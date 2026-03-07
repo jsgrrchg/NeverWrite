@@ -1,0 +1,13 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "default",
+    "description": "Default capabilities for VaultAI",
+    "windows": ["main", "note-*"],
+    "permissions": [
+        "core:default",
+        "dialog:allow-open",
+        "core:window:allow-start-dragging",
+        "core:window:allow-close",
+        "core:webview:allow-create-webview-window"
+    ]
+}

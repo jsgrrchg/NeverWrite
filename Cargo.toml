@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/types",
+    "crates/vault",
+    "crates/index",
+    "crates/diff",
+    "crates/ai",
+    "crates/state",
+    "apps/desktop/src-tauri",
+]

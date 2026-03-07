@@ -1,0 +1,17 @@
+[package]
+name = "vault-ai-vault"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vault-ai-types = { path = "../types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
+notify = "7"
+thiserror = "2"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

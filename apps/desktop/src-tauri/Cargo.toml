@@ -1,0 +1,29 @@
+[package]
+name = "vault-ai-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vault_ai_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "vault-ai-desktop"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+vault-ai-types = { path = "../../../crates/types" }
+vault-ai-vault = { path = "../../../crates/vault" }
+vault-ai-index = { path = "../../../crates/index" }
+vault-ai-diff = { path = "../../../crates/diff" }
+vault-ai-ai = { path = "../../../crates/ai" }
+vault-ai-state = { path = "../../../crates/state" }
+tauri-plugin-dialog = "2.6.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

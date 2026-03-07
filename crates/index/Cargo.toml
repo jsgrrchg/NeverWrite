@@ -1,0 +1,11 @@
+[package]
+name = "vault-ai-index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vault-ai-types = { path = "../types" }
+vault-ai-vault = { path = "../vault" }
+
+[dev-dependencies]
+vault-ai-vault = { path = "../vault" }

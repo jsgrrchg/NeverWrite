@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f5;
+    --bg-tertiary: #ebebeb;
+    --text-primary: #1c1c1c;
+    --text-secondary: #737373;
+    --border: #e5e5e5;
+    --accent: #6366f1;
+}
+
+.dark {
+    --bg-primary: #1c1c1c;
+    --bg-secondary: #252525;
+    --bg-tertiary: #2e2e2e;
+    --text-primary: #e8e8e8;
+    --text-secondary: #8a8a8a;
+    --border: #383838;
+    --accent: #818cf8;
+}
+
+.scrollbar-hidden {
+    scrollbar-width: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+}
+
+/* Drag region nativo de WebKit — funciona a nivel del SO, no JS */
+.drag {
+    -webkit-app-region: drag;
+    cursor: default;
+}
+
+.no-drag {
+    -webkit-app-region: no-drag;
+}
+
+[data-tauri-drag-region] {
+    -webkit-app-region: drag;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+}
+
+body.resizing-sidebar,
+body.resizing-sidebar * {
+    cursor: col-resize !important;
+    user-select: none !important;
+}
+
+body.dragging-tab,
+body.dragging-tab * {
+    user-select: none !important;
+}

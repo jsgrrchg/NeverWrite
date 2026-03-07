@@ -1,0 +1,43 @@
+{
+    "name": "desktop",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc -b && vite build",
+        "lint": "eslint .",
+        "preview": "vite preview",
+        "tauri": "tauri"
+    },
+    "dependencies": {
+        "@codemirror/commands": "^6.10.2",
+        "@codemirror/lang-markdown": "^6.5.0",
+        "@codemirror/language": "^6.12.2",
+        "@codemirror/state": "^6.5.4",
+        "@codemirror/theme-one-dark": "^6.1.3",
+        "@codemirror/view": "^6.39.16",
+        "@tailwindcss/vite": "^4.2.1",
+        "@tauri-apps/api": "^2.10.1",
+        "@tauri-apps/cli": "^2.10.1",
+        "@tauri-apps/plugin-dialog": "^2.6.0",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0",
+        "tailwindcss": "^4.2.1",
+        "zustand": "^5.0.11"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.39.1",
+        "@types/node": "^24.10.1",
+        "@types/react": "^19.2.7",
+        "@types/react-dom": "^19.2.3",
+        "@vitejs/plugin-react": "^5.1.1",
+        "eslint": "^9.39.1",
+        "eslint-plugin-react-hooks": "^7.0.1",
+        "eslint-plugin-react-refresh": "^0.4.24",
+        "globals": "^16.5.0",
+        "typescript": "~5.9.3",
+        "typescript-eslint": "^8.48.0",
+        "vite": "^7.3.1"
+    }
+}
