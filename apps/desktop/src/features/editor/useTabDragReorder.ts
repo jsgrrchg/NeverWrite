@@ -364,8 +364,6 @@ export function useTabDragReorder({
                 dragging: false,
             };
 
-            previewOrderRef.current = tabs.map((tab) => tab.id);
-            setPreviewOrder(previewOrderRef.current);
             node.setPointerCapture(event.pointerId);
         },
         [tabs],
@@ -391,6 +389,11 @@ export function useTabDragReorder({
 
             if (!session.dragging) {
                 session.dragging = true;
+                if (previewOrderRef.current === null) {
+                    const initialOrder = tabs.map((tab) => tab.id);
+                    previewOrderRef.current = initialOrder;
+                    setPreviewOrder(initialOrder);
+                }
                 setDraggingTabId(tabId);
                 document.body.classList.add("dragging-tab");
             }
@@ -420,7 +423,14 @@ export function useTabDragReorder({
             updateEdgeScroll(event.clientX);
             syncDraggedTab(event.clientX);
         },
-        [finishDrag, onDetach, shouldDetach, syncDraggedTab, updateEdgeScroll],
+        [
+            finishDrag,
+            onDetach,
+            shouldDetach,
+            syncDraggedTab,
+            tabs,
+            updateEdgeScroll,
+        ],
     );
 
     const handlePointerUp = useCallback(

@@ -20,11 +20,28 @@ macro_rules! lock {
     };
 }
 
+fn get_file_times(path: &std::path::Path) -> (u64, u64) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return (0, 0);
+    };
+    let to_secs = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    };
+    let modified = meta.modified().map(to_secs).unwrap_or(0);
+    let created = meta.created().map(to_secs).unwrap_or(modified);
+    (modified, created)
+}
+
 fn note_to_dto(n: &IndexedNote) -> NoteDto {
+    let (modified_at, created_at) = get_file_times(&n.path.0);
     NoteDto {
         id: n.id.0.clone(),
         path: n.path.0.to_string_lossy().to_string(),
         title: n.title.clone(),
+        modified_at,
+        created_at,
     }
 }
 
@@ -47,10 +64,15 @@ fn open_vault(path: String, state: tauri::State<Mutex<AppState>>) -> Result<Vec<
 
     let dtos: Vec<NoteDto> = notes
         .iter()
-        .map(|n| NoteDto {
-            id: n.id.0.clone(),
-            path: n.path.0.to_string_lossy().to_string(),
-            title: n.title.clone(),
+        .map(|n| {
+            let (modified_at, created_at) = get_file_times(&n.path.0);
+            NoteDto {
+                id: n.id.0.clone(),
+                path: n.path.0.to_string_lossy().to_string(),
+                title: n.title.clone(),
+                modified_at,
+                created_at,
+            }
         })
         .collect();
 
@@ -87,7 +109,7 @@ fn save_note(
     note_id: String,
     content: String,
     state: tauri::State<Mutex<AppState>>,
-) -> Result<(), String> {
+) -> Result<NoteDetailDto, String> {
     let mut state = lock!(state)?;
     let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
 
@@ -99,11 +121,12 @@ fn save_note(
         .map_err(|e| e.to_string())?;
 
     let note = vault.read_note(&note_id).map_err(|e| e.to_string())?;
+    let dto = note_to_detail(&note);
     if let Some(index) = state.index.as_mut() {
         index.reindex_note(note);
     }
 
-    Ok(())
+    Ok(dto)
 }
 
 #[tauri::command]
@@ -196,6 +219,30 @@ fn search_notes(
         .collect())
 }
 
+#[derive(serde::Serialize)]
+struct TagDto {
+    tag: String,
+    note_ids: Vec<String>,
+}
+
+#[tauri::command]
+fn get_tags(state: tauri::State<Mutex<AppState>>) -> Result<Vec<TagDto>, String> {
+    let state = lock!(state)?;
+    let index = state.index.as_ref().ok_or("No hay vault abierto")?;
+
+    let mut tags: Vec<TagDto> = index
+        .tags
+        .iter()
+        .map(|(tag, note_ids)| TagDto {
+            tag: tag.clone(),
+            note_ids: note_ids.iter().map(|id| id.0.clone()).collect(),
+        })
+        .collect();
+
+    tags.sort_by(|a, b| a.tag.cmp(&b.tag));
+    Ok(tags)
+}
+
 #[tauri::command]
 fn get_backlinks(
     note_id: String,
@@ -221,6 +268,7 @@ fn get_backlinks(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(AppState {
             vault: None,
             index: None,
@@ -236,6 +284,7 @@ pub fn run() {
             rename_note,
             search_notes,
             get_backlinks,
+            get_tags,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

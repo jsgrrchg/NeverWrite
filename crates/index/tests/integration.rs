@@ -163,6 +163,143 @@ fn resolve_nonexistent() {
     assert_eq!(resolved, None);
 }
 
+#[test]
+fn resolve_by_title_when_filename_differs() {
+    let index = VaultIndex::build(vec![
+        make_note("refs/rust-book", "Rust Book", vec![], vec![]),
+        make_note("nota1", "Primera Nota", vec![("Rust Book", None)], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink("Rust Book", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("refs/rust-book".into())));
+}
+
+#[test]
+fn resolve_trims_whitespace() {
+    let index = VaultIndex::build(vec![
+        make_note("refs/guia", "Guia", vec![], vec![]),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink("  Guia  ", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("refs/guia".into())));
+}
+
+#[test]
+fn resolve_ignores_heading_and_block_refs() {
+    let index = VaultIndex::build(vec![
+        make_note("refs/guia", "Guia", vec![], vec![]),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink("Guia#intro", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("refs/guia".into())));
+
+    let resolved = index.resolve_wikilink("Guia^bloque-1", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("refs/guia".into())));
+}
+
+#[test]
+fn resolve_accepts_markdown_extension() {
+    let index = VaultIndex::build(vec![
+        make_note("carpeta/nota3", "Nota en Carpeta", vec![], vec![]),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink("carpeta/nota3.md", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("carpeta/nota3".into())));
+}
+
+#[test]
+fn resolve_normalizes_typographic_quotes() {
+    let index = VaultIndex::build(vec![
+        make_note(
+            "news/trumps-greenland",
+            "Donald Trump's Greenland plan",
+            vec![],
+            vec![],
+        ),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink("Donald Trump’s Greenland plan", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("news/trumps-greenland".into())));
+}
+
+#[test]
+fn resolve_ignores_trailing_terminal_punctuation() {
+    let index = VaultIndex::build(vec![
+        make_note(
+            "news/south-korea",
+            "Trump Says He Will Raise Tariffs on South Korea to 25%",
+            vec![],
+            vec![],
+        ),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink(
+        "Trump Says He Will Raise Tariffs on South Korea to 25%.",
+        &NoteId("nota1".into()),
+    );
+    assert_eq!(resolved, Some(NoteId("news/south-korea".into())));
+}
+
+#[test]
+fn resolve_ignores_diacritics_and_extra_spaces() {
+    let index = VaultIndex::build(vec![
+        make_note("authors/jose-luis-cava", "José   Luis Cava", vec![], vec![]),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink("Jose Luis Cava", &NoteId("nota1".into()));
+    assert_eq!(resolved, Some(NoteId("authors/jose-luis-cava".into())));
+}
+
+#[test]
+fn resolve_unique_long_title_prefix() {
+    let index = VaultIndex::build(vec![
+        make_note(
+            "news/starmer-housing",
+            "Starmer planta cara a los grandes propietarios y reforma un mecanismo “feudal” de compra de viviendas en el Reino Unido",
+            vec![],
+            vec![],
+        ),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink(
+        "Starmer planta cara a los grandes propietarios y reforma un mecanismo \"feudal\" de compra de viviendas",
+        &NoteId("nota1".into()),
+    );
+    assert_eq!(resolved, Some(NoteId("news/starmer-housing".into())));
+}
+
+#[test]
+fn resolve_unique_long_title_prefix_does_not_guess_when_ambiguous() {
+    let index = VaultIndex::build(vec![
+        make_note(
+            "news/starmer-uk",
+            "Starmer planta cara a los grandes propietarios y reforma un mecanismo “feudal” de compra de viviendas en el Reino Unido",
+            vec![],
+            vec![],
+        ),
+        make_note(
+            "news/starmer-scotland",
+            "Starmer planta cara a los grandes propietarios y reforma un mecanismo “feudal” de compra de viviendas en Escocia",
+            vec![],
+            vec![],
+        ),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let resolved = index.resolve_wikilink(
+        "Starmer planta cara a los grandes propietarios y reforma un mecanismo \"feudal\" de compra de viviendas",
+        &NoteId("nota1".into()),
+    );
+    assert_eq!(resolved, None);
+}
+
 // --- Tests de búsqueda ---
 
 #[test]

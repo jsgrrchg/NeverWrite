@@ -52,6 +52,8 @@ pub struct NoteDto {
     pub id: String,
     pub path: String,
     pub title: String,
+    pub modified_at: u64,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

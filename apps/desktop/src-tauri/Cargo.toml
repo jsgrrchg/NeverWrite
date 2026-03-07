@@ -24,6 +24,7 @@ vault-ai-diff = { path = "../../../crates/diff" }
 vault-ai-ai = { path = "../../../crates/ai" }
 vault-ai-state = { path = "../../../crates/state" }
 tauri-plugin-dialog = "2.6.0"
+tauri-plugin-opener = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
