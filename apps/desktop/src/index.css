@@ -6,20 +6,37 @@
     --bg-primary: #ffffff;
     --bg-secondary: #f5f5f5;
     --bg-tertiary: #ebebeb;
+    --bg-elevated: #fcfcfc;
     --text-primary: #1c1c1c;
     --text-secondary: #737373;
     --border: #e5e5e5;
     --accent: #6366f1;
+    --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
 }
 
 .dark {
     --bg-primary: #1c1c1c;
     --bg-secondary: #252525;
     --bg-tertiary: #2e2e2e;
+    --bg-elevated: #232323;
     --text-primary: #e8e8e8;
     --text-secondary: #8a8a8a;
     --border: #383838;
     --accent: #818cf8;
+    --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
+}
+
+body {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* Allow text selection in editable content */
+.cm-editor .cm-content,
+input,
+textarea {
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 .scrollbar-hidden {
@@ -63,6 +80,9 @@ body {
         system-ui,
         -apple-system,
         sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 body.resizing-sidebar,
@@ -74,4 +94,30 @@ body.resizing-sidebar * {
 body.dragging-tab,
 body.dragging-tab * {
     user-select: none !important;
+}
+
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--border) 76%, transparent);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.editor-shell {
+    background: var(--bg-primary);
 }

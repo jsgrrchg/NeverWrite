@@ -24,7 +24,10 @@ export interface AttachExternalTabPayload {
 
 export function getWindowMode() {
     const params = new URLSearchParams(window.location.search);
-    return params.get("window") === "note" ? "note" : "main";
+    const w = params.get("window");
+    if (w === "note") return "note";
+    if (w === "settings") return "settings";
+    return "main";
 }
 
 export function getCurrentWindowLabel() {
@@ -109,6 +112,55 @@ export async function findWindowTabDropTarget(
     );
 
     return match?.label ?? null;
+}
+
+export async function openSettingsWindow() {
+    const label = "settings";
+    const existing = await getAllWebviewWindows();
+    const settingsWin = existing.find((w) => w.label === label);
+    if (settingsWin) {
+        await settingsWin.show();
+        await settingsWin.setFocus();
+        return;
+    }
+    const win = new WebviewWindow(label, {
+        url: "/?window=settings",
+        title: "Settings — VaultAI",
+        width: 820,
+        height: 560,
+        minWidth: 640,
+        minHeight: 480,
+        center: true,
+        focus: true,
+        titleBarStyle: "overlay",
+        hiddenTitle: true,
+        trafficLightPosition: { x: 14, y: 18 },
+    });
+    await new Promise<void>((resolve, reject) => {
+        void win.once("tauri://created", () => resolve());
+        void win.once("tauri://error", (e) => reject(e.payload));
+    });
+}
+
+export async function openVaultWindow(vaultPath: string) {
+    const label = `vault-${crypto.randomUUID()}`;
+    const win = new WebviewWindow(label, {
+        url: `/?vault=${encodeURIComponent(vaultPath)}`,
+        title: vaultPath.split("/").pop() ?? "Vault",
+        width: 1200,
+        height: 800,
+        minWidth: 800,
+        minHeight: 600,
+        center: true,
+        focus: true,
+        titleBarStyle: "overlay",
+        hiddenTitle: true,
+    });
+
+    return await new Promise<void>((resolve, reject) => {
+        void win.once("tauri://created", () => resolve());
+        void win.once("tauri://error", (e) => reject(e.payload));
+    });
 }
 
 export async function openDetachedNoteWindow(

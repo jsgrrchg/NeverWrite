@@ -1,5 +1,30 @@
 import { create } from "zustand";
 
+const SESSION_KEY = "vaultai.session.tabs";
+
+interface PersistedSession {
+    noteIds: Array<{ noteId: string; title: string }>;
+    activeNoteId: string | null;
+}
+
+export function readPersistedSession(): PersistedSession | null {
+    try {
+        const raw = localStorage.getItem(SESSION_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw) as PersistedSession;
+    } catch {
+        return null;
+    }
+}
+
+// Only start persisting after the session has been restored,
+// to avoid overwriting saved data with the initial empty state.
+let sessionReady = false;
+
+export function markSessionReady() {
+    sessionReady = true;
+}
+
 export interface Tab {
     id: string;
     noteId: string;
@@ -8,22 +33,37 @@ export interface Tab {
     isDirty: boolean;
 }
 
+export type EditorMode = "preview";
+
+export interface PendingReveal {
+    noteId: string;
+    targets: string[];
+    mode: "link" | "mention";
+}
+
 interface EditorStore {
     tabs: Tab[];
     activeTabId: string | null;
+    editorMode: EditorMode;
+    pendingReveal: PendingReveal | null;
     openNote: (noteId: string, title: string, content: string) => void;
     closeTab: (tabId: string) => void;
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
+    updateTabTitle: (tabId: string, title: string) => void;
     markTabClean: (tabId: string) => void;
     reorderTabs: (fromIndex: number, toIndex: number) => void;
     hydrateTabs: (tabs: Tab[], activeTabId: string | null) => void;
     insertExternalTab: (tab: Tab, index?: number) => void;
+    queueReveal: (reveal: PendingReveal) => void;
+    clearPendingReveal: () => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
     tabs: [],
     activeTabId: null,
+    editorMode: "preview",
+    pendingReveal: null,
 
     openNote: (noteId, title, content) => {
         const existing = get().tabs.find((t) => t.noteId === noteId);
@@ -59,6 +99,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             tabs: state.tabs.map((t) =>
                 t.id === tabId ? { ...t, content, isDirty: true } : t,
+            ),
+        }));
+    },
+
+    updateTabTitle: (tabId, title) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) =>
+                t.id === tabId ? { ...t, title } : t,
             ),
         }));
     },
@@ -104,4 +152,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             return { tabs, activeTabId: tab.id };
         });
     },
+
+    queueReveal: (pendingReveal) => set({ pendingReveal }),
+
+    clearPendingReveal: () => set({ pendingReveal: null }),
 }));
+
+useEditorStore.subscribe((state) => {
+    if (!sessionReady) return;
+    const session: PersistedSession = {
+        noteIds: state.tabs.map((t) => ({ noteId: t.noteId, title: t.title })),
+        activeNoteId:
+            state.tabs.find((t) => t.id === state.activeTabId)?.noteId ?? null,
+    };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+});

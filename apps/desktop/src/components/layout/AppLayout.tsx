@@ -6,34 +6,21 @@ import {
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+    DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
+    MAX_RIGHT_PANEL_WIDTH,
     MAX_SIDEBAR_WIDTH,
+    MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
 } from "../../app/store/layoutStore";
 
 const COLLAPSE_TRIGGER_WIDTH = 168;
-const SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH, 320];
+const LEFT_SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH, 320];
+const RIGHT_SNAP_POINTS = [DEFAULT_RIGHT_PANEL_WIDTH, 360];
 const SNAP_DISTANCE = 18;
 const RESIZER_HITBOX_WIDTH = 10;
 const RESIZER_VISIBLE_WIDTH = 1;
-
-function clampPreviewWidth(width: number) {
-    return Math.max(0, Math.min(MAX_SIDEBAR_WIDTH, width));
-}
-
-function snapSidebarWidth(width: number) {
-    const clamped = Math.max(
-        MIN_SIDEBAR_WIDTH,
-        Math.min(MAX_SIDEBAR_WIDTH, width),
-    );
-
-    const snapTarget = SNAP_POINTS.find(
-        (point) => Math.abs(point - clamped) <= SNAP_DISTANCE,
-    );
-
-    return snapTarget ?? clamped;
-}
 
 interface ResizeSession {
     pointerId: number;
@@ -45,69 +32,85 @@ interface ResizeSession {
 interface AppLayoutProps {
     left: React.ReactNode;
     center: React.ReactNode;
+    right?: React.ReactNode;
 }
 
-export function AppLayout({ left, center }: AppLayoutProps) {
-    const {
-        sidebarCollapsed,
-        sidebarWidth,
-        collapseSidebarToWidth,
-        showSidebarAtWidth,
-        toggleSidebar,
-    } = useLayoutStore();
-    const [isResizing, setIsResizing] = useState(false);
-    const [collapsePreview, setCollapsePreview] = useState(false);
+export function AppLayout({ left, center, right }: AppLayoutProps) {
+    const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
+    const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
+    const collapseSidebarToWidth = useLayoutStore(
+        (s) => s.collapseSidebarToWidth,
+    );
+    const showSidebarAtWidth = useLayoutStore((s) => s.showSidebarAtWidth);
+    const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
+    const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
+    const rightPanelWidth = useLayoutStore((s) => s.rightPanelWidth);
+    const collapseRightPanelToWidth = useLayoutStore(
+        (s) => s.collapseRightPanelToWidth,
+    );
+    const showRightPanelAtWidth = useLayoutStore(
+        (s) => s.showRightPanelAtWidth,
+    );
+    const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
 
+    // --- Left panel ---
+    const [isResizingLeft, setIsResizingLeft] = useState(false);
+    const [collapsePreviewLeft, setCollapsePreviewLeft] = useState(false);
     const leftPanelRef = useRef<HTMLDivElement>(null);
-    const resizerRef = useRef<HTMLDivElement>(null);
-    const resizeSessionRef = useRef<ResizeSession | null>(null);
-    const previewFrameRef = useRef<number | null>(null);
-    const collapsePreviewRef = useRef(false);
+    const leftResizerRef = useRef<HTMLDivElement>(null);
+    const leftSessionRef = useRef<ResizeSession | null>(null);
+    const leftFrameRef = useRef<number | null>(null);
+    const leftCollapsePreviewRef = useRef(false);
 
-    const applyPanelWidth = useCallback((width: number) => {
+    // --- Right panel ---
+    const [isResizingRight, setIsResizingRight] = useState(false);
+    const [collapsePreviewRight, setCollapsePreviewRight] = useState(false);
+    const rightPanelRef = useRef<HTMLDivElement>(null);
+    const rightResizerRef = useRef<HTMLDivElement>(null);
+    const rightSessionRef = useRef<ResizeSession | null>(null);
+    const rightFrameRef = useRef<number | null>(null);
+    const rightCollapsePreviewRef = useRef(false);
+
+    // ---- Left resize logic ----
+
+    const applyLeftWidth = useCallback((width: number) => {
         const panel = leftPanelRef.current;
         if (!panel) return;
-
         panel.style.width = `${width}px`;
         panel.style.borderRight =
             width > 0 ? "1px solid var(--border)" : "none";
     }, []);
 
-    const syncCollapsePreview = useCallback((next: boolean) => {
-        if (collapsePreviewRef.current === next) return;
-        collapsePreviewRef.current = next;
-        setCollapsePreview(next);
+    const syncLeftPreview = useCallback((next: boolean) => {
+        if (leftCollapsePreviewRef.current === next) return;
+        leftCollapsePreviewRef.current = next;
+        setCollapsePreviewLeft(next);
     }, []);
 
-    const flushPreviewWidth = useCallback(() => {
-        previewFrameRef.current = null;
-        const session = resizeSessionRef.current;
-        if (!session) return;
+    const flushLeftWidth = useCallback(() => {
+        leftFrameRef.current = null;
+        const s = leftSessionRef.current;
+        if (!s) return;
+        applyLeftWidth(s.pendingWidth);
+        syncLeftPreview(s.pendingWidth < COLLAPSE_TRIGGER_WIDTH);
+    }, [applyLeftWidth, syncLeftPreview]);
 
-        applyPanelWidth(session.pendingWidth);
-        syncCollapsePreview(session.pendingWidth < COLLAPSE_TRIGGER_WIDTH);
-    }, [applyPanelWidth, syncCollapsePreview]);
+    const scheduleLeftWidth = useCallback(() => {
+        if (leftFrameRef.current !== null) return;
+        leftFrameRef.current = window.requestAnimationFrame(flushLeftWidth);
+    }, [flushLeftWidth]);
 
-    const schedulePreviewWidth = useCallback(() => {
-        if (previewFrameRef.current !== null) return;
-        previewFrameRef.current =
-            window.requestAnimationFrame(flushPreviewWidth);
-    }, [flushPreviewWidth]);
-
-    const finishResize = useCallback(
+    const finishLeftResize = useCallback(
         (pointerId?: number) => {
-            const session = resizeSessionRef.current;
-            if (!session) return;
-            if (pointerId !== undefined && session.pointerId !== pointerId) {
-                return;
-            }
+            const s = leftSessionRef.current;
+            if (!s) return;
+            if (pointerId !== undefined && s.pointerId !== pointerId) return;
 
-            if (previewFrameRef.current !== null) {
-                window.cancelAnimationFrame(previewFrameRef.current);
-                previewFrameRef.current = null;
+            if (leftFrameRef.current !== null) {
+                window.cancelAnimationFrame(leftFrameRef.current);
+                leftFrameRef.current = null;
             }
-
-            const resizer = resizerRef.current;
+            const resizer = leftResizerRef.current;
             if (
                 resizer &&
                 pointerId !== undefined &&
@@ -115,133 +118,272 @@ export function AppLayout({ left, center }: AppLayoutProps) {
             ) {
                 resizer.releasePointerCapture(pointerId);
             }
-
-            applyPanelWidth(session.pendingWidth);
+            applyLeftWidth(s.pendingWidth);
             document.body.classList.remove("resizing-sidebar");
-            resizeSessionRef.current = null;
-            syncCollapsePreview(false);
-            setIsResizing(false);
+            leftSessionRef.current = null;
+            syncLeftPreview(false);
+            setIsResizingLeft(false);
 
-            if (session.pendingWidth < COLLAPSE_TRIGGER_WIDTH) {
+            if (s.pendingWidth < COLLAPSE_TRIGGER_WIDTH) {
                 collapseSidebarToWidth(MIN_SIDEBAR_WIDTH);
                 return;
             }
-
-            showSidebarAtWidth(snapSidebarWidth(session.pendingWidth));
+            const clamped = Math.max(
+                MIN_SIDEBAR_WIDTH,
+                Math.min(MAX_SIDEBAR_WIDTH, s.pendingWidth),
+            );
+            const snapped =
+                LEFT_SNAP_POINTS.find(
+                    (p) => Math.abs(p - clamped) <= SNAP_DISTANCE,
+                ) ?? clamped;
+            showSidebarAtWidth(snapped);
         },
         [
-            applyPanelWidth,
+            applyLeftWidth,
             collapseSidebarToWidth,
             showSidebarAtWidth,
-            syncCollapsePreview,
+            syncLeftPreview,
         ],
     );
 
     useEffect(() => {
-        if (!isResizing) return;
-
-        const stopResize = () => finishResize();
-
-        window.addEventListener("pointerup", stopResize);
-        window.addEventListener("pointercancel", stopResize);
-        window.addEventListener("mouseup", stopResize);
-        window.addEventListener("blur", stopResize);
-
-        const handleVisibilityChange = () => {
-            if (document.visibilityState !== "visible") {
-                stopResize();
-            }
+        if (!isResizingLeft) return;
+        const stop = () => finishLeftResize();
+        window.addEventListener("pointerup", stop);
+        window.addEventListener("pointercancel", stop);
+        window.addEventListener("mouseup", stop);
+        window.addEventListener("blur", stop);
+        const onVis = () => {
+            if (document.visibilityState !== "visible") stop();
         };
-
-        document.addEventListener("visibilitychange", handleVisibilityChange);
-
+        document.addEventListener("visibilitychange", onVis);
         return () => {
-            window.removeEventListener("pointerup", stopResize);
-            window.removeEventListener("pointercancel", stopResize);
-            window.removeEventListener("mouseup", stopResize);
-            window.removeEventListener("blur", stopResize);
-            document.removeEventListener(
-                "visibilitychange",
-                handleVisibilityChange,
-            );
+            window.removeEventListener("pointerup", stop);
+            window.removeEventListener("pointercancel", stop);
+            window.removeEventListener("mouseup", stop);
+            window.removeEventListener("blur", stop);
+            document.removeEventListener("visibilitychange", onVis);
         };
-    }, [finishResize, isResizing]);
+    }, [finishLeftResize, isResizingLeft]);
 
-    useEffect(() => {
-        return () => {
-            if (previewFrameRef.current !== null) {
-                window.cancelAnimationFrame(previewFrameRef.current);
-            }
+    useEffect(
+        () => () => {
+            if (leftFrameRef.current !== null)
+                window.cancelAnimationFrame(leftFrameRef.current);
             document.body.classList.remove("resizing-sidebar");
-        };
-    }, []);
+        },
+        [],
+    );
 
-    const handleResizePointerDown = useCallback(
-        (event: ReactPointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0) return;
-
+    const onLeftDown = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => {
+            if (e.button !== 0) return;
             const startWidth = sidebarCollapsed ? 0 : sidebarWidth;
-            resizeSessionRef.current = {
-                pointerId: event.pointerId,
-                startX: event.clientX,
+            leftSessionRef.current = {
+                pointerId: e.pointerId,
+                startX: e.clientX,
                 startWidth,
                 pendingWidth: startWidth,
             };
-
-            event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
             document.body.classList.add("resizing-sidebar");
-            syncCollapsePreview(false);
-            setIsResizing(true);
-            applyPanelWidth(startWidth);
+            syncLeftPreview(false);
+            setIsResizingLeft(true);
+            applyLeftWidth(startWidth);
         },
-        [applyPanelWidth, sidebarCollapsed, sidebarWidth, syncCollapsePreview],
+        [applyLeftWidth, sidebarCollapsed, sidebarWidth, syncLeftPreview],
     );
 
-    const handleResizePointerMove = useCallback(
-        (event: ReactPointerEvent<HTMLDivElement>) => {
-            const session = resizeSessionRef.current;
-            if (!session || session.pointerId !== event.pointerId) return;
-
-            session.pendingWidth = clampPreviewWidth(
-                session.startWidth + event.clientX - session.startX,
+    const onLeftMove = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => {
+            const s = leftSessionRef.current;
+            if (!s || s.pointerId !== e.pointerId) return;
+            s.pendingWidth = Math.max(
+                0,
+                Math.min(
+                    MAX_SIDEBAR_WIDTH,
+                    s.startWidth + e.clientX - s.startX,
+                ),
             );
-            schedulePreviewWidth();
+            scheduleLeftWidth();
         },
-        [schedulePreviewWidth],
+        [scheduleLeftWidth],
     );
 
-    const handleResizePointerUp = useCallback(
-        (event: ReactPointerEvent<HTMLDivElement>) => {
-            finishResize(event.pointerId);
-        },
-        [finishResize],
+    const onLeftUp = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => finishLeftResize(e.pointerId),
+        [finishLeftResize],
     );
 
-    const handleResizePointerCancel = useCallback(
-        (event: ReactPointerEvent<HTMLDivElement>) => {
-            finishResize(event.pointerId);
+    // ---- Right resize logic ----
+
+    const applyRightWidth = useCallback((width: number) => {
+        const panel = rightPanelRef.current;
+        if (!panel) return;
+        panel.style.width = `${width}px`;
+        panel.style.borderLeft = width > 0 ? "1px solid var(--border)" : "none";
+    }, []);
+
+    const syncRightPreview = useCallback((next: boolean) => {
+        if (rightCollapsePreviewRef.current === next) return;
+        rightCollapsePreviewRef.current = next;
+        setCollapsePreviewRight(next);
+    }, []);
+
+    const flushRightWidth = useCallback(() => {
+        rightFrameRef.current = null;
+        const s = rightSessionRef.current;
+        if (!s) return;
+        applyRightWidth(s.pendingWidth);
+        syncRightPreview(s.pendingWidth < COLLAPSE_TRIGGER_WIDTH);
+    }, [applyRightWidth, syncRightPreview]);
+
+    const scheduleRightWidth = useCallback(() => {
+        if (rightFrameRef.current !== null) return;
+        rightFrameRef.current = window.requestAnimationFrame(flushRightWidth);
+    }, [flushRightWidth]);
+
+    const finishRightResize = useCallback(
+        (pointerId?: number) => {
+            const s = rightSessionRef.current;
+            if (!s) return;
+            if (pointerId !== undefined && s.pointerId !== pointerId) return;
+
+            if (rightFrameRef.current !== null) {
+                window.cancelAnimationFrame(rightFrameRef.current);
+                rightFrameRef.current = null;
+            }
+            const resizer = rightResizerRef.current;
+            if (
+                resizer &&
+                pointerId !== undefined &&
+                resizer.hasPointerCapture(pointerId)
+            ) {
+                resizer.releasePointerCapture(pointerId);
+            }
+            applyRightWidth(s.pendingWidth);
+            document.body.classList.remove("resizing-sidebar");
+            rightSessionRef.current = null;
+            syncRightPreview(false);
+            setIsResizingRight(false);
+
+            if (s.pendingWidth < COLLAPSE_TRIGGER_WIDTH) {
+                collapseRightPanelToWidth(MIN_RIGHT_PANEL_WIDTH);
+                return;
+            }
+            const clamped = Math.max(
+                MIN_RIGHT_PANEL_WIDTH,
+                Math.min(MAX_RIGHT_PANEL_WIDTH, s.pendingWidth),
+            );
+            const snapped =
+                RIGHT_SNAP_POINTS.find(
+                    (p) => Math.abs(p - clamped) <= SNAP_DISTANCE,
+                ) ?? clamped;
+            showRightPanelAtWidth(snapped);
         },
-        [finishResize],
+        [
+            applyRightWidth,
+            collapseRightPanelToWidth,
+            showRightPanelAtWidth,
+            syncRightPreview,
+        ],
     );
 
-    const handleResizeDoubleClick = useCallback(() => {
-        if (sidebarCollapsed) {
-            showSidebarAtWidth(DEFAULT_SIDEBAR_WIDTH);
-            return;
+    useEffect(() => {
+        if (!isResizingRight) return;
+        const stop = () => finishRightResize();
+        window.addEventListener("pointerup", stop);
+        window.addEventListener("pointercancel", stop);
+        window.addEventListener("mouseup", stop);
+        window.addEventListener("blur", stop);
+        const onVis = () => {
+            if (document.visibilityState !== "visible") stop();
+        };
+        document.addEventListener("visibilitychange", onVis);
+        return () => {
+            window.removeEventListener("pointerup", stop);
+            window.removeEventListener("pointercancel", stop);
+            window.removeEventListener("mouseup", stop);
+            window.removeEventListener("blur", stop);
+            document.removeEventListener("visibilitychange", onVis);
+        };
+    }, [finishRightResize, isResizingRight]);
+
+    useEffect(
+        () => () => {
+            if (rightFrameRef.current !== null)
+                window.cancelAnimationFrame(rightFrameRef.current);
+        },
+        [],
+    );
+
+    const onRightDown = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => {
+            if (e.button !== 0) return;
+            const startWidth = rightPanelCollapsed ? 0 : rightPanelWidth;
+            rightSessionRef.current = {
+                pointerId: e.pointerId,
+                startX: e.clientX,
+                startWidth,
+                pendingWidth: startWidth,
+            };
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            document.body.classList.add("resizing-sidebar");
+            syncRightPreview(false);
+            setIsResizingRight(true);
+            applyRightWidth(startWidth);
+        },
+        [
+            applyRightWidth,
+            rightPanelCollapsed,
+            rightPanelWidth,
+            syncRightPreview,
+        ],
+    );
+
+    const onRightMove = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => {
+            const s = rightSessionRef.current;
+            if (!s || s.pointerId !== e.pointerId) return;
+            // Inverted: drag left = expand right panel
+            s.pendingWidth = Math.max(
+                0,
+                Math.min(
+                    MAX_RIGHT_PANEL_WIDTH,
+                    s.startWidth - (e.clientX - s.startX),
+                ),
+            );
+            scheduleRightWidth();
+        },
+        [scheduleRightWidth],
+    );
+
+    const onRightUp = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) =>
+            finishRightResize(e.pointerId),
+        [finishRightResize],
+    );
+
+    const onRightDoubleClick = useCallback(() => {
+        if (rightPanelCollapsed) {
+            showRightPanelAtWidth(DEFAULT_RIGHT_PANEL_WIDTH);
+        } else {
+            toggleRightPanel();
         }
-
-        toggleSidebar();
-    }, [showSidebarAtWidth, sidebarCollapsed, toggleSidebar]);
+    }, [rightPanelCollapsed, showRightPanelAtWidth, toggleRightPanel]);
 
     const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
+    const effectiveRight = rightPanelCollapsed ? 0 : rightPanelWidth;
+    const isResizing = isResizingLeft || isResizingRight;
 
     return (
         <div
             className="relative flex h-full overflow-hidden"
             style={{ backgroundColor: "var(--bg-primary)" }}
         >
-            {/* Panel izquierdo (sidebar) */}
+            {/* Left sidebar */}
             <div
                 ref={leftPanelRef}
                 style={{
@@ -252,7 +394,7 @@ export function AppLayout({ left, center }: AppLayoutProps) {
                     borderRight: sidebarCollapsed
                         ? "none"
                         : "1px solid var(--border)",
-                    transition: isResizing
+                    transition: isResizingLeft
                         ? "none"
                         : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
                 }}
@@ -260,36 +402,93 @@ export function AppLayout({ left, center }: AppLayoutProps) {
                 {left}
             </div>
 
-            {/* Resizer */}
+            {/* Left resizer */}
             <div
-                ref={resizerRef}
+                ref={leftResizerRef}
                 className="relative flex-shrink-0 cursor-col-resize touch-none"
                 style={{ width: RESIZER_HITBOX_WIDTH }}
-                onPointerDown={handleResizePointerDown}
-                onPointerMove={handleResizePointerMove}
-                onPointerUp={handleResizePointerUp}
-                onPointerCancel={handleResizePointerCancel}
-                onLostPointerCapture={handleResizePointerCancel}
-                onDoubleClick={handleResizeDoubleClick}
+                onPointerDown={onLeftDown}
+                onPointerMove={onLeftMove}
+                onPointerUp={onLeftUp}
+                onPointerCancel={onLeftUp}
+                onLostPointerCapture={onLeftUp}
+                onDoubleClick={() => {
+                    if (sidebarCollapsed)
+                        showSidebarAtWidth(DEFAULT_SIDEBAR_WIDTH);
+                    else toggleSidebar();
+                }}
             >
                 <div
                     className="pointer-events-none absolute bottom-0 top-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
                     style={{
                         width: RESIZER_VISIBLE_WIDTH,
-                        backgroundColor: collapsePreview
+                        backgroundColor: collapsePreviewLeft
                             ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
-                            : isResizing
+                            : isResizingLeft
                               ? "var(--accent)"
                               : "transparent",
-                        boxShadow: isResizing
+                        boxShadow: isResizingLeft
                             ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
                             : "none",
                     }}
                 />
             </div>
 
-            {/* Panel central */}
-            <div className="flex-1 flex flex-col overflow-hidden">{center}</div>
+            {/* Center */}
+            <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                {center}
+            </div>
+
+            {/* Right resizer */}
+            {right && (
+                <div
+                    ref={rightResizerRef}
+                    className="relative flex-shrink-0 cursor-col-resize touch-none"
+                    style={{ width: RESIZER_HITBOX_WIDTH }}
+                    onPointerDown={onRightDown}
+                    onPointerMove={onRightMove}
+                    onPointerUp={onRightUp}
+                    onPointerCancel={onRightUp}
+                    onLostPointerCapture={onRightUp}
+                    onDoubleClick={onRightDoubleClick}
+                >
+                    <div
+                        className="pointer-events-none absolute bottom-0 top-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+                        style={{
+                            width: RESIZER_VISIBLE_WIDTH,
+                            backgroundColor: collapsePreviewRight
+                                ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
+                                : isResizingRight
+                                  ? "var(--accent)"
+                                  : "transparent",
+                            boxShadow: isResizingRight
+                                ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
+                                : "none",
+                        }}
+                    />
+                </div>
+            )}
+
+            {/* Right panel */}
+            {right && (
+                <div
+                    ref={rightPanelRef}
+                    style={{
+                        width: effectiveRight,
+                        flexShrink: 0,
+                        overflow: "hidden",
+                        backgroundColor: "var(--bg-secondary)",
+                        borderLeft: rightPanelCollapsed
+                            ? "none"
+                            : "1px solid var(--border)",
+                        transition: isResizingRight
+                            ? "none"
+                            : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
+                    }}
+                >
+                    {right}
+                </div>
+            )}
 
             {isResizing && (
                 <div className="pointer-events-none absolute inset-0 z-10 cursor-col-resize" />

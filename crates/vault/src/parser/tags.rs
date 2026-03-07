@@ -1,18 +1,55 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
+use super::frontmatter::extract_frontmatter;
+
 // Captura #tag: al inicio de línea o después de whitespace.
 // El grupo 1 es el nombre del tag.
 static TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)#([a-zA-Z][a-zA-Z0-9_\-/]*)").unwrap());
 
 pub fn extract_tags(text: &str) -> Vec<String> {
-    let content = strip_frontmatter(text);
+    let mut tags: Vec<String> = Vec::new();
 
-    TAG_RE
-        .captures_iter(content)
-        .map(|cap| cap[1].to_string())
-        .collect()
+    // 1. Tags desde el campo tags:/tag: del frontmatter YAML
+    if let Some(fm) = extract_frontmatter(text) {
+        for key in &["tags", "tag"] {
+            if let Some(value) = fm.get(key) {
+                match value {
+                    serde_json::Value::Array(arr) => {
+                        for item in arr {
+                            if let Some(s) = item.as_str() {
+                                let tag = s.trim().trim_start_matches('#').to_string();
+                                if !tag.is_empty() && !tags.contains(&tag) {
+                                    tags.push(tag);
+                                }
+                            }
+                        }
+                    }
+                    serde_json::Value::String(s) => {
+                        for part in s.split(',') {
+                            let tag = part.trim().trim_start_matches('#').to_string();
+                            if !tag.is_empty() && !tags.contains(&tag) {
+                                tags.push(tag);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 2. Tags inline #tag del body
+    let content = strip_frontmatter(text);
+    for cap in TAG_RE.captures_iter(content) {
+        let tag = cap[1].to_string();
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+
+    tags
 }
 
 fn strip_frontmatter(text: &str) -> &str {
@@ -54,16 +91,32 @@ mod tests {
 
     #[test]
     fn ignores_headers() {
-        // # Header no es un tag porque no tiene letras pegadas al #
-        // En realidad "# Header" tiene un espacio después del #, así que la regex no lo captura
         let tags = extract_tags("# Header\n## Subheader");
         assert!(tags.is_empty());
     }
 
     #[test]
-    fn ignores_frontmatter_tags() {
-        let text = "---\ntags: [rust, web]\n---\n#real-tag aquí";
+    fn frontmatter_array_tags() {
+        let text = "---\ntags:\n  - rust\n  - web\n---\nContenido";
         let tags = extract_tags(text);
-        assert_eq!(tags, vec!["real-tag"]);
+        assert!(tags.contains(&"rust".to_string()));
+        assert!(tags.contains(&"web".to_string()));
+    }
+
+    #[test]
+    fn frontmatter_inline_tags() {
+        let text = "---\ntags: [clippings, CHILE, Venezuela]\n---\nContenido";
+        let tags = extract_tags(text);
+        assert!(tags.contains(&"clippings".to_string()));
+        assert!(tags.contains(&"CHILE".to_string()));
+        assert!(tags.contains(&"Venezuela".to_string()));
+    }
+
+    #[test]
+    fn frontmatter_and_body_tags_deduped() {
+        let text = "---\ntags: [rust]\n---\n#rust y #web";
+        let tags = extract_tags(text);
+        assert_eq!(tags.iter().filter(|t| t.as_str() == "rust").count(), 1);
+        assert!(tags.contains(&"web".to_string()));
     }
 }

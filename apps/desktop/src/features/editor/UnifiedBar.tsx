@@ -1,4 +1,9 @@
-import { useCallback, type MouseEvent as ReactMouseEvent } from "react";
+import {
+    useCallback,
+    useEffect,
+    type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
     ATTACH_EXTERNAL_TAB_EVENT,
@@ -11,6 +16,7 @@ import {
 } from "../../app/detachedWindows";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useTabDragReorder } from "./useTabDragReorder";
 
 const appWindow = getCurrentWindow();
@@ -23,14 +29,51 @@ function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     });
 }
 
+function getChromeButtonStyle(active = false): CSSProperties {
+    return {
+        width: 30,
+        height: 30,
+        borderRadius: 9,
+        border: active
+            ? "1px solid color-mix(in srgb, var(--accent) 20%, var(--border))"
+            : "1px solid transparent",
+        backgroundColor: active
+            ? "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))"
+            : "transparent",
+        color: active ? "var(--text-primary)" : "var(--text-secondary)",
+        boxShadow: active ? "0 8px 20px rgba(15, 23, 42, 0.08)" : "none",
+        opacity: active ? 1 : 0.78,
+        transition:
+            "background-color 140ms ease, color 140ms ease, border-color 140ms ease, opacity 140ms ease, box-shadow 140ms ease",
+    };
+}
+
+const controlsGroupStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "4px",
+    borderRadius: 12,
+    border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
+    background: "color-mix(in srgb, var(--bg-primary) 52%, var(--bg-tertiary))",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+};
+
 interface UnifiedBarProps {
     windowMode: "main" | "note";
 }
 
 export function UnifiedBar({ windowMode }: UnifiedBarProps) {
-    const { tabs, activeTabId, switchTab, closeTab, reorderTabs } =
-        useEditorStore();
-    const { sidebarCollapsed, toggleSidebar } = useLayoutStore();
+    const tabs = useEditorStore((s) => s.tabs);
+    const activeTabId = useEditorStore((s) => s.activeTabId);
+    const switchTab = useEditorStore((s) => s.switchTab);
+    const closeTab = useEditorStore((s) => s.closeTab);
+    const reorderTabs = useEditorStore((s) => s.reorderTabs);
+    const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
+    const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
+    const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
+    const rightPanelView = useLayoutStore((s) => s.rightPanelView);
+    const activateRightView = useLayoutStore((s) => s.activateRightView);
 
     const handleDetachTab = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
@@ -76,7 +119,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const {
         dragOffsetX,
         draggingTabId,
-        dragSession,
         tabStripRef,
         visualTabs,
         registerTabNode,
@@ -114,6 +156,35 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         [closeTab, tabs.length, windowMode],
     );
 
+    const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");
+
+    useEffect(() => {
+        if (!activeTabId || draggingTabId) return;
+
+        const strip = tabStripRef.current;
+        if (!strip) return;
+
+        const activeNode = strip.querySelector<HTMLElement>(
+            `[data-tab-id="${CSS.escape(activeTabId)}"]`,
+        );
+        if (!activeNode) return;
+
+        const stripLeft = strip.scrollLeft;
+        const stripRight = stripLeft + strip.clientWidth;
+        const nodeLeft = activeNode.offsetLeft;
+        const nodeRight = nodeLeft + activeNode.offsetWidth;
+
+        if (nodeLeft >= stripLeft && nodeRight <= stripRight) {
+            return;
+        }
+
+        activeNode.scrollIntoView({
+            block: "nearest",
+            inline: "center",
+            behavior: "smooth",
+        });
+    }, [activeTabId, draggingTabId, tabOrderKey]);
+
     const hasTabs = visualTabs.length > 0;
 
     return (
@@ -125,17 +196,20 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             }}
             style={{
                 paddingTop: "env(safe-area-inset-top, 28px)",
-                backgroundColor: "var(--bg-tertiary)",
+                background:
+                    "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
                 borderBottom: "1px solid var(--border)",
+                backdropFilter: "blur(18px)",
+                boxShadow: "0 1px 0 rgba(255,255,255,0.04)",
             }}
         >
             <div
                 className="flex items-stretch select-none"
-                style={{ height: 40, cursor: "default" }}
+                style={{ height: 44, cursor: "default", padding: "0 6px" }}
             >
                 <div
                     onMouseDown={startWindowDrag}
-                    style={{ width: 72, flexShrink: 0 }}
+                    style={{ width: 68, flexShrink: 0 }}
                 />
 
                 {windowMode === "main" && (
@@ -144,13 +218,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         title={
                             sidebarCollapsed ? "Show sidebar" : "Hide sidebar"
                         }
-                        className="no-drag flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-gray-500/10 active:bg-gray-500/20 transition-all rounded-md flex-shrink-0"
+                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
                         style={{
-                            width: 28,
-                            height: 28,
                             alignSelf: "center",
                             marginLeft: 4,
                             marginRight: 4,
+                            ...getChromeButtonStyle(!sidebarCollapsed),
                         }}
                     >
                         <svg
@@ -200,14 +273,15 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     <>
                         <div
                             onMouseDown={startWindowDrag}
-                            style={{ width: 12, flexShrink: 0 }}
+                            style={{ width: 10, flexShrink: 0 }}
                         />
 
-                        <div className="no-drag flex min-w-0 flex-1 overflow-hidden">
+                        <div className="no-drag flex min-w-0 flex-1 overflow-hidden items-center">
                             <div className="no-drag flex min-w-0 flex-1 overflow-hidden">
                                 <div
                                     ref={tabStripRef}
-                                    className="no-drag flex min-w-0 flex-shrink overflow-x-auto scrollbar-hidden"
+                                    className="no-drag flex min-w-0 flex-shrink overflow-x-auto scrollbar-hidden items-center"
+                                    style={{ gap: 4, padding: "0 4px" }}
                                     onWheel={(event) => {
                                         if (event.deltaY !== 0) {
                                             event.currentTarget.scrollLeft +=
@@ -224,12 +298,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         return (
                                             <div
                                                 key={tab.id}
+                                                data-tab-id={tab.id}
                                                 ref={(node) =>
                                                     registerTabNode(
                                                         tab.id,
                                                         node,
                                                     )
                                                 }
+                                                title={tab.noteId}
                                                 onClick={() =>
                                                     handleTabClick(tab.id)
                                                 }
@@ -261,14 +337,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         event.pointerId,
                                                     )
                                                 }
-                                                className={`group no-drag flex items-center gap-2 px-3 py-1 cursor-pointer border-r transition-colors ${
+                                                className={`group no-drag flex items-center gap-2 px-3 cursor-pointer ${
                                                     !isActive && !isDragging
                                                         ? "hover:bg-gray-500/10"
                                                         : ""
                                                 }`}
                                                 style={{
-                                                    minWidth: "120px",
-                                                    maxWidth: "200px",
+                                                    minWidth: "112px",
+                                                    maxWidth: "210px",
+                                                    height: 30,
+                                                    borderRadius: 9,
                                                     flexShrink:
                                                         isActive &&
                                                         visualTabs.length > 5
@@ -276,15 +354,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                             : 1,
                                                     backgroundColor: isActive
                                                         ? "var(--bg-primary)"
-                                                        : "transparent",
+                                                        : "color-mix(in srgb, var(--bg-primary) 44%, transparent)",
                                                     color: isActive
                                                         ? "var(--text-primary)"
                                                         : "var(--text-secondary)",
-                                                    borderColor:
-                                                        "var(--border)",
-                                                    borderBottom: isActive
-                                                        ? "2px solid var(--accent)"
-                                                        : "2px solid transparent",
+                                                    border: isActive
+                                                        ? "1px solid color-mix(in srgb, var(--accent) 12%, var(--border))"
+                                                        : "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
                                                     opacity: isDragging
                                                         ? 0.95
                                                         : 1,
@@ -294,10 +370,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         : undefined,
                                                     transition: isDragging
                                                         ? "none"
-                                                        : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 150ms ease, color 150ms ease, border-color 150ms ease",
+                                                        : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 150ms ease, color 150ms ease, border-color 150ms ease, box-shadow 150ms ease",
                                                     boxShadow: isDragging
                                                         ? "0 10px 28px rgba(0, 0, 0, 0.2)"
-                                                        : "none",
+                                                        : isActive
+                                                          ? "0 10px 24px rgba(15, 23, 42, 0.08)"
+                                                          : "none",
                                                     willChange: isDragging
                                                         ? "transform"
                                                         : undefined,
@@ -312,7 +390,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         }}
                                                     />
                                                 )}
-                                                <span className="flex-1 truncate text-[13px]">
+                                                <span className="flex-1 truncate text-[12.5px] font-medium">
                                                     {tab.title}
                                                 </span>
                                                 <button
@@ -322,19 +400,19 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                             tab.id,
                                                         );
                                                     }}
-                                                    className={`no-drag flex-shrink-0 rounded-md w-5 h-5 flex items-center justify-center transition-all ${
+                                                    className={`no-drag flex-shrink-0 rounded w-4 h-4 flex items-center justify-center transition-all ${
                                                         isActive
-                                                            ? "opacity-60 hover:opacity-100 hover:bg-gray-500/20 active:bg-gray-500/40"
-                                                            : "opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-gray-500/20 active:bg-gray-500/40"
+                                                            ? "opacity-60 hover:opacity-100 hover:bg-gray-500/18 active:bg-gray-500/28"
+                                                            : "opacity-0 group-hover:opacity-55 hover:!opacity-100 hover:bg-gray-500/18 active:bg-gray-500/28"
                                                     }`}
                                                 >
                                                     <svg
-                                                        width="12"
-                                                        height="12"
+                                                        width="10"
+                                                        height="10"
                                                         viewBox="0 0 16 16"
                                                         fill="none"
                                                         stroke="currentColor"
-                                                        strokeWidth="1.5"
+                                                        strokeWidth="1.8"
                                                         strokeLinecap="round"
                                                         strokeLinejoin="round"
                                                     >
@@ -344,23 +422,249 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             </div>
                                         );
                                     })}
+
+                                    <button
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={() => {
+                                            const {
+                                                vaultPath,
+                                                notes,
+                                                createNote,
+                                            } = useVaultStore.getState();
+                                            if (!vaultPath) return;
+                                            let name = "Untitled";
+                                            let i = 1;
+                                            while (
+                                                notes.some(
+                                                    (n) =>
+                                                        n.id === name ||
+                                                        n.id.endsWith(
+                                                            `/${name}`,
+                                                        ),
+                                                )
+                                            ) {
+                                                name = `Untitled ${i++}`;
+                                            }
+                                            void createNote(name).then(
+                                                (note) => {
+                                                    if (note)
+                                                        useEditorStore
+                                                            .getState()
+                                                            .openNote(
+                                                                note.id,
+                                                                note.title,
+                                                                "",
+                                                            );
+                                                },
+                                            );
+                                        }}
+                                        title="New note"
+                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                        style={{
+                                            fontSize: 18,
+                                            lineHeight: 1,
+                                            alignSelf: "center",
+                                            marginLeft: 4,
+                                            flexShrink: 0,
+                                            ...getChromeButtonStyle(false),
+                                        }}
+                                    >
+                                        +
+                                    </button>
                                 </div>
 
                                 <div
                                     onMouseDown={startWindowDrag}
-                                    className="min-w-[24px] flex-1"
+                                    className="min-w-[8px] flex-1"
                                 />
                             </div>
                         </div>
 
                         <div
                             onMouseDown={startWindowDrag}
-                            className="flex-shrink-0"
-                            style={{ width: 72 }}
-                        />
+                            className="flex items-center justify-end flex-shrink-0"
+                            style={{ width: windowMode === "main" ? 116 : 16 }}
+                        >
+                            <div style={controlsGroupStyle}>
+                                {windowMode === "main" && (
+                                    <>
+                                        <button
+                                            onMouseDown={(e) =>
+                                                e.stopPropagation()
+                                            }
+                                            onClick={() =>
+                                                activateRightView("chat")
+                                            }
+                                            title="AI Chat"
+                                            className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                            style={getChromeButtonStyle(
+                                                !rightPanelCollapsed &&
+                                                    rightPanelView === "chat",
+                                            )}
+                                        >
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            >
+                                                <path d="M14 10a2 2 0 0 1-2 2H5l-3 3V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+                                            </svg>
+                                        </button>
+                                        <button
+                                            onMouseDown={(e) =>
+                                                e.stopPropagation()
+                                            }
+                                            onClick={() =>
+                                                activateRightView("links")
+                                            }
+                                            title="Links panel"
+                                            className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                            style={getChromeButtonStyle(
+                                                !rightPanelCollapsed &&
+                                                    rightPanelView === "links",
+                                            )}
+                                        >
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                            >
+                                                <rect
+                                                    x="11"
+                                                    y="2"
+                                                    width="4"
+                                                    height="12"
+                                                    rx="1"
+                                                    fill="currentColor"
+                                                />
+                                                <rect
+                                                    x="1"
+                                                    y="2"
+                                                    width="8"
+                                                    height="2"
+                                                    rx="1"
+                                                    fill="currentColor"
+                                                />
+                                                <rect
+                                                    x="1"
+                                                    y="7"
+                                                    width="8"
+                                                    height="2"
+                                                    rx="1"
+                                                    fill="currentColor"
+                                                />
+                                                <rect
+                                                    x="1"
+                                                    y="12"
+                                                    width="8"
+                                                    height="2"
+                                                    rx="1"
+                                                    fill="currentColor"
+                                                />
+                                            </svg>
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
                     </>
                 ) : (
-                    <div onMouseDown={startWindowDrag} className="flex-1" />
+                    <>
+                        <div onMouseDown={startWindowDrag} className="flex-1" />
+                        <div
+                            onMouseDown={startWindowDrag}
+                            className="flex items-center justify-end flex-shrink-0"
+                            style={{ width: 116 }}
+                        >
+                            {windowMode === "main" && (
+                                <div style={controlsGroupStyle}>
+                                    <button
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={() =>
+                                            activateRightView("chat")
+                                        }
+                                        title="AI Chat"
+                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                        style={getChromeButtonStyle(
+                                            !rightPanelCollapsed &&
+                                                rightPanelView === "chat",
+                                        )}
+                                    >
+                                        <svg
+                                            width="14"
+                                            height="14"
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                        >
+                                            <path d="M14 10a2 2 0 0 1-2 2H5l-3 3V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+                                        </svg>
+                                    </button>
+                                    <button
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={() =>
+                                            activateRightView("links")
+                                        }
+                                        title="Links panel"
+                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                        style={getChromeButtonStyle(
+                                            !rightPanelCollapsed &&
+                                                rightPanelView === "links",
+                                        )}
+                                    >
+                                        <svg
+                                            width="14"
+                                            height="14"
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                        >
+                                            <rect
+                                                x="11"
+                                                y="2"
+                                                width="4"
+                                                height="12"
+                                                rx="1"
+                                                fill="currentColor"
+                                            />
+                                            <rect
+                                                x="1"
+                                                y="2"
+                                                width="8"
+                                                height="2"
+                                                rx="1"
+                                                fill="currentColor"
+                                            />
+                                            <rect
+                                                x="1"
+                                                y="7"
+                                                width="8"
+                                                height="2"
+                                                rx="1"
+                                                fill="currentColor"
+                                            />
+                                            <rect
+                                                x="1"
+                                                y="12"
+                                                width="8"
+                                                height="2"
+                                                rx="1"
+                                                fill="currentColor"
+                                            />
+                                        </svg>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </>
                 )}
             </div>
         </div>
