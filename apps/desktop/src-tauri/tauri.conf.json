@@ -1,0 +1,23 @@
+{
+    "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+    "productName": "VaultAI",
+    "version": "0.1.0",
+    "identifier": "com.vaultai",
+    "build": {
+        "frontendDist": "../dist",
+        "devUrl": "http://localhost:5173",
+        "beforeDevCommand": "npm run dev",
+        "beforeBuildCommand": "npm run build"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "VaultAI",
+                "width": 1200,
+                "height": 800,
+                "titleBarStyle": "Overlay",
+                "hiddenTitle": true
+            }
+        ]
+    }
+}
