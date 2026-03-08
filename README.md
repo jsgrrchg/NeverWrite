@@ -27,9 +27,6 @@ npm install
 ```bash
 Para ejecutar la aplicación en modo desarrollo:
  npm run tauri dev
- 
- cd apps/desktop && npm run tauri dev
-
 ```
 
 ```bash

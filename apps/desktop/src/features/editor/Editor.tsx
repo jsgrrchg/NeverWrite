@@ -514,7 +514,12 @@ function getSyntaxExtension(isDark: boolean) {
 
 function getLivePreviewExtension(mode: EditorMode) {
     const vaultPath = useVaultStore.getState().vaultPath;
-    return mode === "preview" ? livePreviewExtension(vaultPath) : [];
+    return mode === "preview"
+        ? livePreviewExtension(vaultPath, {
+              resolveWikilink,
+              navigateWikilink,
+          })
+        : [];
 }
 
 function getAlignmentExtension(enabled: boolean) {

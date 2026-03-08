@@ -161,4 +161,100 @@ export const livePreviewTheme = EditorView.baseTheme({
         border: "1px dashed var(--border)",
         borderRadius: "6px",
     },
+    ".cm-lp-table-widget": {
+        display: "block",
+        margin: "12px 0",
+        overflowX: "auto",
+        cursor: "text",
+    },
+    ".cm-lp-table": {
+        width: "100%",
+        fontSize: "0.95em",
+        background: "var(--bg-primary)",
+        border: "1px solid var(--border)",
+        borderRadius: "10px",
+        overflow: "hidden",
+    },
+    ".cm-lp-table-row": {
+        display: "grid",
+        gridTemplateColumns:
+            "repeat(var(--cm-lp-table-columns, 1), minmax(0, 1fr))",
+    },
+    ".cm-lp-table-cell": {
+        padding: "10px 12px",
+        borderBottom: "1px solid var(--border)",
+        borderRight: "1px solid var(--border)",
+        verticalAlign: "top",
+        textAlign: "left",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+    },
+    ".cm-lp-table-row .cm-lp-table-cell:last-child": {
+        borderRight: "none",
+    },
+    ".cm-lp-table-row:last-child .cm-lp-table-cell": {
+        borderBottom: "none",
+    },
+    ".cm-lp-table-row-header .cm-lp-table-cell": {
+        fontWeight: "700",
+        color: "var(--text-primary)",
+        background:
+            "color-mix(in srgb, var(--bg-secondary) 82%, var(--bg-primary))",
+    },
+    ".cm-lp-table-row:not(.cm-lp-table-row-header) .cm-lp-table-cell": {
+        color: "var(--text-primary)",
+        background: "var(--bg-primary)",
+    },
+    ".cm-lp-table-row:not(.cm-lp-table-row-header):hover .cm-lp-table-cell": {
+        background:
+            "color-mix(in srgb, var(--bg-secondary) 76%, var(--bg-primary))",
+    },
+    ".cm-lp-table-cell[data-align='center']": {
+        textAlign: "center",
+    },
+    ".cm-lp-table-cell[data-align='right']": {
+        textAlign: "right",
+    },
+    ".cm-lp-table-link": {
+        cursor: "pointer",
+        textDecoration: "underline",
+        textUnderlineOffset: "3px",
+    },
+    ".cm-lp-table-url": {
+        color: "var(--accent)",
+        textDecorationStyle: "solid",
+    },
+    ".cm-lp-table-wikilink-valid": {
+        color: "var(--accent)",
+        textDecorationStyle: "dotted",
+    },
+    ".cm-lp-table-wikilink-broken": {
+        color: "#ef4444",
+        textDecorationColor: "#ef4444",
+        textDecorationStyle: "dotted",
+    },
+    ".cm-lp-table-bold": {
+        fontWeight: "700",
+    },
+    ".cm-lp-table-highlight": {
+        backgroundColor: "var(--highlight-bg)",
+        color: "var(--highlight-text)",
+        borderRadius: "3px",
+        padding: "0 2px",
+        boxDecorationBreak: "clone",
+        WebkitBoxDecorationBreak: "clone",
+    },
+    ".cm-lp-table-fallback": {
+        margin: 0,
+        padding: "12px 14px",
+        borderRadius: "10px",
+        border: "1px dashed var(--border)",
+        background:
+            "color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary))",
+        color: "var(--text-secondary)",
+        whiteSpace: "pre-wrap",
+        fontFamily:
+            "ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace",
+        fontSize: "0.9em",
+    },
 });
