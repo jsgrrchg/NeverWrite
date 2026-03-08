@@ -9,6 +9,7 @@ import { VaultSwitcher } from "./features/vault/VaultSwitcher";
 import { TagsPanel } from "./features/tags/TagsPanel";
 import { SearchPanel } from "./features/search/SearchPanel";
 import { LinksPanel } from "./features/notes/LinksPanel";
+import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { Editor } from "./features/editor/Editor";
@@ -55,7 +56,48 @@ function RightPanel() {
     if (rightPanelView === "chat") {
         return <AIChatPanel />;
     }
+    if (rightPanelView === "outline") {
+        return <OutlineRightPanel />;
+    }
     return <LinksPanel />;
+}
+
+function OutlineRightPanel() {
+    const activeNoteId = useEditorStore(
+        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
+    );
+    const activeContent = useEditorStore(
+        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.content ?? null,
+    );
+    const activeTitle = useEditorStore(
+        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.title ?? null,
+    );
+    const queueSelectionReveal = useEditorStore((s) => s.queueSelectionReveal);
+
+    if (!activeNoteId) {
+        return (
+            <div
+                className="flex items-center justify-center h-full text-xs"
+                style={{ color: "var(--text-secondary)" }}
+            >
+                No note open
+            </div>
+        );
+    }
+
+    return (
+        <OutlinePanel
+            title={activeTitle}
+            content={activeContent}
+            onSelectHeading={(selection) =>
+                queueSelectionReveal({
+                    noteId: activeNoteId,
+                    anchor: selection.anchor,
+                    head: selection.head,
+                })
+            }
+        />
+    );
 }
 
 // Register all initial commands

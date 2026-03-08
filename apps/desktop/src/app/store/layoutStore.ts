@@ -66,9 +66,9 @@ interface LayoutStore {
     // Right panel
     rightPanelCollapsed: boolean;
     rightPanelWidth: number;
-    rightPanelView: "links" | "chat";
+    rightPanelView: "links" | "outline" | "chat";
     toggleRightPanel: () => void;
-    activateRightView: (view: "links" | "chat") => void;
+    activateRightView: (view: "links" | "outline" | "chat") => void;
     showRightPanelAtWidth: (width: number) => void;
     collapseRightPanelToWidth: (width: number) => void;
 }
@@ -102,7 +102,7 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
     // Right panel
     rightPanelCollapsed: false,
     rightPanelWidth: initialRightPanelWidth,
-    rightPanelView: "links",
+    rightPanelView: "outline",
     toggleRightPanel: () =>
         set((state) => ({
             rightPanelCollapsed: !state.rightPanelCollapsed,

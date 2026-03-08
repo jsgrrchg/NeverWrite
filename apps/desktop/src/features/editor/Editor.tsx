@@ -94,7 +94,7 @@ function normalizeWikilinkTarget(target: string): string {
 function getWikilinkVariants(target: string): string[] {
     const normalized = normalizeWikilinkTarget(target);
     if (!normalized) return [];
-    const trimmed = normalized.replace(/[\s\.,!?:;]+$/g, "");
+    const trimmed = normalized.replace(/[\s.,!?:;]+$/g, "");
     return trimmed && trimmed !== normalized
         ? [normalized, trimmed]
         : [normalized];
@@ -290,6 +290,8 @@ const baseTheme = EditorView.theme({
         borderLeftColor: "var(--text-primary)",
         borderLeftWidth: "1.6px",
         marginLeft: "-0.8px",
+        marginTop: "0.14em",
+        marginBottom: "0.14em",
     },
     ".cm-selectionBackground, ::selection": {
         backgroundColor:
@@ -511,7 +513,8 @@ function getSyntaxExtension(isDark: boolean) {
 }
 
 function getLivePreviewExtension(mode: EditorMode) {
-    return mode === "preview" ? livePreviewExtension : [];
+    const vaultPath = useVaultStore.getState().vaultPath;
+    return mode === "preview" ? livePreviewExtension(vaultPath) : [];
 }
 
 function getAlignmentExtension(enabled: boolean) {
@@ -799,6 +802,12 @@ export function Editor({
     const editorMode = useEditorStore((s) => s.editorMode);
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
+    const pendingSelectionReveal = useEditorStore(
+        (s) => s.pendingSelectionReveal,
+    );
+    const clearPendingSelectionReveal = useEditorStore(
+        (s) => s.clearPendingSelectionReveal,
+    );
     const updateTabContent = useEditorStore((s) => s.updateTabContent);
     const markTabDirty = useEditorStore((s) => s.markTabDirty);
     const updateTabTitle = useEditorStore((s) => s.updateTabTitle);
@@ -1259,6 +1268,22 @@ export function Editor({
         view.focus();
         clearPendingReveal();
     }, [activeTab, pendingReveal, clearPendingReveal]);
+
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view || !activeTab || !pendingSelectionReveal) return;
+        if (pendingSelectionReveal.noteId !== activeTab.noteId) return;
+
+        view.dispatch({
+            selection: {
+                anchor: pendingSelectionReveal.anchor,
+                head: pendingSelectionReveal.head,
+            },
+            scrollIntoView: true,
+        });
+        view.focus();
+        clearPendingSelectionReveal();
+    }, [activeTab, pendingSelectionReveal, clearPendingSelectionReveal]);
 
     // Keyboard shortcuts
     useEffect(() => {

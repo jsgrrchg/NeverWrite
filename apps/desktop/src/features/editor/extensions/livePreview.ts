@@ -4,53 +4,29 @@ import {
     EditorView,
     ViewPlugin,
     type ViewUpdate,
+    WidgetType,
 } from "@codemirror/view";
 import { type EditorState, RangeSetBuilder } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { SyntaxNode } from "@lezer/common";
 
-// ---------------------------------------------------------------------------
-// Cursor-awareness helpers
-// ---------------------------------------------------------------------------
-
-/** Block-level check: is any cursor/selection on the same line(s) as [from, to]? */
-function isLineActive(state: EditorState, from: number, to: number): boolean {
-    const lineFrom = state.doc.lineAt(from).number;
-    const lineTo = state.doc.lineAt(to).number;
-    for (const range of state.selection.ranges) {
-        const curFrom = state.doc.lineAt(range.from).number;
-        const curTo = state.doc.lineAt(range.to).number;
-        if (curTo >= lineFrom && curFrom <= lineTo) return true;
-    }
-    return false;
-}
-
-/** Editing-specific check: is there a caret on the same line(s) as [from, to]? */
-function hasCaretOnLine(state: EditorState, from: number, to: number): boolean {
-    const lineFrom = state.doc.lineAt(from).number;
-    const lineTo = state.doc.lineAt(to).number;
-    for (const range of state.selection.ranges) {
-        if (!range.empty) continue;
-        const caretLine = state.doc.lineAt(range.from).number;
-        if (caretLine >= lineFrom && caretLine <= lineTo) return true;
-    }
-    return false;
-}
-
-/** Inline-level check: does any cursor/selection overlap the range [from, to]? */
-function isRangeActive(state: EditorState, from: number, to: number): boolean {
-    for (const range of state.selection.ranges) {
-        if (range.to >= from && range.from <= to) return true;
-    }
-    return false;
-}
-
-// ---------------------------------------------------------------------------
-// Decoration constants
-// ---------------------------------------------------------------------------
-
-// Using mark-based hiding is much safer than structural replace decorations.
-const hideMark = Decoration.mark({ class: "cm-lp-hidden" });
+import {
+    type DecoEntry,
+    type LineDecoEntry,
+    hideMark,
+    hideInactiveChildMarks,
+    parseLinkChildren,
+    findAncestor,
+    hasDescendant,
+    extendPastFollowingWhitespace,
+    measureIndent,
+    measureLineLeadingIndent,
+    addLineDecoration,
+} from "./livePreviewHelpers";
+import { selectionTouchesRange } from "./selectionActivity";
+import { livePreviewTheme } from "./livePreviewTheme";
 
 const headingMarks: Record<number, Decoration> = {
     1: Decoration.mark({ class: "cm-lp-h1" }),
@@ -61,6 +37,43 @@ const headingMarks: Record<number, Decoration> = {
     6: Decoration.mark({ class: "cm-lp-h6" }),
 };
 
+const boldMark = Decoration.mark({ class: "cm-lp-bold" });
+const italicMark = Decoration.mark({ class: "cm-lp-italic" });
+const inlineCodeMark = Decoration.mark({ class: "cm-lp-code" });
+const strikethroughMark = Decoration.mark({ class: "cm-lp-strikethrough" });
+const highlightMark = Decoration.mark({ class: "cm-lp-highlight" });
+const linkTextMark = Decoration.mark({ class: "cm-lp-link" });
+const quoteContentMark = Decoration.mark({ class: "cm-lp-blockquote" });
+
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
+const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+const HIGHLIGHT_RE = /==(?=\S)([^\n]*?\S)==/g;
+
+type LivePreviewNode = {
+    name: string;
+    from: number;
+    to: number;
+    node: SyntaxNode;
+};
+
+interface BuildContext {
+    state: EditorState;
+    vaultRoot: string | null;
+    decos: DecoEntry[];
+    lineDecos: Map<number, LineDecoEntry>;
+    vpFrom: number;
+    vpTo: number;
+    vpText: string;
+}
+
+type NodeRule = (node: LivePreviewNode, context: BuildContext) => void;
+type RegexRule = (
+    match: RegExpExecArray,
+    absFrom: number,
+    absTo: number,
+    context: BuildContext,
+) => void;
+
 function getHeadingLevel(nodeName: string): number | null {
     if (nodeName.startsWith("ATXHeading")) {
         return parseInt(nodeName.slice(10), 10);
@@ -70,764 +83,605 @@ function getHeadingLevel(nodeName: string): number | null {
     return null;
 }
 
-const boldMark = Decoration.mark({ class: "cm-lp-bold" });
-const italicMark = Decoration.mark({ class: "cm-lp-italic" });
-const inlineCodeMark = Decoration.mark({ class: "cm-lp-code" });
-const strikethroughMark = Decoration.mark({ class: "cm-lp-strikethrough" });
-const highlightMark = Decoration.mark({ class: "cm-lp-highlight" });
-const linkTextMark = Decoration.mark({ class: "cm-lp-link" });
-const quoteContentMark = Decoration.mark({ class: "cm-lp-blockquote" });
-
-// ---------------------------------------------------------------------------
-// Accumulated decoration entry (sorted before building RangeSet)
-// ---------------------------------------------------------------------------
-
-interface DecoEntry {
-    from: number;
-    to: number;
-    deco: Decoration;
+function isLeadingDocumentHeading(state: EditorState, from: number): boolean {
+    return state.doc.sliceString(0, from).trim().length === 0;
 }
 
-interface LineDecoEntry {
-    classes: Set<string>;
-    attrs: Record<string, string>;
-    styles: Record<string, string>;
-}
-
-// ---------------------------------------------------------------------------
-// Helper: hide all child nodes with a given name
-// ---------------------------------------------------------------------------
-
-function hideChildMarks(
-    parentNode: SyntaxNode,
-    markName: string,
-    decos: DecoEntry[],
-) {
-    const cursor = parentNode.cursor();
-    if (cursor.firstChild()) {
-        do {
-            if (cursor.name === markName) {
-                decos.push({
-                    from: cursor.from,
-                    to: cursor.to,
-                    deco: hideMark,
-                });
-            }
-        } while (cursor.nextSibling());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: parse Link/Image children to extract text range and URL presence
-// ---------------------------------------------------------------------------
-
-interface LinkInfo {
-    textFrom: number;
-    textTo: number;
-    hasUrl: boolean;
-}
-
-function parseLinkChildren(
-    linkNode: SyntaxNode,
+function getLeadingHeadingHideTo(
     state: EditorState,
-): LinkInfo | null {
-    const cur = linkNode.cursor();
-    let textFrom = -1;
-    let textTo = -1;
-    let hasUrl = false;
-
-    if (cur.firstChild()) {
-        do {
-            if (cur.name === "LinkMark") {
-                const ch = state.doc.sliceString(cur.from, cur.to);
-                if (ch === "[" || ch === "![") textFrom = cur.to;
-                else if (ch === "]" && textTo < 0) textTo = cur.from;
-            }
-            if (cur.name === "URL") hasUrl = true;
-        } while (cur.nextSibling());
+    headingTo: number,
+): number {
+    const headingLine = state.doc.lineAt(headingTo);
+    const nextLineNumber = headingLine.number + 1;
+    if (nextLineNumber > state.doc.lines) {
+        return headingLine.to;
     }
 
-    if (textFrom >= 0 && textTo > textFrom) {
-        return { textFrom, textTo, hasUrl };
+    const nextLine = state.doc.line(nextLineNumber);
+    if (nextLine.text.trim().length === 0) {
+        return nextLine.to;
     }
-    return null;
+
+    return headingLine.to;
 }
 
-function findAncestor(
-    node: SyntaxNode | null,
-    name: string,
-): SyntaxNode | null {
-    let current: SyntaxNode | null = node;
-    while (current) {
-        if (current.name === name) return current;
-        current = current.parent;
+class ImageWidget extends WidgetType {
+    private src: string;
+    private alt: string;
+    private href: string | null;
+
+    constructor(
+        src: string,
+        alt: string,
+        href: string | null = null,
+    ) {
+        super();
+        this.src = src;
+        this.alt = alt;
+        this.href = href;
     }
-    return null;
-}
 
-function hasDescendant(node: SyntaxNode, name: string): boolean {
-    const nodeFrom = node.from;
-    const nodeTo = node.to;
-    const cursor = node.cursor();
-    if (!cursor.firstChild()) return false;
-
-    do {
-        if (cursor.from < nodeFrom || cursor.to > nodeTo) break;
-        if (cursor.name === name) return true;
-    } while (cursor.next());
-
-    return false;
-}
-
-function extendPastFollowingWhitespace(state: EditorState, to: number): number {
-    let end = to;
-    while (end < state.doc.length) {
-        const char = state.doc.sliceString(end, end + 1);
-        if (char !== " " && char !== "\t") break;
-        end++;
+    eq(other: ImageWidget) {
+        return this.src === other.src;
     }
-    return end;
-}
 
-function measureIndent(prefix: string): number {
-    let width = 0;
-    for (const char of prefix) {
-        width += char === "\t" ? 4 : 1;
+    toDOM() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cm-inline-image-wrapper";
+        if (this.href) {
+            wrapper.classList.add("cm-inline-image-link");
+            wrapper.dataset.href = this.href;
+        }
+
+        const img = document.createElement("img");
+        img.src = this.src;
+        img.alt = this.alt;
+        img.className = "cm-inline-image";
+        img.draggable = false;
+
+        img.onerror = () => {
+            img.style.display = "none";
+            const fallback = document.createElement("span");
+            fallback.className = "cm-inline-image-fallback";
+            fallback.textContent = `Image not found: ${this.alt || this.src}`;
+            wrapper.appendChild(fallback);
+        };
+
+        wrapper.appendChild(img);
+        return wrapper;
     }
-    return width;
+
+    ignoreEvent() {
+        return false;
+    }
 }
 
-function measureLineLeadingIndent(lineText: string): number {
-    const leadingWhitespace = lineText.match(/^\s*/)?.[0] ?? "";
-    return measureIndent(leadingWhitespace);
+function resolveImageUrl(rawUrl: string, vaultRoot: string | null): string {
+    if (
+        rawUrl.startsWith("http://") ||
+        rawUrl.startsWith("https://") ||
+        rawUrl.startsWith("data:")
+    ) {
+        return rawUrl;
+    }
+    if (!vaultRoot) return rawUrl;
+    const path = rawUrl.startsWith("/") ? rawUrl : `${vaultRoot}/${rawUrl}`;
+    return convertFileSrc(path);
 }
 
-function addLineDecoration(
-    lineDecos: Map<number, LineDecoEntry>,
-    lineFrom: number,
+function pushDeco(
+    context: BuildContext,
+    from: number,
+    to: number,
+    deco: Decoration,
+) {
+    context.decos.push({ from, to, deco });
+}
+
+function hideRangeUnlessEditing(
+    context: BuildContext,
+    from: number,
+    to: number,
+    deco: Decoration = hideMark,
+) {
+    if (!selectionTouchesRange(context.state, from, to)) {
+        pushDeco(context, from, to, deco);
+    }
+}
+
+function addLineClassForRange(
+    context: BuildContext,
+    from: number,
+    to: number,
     className: string,
     attrs?: Record<string, string>,
     styles?: Record<string, string>,
 ) {
-    const entry = lineDecos.get(lineFrom) ?? {
-        classes: new Set<string>(),
-        attrs: {},
-        styles: {},
-    };
-    entry.classes.add(className);
-    if (attrs) {
-        Object.assign(entry.attrs, attrs);
+    const startLine = context.state.doc.lineAt(from).number;
+    const endLine = context.state.doc.lineAt(to).number;
+
+    for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
+        const line = context.state.doc.line(lineNumber);
+        addLineDecoration(context.lineDecos, line.from, className, attrs, styles);
     }
-    if (styles) {
-        Object.assign(entry.styles, styles);
-    }
-    lineDecos.set(lineFrom, entry);
 }
 
-// ---------------------------------------------------------------------------
-// ViewPlugin
-// ---------------------------------------------------------------------------
+function createInlineFormattingRule(
+    nodeName: string,
+    mark: Decoration,
+    markerName: string,
+): NodeRule {
+    return (node, context) => {
+        if (node.name !== nodeName) return;
+        pushDeco(context, node.from, node.to, mark);
+        hideInactiveChildMarks(
+            node.node,
+            markerName,
+            context.state,
+            context.decos,
+            hideMark,
+        );
+    };
+}
 
-const livePreviewPlugin = ViewPlugin.fromClass(
-    class {
-        decorations: DecorationSet;
+const headingRule: NodeRule = (node, context) => {
+    const headingLevel = getHeadingLevel(node.name);
+    if (headingLevel === null) return;
 
-        constructor(view: EditorView) {
-            this.decorations = this.build(view);
-        }
+    if (headingLevel === 1 && isLeadingDocumentHeading(context.state, node.from)) {
+        const hideTo = getLeadingHeadingHideTo(context.state, node.to);
+        hideRangeUnlessEditing(context, node.from, hideTo);
+        return;
+    }
 
-        update(update: ViewUpdate) {
+    const mark = headingMarks[headingLevel];
+    if (mark) {
+        pushDeco(context, node.from, node.to, mark);
+    }
+
+    const cursor = node.node.cursor();
+    if (!cursor.firstChild()) return;
+
+    do {
+        if (cursor.name !== "HeaderMark") continue;
+
+        let hideFrom = cursor.from;
+        let hideTo = cursor.to;
+
+        if (node.name.startsWith("ATXHeading")) {
             if (
-                update.docChanged ||
-                update.selectionSet ||
-                update.viewportChanged
+                hideTo < node.to &&
+                context.state.doc.sliceString(hideTo, hideTo + 1) === " "
             ) {
-                this.decorations = this.build(update.view);
+                hideTo++;
             }
         }
 
-        build(view: EditorView): DecorationSet {
-            const { state } = view;
-            const decos: DecoEntry[] = [];
-            const lineDecos = new Map<number, LineDecoEntry>();
-            const tree = syntaxTree(state);
-            const { from: vpFrom, to: vpTo } = view.viewport;
+        if (
+            node.name.startsWith("SetextHeading") &&
+            hideFrom > node.from &&
+            context.state.doc.sliceString(hideFrom - 1, hideFrom) === "\n"
+        ) {
+            hideFrom--;
+        }
 
-            tree.iterate({
-                from: vpFrom,
-                to: vpTo,
-                enter(node) {
-                    // --- HEADINGS ---
-                    const headingLevel = getHeadingLevel(node.name);
-                    if (headingLevel !== null) {
-                        const level = headingLevel;
-                        const mark = headingMarks[level];
-                        if (mark) {
-                            decos.push({
-                                from: node.from,
-                                to: node.to,
-                                deco: mark,
-                            });
-                        }
+        hideRangeUnlessEditing(context, hideFrom, hideTo);
+    } while (cursor.nextSibling());
+};
 
-                        if (!isLineActive(state, node.from, node.to)) {
-                            // Hide heading markers so headings are distinguished
-                            // only by typography in live preview.
-                            const cur = node.node.cursor();
-                            if (cur.firstChild()) {
-                                do {
-                                    if (cur.name === "HeaderMark") {
-                                        let hideFrom = cur.from;
-                                        let hideTo = cur.to;
+const imageRule: NodeRule = (node, context) => {
+    if (node.name !== "Image") return;
 
-                                        // ATX headings: also hide the space after #
-                                        if (
-                                            node.name.startsWith("ATXHeading")
-                                        ) {
-                                            if (
-                                                hideTo < node.to &&
-                                                state.doc.sliceString(
-                                                    hideTo,
-                                                    hideTo + 1,
-                                                ) === " "
-                                            ) {
-                                                hideTo++;
-                                            }
-                                        }
+    const info = parseLinkChildren(node.node, context.state);
+    if (!info?.hasUrl || !info.url || !IMAGE_EXTENSIONS.test(info.url)) return;
+    if (selectionTouchesRange(context.state, node.from, node.to)) return;
 
-                                        // Setext headings: also hide the preceding newline
-                                        // so the underline line disappears entirely.
-                                        if (
-                                            node.name.startsWith(
-                                                "SetextHeading",
-                                            ) &&
-                                            hideFrom > node.from &&
-                                            state.doc.sliceString(
-                                                hideFrom - 1,
-                                                hideFrom,
-                                            ) === "\n"
-                                        ) {
-                                            hideFrom--;
-                                        }
+    const altText = context.state.doc.sliceString(info.textFrom, info.textTo);
+    const resolvedUrl = resolveImageUrl(info.url, context.vaultRoot);
+    const parentLink = findAncestor(node.node.parent, "Link");
+    const outerLinkInfo = parentLink
+        ? parseLinkChildren(parentLink, context.state)
+        : null;
+    const href = outerLinkInfo?.url ?? null;
 
-                                        decos.push({
-                                            from: hideFrom,
-                                            to: hideTo,
-                                            deco: hideMark,
-                                        });
-                                    }
-                                } while (cur.nextSibling());
-                            }
-                        }
-                    }
+    pushDeco(
+        context,
+        node.from,
+        node.to,
+        Decoration.replace({
+            widget: new ImageWidget(resolvedUrl, altText, href),
+            block: false,
+        }),
+    );
+};
 
-                    // --- BOLD ---
-                    if (node.name === "StrongEmphasis") {
-                        decos.push({
-                            from: node.from,
-                            to: node.to,
-                            deco: boldMark,
-                        });
-                        if (!isRangeActive(state, node.from, node.to)) {
-                            hideChildMarks(node.node, "EmphasisMark", decos);
-                        }
-                    }
+const linkRule: NodeRule = (node, context) => {
+    if (node.name !== "Link") return;
 
-                    // --- ITALIC ---
-                    if (node.name === "Emphasis") {
-                        decos.push({
-                            from: node.from,
-                            to: node.to,
-                            deco: italicMark,
-                        });
-                        if (!isRangeActive(state, node.from, node.to)) {
-                            hideChildMarks(node.node, "EmphasisMark", decos);
-                        }
-                    }
+    const info = parseLinkChildren(node.node, context.state);
+    if (!info?.hasUrl) return;
 
-                    // --- INLINE CODE ---
-                    if (node.name === "InlineCode") {
-                        decos.push({
-                            from: node.from,
-                            to: node.to,
-                            deco: inlineCodeMark,
-                        });
-                        if (!isRangeActive(state, node.from, node.to)) {
-                            hideChildMarks(node.node, "CodeMark", decos);
-                        }
-                    }
+    pushDeco(context, info.textFrom, info.textTo, linkTextMark);
+    hideRangeUnlessEditing(context, node.from, info.textFrom, hideMark);
+    hideRangeUnlessEditing(context, info.textTo, node.to, hideMark);
+};
 
-                    // --- LINKS [text](url) ---
-                    // Skip Link nodes without URL child (e.g. [[wikilink]] misparsed)
-                    if (node.name === "Link" || node.name === "Image") {
-                        const info = parseLinkChildren(node.node, state);
-                        // Only decorate if there's a real URL
-                        if (info && info.hasUrl) {
-                            if (!isRangeActive(state, node.from, node.to)) {
-                                // Hide opening [  or ![
-                                decos.push({
-                                    from: node.from,
-                                    to: info.textFrom,
-                                    deco: hideMark,
-                                });
-                                // Hide ](url)
-                                decos.push({
-                                    from: info.textTo,
-                                    to: node.to,
-                                    deco: hideMark,
-                                });
-                                // Style the visible text as a link
-                                decos.push({
-                                    from: info.textFrom,
-                                    to: info.textTo,
-                                    deco: linkTextMark,
-                                });
-                            } else {
-                                // When active, still style link text
-                                decos.push({
-                                    from: info.textFrom,
-                                    to: info.textTo,
-                                    deco: linkTextMark,
-                                });
-                            }
-                        }
-                    }
+const horizontalRuleRule: NodeRule = (node, context) => {
+    if (node.name !== "HorizontalRule") return;
 
-                    // --- HORIZONTAL RULE ---
-                    if (node.name === "HorizontalRule") {
-                        if (isLineActive(state, node.from, node.to)) return;
-                        const line = state.doc.lineAt(node.from);
-                        decos.push({
-                            from: line.from,
-                            to: line.to,
-                            deco: hideMark,
-                        });
-                        addLineDecoration(
-                            lineDecos,
-                            line.from,
-                            "cm-lp-hr-line",
-                        );
-                    }
+    const line = context.state.doc.lineAt(node.from);
+    if (selectionTouchesRange(context.state, line.from, line.to)) return;
 
-                    // --- LIST MARKERS ---
-                    if (node.name === "ListMark") {
-                        const listItem = findAncestor(node.node, "ListItem");
-                        const isTaskItem = listItem
-                            ? hasDescendant(listItem, "TaskMarker")
-                            : false;
-                        const line = state.doc.lineAt(node.from);
-                        if (isLineActive(state, node.from, node.to)) {
-                            return;
-                        }
-                        const indentWidth = measureIndent(
-                            state.doc.sliceString(line.from, node.from),
-                        );
-                        const hideTo = extendPastFollowingWhitespace(
-                            state,
-                            node.to,
-                        );
+    pushDeco(context, line.from, line.to, hideMark);
+    addLineDecoration(context.lineDecos, line.from, "cm-lp-hr-line");
+};
 
-                        decos.push({
-                            from: line.from,
-                            to: hideTo,
-                            deco: hideMark,
-                        });
+const listMarkRule: NodeRule = (node, context) => {
+    if (node.name !== "ListMark") return;
 
-                        if (!isTaskItem) {
-                            const ordered =
-                                findAncestor(node.node, "OrderedList") !== null;
-                            addLineDecoration(
-                                lineDecos,
-                                line.from,
-                                ordered
-                                    ? "cm-lp-li-ordered"
-                                    : "cm-lp-li-unordered",
-                                ordered
-                                    ? {
-                                          "data-lp-marker":
-                                              state.doc.sliceString(
-                                                  node.from,
-                                                  node.to,
-                                              ),
-                                      }
-                                    : undefined,
-                                {
-                                    "--cm-lp-indent": `${indentWidth}ch`,
-                                },
-                            );
-                            addLineDecoration(
-                                lineDecos,
-                                line.from,
-                                "cm-lp-li-line",
-                                undefined,
-                                {
-                                    "--cm-lp-indent": `${indentWidth}ch`,
-                                },
-                            );
-                        }
-                    }
+    const listItem = findAncestor(node.node, "ListItem");
+    const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
+    const line = context.state.doc.lineAt(node.from);
+    const hideTo = extendPastFollowingWhitespace(context.state, node.to);
+    const isEditingMarker = selectionTouchesRange(
+        context.state,
+        node.from,
+        hideTo,
+    );
 
-                    // --- BLOCKQUOTE ---
-                    if (node.name === "Blockquote") {
-                        decos.push({
-                            from: node.from,
-                            to: node.to,
-                            deco: quoteContentMark,
-                        });
-                        if (!isLineActive(state, node.from, node.to)) {
-                            // Hide QuoteMark (>) and the space after it
-                            const cur = node.node.cursor();
-                            if (cur.firstChild()) {
-                                do {
-                                    if (cur.name === "QuoteMark") {
-                                        let end = cur.to;
-                                        if (
-                                            end < node.to &&
-                                            state.doc.sliceString(
-                                                end,
-                                                end + 1,
-                                            ) === " "
-                                        ) {
-                                            end++;
-                                        }
-                                        decos.push({
-                                            from: cur.from,
-                                            to: end,
-                                            deco: hideMark,
-                                        });
-                                    }
-                                } while (cur.nextSibling());
-                            }
-                        }
-                    }
+    if (!isEditingMarker) {
+        pushDeco(context, line.from, hideTo, hideMark);
+    }
 
-                    // --- STRIKETHROUGH ---
-                    if (node.name === "Strikethrough") {
-                        decos.push({
-                            from: node.from,
-                            to: node.to,
-                            deco: strikethroughMark,
-                        });
-                        if (!isRangeActive(state, node.from, node.to)) {
-                            hideChildMarks(
-                                node.node,
-                                "StrikethroughMark",
-                                decos,
-                            );
-                        }
-                    }
+    if (isTaskItem) return;
 
-                    // --- FENCED CODE ---
-                    if (node.name === "FencedCode") {
-                        if (!isLineActive(state, node.from, node.to)) {
-                            // Hide opening fence line (```lang) and closing fence (```)
-                            const cur = node.node.cursor();
-                            let openEnd = -1;
-                            let closeFrom = -1;
-                            if (cur.firstChild()) {
-                                do {
-                                    if (
-                                        cur.name === "CodeMark" &&
-                                        openEnd < 0
-                                    ) {
-                                        // First CodeMark = opening ```
-                                        // Hide up to end of line (including newline)
-                                        const line = state.doc.lineAt(cur.from);
-                                        openEnd = Math.min(
-                                            line.to + 1,
-                                            node.to,
-                                        );
-                                    } else if (cur.name === "CodeMark") {
-                                        // Subsequent CodeMark = closing ```
-                                        closeFrom = cur.from;
-                                    }
-                                } while (cur.nextSibling());
-                            }
-                            if (openEnd > node.from) {
-                                decos.push({
-                                    from: node.from,
-                                    to: openEnd,
-                                    deco: hideMark,
-                                });
-                            }
-                            if (closeFrom > 0 && closeFrom < node.to) {
-                                // Include the newline before the closing fence
-                                const hideFrom =
-                                    closeFrom > 0 &&
-                                    state.doc.sliceString(
-                                        closeFrom - 1,
-                                        closeFrom,
-                                    ) === "\n"
-                                        ? closeFrom - 1
-                                        : closeFrom;
-                                decos.push({
-                                    from: hideFrom,
-                                    to: node.to,
-                                    deco: hideMark,
-                                });
-                            }
-                        }
-                    }
+    const ordered = findAncestor(node.node, "OrderedList") !== null;
+    const indentWidth = measureIndent(
+        context.state.doc.sliceString(line.from, node.from),
+    );
+    const lineStyles = { "--cm-lp-indent": `${indentWidth}ch` };
 
-                    // --- TASK LISTS ---
-                    if (node.name === "TaskMarker") {
-                        if (isLineActive(state, node.from, node.to)) return;
-                        const text = state.doc.sliceString(node.from, node.to);
-                        const checked =
-                            text.includes("x") || text.includes("X");
-                        const line = state.doc.lineAt(node.from);
-                        const indentWidth = measureLineLeadingIndent(line.text);
-                        decos.push({
-                            from: node.from,
-                            to: extendPastFollowingWhitespace(state, node.to),
-                            deco: hideMark,
-                        });
-                        addLineDecoration(
-                            lineDecos,
-                            line.from,
-                            "cm-lp-task-line",
-                            {
-                                "data-lp-checked": checked ? "true" : "false",
-                            },
-                            {
-                                "--cm-lp-indent": `${indentWidth}ch`,
-                            },
-                        );
-                        if (checked) {
-                            addLineDecoration(
-                                lineDecos,
-                                line.from,
-                                "cm-lp-task-checked",
-                            );
-                        }
-                    }
+    addLineDecoration(
+        context.lineDecos,
+        line.from,
+        ordered ? "cm-lp-li-ordered" : "cm-lp-li-unordered",
+        {
+            ...(ordered
+                ? {
+                      "data-lp-marker": context.state.doc.sliceString(
+                          node.from,
+                          node.to,
+                      ),
+                  }
+                : {}),
+            "data-lp-editing-marker": isEditingMarker ? "true" : "false",
+        },
+        lineStyles,
+    );
+    addLineDecoration(
+        context.lineDecos,
+        line.from,
+        "cm-lp-li-line",
+        {
+            "data-lp-editing-marker": isEditingMarker ? "true" : "false",
+        },
+        lineStyles,
+    );
+};
+
+const blockquoteRule: NodeRule = (node, context) => {
+    if (node.name !== "Blockquote") return;
+
+    pushDeco(context, node.from, node.to, quoteContentMark);
+    addLineClassForRange(context, node.from, node.to, "cm-lp-blockquote-line");
+
+    const cursor = node.node.cursor();
+    if (!cursor.firstChild()) return;
+
+    do {
+        if (cursor.name !== "QuoteMark") continue;
+
+        let hideTo = cursor.to;
+        if (
+            hideTo < node.to &&
+            context.state.doc.sliceString(hideTo, hideTo + 1) === " "
+        ) {
+            hideTo++;
+        }
+
+        hideRangeUnlessEditing(context, cursor.from, hideTo);
+    } while (cursor.nextSibling());
+};
+
+const fencedCodeRule: NodeRule = (node, context) => {
+    if (node.name !== "FencedCode") return;
+
+    const cursor = node.node.cursor();
+    let openEnd = -1;
+    let closeFrom = -1;
+
+    if (cursor.firstChild()) {
+        do {
+            if (cursor.name !== "CodeMark") continue;
+
+            if (openEnd < 0) {
+                const line = context.state.doc.lineAt(cursor.from);
+                openEnd = Math.min(line.to + 1, node.to);
+                continue;
+            }
+
+            closeFrom = cursor.from;
+        } while (cursor.nextSibling());
+    }
+
+    if (openEnd > node.from) {
+        hideRangeUnlessEditing(context, node.from, openEnd);
+    }
+
+    if (closeFrom > 0 && closeFrom < node.to) {
+        const hideFrom =
+            closeFrom > 0 &&
+            context.state.doc.sliceString(closeFrom - 1, closeFrom) === "\n"
+                ? closeFrom - 1
+                : closeFrom;
+        hideRangeUnlessEditing(context, hideFrom, node.to);
+    }
+};
+
+const taskMarkerRule: NodeRule = (node, context) => {
+    if (node.name !== "TaskMarker") return;
+
+    const prefixEnd = extendPastFollowingWhitespace(context.state, node.to);
+    const isEditingMarker = selectionTouchesRange(
+        context.state,
+        node.from,
+        prefixEnd,
+    );
+
+    const text = context.state.doc.sliceString(node.from, node.to);
+    const checked = text.includes("x") || text.includes("X");
+    const line = context.state.doc.lineAt(node.from);
+    const indentWidth = measureLineLeadingIndent(line.text);
+
+    if (!isEditingMarker) {
+        pushDeco(context, node.from, prefixEnd, hideMark);
+    }
+    addLineDecoration(
+        context.lineDecos,
+        line.from,
+        "cm-lp-task-line",
+        {
+            "data-lp-checked": checked ? "true" : "false",
+            "data-lp-editing-marker": isEditingMarker ? "true" : "false",
+        },
+        {
+            "--cm-lp-indent": `${indentWidth}ch`,
+        },
+    );
+
+    if (checked) {
+        addLineDecoration(context.lineDecos, line.from, "cm-lp-task-checked");
+    }
+};
+
+const nodeRules: NodeRule[] = [
+    headingRule,
+    createInlineFormattingRule("StrongEmphasis", boldMark, "EmphasisMark"),
+    createInlineFormattingRule("Emphasis", italicMark, "EmphasisMark"),
+    createInlineFormattingRule("InlineCode", inlineCodeMark, "CodeMark"),
+    imageRule,
+    linkRule,
+    horizontalRuleRule,
+    listMarkRule,
+    blockquoteRule,
+    createInlineFormattingRule(
+        "Strikethrough",
+        strikethroughMark,
+        "StrikethroughMark",
+    ),
+    fencedCodeRule,
+    taskMarkerRule,
+];
+
+const regexRules: Array<{
+    pattern: RegExp;
+    apply: RegexRule;
+}> = [
+    {
+        pattern: WIKILINK_RE,
+        apply(match, absFrom, absTo, context) {
+            const inner = match[1];
+            const pipeIndex = inner.indexOf("|");
+
+            if (pipeIndex >= 0) {
+                hideRangeUnlessEditing(
+                    context,
+                    absFrom,
+                    absFrom + 2 + pipeIndex + 1,
+                    hideMark,
+                );
+            } else {
+                hideRangeUnlessEditing(
+                    context,
+                    absFrom,
+                    absFrom + 2,
+                    hideMark,
+                );
+            }
+
+            hideRangeUnlessEditing(context, absTo - 2, absTo, hideMark);
+        },
+    },
+    {
+        pattern: HIGHLIGHT_RE,
+        apply(_match, absFrom, absTo, context) {
+            hideRangeUnlessEditing(
+                context,
+                absFrom,
+                absFrom + 2,
+                hideMark,
+            );
+            pushDeco(context, absFrom + 2, absTo - 2, highlightMark);
+            hideRangeUnlessEditing(
+                context,
+                absTo - 2,
+                absTo,
+                hideMark,
+            );
+        },
+    },
+];
+
+function applyNodeRules(context: BuildContext) {
+    const tree = syntaxTree(context.state);
+
+    tree.iterate({
+        from: context.vpFrom,
+        to: context.vpTo,
+        enter(node) {
+            const liveNode: LivePreviewNode = {
+                name: node.name,
+                from: node.from,
+                to: node.to,
+                node: node.node,
+            };
+
+            for (const rule of nodeRules) {
+                rule(liveNode, context);
+            }
+        },
+    });
+}
+
+function applyRegexRules(context: BuildContext) {
+    for (const { pattern, apply } of regexRules) {
+        pattern.lastIndex = 0;
+
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(context.vpText)) !== null) {
+            const absFrom = context.vpFrom + match.index;
+            const absTo = absFrom + match[0].length;
+            apply(match, absFrom, absTo, context);
+        }
+    }
+}
+
+function appendLineDecorations(context: BuildContext) {
+    const sortedLineDecos = [...context.lineDecos.entries()].sort(
+        ([left], [right]) => left - right,
+    );
+
+    for (const [lineFrom, spec] of sortedLineDecos) {
+        const style = Object.entries(spec.styles)
+            .map(([name, value]) => `${name}: ${value}`)
+            .join("; ");
+
+        pushDeco(
+            context,
+            lineFrom,
+            lineFrom,
+            Decoration.line({
+                attributes: {
+                    ...spec.attrs,
+                    class: [...spec.classes].join(" "),
+                    ...(style ? { style } : {}),
                 },
-            });
+            }),
+        );
+    }
+}
 
-            // --- WIKILINKS [[target]] / [[target|alias]] ---
-            // Wikilinks are regex-based (not in the Lezer tree), so we scan the viewport text
-            const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
-            const vpText = state.doc.sliceString(vpFrom, vpTo);
-            let wlMatch;
-            while ((wlMatch = WIKILINK_RE.exec(vpText)) !== null) {
-                const absFrom = vpFrom + wlMatch.index;
-                const absTo = absFrom + wlMatch[0].length;
-                if (!isRangeActive(state, absFrom, absTo)) {
-                    const inner = wlMatch[1];
-                    const pipeIdx = inner.indexOf("|");
-                    if (pipeIdx >= 0) {
-                        // [[target|alias]] → hide [[target| and ]]
-                        decos.push({
-                            from: absFrom,
-                            to: absFrom + 2 + pipeIdx + 1,
-                            deco: hideMark,
-                        });
-                    } else {
-                        // [[target]] → hide [[ and ]]
-                        decos.push({
-                            from: absFrom,
-                            to: absFrom + 2,
-                            deco: hideMark,
-                        });
-                    }
-                    decos.push({
-                        from: absTo - 2,
-                        to: absTo,
-                        deco: hideMark,
-                    });
+function buildDecorations(
+    state: EditorState,
+    vaultRoot: string | null,
+    vpFrom: number,
+    vpTo: number,
+): DecorationSet {
+    const context: BuildContext = {
+        state,
+        vaultRoot,
+        decos: [],
+        lineDecos: new Map<number, LineDecoEntry>(),
+        vpFrom,
+        vpTo,
+        vpText: state.doc.sliceString(vpFrom, vpTo),
+    };
+
+    applyNodeRules(context);
+    applyRegexRules(context);
+    appendLineDecorations(context);
+
+    context.decos.sort((left, right) => left.from - right.from || left.to - right.to);
+
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const deco of context.decos) {
+        builder.add(deco.from, deco.to, deco.deco);
+    }
+    return builder.finish();
+}
+
+function createLivePreviewPlugin(vaultRoot: string | null) {
+    return ViewPlugin.fromClass(
+        class {
+            decorations: DecorationSet;
+
+            constructor(view: EditorView) {
+                this.decorations = this.build(view);
+            }
+
+            update(update: ViewUpdate) {
+                if (
+                    update.docChanged ||
+                    update.selectionSet ||
+                    update.viewportChanged
+                ) {
+                    this.decorations = this.build(update.view);
                 }
             }
 
-            // --- HIGHLIGHT ==text== ---
-            // Highlight is regex-based, same approach as wikilinks.
-            const HIGHLIGHT_RE = /==(?=\S)([^\n]*?\S)==/g;
-            let hlMatch;
-            while ((hlMatch = HIGHLIGHT_RE.exec(vpText)) !== null) {
-                const absFrom = vpFrom + hlMatch.index;
-                const absTo = absFrom + hlMatch[0].length;
-                if (isRangeActive(state, absFrom, absTo)) continue;
+            build(view: EditorView): DecorationSet {
+                const { from, to } = view.viewport;
+                return buildDecorations(view.state, vaultRoot, from, to);
+            }
+        },
+        { decorations: (value) => value.decorations },
+    );
+}
 
-                decos.push({
-                    from: absFrom,
-                    to: absFrom + 2,
-                    deco: hideMark,
-                });
-                decos.push({
-                    from: absFrom + 2,
-                    to: absTo - 2,
-                    deco: highlightMark,
-                });
-                decos.push({
-                    from: absTo - 2,
-                    to: absTo,
-                    deco: hideMark,
-                });
+export function livePreviewExtension(vaultRoot: string | null) {
+    const clickHandler = EditorView.domEventHandlers({
+        click(event: MouseEvent, view: EditorView) {
+            const target = event.target as HTMLElement;
+            const linkedImage = target.closest(
+                ".cm-inline-image-link",
+            ) as HTMLElement | null;
+
+            if (linkedImage?.dataset.href) {
+                event.preventDefault();
+                void openUrl(linkedImage.dataset.href);
+                return true;
             }
 
-            const sortedLineDecos = [...lineDecos.entries()].sort(
-                ([a], [b]) => a - b,
-            );
-            for (const [lineFrom, spec] of sortedLineDecos) {
-                const style = Object.entries(spec.styles)
-                    .map(([name, value]) => `${name}: ${value}`)
-                    .join("; ");
-                decos.push({
-                    from: lineFrom,
-                    to: lineFrom,
-                    deco: Decoration.line({
-                        attributes: {
-                            ...spec.attrs,
-                            class: [...spec.classes].join(" "),
-                            ...(style ? { style } : {}),
-                        },
-                    }),
-                });
-            }
+            if (!target.closest(".cm-lp-link")) return false;
 
-            // RangeSetBuilder requires decorations in document order
-            decos.sort((a, b) => a.from - b.from || a.to - b.to);
+            const pos = view.posAtCoords({
+                x: event.clientX,
+                y: event.clientY,
+            });
+            if (pos === null) return false;
 
-            const builder = new RangeSetBuilder<Decoration>();
-            for (const d of decos) {
-                builder.add(d.from, d.to, d.deco);
-            }
-            return builder.finish();
-        }
-    },
-    { decorations: (v) => v.decorations },
-);
+            const resolved = syntaxTree(view.state).resolveInner(pos, -1);
+            const linkNode = findAncestor(resolved, "Link");
+            if (!linkNode) return false;
 
-// ---------------------------------------------------------------------------
-// Theme
-// ---------------------------------------------------------------------------
+            const info = parseLinkChildren(linkNode, view.state);
+            if (!info?.url) return false;
 
-const livePreviewTheme = EditorView.baseTheme({
-    ".cm-lp-hidden": {
-        display: "none",
-    },
-    ".cm-lp-h1": { fontSize: "1.8em", fontWeight: "700", lineHeight: "1.3", textDecoration: "none" },
-    ".cm-lp-h2": { fontSize: "1.5em", fontWeight: "600", lineHeight: "1.35", textDecoration: "none" },
-    ".cm-lp-h3": { fontSize: "1.25em", fontWeight: "600", lineHeight: "1.4", textDecoration: "none" },
-    ".cm-lp-h4": { fontSize: "1.1em", fontWeight: "600", lineHeight: "1.45", textDecoration: "none" },
-    ".cm-lp-h5": { fontSize: "1.05em", fontWeight: "600", lineHeight: "1.5", textDecoration: "none" },
-    ".cm-lp-h6": {
-        fontSize: "1em",
-        fontWeight: "600",
-        lineHeight: "1.5",
-        color: "var(--text-secondary)",
-        textDecoration: "none",
-    },
-    ".cm-lp-bold": { fontWeight: "700" },
-    ".cm-lp-italic": { fontStyle: "italic" },
-    ".cm-lp-code": {
-        fontFamily:
-            "ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace",
-        fontSize: "0.9em",
-        backgroundColor: "var(--bg-tertiary)",
-        borderRadius: "3px",
-        padding: "1px 4px",
-    },
-    ".cm-lp-strikethrough": { textDecoration: "line-through" },
-    ".cm-lp-highlight": {
-        backgroundColor: "var(--highlight-bg)",
-        color: "var(--highlight-text)",
-        borderRadius: "3px",
-        padding: "0 2px",
-        boxDecorationBreak: "clone",
-        WebkitBoxDecorationBreak: "clone",
-    },
-    ".cm-lp-link": {
-        color: "var(--accent)",
-        textDecoration: "underline",
-        textDecorationStyle: "solid",
-        textUnderlineOffset: "3px",
-        cursor: "pointer",
-    },
-    ".cm-lp-blockquote": {
-        borderLeft: "3px solid var(--accent)",
-        paddingLeft: "12px",
-        color: "var(--text-secondary)",
-    },
-    ".cm-lp-hr-line": {
-        position: "relative",
-        minHeight: "1.2em",
-    },
-    ".cm-lp-hr-line::before": {
-        content: '""',
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: "50%",
-        borderTop: "1px solid var(--border)",
-        transform: "translateY(-50%)",
-    },
-    ".cm-lp-li-line, .cm-lp-task-line": {
-        position: "relative",
-        paddingLeft: "calc(var(--cm-lp-indent, 0ch) + 2.1em) !important",
-    },
-    ".cm-lp-li-line::before": {
-        position: "absolute",
-        left: "calc(var(--cm-lp-indent, 0ch) + 0.1em)",
-        top: "0.02em",
-        content: '"•"',
-        color: "var(--text-secondary)",
-        width: "1.45em",
-        textAlign: "right",
-        pointerEvents: "none",
-        lineHeight: "inherit",
-    },
-    ".cm-lp-li-unordered::before": {
-        content: '"•"',
-        fontSize: "0.95em",
-    },
-    ".cm-lp-li-ordered::before": {
-        content: "attr(data-lp-marker)",
-        fontVariantNumeric: "tabular-nums",
-        fontWeight: "600",
-    },
-    ".cm-lp-task-line::before": {
-        position: "absolute",
-        content: '""',
-        width: "0.92em",
-        height: "0.92em",
-        left: "calc(var(--cm-lp-indent, 0ch) + 0.35em)",
-        top: "0.3em",
-        borderRadius: "0.22em",
-        border: "1.5px solid color-mix(in srgb, var(--text-secondary) 40%, var(--border))",
-        background:
-            "color-mix(in srgb, var(--bg-primary) 96%, var(--bg-secondary))",
-        boxSizing: "border-box",
-        pointerEvents: "none",
-    },
-    ".cm-lp-task-line::after": {
-        content: '""',
-        position: "absolute",
-        left: "calc(var(--cm-lp-indent, 0ch) + 0.64em)",
-        top: "0.56em",
-        width: "0.31em",
-        height: "0.17em",
-        borderLeft: "2px solid transparent",
-        borderBottom: "2px solid transparent",
-        transform: "rotate(-45deg)",
-        pointerEvents: "none",
-        opacity: 0,
-    },
-    ".cm-lp-task-checked": {
-        color: "var(--text-secondary)",
-    },
-    ".cm-lp-task-checked::before": {
-        borderColor: "color-mix(in srgb, var(--accent) 55%, var(--border))",
-        background: "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))",
-    },
-    ".cm-lp-task-checked::after": {
-        borderLeftColor: "var(--accent)",
-        borderBottomColor: "var(--accent)",
-        opacity: 1,
-    },
-});
+            event.preventDefault();
+            void openUrl(info.url);
+            return true;
+        },
+    });
 
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
-
-export const livePreviewExtension = [livePreviewPlugin, livePreviewTheme];
+    return [createLivePreviewPlugin(vaultRoot), clickHandler, livePreviewTheme];
+}
