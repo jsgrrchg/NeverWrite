@@ -6,6 +6,7 @@ import {
     type EditorFontFamily,
 } from "../../app/store/settingsStore";
 import { useThemeStore } from "../../app/store/themeStore";
+import { themes, type ThemeName } from "../../app/themes/index";
 import {
     useVaultStore,
     getRecentVaults,
@@ -259,6 +260,104 @@ function NumberStepper({
     );
 }
 
+// --- Theme Picker ---
+
+const THEME_ORDER: ThemeName[] = [
+    "default",
+    "ocean",
+    "forest",
+    "rose",
+    "amber",
+    "lavender",
+    "nord",
+    "sunset",
+];
+
+function ThemePicker({
+    value,
+    onChange,
+}: {
+    value: ThemeName;
+    onChange: (name: ThemeName) => void;
+}) {
+    return (
+        <div
+            style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, 1fr)",
+                gap: 10,
+                padding: "8px 0",
+            }}
+        >
+            {THEME_ORDER.map((name) => {
+                const theme = themes[name];
+                const active = name === value;
+                return (
+                    <button
+                        key={name}
+                        onClick={() => onChange(name)}
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: 8,
+                            borderRadius: 8,
+                            border: active
+                                ? "2px solid var(--accent)"
+                                : "2px solid var(--border)",
+                            background: "var(--bg-secondary)",
+                            cursor: "pointer",
+                            transition: "border-color 150ms",
+                        }}
+                    >
+                        {/* Color preview */}
+                        <div
+                            style={{
+                                width: "100%",
+                                height: 32,
+                                borderRadius: 4,
+                                overflow: "hidden",
+                                display: "flex",
+                            }}
+                        >
+                            <div
+                                style={{
+                                    flex: 1,
+                                    backgroundColor: theme.light.bgPrimary,
+                                }}
+                            />
+                            <div
+                                style={{
+                                    flex: 1,
+                                    backgroundColor: theme.dark.bgPrimary,
+                                }}
+                            />
+                            <div
+                                style={{
+                                    width: 8,
+                                    backgroundColor: theme.light.accent,
+                                }}
+                            />
+                        </div>
+                        <span
+                            style={{
+                                fontSize: 11,
+                                fontWeight: active ? 600 : 400,
+                                color: active
+                                    ? "var(--accent)"
+                                    : "var(--text-secondary)",
+                            }}
+                        >
+                            {theme.label}
+                        </span>
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
 // --- Row ---
 
 function Row({
@@ -385,14 +484,17 @@ function GeneralSettings() {
 }
 
 function AppearanceSettings() {
-    const { mode, setMode } = useThemeStore();
+    const { mode, setMode, themeName, setThemeName } = useThemeStore();
     const { fileTreeScale, setSetting } = useSettingsStore();
 
     return (
         <div>
             <SectionLabel>Theme</SectionLabel>
+            <ThemePicker value={themeName} onChange={setThemeName} />
+
+            <SectionLabel>Mode</SectionLabel>
             <Row
-                label="Color theme"
+                label="System theme"
                 description="Choose how VaultAI looks. 'System' follows your OS preference."
                 control={
                     <SegmentedControl
@@ -428,6 +530,7 @@ function EditorSettings() {
     const {
         editorFontSize,
         editorFontFamily,
+        editorContentWidth,
         lineWrapping,
         justifyText,
         tabSize,
@@ -511,6 +614,20 @@ function EditorSettings() {
                             { value: 4, label: "4" },
                         ]}
                         onChange={(v) => setSetting("tabSize", v as 2 | 4)}
+                    />
+                }
+            />
+
+            <SectionLabel>Layout</SectionLabel>
+            <Row
+                label="Text width"
+                description="Maximum width of the editor content, in pixels."
+                control={
+                    <NumberStepper
+                        value={editorContentWidth}
+                        min={600}
+                        max={1200}
+                        onChange={(v) => setSetting("editorContentWidth", v)}
                     />
                 }
             />

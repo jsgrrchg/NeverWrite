@@ -1,20 +1,41 @@
 import { create } from "zustand";
+import { type ThemeName, applyThemeColors } from "../themes/index";
 
 export type ThemeMode = "system" | "light" | "dark";
 
 interface ThemeStore {
     mode: ThemeMode;
+    themeName: ThemeName;
     isDark: boolean;
     setMode: (mode: ThemeMode) => void;
+    setThemeName: (name: ThemeName) => void;
 }
 
 const THEME_STORAGE_KEY = "vaultai:theme";
 const THEME_BROADCAST_CHANNEL = "vaultai:theme-sync";
 
+const VALID_THEME_NAMES = new Set<ThemeName>([
+    "default",
+    "ocean",
+    "forest",
+    "rose",
+    "amber",
+    "lavender",
+    "nord",
+    "sunset",
+]);
+
 function normalizeThemeMode(value: unknown): ThemeMode {
     return value === "light" || value === "dark" || value === "system"
         ? value
         : "system";
+}
+
+function normalizeThemeName(value: unknown): ThemeName {
+    return typeof value === "string" &&
+        VALID_THEME_NAMES.has(value as ThemeName)
+        ? (value as ThemeName)
+        : "default";
 }
 
 function getIsDark(mode: ThemeMode): boolean {
@@ -29,43 +50,59 @@ function applyDark(isDark: boolean) {
     document.documentElement.classList.toggle("dark", isDark);
 }
 
-function resolveTheme(mode: ThemeMode) {
+function resolveTheme(mode: ThemeMode, themeName: ThemeName) {
     const isDark = getIsDark(mode);
     applyDark(isDark);
-    return { mode, isDark };
+    applyThemeColors(themeName, isDark);
+    return { mode, themeName, isDark };
 }
 
-function readStoredThemeMode(): ThemeMode {
-    if (typeof window === "undefined") return "system";
+function readStored(): { mode: ThemeMode; themeName: ThemeName } {
+    if (typeof window === "undefined")
+        return { mode: "system", themeName: "default" };
 
     const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (!raw) return "system";
+    if (!raw) return { mode: "system", themeName: "default" };
 
     try {
         const parsed = JSON.parse(raw) as
-            | { mode?: unknown; state?: { mode?: unknown } }
+            | {
+                  mode?: unknown;
+                  themeName?: unknown;
+                  state?: { mode?: unknown; themeName?: unknown };
+              }
             | string;
 
         if (typeof parsed === "string") {
-            return normalizeThemeMode(parsed);
+            return { mode: normalizeThemeMode(parsed), themeName: "default" };
         }
 
-        return normalizeThemeMode(parsed.state?.mode ?? parsed.mode);
+        return {
+            mode: normalizeThemeMode(parsed.state?.mode ?? parsed.mode),
+            themeName: normalizeThemeName(
+                parsed.state?.themeName ?? parsed.themeName,
+            ),
+        };
     } catch {
-        return "system";
+        return { mode: "system", themeName: "default" };
     }
 }
 
-function writeStoredThemeMode(mode: ThemeMode) {
+function writeStored(mode: ThemeMode, themeName: ThemeName) {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({ mode }));
+    window.localStorage.setItem(
+        THEME_STORAGE_KEY,
+        JSON.stringify({ mode, themeName }),
+    );
 }
 
-const initialTheme = resolveTheme(readStoredThemeMode());
+const initial = readStored();
+const initialTheme = resolveTheme(initial.mode, initial.themeName);
 
-export const useThemeStore = create<ThemeStore>((set) => ({
+export const useThemeStore = create<ThemeStore>((set, get) => ({
     ...initialTheme,
-    setMode: (mode) => set(resolveTheme(mode)),
+    setMode: (mode) => set(resolveTheme(mode, get().themeName)),
+    setThemeName: (themeName) => set(resolveTheme(get().mode, themeName)),
 }));
 
 let isApplyingRemoteTheme = false;
@@ -81,16 +118,18 @@ if (typeof window !== "undefined") {
             ? new BroadcastChannel(THEME_BROADCAST_CHANNEL)
             : null;
 
-    const applyRemoteMode = (mode: ThemeMode | null) => {
+    const applyRemote = (mode: ThemeMode | null, themeName?: ThemeName) => {
         if (!mode) return;
         isApplyingRemoteTheme = true;
-        useThemeStore.setState(resolveTheme(mode));
+        const name = themeName ?? useThemeStore.getState().themeName;
+        useThemeStore.setState(resolveTheme(mode, name));
         isApplyingRemoteTheme = false;
     };
 
     const handleSystemThemeChange = () => {
-        if (useThemeStore.getState().mode !== "system") return;
-        useThemeStore.setState(resolveTheme("system"));
+        const s = useThemeStore.getState();
+        if (s.mode !== "system") return;
+        useThemeStore.setState(resolveTheme("system", s.themeName));
     };
 
     if ("addEventListener" in media) {
@@ -101,24 +140,27 @@ if (typeof window !== "undefined") {
 
     channel?.addEventListener("message", (event) => {
         const payload = event.data as
-            | { source?: string; mode?: ThemeMode }
+            | { source?: string; mode?: ThemeMode; themeName?: ThemeName }
             | undefined;
         if (!payload?.mode || payload.source === syncId) return;
-        applyRemoteMode(payload.mode);
+        applyRemote(payload.mode, payload.themeName);
     });
 
     window.addEventListener("storage", (event) => {
         if (event.key !== THEME_STORAGE_KEY) return;
-        applyRemoteMode(readStoredThemeMode());
+        const stored = readStored();
+        applyRemote(stored.mode, stored.themeName);
     });
 
     useThemeStore.subscribe((state) => {
         applyDark(state.isDark);
+        applyThemeColors(state.themeName, state.isDark);
         if (isApplyingRemoteTheme) return;
-        writeStoredThemeMode(state.mode);
+        writeStored(state.mode, state.themeName);
         channel?.postMessage({
             source: syncId,
             mode: state.mode,
+            themeName: state.themeName,
         });
     });
 }

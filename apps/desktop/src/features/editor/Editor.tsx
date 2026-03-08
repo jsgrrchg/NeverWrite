@@ -113,8 +113,13 @@ function isPrefixExpansion(candidate: string, target: string): boolean {
     return next === " " || next === "-" || next === ":" || next === "(";
 }
 
-function findUniquePrefixNote(target: string, notes: VaultNote[]): VaultNote | null {
-    const variants = getWikilinkVariants(target).filter(isStrongPrefixCandidate);
+function findUniquePrefixNote(
+    target: string,
+    notes: VaultNote[],
+): VaultNote | null {
+    const variants = getWikilinkVariants(target).filter(
+        isStrongPrefixCandidate,
+    );
     if (!variants.length) return null;
 
     const matches: VaultNote[] = [];
@@ -125,9 +130,11 @@ function findUniquePrefixNote(target: string, notes: VaultNote[]): VaultNote | n
             normalizeWikilinkTarget(note.id.split("/").pop() ?? ""),
         ];
 
-        if (!aliases.some((alias) =>
-            variants.some((variant) => isPrefixExpansion(alias, variant)),
-        )) {
+        if (
+            !aliases.some((alias) =>
+                variants.some((variant) => isPrefixExpansion(alias, variant)),
+            )
+        ) {
             continue;
         }
 
@@ -252,23 +259,23 @@ const baseTheme = EditorView.theme({
         fontFamily: "var(--editor-font-family)",
     },
     ".cm-scroller": {
-        overflow: "auto",
+        overflow: "hidden auto",
         fontFamily: "inherit",
         flexWrap: "wrap",
         paddingBottom: "72px",
         scrollbarColor: "var(--border) transparent",
+        minWidth: 0,
     },
     ".cm-lp-scroll-header": {
         flex: "0 0 100%",
-        maxWidth: "var(--editor-content-width)",
-        margin: "0 auto",
-        padding: "40px clamp(24px, 5vw, 56px) 20px",
         boxSizing: "border-box",
     },
     ".cm-content": {
-        padding: "24px clamp(24px, 5vw, 56px) 120px",
-        maxWidth: "var(--editor-content-width)",
-        margin: "0 auto",
+        flex: "1 1 0%",
+        minWidth: 0,
+        boxSizing: "border-box",
+        padding:
+            "24px max(clamp(24px, 5vw, 56px), calc((100% - var(--editor-content-width)) / 2)) 120px",
         caretColor: "var(--text-primary)",
         lineHeight: "1.75",
         minHeight: "calc(100vh - 220px)",
@@ -304,8 +311,6 @@ const baseTheme = EditorView.theme({
 const syntaxCompartment = new Compartment();
 // Compartment for the editor rendering mode (fixed to live preview)
 const livePreviewCompartment = new Compartment();
-// Compartment for line wrapping
-const wrappingCompartment = new Compartment();
 // Compartment for justified alignment
 const alignmentCompartment = new Compartment();
 // Compartment for tab size
@@ -509,14 +514,9 @@ function getLivePreviewExtension(mode: EditorMode) {
     return mode === "preview" ? livePreviewExtension : [];
 }
 
-function getWrappingExtension(enabled: boolean) {
-    return enabled ? EditorView.lineWrapping : [];
-}
-
 function getAlignmentExtension(enabled: boolean) {
     return enabled
         ? [
-              EditorView.lineWrapping,
               EditorView.contentAttributes.of({
                   class: "cm-justify-text",
               }),
@@ -590,8 +590,9 @@ function deriveDisplayedTitle(
     fallback: string,
 ) {
     const fmTitle = frontmatterRaw
-        ? parseFrontmatterRaw(frontmatterRaw).find((entry) => entry.key === "title")
-              ?.value
+        ? parseFrontmatterRaw(frontmatterRaw).find(
+              (entry) => entry.key === "title",
+          )?.value
         : null;
     if (typeof fmTitle === "string" && fmTitle.trim()) {
         return fmTitle.trim();
@@ -617,7 +618,9 @@ function upsertFrontmatterTitle(raw: string, title: string): string {
         nextEntries.unshift({ key: "title", value: title });
     }
 
-    return serializeFrontmatterRaw(nextEntries) ?? `---\ntitle: ${title}\n---\n`;
+    return (
+        serializeFrontmatterRaw(nextEntries) ?? `---\ntitle: ${title}\n---\n`
+    );
 }
 
 function replaceOrInsertLeadingHeading(body: string, title: string): string {
@@ -756,11 +759,14 @@ interface EditorProps {
 }
 
 export function Editor({
-    emptyStateMessage = "Abre una nota del panel izquierdo",
+    emptyStateMessage = "Open a note from the left panel",
 }: EditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const contentUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
     const activeTabRef = useRef<Tab | null>(null);
     const isInternalRef = useRef(false);
     // Save/restore full EditorState per tab (preserves undo history + scroll)
@@ -794,6 +800,7 @@ export function Editor({
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const updateTabContent = useEditorStore((s) => s.updateTabContent);
+    const markTabDirty = useEditorStore((s) => s.markTabDirty);
     const updateTabTitle = useEditorStore((s) => s.updateTabTitle);
     const markTabClean = useEditorStore((s) => s.markTabClean);
     const isDark = useThemeStore((s) => s.isDark);
@@ -801,7 +808,7 @@ export function Editor({
     const autoSaveDelay = useSettingsStore((s) => s.autoSaveDelay);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
-    const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const justifyText = useSettingsStore((s) => s.justifyText);
     const tabSize = useSettingsStore((s) => s.tabSize);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
@@ -980,11 +987,7 @@ export function Editor({
                     syntaxCompartment.of(
                         getSyntaxExtension(useThemeStore.getState().isDark),
                     ),
-                    wrappingCompartment.of(
-                        getWrappingExtension(
-                            useSettingsStore.getState().lineWrapping,
-                        ),
-                    ),
+                    EditorView.lineWrapping,
                     alignmentCompartment.of(
                         getAlignmentExtension(
                             useSettingsStore.getState().justifyText,
@@ -1032,13 +1035,21 @@ export function Editor({
                         const tab = activeTabRef.current;
                         if (!tab) return;
                         const content = update.state.doc.toString();
-                        updateTabContent(tab.id, content);
+                        // Mark dirty immediately (cheap — no-ops if already dirty)
+                        markTabDirty(tab.id);
+                        // Debounce content propagation to Zustand to avoid
+                        // expensive re-renders in LinksPanel on every keystroke
+                        if (contentUpdateTimerRef.current)
+                            clearTimeout(contentUpdateTimerRef.current);
+                        contentUpdateTimerRef.current = setTimeout(() => {
+                            updateTabContent(tab.id, content);
+                        }, 300);
                         scheduleSave(tab, content);
                     }),
                 ],
             });
         },
-        [scheduleSave, updateTabContent],
+        [scheduleSave, markTabDirty, updateTabContent],
     );
 
     const replaceEditorView = useCallback((state: EditorState) => {
@@ -1105,6 +1116,8 @@ export function Editor({
 
         return () => {
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+            if (contentUpdateTimerRef.current)
+                clearTimeout(contentUpdateTimerRef.current);
             scrollHeaderRef.current?.remove();
             scrollHeaderRef.current = null;
             viewRef.current?.destroy();
@@ -1127,6 +1140,11 @@ export function Editor({
         if (saveTimerRef.current) {
             clearTimeout(saveTimerRef.current);
             saveTimerRef.current = null;
+        }
+        // Flush pending content update so the tab's content is up-to-date
+        if (contentUpdateTimerRef.current) {
+            clearTimeout(contentUpdateTimerRef.current);
+            contentUpdateTimerRef.current = null;
         }
 
         // Save previous tab's EditorState (preserves undo history + scroll)
@@ -1201,9 +1219,6 @@ export function Editor({
     useEffect(() => {
         viewRef.current?.dispatch({
             effects: [
-                wrappingCompartment.reconfigure(
-                    getWrappingExtension(lineWrapping),
-                ),
                 alignmentCompartment.reconfigure(
                     getAlignmentExtension(justifyText),
                 ),
@@ -1213,7 +1228,7 @@ export function Editor({
                 ]),
             ],
         });
-    }, [justifyText, lineWrapping, tabSize]);
+    }, [justifyText, tabSize]);
 
     useEffect(() => {
         const view = viewRef.current;
@@ -1331,7 +1346,7 @@ export function Editor({
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,
         "--editor-font-family": getEditorFontFamily(editorFontFamily),
-        "--editor-content-width": "860px",
+        "--editor-content-width": `${editorContentWidth}px`,
     } as CSSProperties;
 
     const activeLocation = activeTabInfo
@@ -1401,7 +1416,7 @@ export function Editor({
                                     letterSpacing: "-0.02em",
                                 }}
                             >
-                                Tu espacio de escritura está listo
+                                Your writing space is ready
                             </div>
                             <div
                                 style={{
@@ -1410,9 +1425,8 @@ export function Editor({
                                     color: "var(--text-secondary)",
                                 }}
                             >
-                                {emptyStateMessage}. Abre una nota existente o
-                                crea una nueva desde la barra superior para
-                                empezar.
+                                {emptyStateMessage}. Or create a new note from
+                                the top bar to get started.
                             </div>
                         </div>
                     </div>
@@ -1421,7 +1435,14 @@ export function Editor({
             {scrollHeaderRef.current &&
                 activeTabInfo &&
                 createPortal(
-                    <>
+                    <div
+                        style={{
+                            maxWidth: "var(--editor-content-width)",
+                            margin: "0 auto",
+                            padding: "40px clamp(24px, 5vw, 56px) 20px",
+                            boxSizing: "border-box",
+                        }}
+                    >
                         {activeLocation.parent && (
                             <div
                                 style={{
@@ -1439,25 +1460,13 @@ export function Editor({
                             value={editableTitle}
                             onChange={applyTitleChange}
                         />
-                        <div
-                            style={{
-                                marginTop: 8,
-                                fontSize: 12,
-                                color: "var(--text-secondary)",
-                                lineHeight: 1.5,
-                                fontFamily:
-                                    '"SFMono-Regular", Menlo, Monaco, Consolas, monospace',
-                            }}
-                        >
-                            {activeTabInfo.noteId}
-                        </div>
                         <div style={{ marginTop: 20 }}>
                             <FrontmatterPanel
                                 raw={activeFrontmatter ?? ""}
                                 onChange={applyFrontmatterChange}
                             />
                         </div>
-                    </>,
+                    </div>,
                     scrollHeaderRef.current,
                 )}
         </div>

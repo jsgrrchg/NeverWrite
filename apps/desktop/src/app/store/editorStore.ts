@@ -50,6 +50,7 @@ interface EditorStore {
     closeTab: (tabId: string) => void;
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
+    markTabDirty: (tabId: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
     markTabClean: (tabId: string) => void;
     reorderTabs: (fromIndex: number, toIndex: number) => void;
@@ -103,11 +104,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 
+    markTabDirty: (tabId) => {
+        const tab = get().tabs.find((t) => t.id === tabId);
+        if (tab && !tab.isDirty) {
+            set((state) => ({
+                tabs: state.tabs.map((t) =>
+                    t.id === tabId ? { ...t, isDirty: true } : t,
+                ),
+            }));
+        }
+    },
+
     updateTabTitle: (tabId, title) => {
         set((state) => ({
-            tabs: state.tabs.map((t) =>
-                t.id === tabId ? { ...t, title } : t,
-            ),
+            tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
         }));
     },
 

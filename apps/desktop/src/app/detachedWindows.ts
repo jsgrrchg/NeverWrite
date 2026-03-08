@@ -155,6 +155,7 @@ export async function openVaultWindow(vaultPath: string) {
         focus: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
+        trafficLightPosition: { x: 14, y: 18 },
     });
 
     return await new Promise<void>((resolve, reject) => {
@@ -184,6 +185,7 @@ export async function openDetachedNoteWindow(
         focus: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
+        trafficLightPosition: { x: 14, y: 18 },
     });
 
     return await new Promise<WebviewWindow>((resolve, reject) => {

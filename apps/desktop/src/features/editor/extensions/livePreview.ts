@@ -202,13 +202,6 @@ function measureLineLeadingIndent(lineText: string): number {
     return measureIndent(leadingWhitespace);
 }
 
-function measureListPrefixWidth(lineText: string): number {
-    const match = lineText.match(
-        /^\s*(?:[-+*]\s+|\d+[.)]\s+)(?:\[(?: |x|X)\]\s+)?/,
-    );
-    return match ? measureIndent(match[0]) : 0;
-}
-
 function addLineDecoration(
     lineDecos: Map<number, LineDecoEntry>,
     lineFrom: number,
@@ -402,7 +395,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
                     // --- HORIZONTAL RULE ---
                     if (node.name === "HorizontalRule") {
-                        if (hasCaretOnLine(state, node.from, node.to)) return;
+                        if (isLineActive(state, node.from, node.to)) return;
                         const line = state.doc.lineAt(node.from);
                         decos.push({
                             from: line.from,
@@ -423,16 +416,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
                             ? hasDescendant(listItem, "TaskMarker")
                             : false;
                         const line = state.doc.lineAt(node.from);
-                        if (hasCaretOnLine(state, node.from, node.to)) {
-                            addLineDecoration(
-                                lineDecos,
-                                line.from,
-                                "cm-lp-list-editing",
-                                undefined,
-                                {
-                                    "--cm-lp-active-prefix": `${measureListPrefixWidth(line.text)}ch`,
-                                },
-                            );
+                        if (isLineActive(state, node.from, node.to)) {
                             return;
                         }
                         const indentWidth = measureIndent(
@@ -587,7 +571,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
                     // --- TASK LISTS ---
                     if (node.name === "TaskMarker") {
-                        if (hasCaretOnLine(state, node.from, node.to)) return;
+                        if (isLineActive(state, node.from, node.to)) return;
                         const text = state.doc.sliceString(node.from, node.to);
                         const checked =
                             text.includes("x") || text.includes("X");
@@ -721,16 +705,17 @@ const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-hidden": {
         display: "none",
     },
-    ".cm-lp-h1": { fontSize: "1.8em", fontWeight: "700", lineHeight: "1.3" },
-    ".cm-lp-h2": { fontSize: "1.5em", fontWeight: "600", lineHeight: "1.35" },
-    ".cm-lp-h3": { fontSize: "1.25em", fontWeight: "600", lineHeight: "1.4" },
-    ".cm-lp-h4": { fontSize: "1.1em", fontWeight: "600", lineHeight: "1.45" },
-    ".cm-lp-h5": { fontSize: "1.05em", fontWeight: "600", lineHeight: "1.5" },
+    ".cm-lp-h1": { fontSize: "1.8em", fontWeight: "700", lineHeight: "1.3", textDecoration: "none" },
+    ".cm-lp-h2": { fontSize: "1.5em", fontWeight: "600", lineHeight: "1.35", textDecoration: "none" },
+    ".cm-lp-h3": { fontSize: "1.25em", fontWeight: "600", lineHeight: "1.4", textDecoration: "none" },
+    ".cm-lp-h4": { fontSize: "1.1em", fontWeight: "600", lineHeight: "1.45", textDecoration: "none" },
+    ".cm-lp-h5": { fontSize: "1.05em", fontWeight: "600", lineHeight: "1.5", textDecoration: "none" },
     ".cm-lp-h6": {
         fontSize: "1em",
         fontWeight: "600",
         lineHeight: "1.5",
         color: "var(--text-secondary)",
+        textDecoration: "none",
     },
     ".cm-lp-bold": { fontWeight: "700" },
     ".cm-lp-italic": { fontStyle: "italic" },
@@ -744,9 +729,8 @@ const livePreviewTheme = EditorView.baseTheme({
     },
     ".cm-lp-strikethrough": { textDecoration: "line-through" },
     ".cm-lp-highlight": {
-        backgroundColor:
-            "color-mix(in srgb, var(--accent) 26%, rgb(255 235 130 / 0.9))",
-        color: "var(--text-primary)",
+        backgroundColor: "var(--highlight-bg)",
+        color: "var(--highlight-text)",
         borderRadius: "3px",
         padding: "0 2px",
         boxDecorationBreak: "clone",
@@ -780,10 +764,6 @@ const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-li-line, .cm-lp-task-line": {
         position: "relative",
         paddingLeft: "calc(var(--cm-lp-indent, 0ch) + 2.1em) !important",
-    },
-    ".cm-lp-list-editing": {
-        paddingLeft: "var(--cm-lp-active-prefix, 0ch) !important",
-        textIndent: "calc(-1 * var(--cm-lp-active-prefix, 0ch))",
     },
     ".cm-lp-li-line::before": {
         position: "absolute",
