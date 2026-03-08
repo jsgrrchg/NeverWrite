@@ -2,6 +2,11 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
+import { revealNoteInTree } from "../../app/utils/navigation";
 
 interface TagEntry {
     tag: string;
@@ -40,13 +45,16 @@ export function TagsPanel() {
     const openNote = useEditorStore((s) => s.openNote);
     const [tags, setTags] = useState<TagEntry[]>([]);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const [tagContextMenu, setTagContextMenu] =
+        useState<ContextMenuState<TagEntry> | null>(null);
+    const [noteContextMenu, setNoteContextMenu] = useState<
+        ContextMenuState<{ noteId: string }>
+    | null>(null);
+    const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
     // Refetch whenever vault or notes list changes
     useEffect(() => {
-        if (!vaultPath) {
-            setTags([]);
-            return;
-        }
+        if (!vaultPath) return;
         void invoke<TagEntry[]>("get_tags").then(setTags).catch(console.error);
     }, [vaultPath, notes.length]);
 
@@ -75,6 +83,32 @@ export function TagsPanel() {
             openNote(note.id, note.title, detail.content);
         } catch (e) {
             console.error(e);
+        }
+    };
+
+    const handleOpenNoteInNewTab = async (noteId: string) => {
+        const note = notes.find((entry) => entry.id === noteId);
+        if (!note) return;
+        try {
+            const currentTabs = useEditorStore.getState().tabs;
+            const existing = currentTabs.find((tab) => tab.noteId === noteId);
+            const content =
+                existing?.content ??
+                (
+                    await invoke<{ content: string }>("read_note", {
+                        noteId,
+                    })
+                ).content;
+
+            insertExternalTab({
+                id: crypto.randomUUID(),
+                noteId: note.id,
+                title: note.title,
+                content,
+                isDirty: false,
+            });
+        } catch (error) {
+            console.error("Error opening tagged note in new tab:", error);
         }
     };
 
@@ -115,6 +149,14 @@ export function TagsPanel() {
                                 {/* Tag row */}
                                 <button
                                     onClick={() => toggleTag(tag)}
+                                    onContextMenu={(event) => {
+                                        event.preventDefault();
+                                        setTagContextMenu({
+                                            x: event.clientX,
+                                            y: event.clientY,
+                                            payload: { tag, note_ids },
+                                        });
+                                    }}
                                     className="flex items-center gap-1.5 w-full text-left py-1 px-2 text-xs rounded"
                                     style={{ color: "var(--text-primary)" }}
                                 >
@@ -149,6 +191,14 @@ export function TagsPanel() {
                                                 onClick={() =>
                                                     void handleNoteClick(noteId)
                                                 }
+                                                onContextMenu={(event) => {
+                                                    event.preventDefault();
+                                                    setNoteContextMenu({
+                                                        x: event.clientX,
+                                                        y: event.clientY,
+                                                        payload: { noteId },
+                                                    });
+                                                }}
                                                 className="flex items-center gap-1.5 w-full text-left py-0.5 text-xs rounded mx-1"
                                                 style={{
                                                     paddingLeft: 28,
@@ -191,6 +241,60 @@ export function TagsPanel() {
                     })
                 )}
             </div>
+            {tagContextMenu && (
+                <ContextMenu
+                    menu={tagContextMenu}
+                    onClose={() => setTagContextMenu(null)}
+                    entries={[
+                        {
+                            label: expanded.has(tagContextMenu.payload.tag)
+                                ? "Collapse"
+                                : "Expand",
+                            action: () => toggleTag(tagContextMenu.payload.tag),
+                        },
+                        {
+                            label: "Copy Tag",
+                            action: () =>
+                                void navigator.clipboard.writeText(
+                                    `#${tagContextMenu.payload.tag}`,
+                                ),
+                        },
+                    ]}
+                />
+            )}
+            {noteContextMenu && (
+                <ContextMenu
+                    menu={noteContextMenu}
+                    onClose={() => setNoteContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open",
+                            action: () =>
+                                void handleNoteClick(noteContextMenu.payload.noteId),
+                        },
+                        {
+                            label: "Open in New Tab",
+                            action: () =>
+                                void handleOpenNoteInNewTab(
+                                    noteContextMenu.payload.noteId,
+                                ),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Reveal in File Tree",
+                            action: () =>
+                                revealNoteInTree(noteContextMenu.payload.noteId),
+                        },
+                        {
+                            label: "Copy Note Path",
+                            action: () =>
+                                void navigator.clipboard.writeText(
+                                    noteContextMenu.payload.noteId,
+                                ),
+                        },
+                    ]}
+                />
+            )}
         </div>
     );
 }

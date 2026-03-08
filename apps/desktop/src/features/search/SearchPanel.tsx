@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEditorStore } from "../../app/store/editorStore";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
+import { revealNoteInTree } from "../../app/utils/navigation";
 
 interface SearchResultDto {
     id: string;
@@ -16,9 +21,12 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
     const [query, setQuery] = useState("");
     const [results, setResults] = useState<SearchResultDto[]>([]);
     const [hasSearched, setHasSearched] = useState(false);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<SearchResultDto> | null>(null);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const openNote = useEditorStore((s) => s.openNote);
+    const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
     const doSearch = useCallback(async (q: string) => {
         if (!q.trim()) {
@@ -64,6 +72,30 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
             openNote(id, title, detail.content);
         } catch (e) {
             console.error("Error opening note:", e);
+        }
+    };
+
+    const handleOpenInNewTab = async (result: SearchResultDto) => {
+        try {
+            const tabs = useEditorStore.getState().tabs;
+            const existing = tabs.find((tab) => tab.noteId === result.id);
+            const content =
+                existing?.content ??
+                (
+                    await invoke<{ content: string }>("read_note", {
+                        noteId: result.id,
+                    })
+                ).content;
+
+            insertExternalTab({
+                id: crypto.randomUUID(),
+                noteId: result.id,
+                title: result.title,
+                content,
+                isDirty: false,
+            });
+        } catch (error) {
+            console.error("Error opening search result in new tab:", error);
         }
     };
 
@@ -147,6 +179,14 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                     <button
                         key={r.id}
                         onClick={() => void handleOpen(r.id, r.title)}
+                        onContextMenu={(event) => {
+                            event.preventDefault();
+                            setContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                payload: r,
+                            });
+                        }}
                         className="w-full text-left px-3 py-1.5 flex flex-col gap-0.5 rounded-sm"
                         style={{ color: "var(--text-primary)" }}
                         onMouseEnter={(e) =>
@@ -171,6 +211,40 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                     </button>
                 ))}
             </div>
+            {contextMenu && (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open",
+                            action: () =>
+                                void handleOpen(
+                                    contextMenu.payload.id,
+                                    contextMenu.payload.title,
+                                ),
+                        },
+                        {
+                            label: "Open in New Tab",
+                            action: () =>
+                                void handleOpenInNewTab(contextMenu.payload),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Reveal in File Tree",
+                            action: () =>
+                                revealNoteInTree(contextMenu.payload.id),
+                        },
+                        {
+                            label: "Copy Note Path",
+                            action: () =>
+                                void navigator.clipboard.writeText(
+                                    contextMenu.payload.id,
+                                ),
+                        },
+                    ]}
+                />
+            )}
         </div>
     );
 }

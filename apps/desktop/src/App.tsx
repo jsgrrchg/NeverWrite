@@ -33,6 +33,11 @@ import {
 } from "./app/store/editorStore";
 import { useVaultStore } from "./app/store/vaultStore";
 import { useLayoutStore } from "./app/store/layoutStore";
+import {
+    getYouTubeEmbedUrl,
+    OPEN_YOUTUBE_MODAL_EVENT,
+    type OpenYouTubeModalPayload,
+} from "./features/editor/youtube";
 
 function SidebarPanel({ view }: { view: SidebarView }) {
     return (
@@ -69,9 +74,6 @@ function OutlineRightPanel() {
     const activeContent = useEditorStore(
         (s) => s.tabs.find((t) => t.id === s.activeTabId)?.content ?? null,
     );
-    const activeTitle = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.title ?? null,
-    );
     const queueSelectionReveal = useEditorStore((s) => s.queueSelectionReveal);
 
     if (!activeNoteId) {
@@ -87,7 +89,6 @@ function OutlineRightPanel() {
 
     return (
         <OutlinePanel
-            title={activeTitle}
             content={activeContent}
             onSelectHeading={(selection) =>
                 queueSelectionReveal({
@@ -97,6 +98,124 @@ function OutlineRightPanel() {
                 })
             }
         />
+    );
+}
+
+function YouTubeModalHost() {
+    const [video, setVideo] = useState<OpenYouTubeModalPayload | null>(null);
+
+    useEffect(() => {
+        const handleOpen = (event: Event) => {
+            const customEvent = event as CustomEvent<OpenYouTubeModalPayload>;
+            if (!customEvent.detail?.href) return;
+            setVideo(customEvent.detail);
+        };
+
+        window.addEventListener(OPEN_YOUTUBE_MODAL_EVENT, handleOpen);
+        return () =>
+            window.removeEventListener(OPEN_YOUTUBE_MODAL_EVENT, handleOpen);
+    }, []);
+
+    useEffect(() => {
+        if (!video) return;
+
+        const handleKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                setVideo(null);
+            }
+        };
+
+        window.addEventListener("keydown", handleKey, true);
+        return () => window.removeEventListener("keydown", handleKey, true);
+    }, [video]);
+
+    if (!video) return null;
+
+    const embedUrl = getYouTubeEmbedUrl(video.href);
+    if (!embedUrl) return null;
+
+    return (
+        <div
+            className="fixed inset-0 flex items-center justify-center p-6"
+            style={{
+                zIndex: 10000,
+                background: "rgb(0 0 0 / 0.66)",
+            }}
+            onClick={() => setVideo(null)}
+        >
+            <div
+                className="w-full max-w-5xl"
+                onClick={(event) => event.stopPropagation()}
+            >
+                <div
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: 10,
+                        color: "white",
+                    }}
+                >
+                    <div
+                        style={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            lineHeight: 1.35,
+                            paddingRight: 16,
+                        }}
+                    >
+                        {video.title}
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => setVideo(null)}
+                        style={{
+                            width: 34,
+                            height: 34,
+                            borderRadius: 999,
+                            border: "1px solid rgb(255 255 255 / 0.18)",
+                            background: "rgb(255 255 255 / 0.08)",
+                            color: "white",
+                            cursor: "pointer",
+                            fontSize: 18,
+                            lineHeight: 1,
+                        }}
+                        aria-label="Close video"
+                    >
+                        ×
+                    </button>
+                </div>
+                <div
+                    style={{
+                        position: "relative",
+                        width: "100%",
+                        aspectRatio: "16 / 9",
+                        borderRadius: 18,
+                        overflow: "hidden",
+                        border: "1px solid rgb(255 255 255 / 0.08)",
+                        boxShadow: "0 24px 80px rgb(0 0 0 / 0.45)",
+                        background: "black",
+                    }}
+                >
+                    <iframe
+                        title={video.title}
+                        src={embedUrl}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                        referrerPolicy="strict-origin-when-cross-origin"
+                        loading="lazy"
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            width: "100%",
+                            height: "100%",
+                            border: "none",
+                        }}
+                    />
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -321,6 +440,20 @@ export default function App() {
     useGlobalShortcuts(openSearchPanel, openSettings);
 
     useEffect(() => {
+        const blockNativeContextMenu = (event: MouseEvent) => {
+            event.preventDefault();
+        };
+
+        window.addEventListener("contextmenu", blockNativeContextMenu, true);
+        return () =>
+            window.removeEventListener(
+                "contextmenu",
+                blockNativeContextMenu,
+                true,
+            );
+    }, []);
+
+    useEffect(() => {
         if (windowMode === "settings") return;
         if (windowMode !== "main") {
             const payload = readDetachedWindowPayload(getCurrentWindowLabel());
@@ -406,6 +539,7 @@ export default function App() {
                 <div className="flex-1 overflow-hidden">
                     <Editor emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
                 </div>
+                <YouTubeModalHost />
                 <CommandPalette />
                 <QuickSwitcher />
             </div>
@@ -431,6 +565,7 @@ export default function App() {
                 </div>
             </div>
 
+            <YouTubeModalHost />
             <CommandPalette />
             <QuickSwitcher />
         </div>

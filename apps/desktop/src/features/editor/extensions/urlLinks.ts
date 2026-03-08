@@ -9,6 +9,7 @@ import { RangeSetBuilder } from "@codemirror/state";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 const URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
+const EMAIL_RE = /(?:^|[\s<(])([^\s<>()"\],;:]+@[^\s<>()"\],;:]+\.[^\s<>()"\],;:]+)(?=$|[\s>)])/g;
 
 const urlMark = Decoration.mark({ class: "cm-url-link" });
 
@@ -35,7 +36,18 @@ function findVisibleUrls(
 ): Array<{ from: number; to: number }> {
     const results: Array<{ from: number; to: number }> = [];
     for (const { from, to } of view.visibleRanges) {
-        results.push(...findUrlsInText(view.state.sliceDoc(from, to), from));
+        const text = view.state.sliceDoc(from, to);
+        results.push(...findUrlsInText(text, from));
+        EMAIL_RE.lastIndex = 0;
+        let match;
+        while ((match = EMAIL_RE.exec(text)) !== null) {
+            const email = match[1];
+            const localFrom = match.index + match[0].lastIndexOf(email);
+            results.push({
+                from: from + localFrom,
+                to: from + localFrom + email.length,
+            });
+        }
     }
     return results;
 }
@@ -45,11 +57,18 @@ function findUrlAtPosition(
     pos: number,
 ): { from: number; to: number } | null {
     const line = view.state.doc.lineAt(pos);
-    return (
-        findUrlsInText(line.text, line.from).find(
-            (url) => pos >= url.from && pos <= url.to,
-        ) ?? null
-    );
+    const urls = findUrlsInText(line.text, line.from);
+    EMAIL_RE.lastIndex = 0;
+    let match;
+    while ((match = EMAIL_RE.exec(line.text)) !== null) {
+        const email = match[1];
+        const localFrom = match.index + match[0].lastIndexOf(email);
+        urls.push({
+            from: line.from + localFrom,
+            to: line.from + localFrom + email.length,
+        });
+    }
+    return urls.find((url) => pos >= url.from && pos <= url.to) ?? null;
 }
 
 const plugin = ViewPlugin.fromClass(
@@ -91,7 +110,12 @@ const clickHandler = EditorView.domEventHandlers({
         const clicked = findUrlAtPosition(view, pos);
         if (clicked) {
             event.preventDefault();
-            const url = view.state.sliceDoc(clicked.from, clicked.to);
+            const raw = view.state.sliceDoc(clicked.from, clicked.to);
+            const url =
+                /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw) &&
+                !/^[a-z][a-z0-9+.-]*:/i.test(raw)
+                    ? `mailto:${raw}`
+                    : raw;
             void openUrl(url);
             return true;
         }

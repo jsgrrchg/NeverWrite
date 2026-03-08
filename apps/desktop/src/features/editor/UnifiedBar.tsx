@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useState,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -18,6 +19,12 @@ import {
 import { useEditorStore } from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealNoteInTree } from "../../app/utils/navigation";
 import { useTabDragReorder } from "./useTabDragReorder";
 
 const appWindow = getCurrentWindow();
@@ -75,6 +82,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const [tabContextMenu, setTabContextMenu] = useState<
+        ContextMenuState<{ tabId: string }>
+    | null>(null);
 
     const handleDetachTab = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
@@ -161,6 +171,49 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         },
         [closeTab, tabs.length, windowMode],
     );
+
+    const closeOtherTabs = useCallback(
+        (tabId: string) => {
+            useEditorStore.setState((state) => {
+                const kept = state.tabs.filter((tab) => tab.id === tabId);
+                return {
+                    tabs: kept,
+                    activeTabId: kept[0]?.id ?? null,
+                };
+            });
+        },
+        [],
+    );
+
+    const closeTabsToTheRight = useCallback((tabId: string) => {
+        useEditorStore.setState((state) => {
+            const index = state.tabs.findIndex((tab) => tab.id === tabId);
+            if (index === -1) return state;
+            const kept = state.tabs.slice(0, index + 1);
+            return {
+                tabs: kept,
+                activeTabId:
+                    kept.find((tab) => tab.id === state.activeTabId)?.id ??
+                    kept[index]?.id ??
+                    null,
+            };
+        });
+    }, []);
+
+    const closeTabsToTheLeft = useCallback((tabId: string) => {
+        useEditorStore.setState((state) => {
+            const index = state.tabs.findIndex((tab) => tab.id === tabId);
+            if (index === -1) return state;
+            const kept = state.tabs.slice(index);
+            return {
+                tabs: kept,
+                activeTabId:
+                    kept.find((tab) => tab.id === state.activeTabId)?.id ??
+                    kept[0]?.id ??
+                    null,
+            };
+        });
+    }, []);
 
     const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");
 
@@ -329,6 +382,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 onClick={() =>
                                                     handleTabClick(tab.id)
                                                 }
+                                                onContextMenu={(event) => {
+                                                    event.preventDefault();
+                                                    setTabContextMenu({
+                                                        x: event.clientX,
+                                                        y: event.clientY,
+                                                        payload: { tabId: tab.id },
+                                                    });
+                                                }}
                                                 onPointerDown={(event) =>
                                                     handlePointerDown(
                                                         tab.id,
@@ -747,6 +808,68 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     </>
                 )}
             </div>
+            {tabContextMenu && (
+                <ContextMenu
+                    menu={tabContextMenu}
+                    onClose={() => setTabContextMenu(null)}
+                    minWidth={132}
+                    entries={(() => {
+                        const tab = tabs.find(
+                            (entry) => entry.id === tabContextMenu.payload.tabId,
+                        );
+                        if (!tab) return [];
+                        const notePath =
+                            useVaultStore
+                                .getState()
+                                .notes.find((note) => note.id === tab.noteId)?.path ??
+                            null;
+
+                        const tabIndex = tabs.findIndex(
+                            (entry) => entry.id === tab.id,
+                        );
+
+                        return [
+                            {
+                                label: "Close",
+                                action: () => void handleCloseTab(tab.id),
+                            },
+                            {
+                                label: "Close Others",
+                                action: () => closeOtherTabs(tab.id),
+                                disabled: tabs.length <= 1,
+                            },
+                            {
+                                label: "Close Right",
+                                action: () => closeTabsToTheRight(tab.id),
+                                disabled: tabIndex === -1 || tabIndex >= tabs.length - 1,
+                            },
+                            {
+                                label: "Close Left",
+                                action: () => closeTabsToTheLeft(tab.id),
+                                disabled: tabIndex <= 0,
+                            },
+                            { type: "separator" as const },
+                            {
+                                label: "Reveal in Tree",
+                                action: () => revealNoteInTree(tab.noteId),
+                            },
+                            {
+                                label: "Reveal in Finder",
+                                action: () => {
+                                    if (!notePath) return;
+                                    void revealItemInDir(notePath);
+                                },
+                                disabled: !notePath,
+                            },
+                            {
+                                label: "Copy Path",
+                                action: () =>
+                                    void navigator.clipboard.writeText(tab.noteId),
+                            },
+                        ];
+                    })()}
+                />
+            )}
         </div>
     );
 }

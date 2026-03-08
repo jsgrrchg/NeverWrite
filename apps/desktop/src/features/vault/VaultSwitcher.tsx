@@ -6,21 +6,22 @@ import {
     type RecentVault,
 } from "../../app/store/vaultStore";
 import { openVaultWindow } from "../../app/detachedWindows";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 
 export function VaultSwitcher() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [isOpen, setIsOpen] = useState(false);
-    const [recents, setRecents] = useState<RecentVault[]>([]);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<{ path: string | null }> | null>(null);
     const ref = useRef<HTMLDivElement>(null);
+    const recents: RecentVault[] = isOpen ? getRecentVaults() : [];
 
     const vaultName = vaultPath
         ? (vaultPath.split("/").pop() ?? vaultPath)
         : "No vault";
-
-    // Refresh recents when dropdown opens
-    useEffect(() => {
-        if (isOpen) setRecents(getRecentVaults());
-    }, [isOpen]);
 
     // Close on click outside or Escape
     useEffect(() => {
@@ -135,6 +136,14 @@ export function VaultSwitcher() {
             {/* Trigger button */}
             <button
                 onClick={() => setIsOpen((v) => !v)}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        payload: { path: vaultPath },
+                    });
+                }}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs"
                 style={{ color: "var(--text-secondary)" }}
             >
@@ -183,6 +192,26 @@ export function VaultSwitcher() {
                     />
                 </svg>
             </button>
+            {contextMenu && (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open Vault…",
+                            action: () => void handleOpenVault(),
+                        },
+                        {
+                            label: "Copy Vault Path",
+                            action: () =>
+                                void navigator.clipboard.writeText(
+                                    contextMenu.payload.path ?? "",
+                                ),
+                            disabled: !contextMenu.payload.path,
+                        },
+                    ]}
+                />
+            )}
         </div>
     );
 }

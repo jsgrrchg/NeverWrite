@@ -1,15 +1,47 @@
 import { EditorView } from "@codemirror/view";
-import { syntaxTree } from "@codemirror/language";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import { findAncestor, parseLinkChildren } from "./livePreviewHelpers";
+import { resolveLinkHref } from "./livePreviewHelpers";
+import { dispatchOpenYouTubeModal } from "../youtube";
 import {
-    createImageLivePreviewPlugin,
+    createImageLivePreviewExtension,
     createTableLivePreviewExtension,
     type TableInteractionHandlers,
 } from "./livePreviewBlocks";
 import { createInlineLivePreviewPlugin } from "./livePreviewInline";
 import { livePreviewTheme } from "./livePreviewTheme";
+
+const INTERACTIVE_PREVIEW_SELECTOR = [
+    ".cm-lp-link",
+    ".cm-inline-image-link",
+    ".cm-youtube-link",
+    ".cm-note-embed",
+    ".cm-lp-footnote-ref",
+    ".cm-lp-table-link",
+].join(", ");
+
+function cycleTaskMarker(marker: string): string {
+    if (marker === " ") return "~";
+    if (marker === "~" || marker === "/") return "x";
+    return " ";
+}
+
+function toggleTaskAtLine(view: EditorView, lineFrom: number, currentMarker: string) {
+    const line = view.state.doc.lineAt(lineFrom);
+    const match = line.text.match(
+        /^(\s*(?:[-+*]|\d+[.)])\s+)\[( |x|X|~|\/)\]/,
+    );
+    if (!match) return false;
+
+    const markerFrom = line.from + match[1].length + 1;
+    const markerTo = markerFrom + 1;
+    const nextMarker = cycleTaskMarker(currentMarker || match[2] || " ");
+    view.dispatch({
+        changes: { from: markerFrom, to: markerTo, insert: nextMarker },
+    });
+    view.focus();
+    return true;
+}
 
 export function livePreviewExtension(
     vaultRoot: string | null,
@@ -18,7 +50,12 @@ export function livePreviewExtension(
     const clickHandler = EditorView.domEventHandlers({
         mousedown(event: MouseEvent, view: EditorView) {
             const target = event.target as HTMLElement;
-            if (target.closest(".cm-lp-table-link")) return false;
+            if (target.closest(INTERACTIVE_PREVIEW_SELECTOR)) {
+                event.preventDefault();
+                view.focus();
+                return true;
+            }
+
             const tableCell = target.closest(
                 ".cm-lp-table-cell",
             ) as HTMLElement | null;
@@ -40,6 +77,23 @@ export function livePreviewExtension(
         },
         click(event: MouseEvent, view: EditorView) {
             const target = event.target as HTMLElement;
+            const taskLine = target.closest(".cm-lp-task-line") as HTMLElement | null;
+            if (taskLine?.dataset.lpTaskFrom) {
+                event.preventDefault();
+                return toggleTaskAtLine(
+                    view,
+                    Number(taskLine.dataset.lpTaskFrom),
+                    taskLine.dataset.lpTaskMarker ?? " ",
+                );
+            }
+
+            const embed = target.closest(".cm-note-embed") as HTMLElement | null;
+            if (embed?.dataset.wikilinkTarget) {
+                event.preventDefault();
+                interactions.navigateWikilink(embed.dataset.wikilinkTarget);
+                return true;
+            }
+
             const tableWikilink = target.closest(
                 ".cm-lp-table-wikilink",
             ) as HTMLElement | null;
@@ -66,30 +120,98 @@ export function livePreviewExtension(
                 return true;
             }
 
-            if (!target.closest(".cm-lp-link")) return false;
+            const youtubeLink = target.closest(
+                ".cm-youtube-link",
+            ) as HTMLElement | null;
+            if (youtubeLink?.dataset.href) {
+                event.preventDefault();
+                dispatchOpenYouTubeModal({
+                    href: youtubeLink.dataset.href,
+                    title: youtubeLink.dataset.title || "YouTube video",
+                });
+                return true;
+            }
 
-            const pos = view.posAtCoords({
-                x: event.clientX,
-                y: event.clientY,
-            });
-            if (pos === null) return false;
+            const liveLink = target.closest(".cm-lp-link") as HTMLElement | null;
+            if (liveLink?.dataset.href) {
+                event.preventDefault();
+                const noteTarget = interactions.getNoteLinkTarget(
+                    liveLink.dataset.href,
+                );
+                if (noteTarget) {
+                    interactions.navigateWikilink(noteTarget);
+                    return true;
+                }
+                void openUrl(resolveLinkHref({ url: liveLink.dataset.href, label: null, isEmail: false }) ?? liveLink.dataset.href);
+                return true;
+            }
 
-            const resolved = syntaxTree(view.state).resolveInner(pos, -1);
-            const linkNode = findAncestor(resolved, "Link");
-            if (!linkNode) return false;
+            const footnoteRef = target.closest(".cm-lp-footnote-ref") as HTMLElement | null;
+            if (footnoteRef?.dataset.footnoteId) {
+                const definition = view.dom.querySelector<HTMLElement>(
+                    `.cm-lp-footnote-def[data-footnote-id="${CSS.escape(
+                        footnoteRef.dataset.footnoteId,
+                    )}"]`,
+                );
+                if (definition) {
+                    event.preventDefault();
+                    definition.scrollIntoView({ block: "nearest" });
+                    return true;
+                }
+            }
 
-            const info = parseLinkChildren(linkNode, view.state);
-            if (!info?.url) return false;
+            return false;
+        },
+        contextmenu(event: MouseEvent) {
+            const target = event.target as HTMLElement;
 
-            event.preventDefault();
-            void openUrl(info.url);
-            return true;
+            const liveLink = target.closest(".cm-lp-link") as HTMLElement | null;
+            if (liveLink?.dataset.href) {
+                event.preventDefault();
+                interactions.openLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: liveLink.dataset.href,
+                    noteTarget: interactions.getNoteLinkTarget(
+                        liveLink.dataset.href,
+                    ),
+                });
+                return true;
+            }
+
+            const linkedImage = target.closest(
+                ".cm-inline-image-link",
+            ) as HTMLElement | null;
+            if (linkedImage?.dataset.href) {
+                event.preventDefault();
+                interactions.openLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: linkedImage.dataset.href,
+                    noteTarget: null,
+                });
+                return true;
+            }
+
+            const tableUrl = target.closest(".cm-lp-table-url") as HTMLElement | null;
+            if (tableUrl?.dataset.url) {
+                event.preventDefault();
+                interactions.openLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: tableUrl.dataset.url,
+                    noteTarget: null,
+                });
+                return true;
+            }
+
+            return false;
         },
     });
 
     return [
         createInlineLivePreviewPlugin(),
-        createImageLivePreviewPlugin(vaultRoot),
+        createImageLivePreviewExtension(vaultRoot),
         createTableLivePreviewExtension(interactions),
         clickHandler,
         livePreviewTheme,
