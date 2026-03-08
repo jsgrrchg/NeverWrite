@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+} from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettingsStore } from "../../app/store/settingsStore";
 
@@ -61,16 +67,17 @@ export function parseFrontmatterRaw(raw: string): FrontmatterEntry[] {
     return entries;
 }
 
-export function serializeFrontmatterRaw(entries: FrontmatterEntry[]): string | null {
+export function serializeFrontmatterRaw(
+    entries: FrontmatterEntry[],
+): string | null {
     const cleaned = entries
         .map(({ key, value }) => ({
             key: key.trim(),
-            value:
-                Array.isArray(value)
-                    ? value.map((item) => item.trim()).filter(Boolean)
-                    : typeof value === "string"
-                      ? value.trim()
-                      : value,
+            value: Array.isArray(value)
+                ? value.map((item) => item.trim()).filter(Boolean)
+                : typeof value === "string"
+                  ? value.trim()
+                  : value,
         }))
         .filter(({ key, value }) => {
             if (!key) return false;
@@ -195,9 +202,13 @@ function shouldUseTextarea(name: string, value: FrontmatterValue) {
     const key = name.toLowerCase();
     return (
         value.length > 56 ||
-        ["summary", "resumen", "description", "descripcion", "excerpt"].includes(
-            key,
-        )
+        [
+            "summary",
+            "resumen",
+            "description",
+            "descripcion",
+            "excerpt",
+        ].includes(key)
     );
 }
 
@@ -302,7 +313,7 @@ function TypeIcon({ type }: { type: PropType }) {
 function Pill({ label, fontSize }: { label: string; fontSize: number }) {
     return (
         <span
-            className="px-2 py-0.5 rounded-full"
+            className="px-1.5 py-px rounded-full"
             style={{
                 fontSize,
                 backgroundColor:
@@ -328,7 +339,9 @@ function DateField({
     const parsed = parseIsoDate(value);
     const [open, setOpen] = useState(false);
     const [viewMonth, setViewMonth] = useState(
-        parsed ? new Date(parsed.getFullYear(), parsed.getMonth(), 1, 12) : new Date(),
+        parsed
+            ? new Date(parsed.getFullYear(), parsed.getMonth(), 1, 12)
+            : new Date(),
     );
     const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -352,7 +365,9 @@ function DateField({
 
     useEffect(() => {
         if (parsed) {
-            setViewMonth(new Date(parsed.getFullYear(), parsed.getMonth(), 1, 12));
+            setViewMonth(
+                new Date(parsed.getFullYear(), parsed.getMonth(), 1, 12),
+            );
         }
     }, [value]);
 
@@ -361,15 +376,22 @@ function DateField({
     const selected = parsed ? formatIsoDate(parsed) : null;
 
     return (
-        <div ref={rootRef} style={{ position: "relative" }}>
+        <div
+            ref={rootRef}
+            style={{
+                position: "relative",
+                display: "inline-block",
+                maxWidth: "100%",
+            }}
+        >
             <button
                 type="button"
                 onClick={() => setOpen((prev) => !prev)}
-                className="w-full flex items-center gap-2 text-left"
+                className="inline-flex items-center gap-2 text-left"
                 style={{
-                    minHeight: 38,
-                    padding: "6px 10px",
-                    borderRadius: 12,
+                    minHeight: 30,
+                    padding: "3px 8px",
+                    borderRadius: 8,
                     border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
                     background:
                         "color-mix(in srgb, var(--bg-primary) 80%, var(--bg-secondary))",
@@ -403,9 +425,9 @@ function DateField({
                         top: "calc(100% + 8px)",
                         left: 0,
                         zIndex: 50,
-                        width: 272,
-                        padding: 12,
-                        borderRadius: 16,
+                        width: 240,
+                        padding: 10,
+                        borderRadius: 12,
                         border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
                         background:
                             "color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary))",
@@ -419,8 +441,10 @@ function DateField({
                     >
                         <button
                             type="button"
-                            onClick={() => setViewMonth((prev) => shiftMonth(prev, -1))}
-                            className="h-8 w-8 rounded-full"
+                            onClick={() =>
+                                setViewMonth((prev) => shiftMonth(prev, -1))
+                            }
+                            className="h-6 w-6 rounded-full"
                             style={{
                                 border: "1px solid transparent",
                                 color: "var(--text-secondary)",
@@ -443,8 +467,10 @@ function DateField({
                         </div>
                         <button
                             type="button"
-                            onClick={() => setViewMonth((prev) => shiftMonth(prev, 1))}
-                            className="h-8 w-8 rounded-full"
+                            onClick={() =>
+                                setViewMonth((prev) => shiftMonth(prev, 1))
+                            }
+                            className="h-6 w-6 rounded-full"
                             style={{
                                 border: "1px solid transparent",
                                 color: "var(--text-secondary)",
@@ -499,8 +525,8 @@ function DateField({
                                     }}
                                     className="rounded-xl"
                                     style={{
-                                        height: 34,
-                                        fontSize: 12,
+                                        height: 26,
+                                        fontSize: 11,
                                         fontWeight: isSelected ? 700 : 500,
                                         border: isSelected
                                             ? "1px solid color-mix(in srgb, var(--accent) 65%, transparent)"
@@ -533,9 +559,9 @@ function DateField({
                                 onChange(today);
                                 setOpen(false);
                             }}
-                            className="px-3 h-8 rounded-full"
+                            className="px-2.5 h-6 rounded-full"
                             style={{
-                                fontSize: 11,
+                                fontSize: 10,
                                 fontWeight: 600,
                                 color: "var(--text-primary)",
                                 border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
@@ -551,9 +577,9 @@ function DateField({
                                 onChange("");
                                 setOpen(false);
                             }}
-                            className="px-3 h-8 rounded-full"
+                            className="px-2.5 h-6 rounded-full"
                             style={{
-                                fontSize: 11,
+                                fontSize: 10,
                                 fontWeight: 600,
                                 color: "var(--text-secondary)",
                                 border: "1px solid transparent",
@@ -605,6 +631,91 @@ function AutoGrowTextarea({
     );
 }
 
+function PillEditor({
+    items,
+    fontSize,
+    onRemove,
+    onAdd,
+}: {
+    items: string[];
+    fontSize: number;
+    onRemove: (index: number) => void;
+    onAdd: (item: string) => void;
+}) {
+    const [draft, setDraft] = useState("");
+
+    const commit = () => {
+        const trimmed = draft.trim();
+        if (trimmed) onAdd(trimmed);
+        setDraft("");
+    };
+
+    return (
+        <div
+            className="flex flex-wrap items-center gap-1"
+            style={{ padding: "2px 0" }}
+        >
+            {items.map((item, i) => (
+                <span
+                    key={i}
+                    className="inline-flex items-center gap-0.5 px-1.5 py-px rounded-full"
+                    style={{
+                        fontSize,
+                        backgroundColor:
+                            "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
+                        color: "var(--text-secondary)",
+                        border: "1px solid var(--border)",
+                    }}
+                >
+                    {item}
+                    <button
+                        type="button"
+                        onClick={() => onRemove(i)}
+                        style={{
+                            lineHeight: 1,
+                            opacity: 0.5,
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: "0 1px",
+                            color: "inherit",
+                            fontSize: fontSize - 1,
+                        }}
+                    >
+                        ×
+                    </button>
+                </span>
+            ))}
+            <input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === ",") {
+                        e.preventDefault();
+                        commit();
+                    }
+                }}
+                onBlur={commit}
+                placeholder={items.length === 0 ? "Add item…" : "+"}
+                style={{
+                    fontSize,
+                    color: "var(--text-secondary)",
+                    background: "transparent",
+                    border: "none",
+                    outline: "none",
+                    width:
+                        draft.length > 0
+                            ? `${draft.length + 2}ch`
+                            : items.length === 0
+                              ? "7ch"
+                              : "2ch",
+                    minWidth: "2ch",
+                }}
+            />
+        </div>
+    );
+}
+
 function PropertyEditor({
     name,
     value,
@@ -620,17 +731,16 @@ function PropertyEditor({
     pillFontSize: number;
     onChange?: (nextValue: FrontmatterValue) => void;
 }) {
-    const commonInputStyle = {
+    const commonInputStyle: CSSProperties = {
         width: "100%",
-        minWidth: 0,
         fontSize,
         color: "var(--text-primary)",
         background: "transparent",
         border: "1px solid transparent",
-        borderRadius: 10,
-        padding: "6px 8px",
+        borderRadius: 6,
+        padding: "3px 6px",
         outline: "none",
-    } as const;
+    };
 
     if (!onChange) {
         if (!value) return null;
@@ -652,7 +762,12 @@ function PropertyEditor({
                         e.preventDefault();
                         void openUrl(String(value));
                     }}
-                    style={{ ...commonInputStyle, color: "var(--accent)" }}
+                    style={{
+                        ...commonInputStyle,
+                        color: "var(--accent)",
+                        display: "block",
+                        wordBreak: "break-all",
+                    }}
                 >
                     {String(value)}
                 </a>
@@ -665,7 +780,7 @@ function PropertyEditor({
                     fontSize,
                     wordBreak: "break-word",
                     display: "block",
-                    padding: "6px 8px",
+                    padding: "3px 6px",
                 }}
             >
                 {value}
@@ -674,30 +789,16 @@ function PropertyEditor({
     }
 
     if (Array.isArray(value) || type === "list" || type === "tags") {
-        const joined = Array.isArray(value) ? value.join(", ") : "";
+        const items = Array.isArray(value) ? value : [];
+        const removeItem = (index: number) =>
+            onChange(items.filter((_, i) => i !== index));
         return (
-            <div className="space-y-2">
-                <input
-                    value={joined}
-                    onChange={(e) =>
-                        onChange(
-                            e.target.value
-                                .split(",")
-                                .map((item) => item.trim())
-                                .filter(Boolean),
-                        )
-                    }
-                    placeholder="item 1, item 2, item 3"
-                    style={commonInputStyle}
-                />
-                {Array.isArray(value) && value.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 px-1">
-                        {value.map((item, i) => (
-                            <Pill key={i} label={item} fontSize={pillFontSize} />
-                        ))}
-                    </div>
-                )}
-            </div>
+            <PillEditor
+                items={items}
+                fontSize={pillFontSize}
+                onRemove={removeItem}
+                onAdd={(item) => onChange([...items, item])}
+            />
         );
     }
 
@@ -733,7 +834,7 @@ function PropertyEditor({
             {type === "url" && typeof value === "string" && value && (
                 <button
                     onClick={() => void openUrl(value)}
-                    className="px-2.5 h-8 rounded-lg text-xs"
+                    className="px-2 h-6 rounded-md text-xs"
                     style={{
                         color: "var(--text-secondary)",
                         border: "1px solid var(--border)",
@@ -766,15 +867,15 @@ function PropertyRow({
     const type = detectType(name, value);
     return (
         <div
-            className="flex items-start gap-3 px-4 py-2"
+            className="flex items-start gap-2 pl-3 pr-4 py-1"
             style={{ borderTop: "1px solid var(--border)" }}
         >
             <div
                 className="flex items-center gap-1.5 flex-shrink-0"
                 style={{
-                    width: 96,
+                    width: 80,
                     color: "var(--text-secondary)",
-                    paddingTop: 8,
+                    paddingTop: 5,
                     fontSize: labelFontSize,
                 }}
             >
@@ -783,7 +884,10 @@ function PropertyRow({
                 </div>
                 <span className="truncate">{name}</span>
             </div>
-            <div className="flex-1 min-w-0" style={{ color: "var(--text-primary)" }}>
+            <div
+                className="flex-1 min-w-0"
+                style={{ color: "var(--text-primary)" }}
+            >
                 <PropertyEditor
                     name={name}
                     value={value}
@@ -819,8 +923,9 @@ function AddPropertyComposer({
     const submit = () => {
         const trimmedKey = key.trim();
         const nextValue = createEntryValue(type, value);
-        const hasValue =
-            Array.isArray(nextValue) ? nextValue.length > 0 : nextValue !== "";
+        const hasValue = Array.isArray(nextValue)
+            ? nextValue.length > 0
+            : nextValue !== "";
         if (!trimmedKey || !hasValue) return;
         onAdd(trimmedKey, nextValue);
         reset();
@@ -831,15 +936,15 @@ function AddPropertyComposer({
             <div
                 style={{
                     borderTop: "1px solid var(--border)",
-                    padding: "12px 16px 14px",
+                    padding: "8px 16px 10px 12px",
                 }}
             >
                 <button
                     type="button"
                     onClick={() => setOpen(true)}
-                    className="inline-flex items-center gap-2 rounded-full px-3 h-8"
+                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 h-6"
                     style={{
-                        fontSize: 12,
+                        fontSize: 11,
                         fontWeight: 600,
                         color: "var(--text-secondary)",
                         border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
@@ -847,7 +952,7 @@ function AddPropertyComposer({
                             "color-mix(in srgb, var(--bg-primary) 72%, var(--bg-secondary))",
                     }}
                 >
-                    <span style={{ fontSize: 14, lineHeight: 1 }}>+</span>
+                    <span style={{ fontSize: 12, lineHeight: 1 }}>+</span>
                     Add property
                 </button>
             </div>
@@ -858,14 +963,15 @@ function AddPropertyComposer({
         <div
             style={{
                 borderTop: "1px solid var(--border)",
-                padding: "14px 16px 16px",
+                padding: "8px 12px 10px",
             }}
         >
             <div
                 style={{
                     display: "grid",
-                    gridTemplateColumns: "minmax(0, 1.1fr) 120px minmax(0, 1.6fr)",
-                    gap: 8,
+                    gridTemplateColumns:
+                        "minmax(0, 1.1fr) 100px minmax(0, 1.6fr)",
+                    gap: 6,
                 }}
             >
                 <input
@@ -874,9 +980,9 @@ function AddPropertyComposer({
                     placeholder="Property name"
                     style={{
                         minWidth: 0,
-                        height: 36,
-                        padding: "0 10px",
-                        borderRadius: 10,
+                        height: 28,
+                        padding: "0 8px",
+                        borderRadius: 6,
                         border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
                         background:
                             "color-mix(in srgb, var(--bg-primary) 78%, var(--bg-secondary))",
@@ -889,9 +995,9 @@ function AddPropertyComposer({
                     onChange={(e) => setType(e.target.value as PropType)}
                     style={{
                         minWidth: 0,
-                        height: 36,
-                        padding: "0 10px",
-                        borderRadius: 10,
+                        height: 28,
+                        padding: "0 8px",
+                        borderRadius: 6,
                         border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
                         background:
                             "color-mix(in srgb, var(--bg-primary) 78%, var(--bg-secondary))",
@@ -906,7 +1012,11 @@ function AddPropertyComposer({
                     <option value="tags">Tags</option>
                 </select>
                 {type === "date" ? (
-                    <DateField value={value} fontSize={fontSize} onChange={setValue} />
+                    <DateField
+                        value={value}
+                        fontSize={fontSize}
+                        onChange={setValue}
+                    />
                 ) : (
                     <input
                         value={value}
@@ -918,9 +1028,9 @@ function AddPropertyComposer({
                         }
                         style={{
                             minWidth: 0,
-                            height: 36,
-                            padding: "0 10px",
-                            borderRadius: 10,
+                            height: 28,
+                            padding: "0 8px",
+                            borderRadius: 6,
                             border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
                             background:
                                 "color-mix(in srgb, var(--bg-primary) 78%, var(--bg-secondary))",
@@ -932,14 +1042,14 @@ function AddPropertyComposer({
             </div>
             <div
                 className="flex items-center justify-end gap-2"
-                style={{ marginTop: 10 }}
+                style={{ marginTop: 6 }}
             >
                 <button
                     type="button"
                     onClick={reset}
-                    className="px-3 h-8 rounded-full"
+                    className="px-2.5 h-6 rounded-full"
                     style={{
-                        fontSize: 12,
+                        fontSize: 11,
                         fontWeight: 600,
                         color: "var(--text-secondary)",
                         border: "1px solid transparent",
@@ -951,9 +1061,9 @@ function AddPropertyComposer({
                 <button
                     type="button"
                     onClick={submit}
-                    className="px-3 h-8 rounded-full"
+                    className="px-2.5 h-6 rounded-full"
                     style={{
-                        fontSize: 12,
+                        fontSize: 11,
                         fontWeight: 700,
                         color: "var(--text-primary)",
                         border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
@@ -980,10 +1090,10 @@ export function FrontmatterPanel({
         () => localStorage.getItem(FM_COLLAPSED_KEY) === "true",
     );
 
-    const headerFontSize = Math.max(11, Math.round(editorFontSize * 0.86));
-    const labelFontSize = Math.max(11, Math.round(editorFontSize * 0.86));
-    const valueFontSize = Math.max(12, editorFontSize);
-    const pillFontSize = Math.max(11, Math.round(editorFontSize * 0.86));
+    const headerFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
+    const labelFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
+    const valueFontSize = Math.max(11, editorFontSize - 2);
+    const pillFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
 
     const entries = useMemo(() => parseFrontmatterRaw(raw), [raw]);
     if (entries.length === 0 && !onChange) return null;
@@ -1008,7 +1118,7 @@ export function FrontmatterPanel({
         <div
             style={{
                 marginBottom: 8,
-                borderRadius: 12,
+                borderRadius: 10,
                 border: "1px solid var(--border)",
                 background:
                     "color-mix(in srgb, var(--bg-secondary) 88%, transparent)",
@@ -1017,8 +1127,8 @@ export function FrontmatterPanel({
         >
             <button
                 onClick={toggleCollapsed}
-                className="flex items-center gap-2 w-full text-left px-4"
-                style={{ height: 36, color: "var(--text-secondary)" }}
+                className="flex items-center gap-1.5 w-full text-left pl-3 pr-4"
+                style={{ height: 28, color: "var(--text-secondary)" }}
                 onMouseEnter={(e) =>
                     (e.currentTarget.style.color = "var(--text-primary)")
                 }
@@ -1032,7 +1142,9 @@ export function FrontmatterPanel({
                     viewBox="0 0 16 16"
                     fill="none"
                     style={{
-                        transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                        transform: collapsed
+                            ? "rotate(-90deg)"
+                            : "rotate(0deg)",
                         transition: "transform 120ms ease",
                         opacity: 0.5,
                         flexShrink: 0,
@@ -1074,7 +1186,8 @@ export function FrontmatterPanel({
                         pillFontSize={pillFontSize}
                         onChange={
                             onChange
-                                ? (nextValue) => handleEntryChange(key, nextValue)
+                                ? (nextValue) =>
+                                      handleEntryChange(key, nextValue)
                                 : undefined
                         }
                     />

@@ -12,6 +12,8 @@
     --border: #e5e5e5;
     --accent: #6366f1;
     --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
+    --highlight-bg: color-mix(in srgb, var(--accent) 20%, rgb(255 235 130 / 0.85));
+    --highlight-text: #1c1c1c;
 }
 
 .dark {
@@ -24,6 +26,8 @@
     --border: #383838;
     --accent: #818cf8;
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
+    --highlight-bg: rgba(202, 162, 0, 0.35);
+    --highlight-text: #f5e082;
 }
 
 body {
@@ -37,6 +41,11 @@ input,
 textarea {
     user-select: text;
     -webkit-user-select: text;
+}
+
+/* Force long URLs and unbreakable strings to wrap within the editor width */
+.cm-editor .cm-content.cm-lineWrapping {
+    overflow-wrap: anywhere;
 }
 
 .scrollbar-hidden {

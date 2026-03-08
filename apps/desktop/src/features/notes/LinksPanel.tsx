@@ -1,10 +1,4 @@
-import {
-    useState,
-    useEffect,
-    useMemo,
-    useRef,
-    useLayoutEffect,
-} from "react";
+import { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
     useEditorStore,
@@ -32,7 +26,9 @@ interface BrokenOutgoingLink {
 
 type OutgoingLink = ResolvedOutgoingLink | BrokenOutgoingLink;
 
-function isResolvedOutgoingLink(link: OutgoingLink): link is ResolvedOutgoingLink {
+function isResolvedOutgoingLink(
+    link: OutgoingLink,
+): link is ResolvedOutgoingLink {
     return link.note !== null;
 }
 
@@ -84,8 +80,13 @@ function isPrefixExpansion(candidate: string, target: string): boolean {
     return next === " " || next === "-" || next === ":" || next === "(";
 }
 
-function findUniquePrefixNote(target: string, notes: NoteDto[]): NoteDto | null {
-    const variants = getWikilinkVariants(target).filter(isStrongPrefixCandidate);
+function findUniquePrefixNote(
+    target: string,
+    notes: NoteDto[],
+): NoteDto | null {
+    const variants = getWikilinkVariants(target).filter(
+        isStrongPrefixCandidate,
+    );
     if (!variants.length) return null;
 
     const matches: NoteDto[] = [];
@@ -96,9 +97,11 @@ function findUniquePrefixNote(target: string, notes: NoteDto[]): NoteDto | null 
             normalizeWikilinkTarget(note.id.split("/").pop() ?? ""),
         ];
 
-        if (!aliases.some((alias) =>
-            variants.some((variant) => isPrefixExpansion(alias, variant)),
-        )) {
+        if (
+            !aliases.some((alias) =>
+                variants.some((variant) => isPrefixExpansion(alias, variant)),
+            )
+        ) {
             continue;
         }
 
@@ -109,20 +112,50 @@ function findUniquePrefixNote(target: string, notes: NoteDto[]): NoteDto | null 
     return matches[0] ?? null;
 }
 
-function resolveNote(target: string, notes: NoteDto[]): NoteDto | null {
+interface NoteIndex {
+    byId: Map<string, NoteDto>;
+    byTitle: Map<string, NoteDto>;
+    byFilename: Map<string, NoteDto[]>;
+    notes: NoteDto[];
+}
+
+function buildNoteIndex(notes: NoteDto[]): NoteIndex {
+    const byId = new Map<string, NoteDto>();
+    const byTitle = new Map<string, NoteDto>();
+    const byFilename = new Map<string, NoteDto[]>();
+
+    for (const note of notes) {
+        byId.set(normalizeWikilinkTarget(note.id), note);
+        byTitle.set(normalizeWikilinkTarget(note.title), note);
+
+        const filename = normalizeWikilinkTarget(
+            note.id.split("/").pop() ?? "",
+        );
+        if (filename) {
+            const existing = byFilename.get(filename);
+            if (existing) existing.push(note);
+            else byFilename.set(filename, [note]);
+        }
+    }
+
+    return { byId, byTitle, byFilename, notes };
+}
+
+function resolveNote(target: string, index: NoteIndex): NoteDto | null {
     const variants = getWikilinkVariants(target);
-    return (
-        notes.find((n) => variants.includes(normalizeWikilinkTarget(n.id))) ??
-        notes.find((n) =>
-            variants.includes(normalizeWikilinkTarget(n.title)),
-        ) ??
-        notes.find((n) => {
-            const last = n.id.split("/").pop() ?? "";
-            return variants.includes(normalizeWikilinkTarget(last));
-        }) ??
-        findUniquePrefixNote(target, notes) ??
-        null
-    );
+    for (const v of variants) {
+        const byId = index.byId.get(v);
+        if (byId) return byId;
+    }
+    for (const v of variants) {
+        const byTitle = index.byTitle.get(v);
+        if (byTitle) return byTitle;
+    }
+    for (const v of variants) {
+        const matches = index.byFilename.get(v);
+        if (matches?.length === 1) return matches[0];
+    }
+    return findUniquePrefixNote(target, index.notes);
 }
 
 function LinkIcon() {
@@ -253,7 +286,12 @@ function BacklinksContextMenu({
         if (!el) return;
         const rect = el.getBoundingClientRect();
         setPosition(
-            getViewportSafeMenuPosition(menu.x, menu.y, rect.width, rect.height),
+            getViewportSafeMenuPosition(
+                menu.x,
+                menu.y,
+                rect.width,
+                rect.height,
+            ),
         );
     }, [menu.x, menu.y]);
 
@@ -355,7 +393,12 @@ function OutgoingLinksContextMenu({
         if (!el) return;
         const rect = el.getBoundingClientRect();
         setPosition(
-            getViewportSafeMenuPosition(menu.x, menu.y, rect.width, rect.height),
+            getViewportSafeMenuPosition(
+                menu.x,
+                menu.y,
+                rect.width,
+                rect.height,
+            ),
         );
     }, [menu.x, menu.y]);
 
@@ -483,6 +526,8 @@ export function LinksPanel() {
             .catch(() => setBacklinks([]));
     }, [activeNoteId]);
 
+    const noteIndex = useMemo(() => buildNoteIndex(notes), [notes]);
+
     const outgoingLinks = useMemo(() => {
         if (!activeContent) return [];
         const seen = new Set<string>();
@@ -493,12 +538,12 @@ export function LinksPanel() {
                 return true;
             })
             .map(({ target }) => {
-                const note = resolveNote(target, notes);
+                const note = resolveNote(target, noteIndex);
                 return note
                     ? ({ target, note } satisfies ResolvedOutgoingLink)
                     : ({ target, note: null } satisfies BrokenOutgoingLink);
             });
-    }, [activeContent, notes]);
+    }, [activeContent, noteIndex]);
 
     const revealTargets = useMemo(() => {
         if (!activeNoteId) return [];
@@ -518,7 +563,11 @@ export function LinksPanel() {
     const getOutgoingTargets = (link: OutgoingLink) => [
         link.target,
         ...(link.note
-            ? [link.note.id, link.note.title, link.note.id.split("/").pop() ?? link.note.id]
+            ? [
+                  link.note.id,
+                  link.note.title,
+                  link.note.id.split("/").pop() ?? link.note.id,
+              ]
             : []),
     ];
 
@@ -773,7 +822,9 @@ export function LinksPanel() {
                     menu={outgoingContextMenu}
                     onOpenInNewTab={(link) => void openOutgoingInNewTab(link)}
                     onRevealLink={(link) => revealOutgoingLink(link)}
-                    onRevealInFileTree={(link) => revealNoteInTree(link.note.id)}
+                    onRevealInFileTree={(link) =>
+                        revealNoteInTree(link.note.id)
+                    }
                     onCopyWikilink={(link) => void copyOutgoingWikilink(link)}
                     onCreateNote={(link) => createOutgoingNote(link)}
                     onClose={() => setOutgoingContextMenu(null)}

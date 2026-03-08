@@ -4,7 +4,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ActivityBar, type SidebarView } from "./components/layout/ActivityBar";
-import { StatusBar } from "./components/layout/StatusBar";
 import { FileTree } from "./features/vault/FileTree";
 import { VaultSwitcher } from "./features/vault/VaultSwitcher";
 import { TagsPanel } from "./features/tags/TagsPanel";
@@ -390,7 +389,6 @@ export default function App() {
                 </div>
             </div>
 
-            <StatusBar />
             <CommandPalette />
             <QuickSwitcher />
         </div>
