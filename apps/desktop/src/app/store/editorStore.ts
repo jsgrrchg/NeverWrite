@@ -41,11 +41,18 @@ export interface PendingReveal {
     mode: "link" | "mention";
 }
 
+export interface PendingSelectionReveal {
+    noteId: string;
+    anchor: number;
+    head: number;
+}
+
 interface EditorStore {
     tabs: Tab[];
     activeTabId: string | null;
     editorMode: EditorMode;
     pendingReveal: PendingReveal | null;
+    pendingSelectionReveal: PendingSelectionReveal | null;
     openNote: (noteId: string, title: string, content: string) => void;
     closeTab: (tabId: string) => void;
     switchTab: (tabId: string) => void;
@@ -58,6 +65,8 @@ interface EditorStore {
     insertExternalTab: (tab: Tab, index?: number) => void;
     queueReveal: (reveal: PendingReveal) => void;
     clearPendingReveal: () => void;
+    queueSelectionReveal: (reveal: PendingSelectionReveal) => void;
+    clearPendingSelectionReveal: () => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -65,6 +74,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     activeTabId: null,
     editorMode: "preview",
     pendingReveal: null,
+    pendingSelectionReveal: null,
 
     openNote: (noteId, title, content) => {
         const existing = get().tabs.find((t) => t.noteId === noteId);
@@ -166,6 +176,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     queueReveal: (pendingReveal) => set({ pendingReveal }),
 
     clearPendingReveal: () => set({ pendingReveal: null }),
+
+    queueSelectionReveal: (pendingSelectionReveal) =>
+        set({ pendingSelectionReveal }),
+
+    clearPendingSelectionReveal: () =>
+        set({ pendingSelectionReveal: null }),
 }));
 
 useEditorStore.subscribe((state) => {

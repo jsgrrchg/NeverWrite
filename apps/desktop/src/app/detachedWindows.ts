@@ -9,8 +9,12 @@ const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "vaultai:detached-window:";
 const DETACH_WINDOW_WIDTH = 960;
 const DETACH_WINDOW_HEIGHT = 720;
-const DETACH_OUTSIDE_MARGIN = 18;
-const TAB_DROP_ZONE_HEIGHT = 96;
+const DETACH_OUTSIDE_MARGIN = 30;
+const TAB_DROP_ZONE_HEIGHT = 128;
+const TAB_DROP_ZONE_TOP_PADDING = 22;
+const TAB_DROP_ZONE_SIDE_PADDING = 28;
+const DETACHED_WINDOW_CURSOR_OFFSET_X = 120;
+const DETACHED_WINDOW_CURSOR_OFFSET_Y = 18;
 export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
 
 export interface DetachedWindowPayload {
@@ -80,7 +84,11 @@ export async function findWindowTabDropTarget(
 
     const candidates = await Promise.all(
         windows
-            .filter((window) => window.label !== excludeLabel)
+            .filter(
+                (window) =>
+                    window.label !== excludeLabel &&
+                    window.label !== "settings",
+            )
             .map(async (window) => {
                 const [position, size, minimized, visible] = await Promise.all([
                     window.outerPosition(),
@@ -101,15 +109,34 @@ export async function findWindowTabDropTarget(
             }),
     );
 
-    const match = candidates.find(
-        (window) =>
-            window.visible &&
-            !window.minimized &&
-            screenX >= window.left &&
-            screenX <= window.right &&
-            screenY >= window.top &&
-            screenY <= window.top + TAB_DROP_ZONE_HEIGHT,
-    );
+    const match = candidates
+        .filter(
+            (window) =>
+                window.visible &&
+                !window.minimized &&
+                screenX >= window.left - TAB_DROP_ZONE_SIDE_PADDING &&
+                screenX <= window.right + TAB_DROP_ZONE_SIDE_PADDING &&
+                screenY >= window.top - TAB_DROP_ZONE_TOP_PADDING &&
+                screenY <= window.top + TAB_DROP_ZONE_HEIGHT,
+        )
+        .sort((left, right) => {
+            const leftInsideHeader =
+                screenX >= left.left &&
+                screenX <= left.right &&
+                screenY >= left.top &&
+                screenY <= left.top + TAB_DROP_ZONE_HEIGHT;
+            const rightInsideHeader =
+                screenX >= right.left &&
+                screenX <= right.right &&
+                screenY >= right.top &&
+                screenY <= right.top + TAB_DROP_ZONE_HEIGHT;
+
+            if (leftInsideHeader !== rightInsideHeader) {
+                return leftInsideHeader ? -1 : 1;
+            }
+
+            return Math.abs(screenY - left.top) - Math.abs(screenY - right.top);
+        })[0];
 
     return match?.label ?? null;
 }
@@ -166,7 +193,10 @@ export async function openVaultWindow(vaultPath: string) {
 
 export async function openDetachedNoteWindow(
     payload: DetachedWindowPayload,
-    options?: { title?: string },
+    options?: {
+        title?: string;
+        position?: { x: number; y: number };
+    },
 ) {
     const label = `${DETACHED_WINDOW_PREFIX}-${crypto.randomUUID()}`;
     window.localStorage.setItem(
@@ -181,8 +211,11 @@ export async function openDetachedNoteWindow(
         height: DETACH_WINDOW_HEIGHT,
         minWidth: 520,
         minHeight: 360,
-        center: true,
+        center: options?.position === undefined,
+        x: options?.position?.x,
+        y: options?.position?.y,
         focus: true,
+        preventOverflow: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
         trafficLightPosition: { x: 14, y: 18 },
@@ -197,4 +230,11 @@ export async function openDetachedNoteWindow(
             reject(event.payload);
         });
     });
+}
+
+export function getDetachedWindowPosition(screenX: number, screenY: number) {
+    return {
+        x: Math.max(0, Math.round(screenX - DETACHED_WINDOW_CURSOR_OFFSET_X)),
+        y: Math.max(0, Math.round(screenY - DETACHED_WINDOW_CURSOR_OFFSET_Y)),
+    };
 }

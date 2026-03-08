@@ -11,6 +11,7 @@ import {
     createDetachedWindowPayload,
     findWindowTabDropTarget,
     getCurrentWindowLabel,
+    getDetachedWindowPosition,
     isPointerOutsideCurrentWindow,
     openDetachedNoteWindow,
 } from "../../app/detachedWindows";
@@ -104,6 +105,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             await openDetachedNoteWindow(createDetachedWindowPayload(tab), {
                 title: tab.title,
+                position: getDetachedWindowPosition(
+                    coords.screenX,
+                    coords.screenY,
+                ),
             });
 
             if (windowMode === "note" && tabs.length === 1) {
@@ -119,6 +124,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const {
         dragOffsetX,
         draggingTabId,
+        detachPreviewActive,
         tabStripRef,
         visualTabs,
         registerTabNode,
@@ -183,7 +189,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             inline: "center",
             behavior: "smooth",
         });
-    }, [activeTabId, draggingTabId, tabOrderKey]);
+    }, [activeTabId, draggingTabId, tabOrderKey, tabStripRef]);
 
     const hasTabs = visualTabs.length > 0;
 
@@ -281,7 +287,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 <div
                                     ref={tabStripRef}
                                     className="no-drag flex min-w-0 flex-shrink overflow-x-auto scrollbar-hidden items-center"
-                                    style={{ gap: 4, padding: "0 4px" }}
+                                    style={{
+                                        gap: 4,
+                                        padding: "0 4px",
+                                        borderRadius: 12,
+                                        background: detachPreviewActive
+                                            ? "color-mix(in srgb, var(--accent) 8%, transparent)"
+                                            : draggingTabId
+                                              ? "color-mix(in srgb, var(--bg-primary) 42%, transparent)"
+                                              : "transparent",
+                                        boxShadow: detachPreviewActive
+                                            ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent)"
+                                            : "none",
+                                        transition:
+                                            "background-color 120ms ease, box-shadow 120ms ease",
+                                    }}
                                     onWheel={(event) => {
                                         if (event.deltaY !== 0) {
                                             event.currentTarget.scrollLeft +=
@@ -483,7 +503,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         <div
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end flex-shrink-0"
-                            style={{ width: windowMode === "main" ? 116 : 16 }}
+                            style={{ width: windowMode === "main" ? 152 : 16 }}
                         >
                             <div style={controlsGroupStyle}>
                                 {windowMode === "main" && (
@@ -513,6 +533,37 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 strokeLinejoin="round"
                                             >
                                                 <path d="M14 10a2 2 0 0 1-2 2H5l-3 3V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+                                            </svg>
+                                        </button>
+                                        <button
+                                            onMouseDown={(e) =>
+                                                e.stopPropagation()
+                                            }
+                                            onClick={() =>
+                                                activateRightView("outline")
+                                            }
+                                            title="Outline panel"
+                                            className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                            style={getChromeButtonStyle(
+                                                !rightPanelCollapsed &&
+                                                    rightPanelView === "outline",
+                                            )}
+                                        >
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            >
+                                                <path d="M3 3.5h10" />
+                                                <path d="M5.5 8h7.5" />
+                                                <path d="M8 12.5h5" />
+                                                <path d="M3 8h.01" />
+                                                <path d="M5.5 12.5h.01" />
                                             </svg>
                                         </button>
                                         <button
@@ -580,7 +631,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         <div
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end flex-shrink-0"
-                            style={{ width: 116 }}
+                            style={{ width: 152 }}
                         >
                             {windowMode === "main" && (
                                 <div style={controlsGroupStyle}>
@@ -607,6 +658,35 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             strokeLinejoin="round"
                                         >
                                             <path d="M14 10a2 2 0 0 1-2 2H5l-3 3V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+                                        </svg>
+                                    </button>
+                                    <button
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={() =>
+                                            activateRightView("outline")
+                                        }
+                                        title="Outline panel"
+                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
+                                        style={getChromeButtonStyle(
+                                            !rightPanelCollapsed &&
+                                                rightPanelView === "outline",
+                                        )}
+                                    >
+                                        <svg
+                                            width="14"
+                                            height="14"
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                        >
+                                            <path d="M3 3.5h10" />
+                                            <path d="M5.5 8h7.5" />
+                                            <path d="M8 12.5h5" />
+                                            <path d="M3 8h.01" />
+                                            <path d="M5.5 12.5h.01" />
                                         </svg>
                                     </button>
                                     <button

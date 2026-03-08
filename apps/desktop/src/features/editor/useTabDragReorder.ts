@@ -12,6 +12,7 @@ import type { Tab } from "../../app/store/editorStore";
 const TAB_REORDER_THRESHOLD = 6;
 const TAB_EDGE_SCROLL_ZONE = 40;
 const TAB_EDGE_SCROLL_STEP = 12;
+const TAB_DETACH_HYSTERESIS_MS = 80;
 
 interface TabDragSession {
     pointerId: number;
@@ -24,6 +25,7 @@ interface TabDragSession {
     width: number;
     tabWidths: Record<string, number>;
     dragging: boolean;
+    detachArmedAt: number | null;
 }
 
 interface UseTabDragReorderOptions {
@@ -59,11 +61,13 @@ export function useTabDragReorder({
     const latestPointerXRef = useRef(0);
     const edgeScrollDirectionRef = useRef(-1 as -1 | 0 | 1);
     const edgeScrollFrameRef = useRef<number | null>(null);
+    const runEdgeScrollRef = useRef<() => void>(() => {});
     const domShiftRef = useRef(0);
 
     const [previewOrder, setPreviewOrder] = useState<string[] | null>(null);
     const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
     const [dragOffsetX, setDragOffsetX] = useState(0);
+    const [detachPreviewActive, setDetachPreviewActive] = useState(false);
 
     const tabsById = useMemo(
         () => Object.fromEntries(tabs.map((tab) => [tab.id, tab])),
@@ -155,28 +159,31 @@ export function useTabDragReorder({
         [buildPreviewOrder, computeDragOffset, tabs],
     );
 
-    const runEdgeScroll = useCallback(() => {
-        edgeScrollFrameRef.current = null;
+    useEffect(() => {
+        runEdgeScrollRef.current = () => {
+            edgeScrollFrameRef.current = null;
 
-        const strip = tabStripRef.current;
-        const session = sessionRef.current;
-        if (!strip || !session || !session.dragging) {
-            stopEdgeScroll();
-            return;
-        }
+            const strip = tabStripRef.current;
+            const session = sessionRef.current;
+            if (!strip || !session || !session.dragging) {
+                stopEdgeScroll();
+                return;
+            }
 
-        const direction = edgeScrollDirectionRef.current;
-        if (!direction) return;
+            const direction = edgeScrollDirectionRef.current;
+            if (!direction) return;
 
-        const previousScroll = strip.scrollLeft;
-        strip.scrollLeft += direction * TAB_EDGE_SCROLL_STEP;
+            const previousScroll = strip.scrollLeft;
+            strip.scrollLeft += direction * TAB_EDGE_SCROLL_STEP;
 
-        if (strip.scrollLeft !== previousScroll) {
-            syncDraggedTab(latestPointerXRef.current);
-        }
+            if (strip.scrollLeft !== previousScroll) {
+                syncDraggedTab(latestPointerXRef.current);
+            }
 
-        edgeScrollFrameRef.current =
-            window.requestAnimationFrame(runEdgeScroll);
+            edgeScrollFrameRef.current = window.requestAnimationFrame(() => {
+                runEdgeScrollRef.current();
+            });
+        };
     }, [stopEdgeScroll, syncDraggedTab]);
 
     const updateEdgeScroll = useCallback(
@@ -206,10 +213,12 @@ export function useTabDragReorder({
 
             if (edgeScrollFrameRef.current === null) {
                 edgeScrollFrameRef.current =
-                    window.requestAnimationFrame(runEdgeScroll);
+                    window.requestAnimationFrame(() => {
+                        runEdgeScrollRef.current();
+                    });
             }
         },
-        [runEdgeScroll, stopEdgeScroll],
+        [stopEdgeScroll],
     );
 
     const finishDrag = useCallback(
@@ -233,6 +242,7 @@ export function useTabDragReorder({
 
             stopEdgeScroll();
             document.body.classList.remove("dragging-tab");
+            setDetachPreviewActive(false);
 
             const commit = options?.commit ?? true;
             const suppressClick = options?.suppressClick ?? session.dragging;
@@ -263,6 +273,7 @@ export function useTabDragReorder({
         return () => {
             stopEdgeScroll();
             document.body.classList.remove("dragging-tab");
+            setDetachPreviewActive(false);
         };
     }, [stopEdgeScroll]);
 
@@ -328,7 +339,7 @@ export function useTabDragReorder({
         });
 
         previousPositionsRef.current = nextPositions;
-    }, [draggingTabId, visualTabs]);
+    }, [draggingTabId, finishDrag, visualTabs]);
 
     const handlePointerDown = useCallback(
         (
@@ -362,6 +373,7 @@ export function useTabDragReorder({
                 width: node.offsetWidth,
                 tabWidths,
                 dragging: false,
+                detachArmedAt: null,
             };
 
             node.setPointerCapture(event.pointerId);
@@ -398,11 +410,26 @@ export function useTabDragReorder({
                 document.body.classList.add("dragging-tab");
             }
 
-            if (
-                shouldDetach?.(event.clientX, event.clientY) &&
-                onDetach &&
-                !detachInProgressRef.current
-            ) {
+            const wantsDetach = shouldDetach?.(event.clientX, event.clientY);
+
+            if (wantsDetach && onDetach && !detachInProgressRef.current) {
+                if (session.detachArmedAt === null) {
+                    session.detachArmedAt = window.performance.now();
+                }
+
+                setDetachPreviewActive(true);
+                stopEdgeScroll();
+                setDragOffsetX(
+                    computeDragOffset(event.clientX) - domShiftRef.current,
+                );
+
+                if (
+                    window.performance.now() - session.detachArmedAt <
+                    TAB_DETACH_HYSTERESIS_MS
+                ) {
+                    return;
+                }
+
                 detachInProgressRef.current = true;
                 finishDrag(event.pointerId, {
                     commit: false,
@@ -420,14 +447,24 @@ export function useTabDragReorder({
                 return;
             }
 
+            if (session.detachArmedAt !== null) {
+                session.detachArmedAt = null;
+            }
+            if (detachPreviewActive) {
+                setDetachPreviewActive(false);
+            }
+
             updateEdgeScroll(event.clientX);
             syncDraggedTab(event.clientX);
         },
         [
+            computeDragOffset,
+            detachPreviewActive,
             finishDrag,
             onDetach,
             shouldDetach,
             syncDraggedTab,
+            stopEdgeScroll,
             tabs,
             updateEdgeScroll,
         ],
@@ -467,7 +504,7 @@ export function useTabDragReorder({
     return {
         dragOffsetX,
         draggingTabId,
-        dragSession: sessionRef.current,
+        detachPreviewActive,
         tabStripRef,
         visualTabs,
         registerTabNode,

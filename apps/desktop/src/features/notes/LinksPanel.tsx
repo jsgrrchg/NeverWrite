@@ -61,7 +61,7 @@ function normalizeWikilinkTarget(target: string): string {
 function getWikilinkVariants(target: string): string[] {
     const normalized = normalizeWikilinkTarget(target);
     if (!normalized) return [];
-    const trimmed = normalized.replace(/[\s\.,!?:;]+$/g, "");
+    const trimmed = normalized.replace(/[\s.,!?:;]+$/g, "");
     return trimmed && trimmed !== normalized
         ? [normalized, trimmed]
         : [normalized];
@@ -703,7 +703,6 @@ export function LinksPanel() {
 
     return (
         <div className="flex flex-col h-full overflow-y-auto">
-            {/* Backlinks section */}
             <SectionHeader label="Backlinks" count={backlinks.length} />
             {backlinks.length === 0 ? (
                 <div
@@ -740,11 +739,7 @@ export function LinksPanel() {
                 }}
             />
 
-            {/* Outgoing links section */}
-            <SectionHeader
-                label="Outgoing Links"
-                count={outgoingLinks.length}
-            />
+            <SectionHeader label="Outgoing Links" count={outgoingLinks.length} />
             {outgoingLinks.length === 0 ? (
                 <div
                     className="px-3 pb-2 text-xs"

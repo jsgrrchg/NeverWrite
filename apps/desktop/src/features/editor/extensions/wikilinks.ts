@@ -6,6 +6,7 @@ import {
     type ViewUpdate,
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { selectionTouchesRange } from "./selectionActivity";
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 
@@ -13,21 +14,6 @@ interface WikilinkMatch {
     from: number;
     to: number;
     target: string;
-}
-
-function isLineActive(view: EditorView, from: number, to: number): boolean {
-    const lineFrom = view.state.doc.lineAt(from).number;
-    const lineTo = view.state.doc.lineAt(to).number;
-
-    for (const range of view.state.selection.ranges) {
-        const activeFrom = view.state.doc.lineAt(range.from).number;
-        const activeTo = view.state.doc.lineAt(range.to).number;
-        if (activeTo >= lineFrom && activeFrom <= lineTo) {
-            return true;
-        }
-    }
-
-    return false;
 }
 
 function findWikilinksInText(doc: string, offset = 0): WikilinkMatch[] {
@@ -105,9 +91,9 @@ export function wikilinkExtension(
                 const builder = new RangeSetBuilder<Decoration>();
                 const resolved = new Map<string, boolean>();
                 for (const link of findVisibleWikilinks(view)) {
-                    // Avoid expensive link resolution and DOM churn on the line
-                    // the user is actively editing.
-                    if (isLineActive(view, link.from, link.to)) continue;
+                    if (selectionTouchesRange(view.state, link.from, link.to)) {
+                        continue;
+                    }
 
                     let exists = resolved.get(link.target);
                     if (exists === undefined) {

@@ -10,6 +10,13 @@
         "beforeBuildCommand": "npm run build"
     },
     "app": {
+        "security": {
+            "csp": "default-src 'self'; img-src 'self' asset: https: http: data:; style-src 'self' 'unsafe-inline'",
+            "assetProtocol": {
+                "enable": true,
+                "scope": ["**"]
+            }
+        },
         "windows": [
             {
                 "title": "VaultAI",
