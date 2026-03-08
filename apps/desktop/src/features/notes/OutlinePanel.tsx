@@ -1,4 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 
 export interface OutlineSelection {
     anchor: number;
@@ -29,7 +33,29 @@ function cleanHeadingTitle(raw: string) {
     return raw
         .trim()
         .replace(/\s+#+\s*$/g, "")
-        .replace(/\\([\\`*_{}[\]()#+\-.!])/g, "$1");
+        .replace(/!\[\[([^|\]]+)\|([^\]]+)\]\]/g, "$2")
+        .replace(/!\[\[([^\]]+)\]\]/g, "$1")
+        .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, "$2")
+        .replace(/\[\[([^\]]+)\]\]/g, "$1")
+        .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+        .replace(/!\[([^\]]*)\]\[[^\]]+\]/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        .replace(/\[([^\]]+)\]\[[^\]]+\]/g, "$1")
+        .replace(/<((?:https?:\/\/|mailto:)?[^>\s@]+@[^>\s]+)>/g, "$1")
+        .replace(/<(https?:\/\/[^>]+)>/g, "$1")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/\[\^([^\]]+)\]/g, "")
+        .replace(/(\*\*|__)(.*?)\1/g, "$2")
+        .replace(/(\*|_)(.*?)\1/g, "$2")
+        .replace(/~~(.*?)~~/g, "$1")
+        .replace(/==(.*?)==/g, "$1")
+        .replace(/~([^~]+)~/g, "$1")
+        .replace(/\^([^^]+)\^/g, "$1")
+        .replace(/<\/?(?:sub|sup|kbd|br)\s*\/?>/gi, "")
+        .replace(/\\\$/g, "$")
+        .replace(/\\([\\`*_{}[\]()#+\-.!])/g, "$1")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
 function parseOutlineHeadings(content: string): OutlineHeading[] {
@@ -134,10 +160,12 @@ function OutlineTree({
     nodes,
     depth,
     onSelect,
+    onContextMenu,
 }: {
     nodes: OutlineNode[];
     depth: number;
     onSelect: (selection: OutlineSelection) => void;
+    onContextMenu: (event: React.MouseEvent, node: OutlineNode) => void;
 }) {
     return (
         <>
@@ -150,6 +178,7 @@ function OutlineTree({
                                 head: node.head,
                             })
                         }
+                        onContextMenu={(event) => onContextMenu(event, node)}
                         className="w-full text-left rounded-sm"
                         style={{
                             display: "block",
@@ -189,6 +218,7 @@ function OutlineTree({
                             nodes={node.children}
                             depth={depth + 1}
                             onSelect={onSelect}
+                            onContextMenu={onContextMenu}
                         />
                     )}
                 </div>
@@ -198,14 +228,14 @@ function OutlineTree({
 }
 
 export function OutlinePanel({
-    title,
     content,
     onSelectHeading,
 }: {
-    title: string | null;
     content: string | null;
     onSelectHeading: (selection: OutlineSelection) => void;
 }) {
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<OutlineNode> | null>(null);
     const tree = useMemo(() => {
         if (!content) return [];
         return buildOutlineTree(parseOutlineHeadings(content));
@@ -214,10 +244,10 @@ export function OutlinePanel({
     return (
         <div className="h-full flex flex-col overflow-hidden">
             <div
-                className="px-3 pt-3 pb-2 text-xs font-semibold"
-                style={{ color: "var(--text-secondary)", lineHeight: 1.35 }}
+                className="px-3 py-2 text-xs font-semibold uppercase tracking-wider"
+                style={{ color: "var(--text-secondary)" }}
             >
-                {title ? `Outline — ${title}` : "Outline"}
+                Outline
             </div>
             <div className="flex-1 overflow-y-auto px-1 pb-3">
                 {tree.length === 0 ? (
@@ -232,9 +262,40 @@ export function OutlinePanel({
                         nodes={tree}
                         depth={0}
                         onSelect={onSelectHeading}
+                        onContextMenu={(event, node) => {
+                            event.preventDefault();
+                            setContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                payload: node,
+                            });
+                        }}
                     />
                 )}
             </div>
+            {contextMenu && (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Jump to Heading",
+                            action: () =>
+                                onSelectHeading({
+                                    anchor: contextMenu.payload.anchor,
+                                    head: contextMenu.payload.head,
+                                }),
+                        },
+                        {
+                            label: "Copy Heading Text",
+                            action: () =>
+                                void navigator.clipboard.writeText(
+                                    contextMenu.payload.title,
+                                ),
+                        },
+                    ]}
+                />
+            )}
         </div>
     );
 }

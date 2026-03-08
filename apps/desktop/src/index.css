@@ -14,6 +14,7 @@
     --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
     --highlight-bg: color-mix(in srgb, var(--accent) 20%, rgb(255 235 130 / 0.85));
     --highlight-text: #1c1c1c;
+    --text-input-line-height: 1.5;
 }
 
 .dark {
@@ -41,6 +42,14 @@ input,
 textarea {
     user-select: text;
     -webkit-user-select: text;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+    font: inherit;
+    line-height: var(--text-input-line-height);
+    caret-color: var(--text-primary);
 }
 
 /* Force long URLs and unbreakable strings to wrap within the editor width */

@@ -2,8 +2,6 @@ import {
     Decoration,
     type DecorationSet,
     EditorView,
-    ViewUpdate,
-    ViewPlugin,
     WidgetType,
 } from "@codemirror/view";
 import {
@@ -13,8 +11,22 @@ import {
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+    extractYouTubeVideoId,
+    getYouTubePreview,
+    getYouTubeThumbnailUrl,
+} from "../youtube";
 
-import { type DecoEntry, findAncestor, parseLinkChildren } from "./livePreviewHelpers";
+import { useEditorStore } from "../../../app/store/editorStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
+import {
+    type DecoEntry,
+    buildLinkReferenceIndex,
+    findAncestor,
+    normalizeReferenceLabel,
+    parseLinkChildren,
+    resolveLinkHref,
+} from "./livePreviewHelpers";
 import { selectionTouchesRange } from "./selectionActivity";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
@@ -22,10 +34,18 @@ const TABLE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const TABLE_BOLD_RE = /\*\*(?=\S)(.+?\S)\*\*/g;
 const TABLE_HIGHLIGHT_RE = /==(?=\S)(.+?\S)==/g;
+const STANDALONE_URL_RE = /^https?:\/\/[^\s<>()"\]]+$/i;
 type TableAlignment = "left" | "center" | "right";
 export interface TableInteractionHandlers {
     resolveWikilink: (target: string) => boolean;
     navigateWikilink: (target: string) => void;
+    getNoteLinkTarget: (href: string) => string | null;
+    openLinkContextMenu: (payload: {
+        x: number;
+        y: number;
+        href: string;
+        noteTarget: string | null;
+    }) => void;
 }
 type ParsedTableCell = {
     content: string;
@@ -41,23 +61,27 @@ class ImageWidget extends WidgetType {
     private src: string;
     private alt: string;
     private href: string | null;
+    private title: string | null;
 
     constructor(
         src: string,
         alt: string,
         href: string | null = null,
+        title: string | null = null,
     ) {
         super();
         this.src = src;
         this.alt = alt;
         this.href = href;
+        this.title = title;
     }
 
     eq(other: ImageWidget) {
         return (
             this.src === other.src &&
             this.alt === other.alt &&
-            this.href === other.href
+            this.href === other.href &&
+            this.title === other.title
         );
     }
 
@@ -75,6 +99,7 @@ class ImageWidget extends WidgetType {
         img.alt = this.alt;
         img.className = "cm-inline-image";
         img.draggable = false;
+        if (this.title) img.title = this.title;
 
         img.onerror = () => {
             img.style.display = "none";
@@ -85,6 +110,151 @@ class ImageWidget extends WidgetType {
         };
 
         wrapper.appendChild(img);
+        return wrapper;
+    }
+
+    ignoreEvent() {
+        return false;
+    }
+}
+
+class YouTubeWidget extends WidgetType {
+    private href: string;
+    private title: string;
+
+    constructor(href: string, title: string) {
+        super();
+        this.href = href;
+        this.title = title;
+    }
+
+    eq(other: YouTubeWidget) {
+        return (
+            this.href === other.href &&
+            this.title === other.title
+        );
+    }
+
+    toDOM() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cm-youtube-link";
+        wrapper.dataset.href = this.href;
+        wrapper.dataset.title = this.title;
+        wrapper.setAttribute("contenteditable", "false");
+
+        const media = document.createElement("div");
+        media.className = "cm-youtube-link-media";
+
+        const thumbnail = document.createElement("img");
+        thumbnail.className = "cm-youtube-link-thumbnail";
+        thumbnail.alt = this.title;
+        thumbnail.loading = "lazy";
+        thumbnail.decoding = "async";
+
+        const thumbnailUrl = getYouTubeThumbnailUrl(this.href);
+        if (thumbnailUrl) {
+            thumbnail.src = thumbnailUrl;
+        } else {
+            media.dataset.noThumbnail = "true";
+        }
+        thumbnail.onerror = () => {
+            media.dataset.noThumbnail = "true";
+        };
+
+        const play = document.createElement("div");
+        play.className = "cm-youtube-link-play";
+        play.setAttribute("aria-hidden", "true");
+
+        media.appendChild(thumbnail);
+        media.appendChild(play);
+
+        const body = document.createElement("div");
+        body.className = "cm-youtube-link-body";
+
+        const label = document.createElement("div");
+        label.className = "cm-youtube-link-label";
+        label.textContent = this.title;
+
+        const meta = document.createElement("div");
+        meta.className = "cm-youtube-link-meta";
+        meta.textContent = "Play in app";
+
+        body.appendChild(label);
+        body.appendChild(meta);
+
+        wrapper.appendChild(media);
+        wrapper.appendChild(body);
+
+        void getYouTubePreview(this.href).then((preview) => {
+            if (!wrapper.isConnected) return;
+
+            if (preview.thumbnailUrl && thumbnail.src !== preview.thumbnailUrl) {
+                thumbnail.src = preview.thumbnailUrl;
+            }
+
+            if (preview.title) {
+                label.textContent = preview.title;
+                thumbnail.alt = preview.title;
+                wrapper.dataset.title = preview.title;
+            }
+        });
+
+        return wrapper;
+    }
+
+    ignoreEvent() {
+        return false;
+    }
+}
+
+class NoteEmbedWidget extends WidgetType {
+    private target: string;
+
+    constructor(target: string) {
+        super();
+        this.target = target;
+    }
+
+    eq(other: NoteEmbedWidget) {
+        return this.target === other.target;
+    }
+
+    toDOM() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cm-note-embed";
+        wrapper.dataset.wikilinkTarget = this.target;
+        wrapper.setAttribute("contenteditable", "false");
+
+        const note = useVaultStore
+            .getState()
+            .notes.find(
+                (entry) =>
+                    entry.id === this.target ||
+                    entry.title === this.target ||
+                    entry.id.replace(/\.md$/i, "") === this.target,
+            );
+        const openTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) =>
+                    tab.noteId === note?.id ||
+                    tab.noteId === this.target ||
+                    tab.title === this.target,
+            );
+
+        const title = document.createElement("div");
+        title.className = "cm-note-embed-title";
+        title.textContent = note?.title ?? this.target;
+
+        const meta = document.createElement("div");
+        meta.className = "cm-note-embed-meta";
+        meta.textContent = openTab?.content
+            ? openTab.content.split(/\r?\n/).find((line) => line.trim()) ??
+              (note?.path ?? this.target)
+            : (note?.path ?? this.target);
+
+        wrapper.appendChild(title);
+        wrapper.appendChild(meta);
         return wrapper;
     }
 
@@ -452,44 +622,221 @@ function resolveImageUrl(rawUrl: string, vaultRoot: string | null): string {
     return convertFileSrc(path);
 }
 
+function isRenderableImageUrl(url: string): boolean {
+    return (
+        url.startsWith("http://") ||
+        url.startsWith("https://") ||
+        url.startsWith("data:image/") ||
+        IMAGE_EXTENSIONS.test(url)
+    );
+}
+
+function parseWikilinkEmbedTarget(raw: string): string | null {
+    const match = raw.match(/^!\[\[([^\]]+)\]\]$/);
+    if (!match) return null;
+    return match[1].split("|", 1)[0]?.trim() ?? null;
+}
+
+function isStandaloneLinkNode(
+    state: EditorState,
+    from: number,
+    to: number,
+): boolean {
+    const startLine = state.doc.lineAt(from);
+    const endLine = state.doc.lineAt(Math.max(from, to - 1));
+    if (startLine.number !== endLine.number) return false;
+
+    const before = state.doc.sliceString(startLine.from, from);
+    const after = state.doc.sliceString(to, startLine.to);
+    return before.trim().length === 0 && after.trim().length === 0;
+}
+
+function findStandaloneUrlLineRange(
+    state: EditorState,
+    lineNumber: number,
+): { from: number; to: number; href: string } | null {
+    const line = state.doc.line(lineNumber);
+    const trimmed = line.text.trim();
+    if (!trimmed || !STANDALONE_URL_RE.test(trimmed)) {
+        return null;
+    }
+
+    const href = trimmed.replace(/[.,;:!?)}\]'"]+$/g, "");
+    if (!href || href !== trimmed || !extractYouTubeVideoId(href)) {
+        return null;
+    }
+
+    const leadingWhitespace = line.text.length - line.text.trimStart().length;
+    return {
+        from: line.from + leadingWhitespace,
+        to: line.from + leadingWhitespace + href.length,
+        href,
+    };
+}
+
+function hasOverlappingDecoration(
+    decos: DecoEntry[],
+    from: number,
+    to: number,
+): boolean {
+    return decos.some(
+        (entry) => entry.from < to && entry.to > from,
+    );
+}
+
 function buildBlockDecorations(
     state: EditorState,
     vaultRoot: string | null,
-    vpFrom: number,
-    vpTo: number,
 ): DecorationSet {
     const decos: DecoEntry[] = [];
+    const linkReferences = buildLinkReferenceIndex(state);
 
     syntaxTree(state).iterate({
-        from: vpFrom,
-        to: vpTo,
         enter(node) {
+            if (node.name === "Link" || node.name === "Autolink") {
+                if (selectionTouchesRange(state, node.from, node.to)) return;
+                if (!isStandaloneLinkNode(state, node.from, node.to)) return;
+
+                const info = parseLinkChildren(node.node, state);
+                if (!info) return;
+
+                const href = resolveLinkHref(info, linkReferences);
+                if (!href || !extractYouTubeVideoId(href)) return;
+
+                const label =
+                    state.doc.sliceString(info.textFrom, info.textTo).trim() ||
+                    info.title ||
+                    "YouTube video";
+
+                decos.push({
+                    from: node.from,
+                    to: node.to,
+                    deco: Decoration.replace({
+                        widget: new YouTubeWidget(href, label),
+                        block: true,
+                    }),
+                });
+                return;
+            }
+
             if (node.name !== "Image") return;
 
+            const raw = state.doc.sliceString(node.from, node.to);
+            const embedTarget = parseWikilinkEmbedTarget(raw);
+            if (embedTarget) {
+                if (selectionTouchesRange(state, node.from, node.to)) return;
+                decos.push({
+                    from: node.from,
+                    to: node.to,
+                    deco: Decoration.replace({
+                        widget: IMAGE_EXTENSIONS.test(embedTarget)
+                            ? new ImageWidget(
+                                  resolveImageUrl(embedTarget, vaultRoot),
+                                  embedTarget,
+                              )
+                            : new NoteEmbedWidget(embedTarget),
+                        block: true,
+                    }),
+                });
+                return;
+            }
+
             const info = parseLinkChildren(node.node, state);
-            if (!info?.hasUrl || !info.url || !IMAGE_EXTENSIONS.test(info.url)) {
+            if (!info) {
+                return;
+            }
+            const resolvedImageHref = resolveLinkHref(info, linkReferences);
+            if (!resolvedImageHref) {
                 return;
             }
             if (selectionTouchesRange(state, node.from, node.to)) return;
 
             const altText = state.doc.sliceString(info.textFrom, info.textTo);
-            const resolvedUrl = resolveImageUrl(info.url, vaultRoot);
+            const youtubeVideoId = extractYouTubeVideoId(resolvedImageHref);
             const parentLink = findAncestor(node.node.parent, "Link");
             const outerLinkInfo = parentLink
                 ? parseLinkChildren(parentLink, state)
                 : null;
-            const href = outerLinkInfo?.url ?? null;
+            const href = outerLinkInfo
+                ? resolveLinkHref(outerLinkInfo, linkReferences)
+                : null;
+
+            if (youtubeVideoId) {
+                decos.push({
+                    from: node.from,
+                    to: node.to,
+                    deco: Decoration.replace({
+                        widget: new YouTubeWidget(
+                            resolvedImageHref,
+                            altText || "YouTube video",
+                        ),
+                        block: true,
+                    }),
+                });
+                return;
+            }
+
+            if (!isRenderableImageUrl(resolvedImageHref)) {
+                return;
+            }
+
+            const resolvedUrl = resolveImageUrl(resolvedImageHref, vaultRoot);
 
             decos.push({
                 from: node.from,
                 to: node.to,
                 deco: Decoration.replace({
-                    widget: new ImageWidget(resolvedUrl, altText, href),
+                    widget: new ImageWidget(
+                        resolvedUrl,
+                        altText,
+                        href,
+                        info.title ??
+                            (info.label
+                                ? linkReferences.get(
+                                      normalizeReferenceLabel(info.label),
+                                  )?.title ?? null
+                                : null),
+                    ),
                     block: false,
                 }),
             });
         },
     });
+
+    for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
+        const standaloneUrl = findStandaloneUrlLineRange(state, lineNumber);
+        if (!standaloneUrl) continue;
+        if (
+            selectionTouchesRange(
+                state,
+                standaloneUrl.from,
+                standaloneUrl.to,
+            )
+        ) {
+            continue;
+        }
+        if (
+            hasOverlappingDecoration(
+                decos,
+                standaloneUrl.from,
+                standaloneUrl.to,
+            )
+        ) {
+            continue;
+        }
+
+        decos.push({
+            from: standaloneUrl.from,
+            to: standaloneUrl.to,
+            deco: Decoration.replace({
+                widget: new YouTubeWidget(
+                    standaloneUrl.href,
+                    "YouTube video",
+                ),
+                block: true,
+            }),
+        });
+    }
 
     decos.sort((left, right) => left.from - right.from || left.to - right.to);
 
@@ -535,32 +882,18 @@ function buildTableDecorations(
     return builder.finish();
 }
 
-export function createImageLivePreviewPlugin(vaultRoot: string | null) {
-    return ViewPlugin.fromClass(
-        class {
-            decorations: DecorationSet;
-
-            constructor(view: EditorView) {
-                this.decorations = this.build(view);
-            }
-
-            update(update: ViewUpdate) {
-                if (
-                    update.docChanged ||
-                    update.selectionSet ||
-                    update.viewportChanged
-                ) {
-                    this.decorations = this.build(update.view);
-                }
-            }
-
-            build(view: EditorView): DecorationSet {
-                const { from, to } = view.viewport;
-                return buildBlockDecorations(view.state, vaultRoot, from, to);
-            }
+export function createImageLivePreviewExtension(vaultRoot: string | null) {
+    return StateField.define<DecorationSet>({
+        create(state) {
+            return buildBlockDecorations(state, vaultRoot);
         },
-        { decorations: (value) => value.decorations },
-    );
+        update(_decorations, transaction) {
+            return buildBlockDecorations(transaction.state, vaultRoot);
+        },
+        provide(field) {
+            return EditorView.decorations.from(field);
+        },
+    });
 }
 
 export function createTableLivePreviewExtension(

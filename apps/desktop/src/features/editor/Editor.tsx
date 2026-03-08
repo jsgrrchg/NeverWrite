@@ -20,6 +20,8 @@ import {
     historyKeymap,
     indentMore,
     indentLess,
+    redo,
+    undo,
 } from "@codemirror/commands";
 import {
     search,
@@ -37,8 +39,14 @@ import {
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useShallow } from "zustand/react/shallow";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 import { getWindowMode } from "../../app/detachedWindows";
+import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { findWikilinks } from "../../app/utils/wikilinks";
 import {
     useEditorStore,
@@ -71,6 +79,19 @@ type SavedNoteDetail = {
     path: string;
     title: string;
     content: string;
+};
+type TabScrollPosition = {
+    top: number;
+    left: number;
+};
+type LinkContextMenuState = {
+    x: number;
+    y: number;
+    href: string;
+    noteTarget: string | null;
+};
+type EditorContextMenuPayload = {
+    hasSelection: boolean;
 };
 
 let cachedNotesRef: VaultNote[] | null = null;
@@ -249,6 +270,167 @@ function navigateWikilink(target: string) {
     }
 }
 
+function resolveRelativeNotePath(baseNoteId: string | null, href: string): string {
+    const cleanedHref = href.replace(/\\/g, "/");
+    const segments = cleanedHref.startsWith("/")
+        ? []
+        : (baseNoteId?.split("/").slice(0, -1) ?? []);
+
+    for (const segment of cleanedHref.split("/")) {
+        if (!segment || segment === ".") continue;
+        if (segment === "..") {
+            if (segments.length > 0) segments.pop();
+            continue;
+        }
+        segments.push(segment);
+    }
+
+    return segments.join("/");
+}
+
+function getNoteLinkTarget(href: string): string | null {
+    const trimmed = href.trim();
+    if (!trimmed || trimmed.startsWith("#")) return null;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return null;
+    if (trimmed.startsWith("//")) return null;
+
+    let decoded = trimmed;
+    try {
+        decoded = decodeURIComponent(trimmed);
+    } catch {
+        decoded = trimmed;
+    }
+
+    const normalizedTarget = decoded
+        .split(/[?#]/, 1)[0]
+        .trim();
+
+    if (!normalizedTarget) return null;
+
+    const activeTabId = useEditorStore.getState().activeTabId;
+    const activeNoteId =
+        useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === activeTabId)?.noteId ?? null;
+
+    const resolvedPath = resolveRelativeNotePath(activeNoteId, normalizedTarget);
+    if (resolvedPath && findNoteByWikilink(resolvedPath)) {
+        return resolvedPath;
+    }
+
+    const directTarget = normalizedTarget.replace(/^\/+/, "");
+    if (directTarget && findNoteByWikilink(directTarget)) {
+        return directTarget;
+    }
+
+    return resolvedPath || directTarget || normalizedTarget;
+}
+
+function LinkContextMenu({
+    menu,
+    onClose,
+}: {
+    menu: LinkContextMenuState;
+    onClose: () => void;
+}) {
+    const ref = useRef<HTMLDivElement>(null);
+    const [position, setPosition] = useState({ x: menu.x, y: menu.y });
+
+    useLayoutEffect(() => {
+        const el = ref.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        setPosition(
+            getViewportSafeMenuPosition(menu.x, menu.y, rect.width, rect.height),
+        );
+    }, [menu.x, menu.y]);
+
+    useEffect(() => {
+        const handleDown = (event: MouseEvent) => {
+            if (ref.current && !ref.current.contains(event.target as Node)) {
+                onClose();
+            }
+        };
+        const handleKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        const handleScroll = () => onClose();
+
+        document.addEventListener("mousedown", handleDown);
+        document.addEventListener("keydown", handleKey);
+        window.addEventListener("scroll", handleScroll, true);
+
+        return () => {
+            document.removeEventListener("mousedown", handleDown);
+            document.removeEventListener("keydown", handleKey);
+            window.removeEventListener("scroll", handleScroll, true);
+        };
+    }, [onClose]);
+
+    const menuItem = (label: string, action: () => void) => (
+        <button
+            key={label}
+            type="button"
+            onClick={() => {
+                action();
+                onClose();
+            }}
+            className="w-full text-left px-3 py-1.5 text-xs rounded"
+            style={{
+                color: "var(--text-primary)",
+                background: "transparent",
+            }}
+            onMouseEnter={(event) => {
+                event.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
+            }}
+            onMouseLeave={(event) => {
+                event.currentTarget.style.backgroundColor = "transparent";
+            }}
+        >
+            {label}
+        </button>
+    );
+
+    return (
+        <div
+            ref={ref}
+            style={{
+                position: "fixed",
+                top: position.y,
+                left: position.x,
+                zIndex: 10000,
+                minWidth: 180,
+                padding: 4,
+                borderRadius: 8,
+                backgroundColor: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+            }}
+        >
+            {menu.noteTarget
+                ? menuItem("Open note", () => {
+                      navigateWikilink(menu.noteTarget ?? menu.href);
+                  })
+                : menuItem("Open link", () => {
+                      void openUrl(menu.href);
+                  })}
+            {menuItem("Copy link", () => {
+                void navigator.clipboard.writeText(menu.href);
+            })}
+        </div>
+    );
+}
+
+const EDITOR_INTERACTIVE_PREVIEW_SELECTOR = [
+    ".cm-lp-link",
+    ".cm-inline-image-link",
+    ".cm-youtube-link",
+    ".cm-note-embed",
+    ".cm-lp-footnote-ref",
+    ".cm-lp-table-link",
+    ".cm-lp-table-url",
+].join(", ");
+
 // Base theme using CSS variables — responds to dark/light via CSS class toggle
 const baseTheme = EditorView.theme({
     "&": {
@@ -277,7 +459,7 @@ const baseTheme = EditorView.theme({
         padding:
             "24px max(clamp(24px, 5vw, 56px), calc((100% - var(--editor-content-width)) / 2)) 120px",
         caretColor: "var(--text-primary)",
-        lineHeight: "1.75",
+        lineHeight: "var(--text-input-line-height)",
         minHeight: "calc(100vh - 220px)",
     },
     ".cm-line": {
@@ -290,8 +472,6 @@ const baseTheme = EditorView.theme({
         borderLeftColor: "var(--text-primary)",
         borderLeftWidth: "1.6px",
         marginLeft: "-0.8px",
-        marginTop: "0.14em",
-        marginBottom: "0.14em",
     },
     ".cm-selectionBackground, ::selection": {
         backgroundColor:
@@ -319,6 +499,158 @@ const alignmentCompartment = new Compartment();
 const tabSizeCompartment = new Compartment();
 
 const MARKDOWN_LIST_LINE_RE = /^(\s*)(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
+const MARKDOWN_LIST_ITEM_RE =
+    /^([ \t]*)(?:(\d+)([.)])|([-+*]))[ \t]+(?:\[( |x|X)\][ \t]+)?(.*)$/;
+
+type MarkdownListItem = {
+    indent: string;
+    marker: string;
+    orderedNumber: number | null;
+    orderedDelimiter: ")" | "." | null;
+    isTask: boolean;
+    content: string;
+    prefixLength: number;
+    isEmpty: boolean;
+};
+
+function parseMarkdownListItem(lineText: string): MarkdownListItem | null {
+    const match = lineText.match(MARKDOWN_LIST_ITEM_RE);
+    if (!match) return null;
+
+    const [
+        fullMatch,
+        indent,
+        orderedDigits,
+        orderedDelimiterRaw,
+        bulletMarker,
+        taskMarker,
+        content,
+    ] = match;
+    const orderedDelimiter =
+        orderedDelimiterRaw === "." || orderedDelimiterRaw === ")"
+            ? orderedDelimiterRaw
+            : null;
+    const orderedNumber = orderedDigits ? Number.parseInt(orderedDigits, 10) : null;
+    const marker = orderedDigits
+        ? `${orderedDigits}${orderedDelimiter ?? "."}`
+        : (bulletMarker ?? "-");
+
+    return {
+        indent,
+        marker,
+        orderedNumber,
+        orderedDelimiter,
+        isTask: taskMarker !== undefined,
+        content,
+        prefixLength: fullMatch.length - content.length,
+        isEmpty: content.trim().length === 0,
+    };
+}
+
+function buildContinuedListPrefix(item: MarkdownListItem): string {
+    const orderedMarker =
+        item.orderedNumber !== null
+            ? `${item.orderedNumber + 1}${item.orderedDelimiter ?? "."}`
+            : item.marker;
+    const taskSuffix = item.isTask ? "[ ] " : "";
+    return `${item.indent}${orderedMarker} ${taskSuffix}`;
+}
+
+function continueMarkdownListItem({
+    state,
+    dispatch,
+}: {
+    state: EditorState;
+    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
+}) {
+    if (state.readOnly) return false;
+    if (state.selection.ranges.length !== 1) return false;
+
+    const range = state.selection.main;
+    if (!range.empty) return false;
+
+    const line = state.doc.lineAt(range.from);
+    const item = parseMarkdownListItem(line.text);
+    if (!item) return false;
+
+    if (item.isEmpty) {
+        dispatch(
+            state.update({
+                changes: { from: line.from, to: line.to, insert: "" },
+                selection: EditorSelection.cursor(line.from),
+                scrollIntoView: true,
+                userEvent: "input",
+            }),
+        );
+        return true;
+    }
+
+    const insert = `\n${buildContinuedListPrefix(item)}`;
+    const anchor = range.from + insert.length;
+
+    dispatch(
+        state.update({
+            changes: { from: range.from, to: range.to, insert },
+            selection: EditorSelection.cursor(anchor),
+            scrollIntoView: true,
+            userEvent: "input",
+        }),
+    );
+
+    return true;
+}
+
+function backspaceMarkdownListMarker({
+    state,
+    dispatch,
+}: {
+    state: EditorState;
+    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
+}) {
+    if (state.readOnly) return false;
+    if (state.selection.ranges.length !== 1) return false;
+
+    const range = state.selection.main;
+    if (!range.empty) return false;
+
+    const line = state.doc.lineAt(range.from);
+    const item = parseMarkdownListItem(line.text);
+    if (!item?.isEmpty) return false;
+
+    const prefixEnd = line.from + item.prefixLength;
+    if (range.from < line.from || range.from > prefixEnd) return false;
+
+    const unit = state.facet(indentUnit);
+    const deleteIndentLength = getOutdentDeleteLength(item.indent, unit.length);
+
+    if (deleteIndentLength > 0) {
+        dispatch(
+            state.update({
+                changes: {
+                    from: line.from,
+                    to: line.from + deleteIndentLength,
+                },
+                selection: EditorSelection.cursor(
+                    Math.max(line.from, range.from - deleteIndentLength),
+                ),
+                scrollIntoView: true,
+                userEvent: "delete.backward",
+            }),
+        );
+        return true;
+    }
+
+    dispatch(
+        state.update({
+            changes: { from: line.from, to: line.to, insert: "" },
+            selection: EditorSelection.cursor(line.from),
+            scrollIntoView: true,
+            userEvent: "delete.backward",
+        }),
+    );
+
+    return true;
+}
 
 function getSelectedLines(state: EditorState) {
     const seen = new Set<number>();
@@ -512,12 +844,17 @@ function getSyntaxExtension(isDark: boolean) {
         : syntaxHighlighting(defaultHighlightStyle);
 }
 
-function getLivePreviewExtension(mode: EditorMode) {
+function getLivePreviewExtension(
+    mode: EditorMode,
+    openLinkContextMenu: (menu: LinkContextMenuState | null) => void,
+) {
     const vaultPath = useVaultStore.getState().vaultPath;
     return mode === "preview"
         ? livePreviewExtension(vaultPath, {
               resolveWikilink,
               navigateWikilink,
+              getNoteLinkTarget,
+              openLinkContextMenu,
           })
         : [];
 }
@@ -703,12 +1040,22 @@ function MetaBadge({
 function EditableNoteTitle({
     value,
     onChange,
+    textareaRef,
+    onContextMenu,
 }: {
     value: string;
     onChange: (nextValue: string) => void;
+    textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+    onContextMenu?: (event: React.MouseEvent<HTMLTextAreaElement>) => void;
 }) {
     const ref = useRef<HTMLTextAreaElement | null>(null);
     const [draft, setDraft] = useState(value);
+
+    useEffect(() => {
+        if (textareaRef) {
+            textareaRef.current = ref.current;
+        }
+    }, [textareaRef]);
 
     useEffect(() => {
         setDraft(value);
@@ -732,6 +1079,7 @@ function EditableNoteTitle({
                 setDraft(nextValue);
                 onChange(nextValue);
             }}
+            onContextMenu={onContextMenu}
             style={{
                 width: "100%",
                 resize: "none",
@@ -775,10 +1123,14 @@ export function Editor({
     const contentUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
         null,
     );
+    const restoreScrollFrameRef = useRef<number | null>(null);
     const activeTabRef = useRef<Tab | null>(null);
     const isInternalRef = useRef(false);
-    // Save/restore full EditorState per tab (preserves undo history + scroll)
+    // Save/restore full EditorState per tab (preserves undo history + selection)
     const tabStatesRef = useRef<Map<string, EditorState>>(new Map());
+    const tabScrollPositionsRef = useRef<Map<string, TabScrollPosition>>(
+        new Map(),
+    );
     const prevTabIdRef = useRef<string | null>(null);
     // Frontmatter: stores the raw ---...--- block per tab so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
@@ -786,6 +1138,13 @@ export function Editor({
         null,
     );
     const [editableTitle, setEditableTitle] = useState("");
+    const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
+    const [linkContextMenu, setLinkContextMenu] =
+        useState<LinkContextMenuState | null>(null);
+    const [editorContextMenu, setEditorContextMenu] =
+        useState<ContextMenuState<EditorContextMenuPayload> | null>(null);
+    const [titleContextMenu, setTitleContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
 
     // Extract and strip frontmatter from content. Stores the raw block in the ref.
@@ -855,6 +1214,38 @@ export function Editor({
             ""
         );
     }, []);
+
+    const saveTabScrollPosition = useCallback(
+        (tabId: string, view: EditorView | null) => {
+            if (!view) return;
+            tabScrollPositionsRef.current.set(tabId, {
+                top: view.scrollDOM.scrollTop,
+                left: view.scrollDOM.scrollLeft,
+            });
+        },
+        [],
+    );
+
+    const restoreTabScrollPosition = useCallback(
+        (tabId: string, view: EditorView | null) => {
+            if (!view) return;
+
+            const position = tabScrollPositionsRef.current.get(tabId);
+            if (restoreScrollFrameRef.current !== null) {
+                cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
+
+            restoreScrollFrameRef.current = requestAnimationFrame(() => {
+                if (viewRef.current !== view) return;
+
+                view.scrollDOM.scrollTop = position?.top ?? 0;
+                view.scrollDOM.scrollLeft = position?.left ?? 0;
+                restoreScrollFrameRef.current = null;
+            });
+        },
+        [],
+    );
 
     const saveNow = useCallback(
         async (tab: Tab, content: string) => {
@@ -989,6 +1380,134 @@ export function Editor({
         ],
     );
 
+    const copySelectedText = useCallback(async () => {
+        const view = viewRef.current;
+        if (!view) return;
+        const selection = view.state.selection.main;
+        if (selection.empty) return;
+
+        try {
+            await navigator.clipboard.writeText(
+                view.state.sliceDoc(selection.from, selection.to),
+            );
+        } catch (error) {
+            console.error("Error copying editor selection:", error);
+        }
+    }, []);
+
+    const cutSelectedText = useCallback(async () => {
+        const view = viewRef.current;
+        if (!view) return;
+        const selection = view.state.selection.main;
+        if (selection.empty) return;
+
+        try {
+            await navigator.clipboard.writeText(
+                view.state.sliceDoc(selection.from, selection.to),
+            );
+            view.dispatch({
+                changes: {
+                    from: selection.from,
+                    to: selection.to,
+                    insert: "",
+                },
+                selection: { anchor: selection.from },
+                userEvent: "delete.cut",
+            });
+            view.focus();
+        } catch (error) {
+            console.error("Error cutting editor selection:", error);
+        }
+    }, []);
+
+    const pasteClipboardText = useCallback(async () => {
+        const view = viewRef.current;
+        if (!view) return;
+
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text.length === 0) return;
+
+            const selection = view.state.selection.main;
+            view.dispatch({
+                changes: {
+                    from: selection.from,
+                    to: selection.to,
+                    insert: text,
+                },
+                selection: { anchor: selection.from + text.length },
+                userEvent: "input.paste",
+            });
+            view.focus();
+        } catch (error) {
+            console.error("Error pasting into editor:", error);
+        }
+    }, []);
+
+    const selectAllEditorText = useCallback(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+            selection: EditorSelection.single(0, view.state.doc.length),
+        });
+        view.focus();
+    }, []);
+
+    const handleOpenLinkContextMenu = useCallback(
+        (menu: LinkContextMenuState | null) => {
+            setEditorContextMenu(null);
+            setLinkContextMenu(menu);
+        },
+        [],
+    );
+
+    const handleEditorContextMenu = useCallback(
+        (event: { clientX: number; clientY: number; target: EventTarget | null; preventDefault: () => void }) => {
+            if (!activeTabRef.current) return false;
+            const view = viewRef.current;
+            if (!view) return false;
+
+            const rawTarget = event.target;
+            const target =
+                rawTarget instanceof Element
+                    ? rawTarget
+                    : rawTarget instanceof Node
+                      ? rawTarget.parentElement
+                      : null;
+            if (target?.closest(EDITOR_INTERACTIVE_PREVIEW_SELECTOR)) {
+                return false;
+            }
+
+            const pos = view.posAtCoords({
+                x: event.clientX,
+                y: event.clientY,
+            });
+            const selection = view.state.selection.main;
+
+            if (
+                pos !== null &&
+                (selection.empty || pos < selection.from || pos > selection.to)
+            ) {
+                view.dispatch({
+                    selection: { anchor: pos },
+                });
+            }
+
+            event.preventDefault();
+            setLinkContextMenu(null);
+            setTitleContextMenu(null);
+            setEditorContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                    payload: {
+                        hasSelection: !view.state.selection.main.empty,
+                    },
+                });
+            return true;
+        },
+        [],
+    );
+
     // Factory to create a fresh EditorState with all extensions
     const createEditorState = useCallback(
         (doc: string) => {
@@ -1018,6 +1537,7 @@ export function Editor({
                     livePreviewCompartment.of(
                         getLivePreviewExtension(
                             useEditorStore.getState().editorMode,
+                            handleOpenLinkContextMenu,
                         ),
                     ),
                     search({ top: true }),
@@ -1032,6 +1552,14 @@ export function Editor({
                                 }
                                 return openSearchPanel(view);
                             },
+                        },
+                        {
+                            key: "Enter",
+                            run: continueMarkdownListItem,
+                        },
+                        {
+                            key: "Backspace",
+                            run: backspaceMarkdownListMarker,
                         },
                         {
                             key: "Tab",
@@ -1063,7 +1591,12 @@ export function Editor({
                 ],
             });
         },
-        [scheduleSave, markTabDirty, updateTabContent],
+        [
+            handleOpenLinkContextMenu,
+            scheduleSave,
+            markTabDirty,
+            updateTabContent,
+        ],
     );
 
     const replaceEditorView = useCallback((state: EditorState) => {
@@ -1132,6 +1665,10 @@ export function Editor({
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             if (contentUpdateTimerRef.current)
                 clearTimeout(contentUpdateTimerRef.current);
+            if (restoreScrollFrameRef.current !== null) {
+                cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
             scrollHeaderRef.current?.remove();
             scrollHeaderRef.current = null;
             viewRef.current?.destroy();
@@ -1161,9 +1698,10 @@ export function Editor({
             contentUpdateTimerRef.current = null;
         }
 
-        // Save previous tab's EditorState (preserves undo history + scroll)
+        // Save previous tab's EditorState and viewport position
         if (prevId && prevId !== activeTabId) {
             tabStatesRef.current.set(prevId, currentView.state);
+            saveTabScrollPosition(prevId, currentView);
         }
 
         if (!activeTabId || !activeTab) return;
@@ -1177,6 +1715,7 @@ export function Editor({
         const nextView = replaceEditorView(nextState);
         isInternalRef.current = false;
         if (!nextView) return;
+        restoreTabScrollPosition(activeTabId, nextView);
 
         // Update frontmatter panel for this tab
         setActiveFrontmatter(
@@ -1199,12 +1738,13 @@ export function Editor({
                 livePreviewCompartment.reconfigure(
                     getLivePreviewExtension(
                         useEditorStore.getState().editorMode,
+                        handleOpenLinkContextMenu,
                     ),
                 ),
             ],
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTabId]);
+    }, [activeTabId, restoreTabScrollPosition, saveTabScrollPosition]);
 
     // Reconfigure syntax theme when isDark changes
     useEffect(() => {
@@ -1217,10 +1757,10 @@ export function Editor({
     useEffect(() => {
         viewRef.current?.dispatch({
             effects: livePreviewCompartment.reconfigure(
-                getLivePreviewExtension(editorMode),
+                getLivePreviewExtension(editorMode, handleOpenLinkContextMenu),
             ),
         });
-    }, [editorMode]);
+    }, [editorMode, handleOpenLinkContextMenu]);
 
     useEffect(() => {
         if (autoSave) return;
@@ -1390,7 +1930,13 @@ export function Editor({
             style={editorShellStyle}
         >
             <div className="min-h-0 flex-1 relative">
-                <div ref={containerRef} className="h-full relative z-[1]" />
+                <div
+                    ref={containerRef}
+                    className="h-full relative z-[1]"
+                    onContextMenu={(event) => {
+                        void handleEditorContextMenu(event);
+                    }}
+                />
                 {!activeTabInfo && (
                     <div
                         className="absolute inset-0 z-[2] flex items-center justify-center"
@@ -1489,6 +2035,17 @@ export function Editor({
                         <EditableNoteTitle
                             value={editableTitle}
                             onChange={applyTitleChange}
+                            textareaRef={titleInputRef}
+                            onContextMenu={(event) => {
+                                event.preventDefault();
+                                setEditorContextMenu(null);
+                                setLinkContextMenu(null);
+                                setTitleContextMenu({
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                    payload: undefined,
+                                });
+                            }}
                         />
                         <div style={{ marginTop: 20 }}>
                             <FrontmatterPanel
@@ -1499,6 +2056,81 @@ export function Editor({
                     </div>,
                     scrollHeaderRef.current,
                 )}
+            {linkContextMenu &&
+                createPortal(
+                    <LinkContextMenu
+                        menu={linkContextMenu}
+                        onClose={() => setLinkContextMenu(null)}
+                    />,
+                    document.body,
+                )}
+            {editorContextMenu && (
+                <ContextMenu
+                    menu={editorContextMenu}
+                    onClose={() => setEditorContextMenu(null)}
+                    minWidth={138}
+                    entries={[
+                        {
+                            label: "Undo",
+                            action: () => {
+                                const view = viewRef.current;
+                                if (!view) return;
+                                undo(view);
+                                view.focus();
+                            },
+                        },
+                        {
+                            label: "Redo",
+                            action: () => {
+                                const view = viewRef.current;
+                                if (!view) return;
+                                redo(view);
+                                view.focus();
+                            },
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Cut",
+                            action: () => void cutSelectedText(),
+                            disabled: !editorContextMenu.payload.hasSelection,
+                        },
+                        {
+                            label: "Copy",
+                            action: () => void copySelectedText(),
+                            disabled: !editorContextMenu.payload.hasSelection,
+                        },
+                        {
+                            label: "Paste",
+                            action: () => void pasteClipboardText(),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Select All",
+                            action: () => selectAllEditorText(),
+                        },
+                    ]}
+                />
+            )}
+            {titleContextMenu && (
+                <ContextMenu
+                    menu={titleContextMenu}
+                    onClose={() => setTitleContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Rename Note",
+                            action: () => {
+                                titleInputRef.current?.focus();
+                                titleInputRef.current?.select();
+                            },
+                        },
+                        {
+                            label: "Copy Title",
+                            action: () =>
+                                void navigator.clipboard.writeText(editableTitle),
+                        },
+                    ]}
+                />
+            )}
         </div>
     );
 }

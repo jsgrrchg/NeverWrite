@@ -1,5 +1,6 @@
 import { Decoration } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { selectionTouchesLine, selectionTouchesRange } from "./selectionActivity";
 
@@ -24,6 +25,10 @@ export interface LinkInfo {
     textTo: number;
     hasUrl: boolean;
     url: string | null;
+    title: string | null;
+    label: string | null;
+    isAutolink: boolean;
+    isEmail: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,25 +131,121 @@ export function parseLinkChildren(
     let textTo = -1;
     let hasUrl = false;
     let url: string | null = null;
+    let title: string | null = null;
+    let label: string | null = null;
+    let seenOpenMark = false;
 
     if (cur.firstChild()) {
         do {
             if (cur.name === "LinkMark") {
                 const ch = state.doc.sliceString(cur.from, cur.to);
-                if (ch === "[" || ch === "![") textFrom = cur.to;
+                if (ch === "<") {
+                    seenOpenMark = true;
+                    textFrom = cur.to;
+                } else if (ch === "[" || ch === "![") {
+                    seenOpenMark = true;
+                    textFrom = cur.to;
+                }
                 else if (ch === "]" && textTo < 0) textTo = cur.from;
+                else if (ch === ">" && textTo < 0 && seenOpenMark) textTo = cur.from;
             }
             if (cur.name === "URL") {
                 hasUrl = true;
                 url = state.doc.sliceString(cur.from, cur.to);
             }
+            if (cur.name === "LinkTitle") {
+                const rawTitle = state.doc.sliceString(cur.from, cur.to);
+                title = rawTitle.slice(1, -1);
+            }
+            if (cur.name === "LinkLabel") {
+                label = state.doc.sliceString(cur.from, cur.to);
+            }
         } while (cur.nextSibling());
     }
 
     if (textFrom >= 0 && textTo >= textFrom) {
-        return { textFrom, textTo, hasUrl, url };
+        const cleanedUrl = url?.trim() ?? null;
+        const isEmail =
+            cleanedUrl !== null &&
+            !/^[a-z][a-z0-9+.-]*:/i.test(cleanedUrl) &&
+            /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanedUrl);
+        return {
+            textFrom,
+            textTo,
+            hasUrl,
+            url: cleanedUrl,
+            title,
+            label,
+            isAutolink: linkNode.name === "Autolink",
+            isEmail,
+        };
     }
     return null;
+}
+
+export function unwrapLinkLabel(label: string): string {
+    return label.trim().replace(/^\[/, "").replace(/\]$/, "").trim();
+}
+
+export function normalizeReferenceLabel(label: string): string {
+    return unwrapLinkLabel(label)
+        .replace(/\\(\[|\])/g, "$1")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+}
+
+export function resolveLinkHref(
+    info: Pick<LinkInfo, "url" | "label" | "isEmail">,
+    references?: Map<string, { url: string; title: string | null }>,
+): string | null {
+    const directUrl = info.url?.trim();
+    const resolved = directUrl
+        ? directUrl
+        : info.label && references
+          ? references.get(normalizeReferenceLabel(info.label))?.url ?? null
+          : null;
+    if (!resolved) return null;
+
+    if (
+        info.isEmail ||
+        (!/^[a-z][a-z0-9+.-]*:/i.test(resolved) &&
+            /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resolved))
+    ) {
+        return `mailto:${resolved}`;
+    }
+    return resolved;
+}
+
+export function buildLinkReferenceIndex(state: EditorState) {
+    const references = new Map<string, { url: string; title: string | null }>();
+    syntaxTree(state).iterate({
+        enter(node) {
+            if (node.name !== "LinkReference") return;
+            const cursor = node.node.cursor();
+            let label: string | null = null;
+            let url: string | null = null;
+            let title: string | null = null;
+
+            if (cursor.firstChild()) {
+                do {
+                    if (cursor.name === "LinkLabel") {
+                        label = state.doc.sliceString(cursor.from, cursor.to);
+                    } else if (cursor.name === "URL") {
+                        url = state.doc.sliceString(cursor.from, cursor.to).trim();
+                    } else if (cursor.name === "LinkTitle") {
+                        const rawTitle = state.doc.sliceString(cursor.from, cursor.to);
+                        title = rawTitle.slice(1, -1);
+                    }
+                } while (cursor.nextSibling());
+            }
+
+            if (!label || !url) return;
+            references.set(normalizeReferenceLabel(label), { url, title });
+        },
+    });
+
+    return references;
 }
 
 export function findAncestor(

@@ -4,15 +4,19 @@ import {
     useEffect,
     useCallback,
     useMemo,
-    useLayoutEffect,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 
 // --- Sort ---
 
@@ -365,142 +369,11 @@ function SortMenu({
 
 // --- Context menu ---
 
-interface ContextMenuState {
-    x: number;
-    y: number;
-    note: NoteDto;
-}
-
-function ContextMenu({
-    menu,
-    folders,
-    onRename,
-    onDelete,
-    onMove,
-    onClose,
-}: {
-    menu: ContextMenuState;
-    folders: string[];
-    onRename: () => void;
-    onDelete: () => void;
-    onMove: (targetFolder: string) => void;
-    onClose: () => void;
-}) {
-    const ref = useRef<HTMLDivElement>(null);
-    const [showMoveList, setShowMoveList] = useState(false);
-    const [position, setPosition] = useState({ x: menu.x, y: menu.y });
-
-    useLayoutEffect(() => {
-        const el = ref.current;
-        if (!el) return;
-        const rect = el.getBoundingClientRect();
-        setPosition(
-            getViewportSafeMenuPosition(menu.x, menu.y, rect.width, rect.height),
-        );
-    }, [menu.x, menu.y, showMoveList, folders.length]);
-
-    useEffect(() => {
-        const handleDown = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node))
-                onClose();
-        };
-        const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
-        };
-        document.addEventListener("mousedown", handleDown);
-        document.addEventListener("keydown", handleKey);
-        return () => {
-            document.removeEventListener("mousedown", handleDown);
-            document.removeEventListener("keydown", handleKey);
-        };
-    }, [onClose]);
-
-    const menuItemStyle = {
-        color: "var(--text-primary)",
-        background: "transparent",
-    } as const;
-
-    const menuItem = (label: string, action: () => void, danger = false) => (
-        <button
-            key={label}
-            onClick={action}
-            className="w-full text-left px-3 py-1.5 text-xs rounded"
-            style={{
-                ...menuItemStyle,
-                color: danger ? "#ef4444" : menuItemStyle.color,
-            }}
-            onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-            }
-            onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = "transparent")
-            }
-        >
-            {label}
-        </button>
-    );
-
-    const containerStyle = {
-        position: "fixed" as const,
-        top: position.y,
-        left: position.x,
-        zIndex: 9999,
-        minWidth: 180,
-        padding: 4,
-        borderRadius: 8,
-        backgroundColor: "var(--bg-secondary)",
-        border: "1px solid var(--border)",
-        boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-    };
-
-    if (showMoveList) {
-        return (
-            <div ref={ref} style={containerStyle}>
-                {menuItem("← Back", () => setShowMoveList(false))}
-                <div
-                    style={{
-                        borderTop: "1px solid var(--border)",
-                        margin: "4px 0",
-                    }}
-                />
-                {menuItem("/ Root", () => {
-                    onMove("");
-                    onClose();
-                })}
-                {folders.map((folder) =>
-                    menuItem(folder, () => {
-                        onMove(folder);
-                        onClose();
-                    }),
-                )}
-            </div>
-        );
-    }
-
-    return (
-        <div ref={ref} style={containerStyle}>
-            {menuItem("Rename", () => {
-                onRename();
-                onClose();
-            })}
-            {menuItem("Move to…", () => setShowMoveList(true))}
-            <div
-                style={{
-                    borderTop: "1px solid var(--border)",
-                    margin: "4px 0",
-                }}
-            />
-            {menuItem(
-                "Delete",
-                () => {
-                    onDelete();
-                    onClose();
-                },
-                true,
-            )}
-        </div>
-    );
-}
+type FileTreeContextPayload =
+    | { kind: "blank" }
+    | { kind: "folder"; path: string; expanded: boolean }
+    | { kind: "note"; note: NoteDto }
+    | { kind: "move-note"; note: NoteDto };
 
 // --- Tree node ---
 
@@ -517,12 +390,13 @@ interface TreeNodeViewProps {
     draggingNoteId: string | null;
     dragOverPath: string | null;
     onToggleFolder: (path: string) => void;
+    onFolderContextMenu: (e: React.MouseEvent, path: string) => void;
     onNoteClick: (
         note: NoteDto,
         modifiers: { cmd: boolean; shift: boolean },
     ) => void;
     onNoteMouseDown: (note: NoteDto, e: React.MouseEvent) => void;
-    onContextMenu: (e: React.MouseEvent, note: NoteDto) => void;
+    onNoteContextMenu: (e: React.MouseEvent, note: NoteDto) => void;
     renamingNoteId: string | null;
     onRenameConfirm: (note: NoteDto, newName: string) => void;
     onRenameCancel: () => void;
@@ -541,9 +415,10 @@ function TreeNodeView({
     draggingNoteId,
     dragOverPath,
     onToggleFolder,
+    onFolderContextMenu,
     onNoteClick,
     onNoteMouseDown,
-    onContextMenu,
+    onNoteContextMenu,
     renamingNoteId,
     onRenameConfirm,
     onRenameCancel,
@@ -572,6 +447,11 @@ function TreeNodeView({
             <div>
                 <button
                     onClick={() => onToggleFolder(path)}
+                    onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onFolderContextMenu(event, path);
+                    }}
                     data-folder-path={path}
                     className="flex items-center gap-1.5 w-full text-left text-xs rounded"
                     style={{
@@ -619,9 +499,10 @@ function TreeNodeView({
                                 draggingNoteId={draggingNoteId}
                                 dragOverPath={dragOverPath}
                                 onToggleFolder={onToggleFolder}
+                                onFolderContextMenu={onFolderContextMenu}
                                 onNoteClick={onNoteClick}
                                 onNoteMouseDown={onNoteMouseDown}
-                                onContextMenu={onContextMenu}
+                                onNoteContextMenu={onNoteContextMenu}
                                 renamingNoteId={renamingNoteId}
                                 onRenameConfirm={onRenameConfirm}
                                 onRenameCancel={onRenameCancel}
@@ -699,7 +580,12 @@ function TreeNodeView({
                     onNoteClick(node.note, { cmd: false, shift: false });
                 }
             }}
-            onContextMenu={(e) => node.note && onContextMenu(e, node.note)}
+            onContextMenu={(event) => {
+                if (!node.note) return;
+                event.preventDefault();
+                event.stopPropagation();
+                onNoteContextMenu(event, node.note);
+            }}
             className="flex items-center gap-1.5 w-full text-left py-1 text-xs rounded mx-1 cursor-pointer"
             style={{
                 paddingLeft: paddingLeft + noteOffset,
@@ -775,10 +661,12 @@ export function FileTree() {
     const createNote = useVaultStore((s) => s.createNote);
     const deleteNote = useVaultStore((s) => s.deleteNote);
     const renameNote = useVaultStore((s) => s.renameNote);
+    const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const openNote = useEditorStore((s) => s.openNote);
     const closeTab = useEditorStore((s) => s.closeTab);
+    const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
 
     const [sortMode, setSortMode] = useState<SortMode>(
@@ -806,9 +694,10 @@ export function FileTree() {
         null,
     );
     const [newItemName, setNewItemName] = useState("");
-    const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
-        null,
-    );
+    const [creatingParentPath, setCreatingParentPath] = useState("");
+    const [contextMenu, setContextMenu] = useState<
+        ContextMenuState<FileTreeContextPayload> | null
+    >(null);
     const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
 
     const inputRef = useRef<HTMLInputElement>(null);
@@ -819,6 +708,11 @@ export function FileTree() {
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
     const activeNoteId = activeTab?.noteId ?? null;
+    const visibleSelectedNoteIds = useMemo(() => {
+        if (!activeNoteId) return new Set<string>();
+        if (selectedNoteIds.size <= 1) return new Set([activeNoteId]);
+        return selectedNoteIds;
+    }, [activeNoteId, selectedNoteIds]);
     const tree = buildTree(notes);
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {
@@ -1048,6 +942,49 @@ export function FileTree() {
         [],
     );
 
+    const readNoteContent = useCallback(
+        (noteId: string) => invoke<{ content: string }>("read_note", { noteId }),
+        [],
+    );
+
+    const openTreeNote = useCallback(
+        async (note: NoteDto) => {
+            const existing = tabs.find((tab) => tab.noteId === note.id);
+            if (existing) {
+                openNote(note.id, note.title, existing.content);
+                return;
+            }
+            try {
+                const detail = await readNoteContent(note.id);
+                openNote(note.id, note.title, detail.content);
+            } catch (error) {
+                console.error("Error opening tree note:", error);
+            }
+        },
+        [openNote, readNoteContent, tabs],
+    );
+
+    const handleOpenNoteInNewTab = useCallback(
+        async (note: NoteDto) => {
+            try {
+                const existing = tabs.find((tab) => tab.noteId === note.id);
+                const content =
+                    existing?.content ?? (await readNoteContent(note.id)).content;
+
+                insertExternalTab({
+                    id: crypto.randomUUID(),
+                    noteId: note.id,
+                    title: note.title,
+                    content,
+                    isDirty: false,
+                });
+            } catch (error) {
+                console.error("Error opening tree note in new tab:", error);
+            }
+        },
+        [insertExternalTab, readNoteContent, tabs],
+    );
+
     const handleNoteClick = async (
         note: NoteDto,
         modifiers: { cmd: boolean; shift: boolean },
@@ -1090,91 +1027,124 @@ export function FileTree() {
 
         setSelectedNoteIds(new Set([note.id]));
         setLastClickedNoteId(note.id);
-
-        const existing = tabs.find((t) => t.noteId === note.id);
-        if (existing) {
-            openNote(note.id, note.title, existing.content);
-            return;
-        }
-        try {
-            const detail = await invoke<{ content: string }>("read_note", {
-                noteId: note.id,
-            });
-            openNote(note.id, note.title, detail.content);
-        } catch (e) {
-            console.error(e);
-        }
+        await openTreeNote(note);
     };
 
-    const handleContextMenu = (e: React.MouseEvent, note: NoteDto) => {
+    const handleNoteContextMenu = (e: React.MouseEvent, note: NoteDto) => {
         e.preventDefault();
-        setContextMenu({ x: e.clientX, y: e.clientY, note });
+        setSelectedNoteIds(new Set([note.id]));
+        setLastClickedNoteId(note.id);
+        setContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            payload: { kind: "note", note },
+        });
     };
 
-    const applyMove = async (note: NoteDto, targetFolder: string) => {
-        const filename = note.id.split("/").pop()!;
-        const currentParent = note.id.includes("/")
-            ? note.id.split("/").slice(0, -1).join("/")
-            : "";
-        if (currentParent === targetFolder) return;
-        const newPath = targetFolder ? `${targetFolder}/${filename}` : filename;
-        const updated = await renameNote(note.id, newPath);
-        if (updated) {
-            useEditorStore.setState((s) => ({
-                tabs: s.tabs.map((t) =>
-                    t.noteId === note.id
-                        ? { ...t, noteId: updated.id, title: updated.title }
-                        : t,
-                ),
-            }));
-        }
+    const handleFolderContextMenu = (e: React.MouseEvent, path: string) => {
+        e.preventDefault();
+        setContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            payload: {
+                kind: "folder",
+                path,
+                expanded: visibleExpandedFolders.has(path),
+            },
+        });
     };
 
-    const handleContextMove = async (targetFolder: string) => {
-        if (!contextMenu) return;
-        await applyMove(contextMenu.note, targetFolder);
+    const handleBlankContextMenu = (e: React.MouseEvent) => {
+        e.preventDefault();
+        setContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            payload: { kind: "blank" },
+        });
     };
 
-    const startCreating = (mode: "note" | "folder") => {
-        setNewItemName("");
-        setCreatingMode(mode);
-        setTimeout(() => inputRef.current?.focus(), 0);
-    };
+    const applyMove = useCallback(
+        async (note: NoteDto, targetFolder: string) => {
+            const filename = note.id.split("/").pop()!;
+            const currentParent = note.id.includes("/")
+                ? note.id.split("/").slice(0, -1).join("/")
+                : "";
+            if (currentParent === targetFolder) return;
+            const newPath = targetFolder
+                ? `${targetFolder}/${filename}`
+                : filename;
+            const updated = await renameNote(note.id, newPath);
+            if (updated) {
+                useEditorStore.setState((s) => ({
+                    tabs: s.tabs.map((t) =>
+                        t.noteId === note.id
+                            ? { ...t, noteId: updated.id, title: updated.title }
+                            : t,
+                    ),
+                }));
+            }
+        },
+        [renameNote],
+    );
+
+    const startCreating = useCallback(
+        (mode: "note" | "folder", parentPath = "") => {
+            setNewItemName("");
+            setCreatingParentPath(parentPath);
+            setCreatingMode(mode);
+            setTimeout(() => inputRef.current?.focus(), 0);
+        },
+        [],
+    );
 
     const confirmCreate = async () => {
         const name = newItemName.trim();
         const mode = creatingMode;
+        const parentPath = creatingParentPath.trim();
         setCreatingMode(null);
+        setCreatingParentPath("");
         setNewItemName("");
         setSelectedNoteIds(new Set());
         if (!name || !mode) return;
 
         if (mode === "folder") {
+            const folderPath = parentPath ? `${parentPath}/${name}` : name;
             const { notes: currentNotes } = useVaultStore.getState();
             let noteName = "Untitled";
             let i = 1;
-            while (currentNotes.some((n) => n.id === `${name}/${noteName}`)) {
+            while (
+                currentNotes.some(
+                    (note) => note.id === `${folderPath}/${noteName}.md`,
+                )
+            ) {
                 noteName = `Untitled ${i++}`;
             }
-            const note = await createNote(`${name}/${noteName}`);
+            const note = await createNote(`${folderPath}/${noteName}`);
             if (note) {
                 openNote(note.id, note.title, "");
-                setExpandedFolders((prev) => new Set([...prev, name]));
+                setExpandedFolders((prev) => {
+                    const next = new Set(prev);
+                    if (parentPath) next.add(parentPath);
+                    next.add(folderPath);
+                    return next;
+                });
             }
-        } else {
-            const note = await createNote(name);
-            if (note) openNote(note.id, note.title, "");
+            return;
         }
+
+        const fullPath = parentPath ? `${parentPath}/${name}` : name;
+        const note = await createNote(fullPath);
+        if (note) openNote(note.id, note.title, "");
     };
 
     const cancelCreate = () => {
         setCreatingMode(null);
+        setCreatingParentPath("");
         setNewItemName("");
     };
 
-    const handleRenameStart = () => {
-        if (!contextMenu) return;
-        setRenamingNoteId(contextMenu.note.id);
+    const handleRenameStart = (note: NoteDto) => {
+        setRenamingNoteId(note.id);
     };
 
     const handleRenameConfirm = async (note: NoteDto, newName: string) => {
@@ -1191,13 +1161,238 @@ export function FileTree() {
         }
     };
 
-    const handleDelete = async () => {
-        if (!contextMenu) return;
-        const { note } = contextMenu;
-        const tab = tabs.find((t) => t.noteId === note.id);
-        if (tab) closeTab(tab.id);
-        await deleteNote(note.id);
-    };
+    const handleDelete = useCallback(
+        async (note: NoteDto) => {
+            const tab = tabs.find((t) => t.noteId === note.id);
+            if (tab) closeTab(tab.id);
+            await deleteNote(note.id);
+        },
+        [closeTab, deleteNote, tabs],
+    );
+
+    const handleDuplicateNote = useCallback(
+        async (note: NoteDto) => {
+            const noteIdWithoutExt = note.id.replace(/\.md$/i, "");
+            const lastSlash = noteIdWithoutExt.lastIndexOf("/");
+            const parentPath =
+                lastSlash === -1 ? "" : noteIdWithoutExt.slice(0, lastSlash);
+            const baseName =
+                lastSlash === -1
+                    ? noteIdWithoutExt
+                    : noteIdWithoutExt.slice(lastSlash + 1);
+
+            let copyPath = parentPath
+                ? `${parentPath}/${baseName} copy`
+                : `${baseName} copy`;
+            let counter = 2;
+            while (notes.some((item) => item.id === `${copyPath}.md`)) {
+                copyPath = parentPath
+                    ? `${parentPath}/${baseName} copy ${counter}`
+                    : `${baseName} copy ${counter}`;
+                counter += 1;
+            }
+
+            try {
+                const existing = tabs.find((tab) => tab.noteId === note.id);
+                const content =
+                    existing?.content ?? (await readNoteContent(note.id)).content;
+                const created = await createNote(copyPath);
+                if (!created) return;
+
+                const detail = await invoke<{ title: string; path: string }>(
+                    "save_note",
+                    {
+                        noteId: created.id,
+                        content,
+                    },
+                );
+
+                updateNoteMetadata(created.id, {
+                    title: detail.title,
+                    path: detail.path,
+                    modified_at: Math.floor(Date.now() / 1000),
+                });
+            } catch (error) {
+                console.error("Error duplicating note:", error);
+            }
+        },
+        [createNote, notes, readNoteContent, tabs, updateNoteMetadata],
+    );
+
+    const handleRevealNoteInFinder = useCallback((note: NoteDto) => {
+        if (!note.path) return;
+        void revealItemInDir(note.path);
+    }, []);
+
+    const handleRevealFolderInFinder = useCallback(
+        (path: string) => {
+            if (!vaultPath) return;
+            void revealItemInDir(path ? `${vaultPath}/${path}` : vaultPath);
+        },
+        [vaultPath],
+    );
+
+    const openMoveMenu = useCallback(
+        (menu: ContextMenuState<FileTreeContextPayload>) => {
+            if (menu.payload.kind !== "note") return;
+            setContextMenu({
+                ...menu,
+                payload: { kind: "move-note", note: menu.payload.note },
+            });
+        },
+        [],
+    );
+
+    const contextMenuEntries = useMemo<ContextMenuEntry[]>(() => {
+        if (!contextMenu) return [];
+
+        switch (contextMenu.payload.kind) {
+            case "blank":
+                return [
+                    { label: "New Note", action: () => startCreating("note") },
+                    {
+                        label: "New Folder",
+                        action: () => startCreating("folder"),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Expand All",
+                        action: () => setExpandedFolders(new Set(allFolderPaths)),
+                        disabled: allFolderPaths.length === 0,
+                    },
+                    {
+                        label: "Collapse All",
+                        action: () => setExpandedFolders(new Set()),
+                        disabled: expandedFolders.size === 0,
+                    },
+                ];
+            case "folder":
+                return [
+                    {
+                        label: "New Note Here",
+                        action: () =>
+                            startCreating("note", contextMenu.payload.path),
+                    },
+                    {
+                        label: "New Folder Here",
+                        action: () =>
+                            startCreating("folder", contextMenu.payload.path),
+                    },
+                    { type: "separator" },
+                    {
+                        label: contextMenu.payload.expanded
+                            ? "Collapse"
+                            : "Expand",
+                        action: () => handleToggleFolder(contextMenu.payload.path),
+                    },
+                    {
+                        label: "Reveal in Finder",
+                        action: () =>
+                            handleRevealFolderInFinder(contextMenu.payload.path),
+                    },
+                    {
+                        label: "Copy Folder Path",
+                        action: () =>
+                            void navigator.clipboard.writeText(
+                                contextMenu.payload.path,
+                            ),
+                    },
+                ];
+            case "note":
+                return [
+                    {
+                        label: "Open",
+                        action: () => void openTreeNote(contextMenu.payload.note),
+                    },
+                    {
+                        label: "Open in New Tab",
+                        action: () =>
+                            void handleOpenNoteInNewTab(contextMenu.payload.note),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Rename",
+                        action: () => handleRenameStart(contextMenu.payload.note),
+                    },
+                    {
+                        label: "Move to…",
+                        action: () => openMoveMenu(contextMenu),
+                        disabled: allFolderPaths.length === 0,
+                    },
+                    {
+                        label: "Duplicate",
+                        action: () =>
+                            void handleDuplicateNote(contextMenu.payload.note),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Reveal in Finder",
+                        action: () =>
+                            handleRevealNoteInFinder(contextMenu.payload.note),
+                    },
+                    {
+                        label: "Copy Note Path",
+                        action: () =>
+                            void navigator.clipboard.writeText(
+                                contextMenu.payload.note.id,
+                            ),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Delete",
+                        action: () => void handleDelete(contextMenu.payload.note),
+                        danger: true,
+                    },
+                ];
+            case "move-note": {
+                const currentParent = contextMenu.payload.note.id.includes("/")
+                    ? contextMenu.payload.note.id.split("/").slice(0, -1).join("/")
+                    : "";
+                const folderTargets = allFolderPaths.filter(
+                    (folder) => folder !== currentParent,
+                );
+
+                return [
+                    {
+                        label: "Back",
+                        action: () =>
+                            setContextMenu({
+                                ...contextMenu,
+                                payload: {
+                                    kind: "note",
+                                    note: contextMenu.payload.note,
+                                },
+                            }),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "/ Root",
+                        action: () =>
+                            void applyMove(contextMenu.payload.note, ""),
+                        disabled: currentParent === "",
+                    },
+                    ...folderTargets.map((folder) => ({
+                        label: folder,
+                        action: () =>
+                            void applyMove(contextMenu.payload.note, folder),
+                    })),
+                ];
+            }
+        }
+    }, [
+        allFolderPaths,
+        applyMove,
+        contextMenu,
+        expandedFolders.size,
+        handleDelete,
+        handleDuplicateNote,
+        handleOpenNoteInNewTab,
+        handleRevealFolderInFinder,
+        handleRevealNoteInFinder,
+        openMoveMenu,
+        openTreeNote,
+        startCreating,
+    ]);
 
     if (!vaultPath) return <OpenVaultForm />;
 
@@ -1390,6 +1585,10 @@ export function FileTree() {
             <div
                 ref={treeScrollRef}
                 className="flex-1 overflow-y-auto pb-1 px-1"
+                onContextMenu={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    handleBlankContextMenu(event);
+                }}
             >
                 {notes.length === 0 ? (
                     <p
@@ -1413,13 +1612,14 @@ export function FileTree() {
                             depth={0}
                             sortMode={sortMode}
                             expandedFolders={visibleExpandedFolders}
-                            selectedNoteIds={selectedNoteIds}
+                            selectedNoteIds={visibleSelectedNoteIds}
                             draggingNoteId={draggingNoteId}
                             dragOverPath={dragOverPath}
                             onToggleFolder={handleToggleFolder}
+                            onFolderContextMenu={handleFolderContextMenu}
                             onNoteClick={handleNoteClick}
                             onNoteMouseDown={handleNoteMouseDown}
-                            onContextMenu={handleContextMenu}
+                            onNoteContextMenu={handleNoteContextMenu}
                             renamingNoteId={renamingNoteId}
                             onRenameConfirm={handleRenameConfirm}
                             onRenameCancel={() => setRenamingNoteId(null)}
@@ -1458,11 +1658,9 @@ export function FileTree() {
             {contextMenu && (
                 <ContextMenu
                     menu={contextMenu}
-                    folders={getAllFolderPaths(tree)}
-                    onRename={handleRenameStart}
-                    onDelete={handleDelete}
-                    onMove={handleContextMove}
                     onClose={() => setContextMenu(null)}
+                    entries={contextMenuEntries}
+                    minWidth={160}
                 />
             )}
         </div>

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import {
     useEffect,
     useMemo,
@@ -7,6 +8,10 @@ import {
 } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 
 const FM_COLLAPSED_KEY = "vaultai:fm-collapsed";
 
@@ -362,14 +367,6 @@ function DateField({
             document.removeEventListener("keydown", handleKey);
         };
     }, [open]);
-
-    useEffect(() => {
-        if (parsed) {
-            setViewMonth(
-                new Date(parsed.getFullYear(), parsed.getMonth(), 1, 12),
-            );
-        }
-    }, [value]);
 
     const days = useMemo(() => buildCalendarDays(viewMonth), [viewMonth]);
     const today = formatIsoDate(new Date());
@@ -856,6 +853,7 @@ function PropertyRow({
     valueFontSize,
     pillFontSize,
     onChange,
+    onContextMenu,
 }: {
     name: string;
     value: FrontmatterValue;
@@ -863,12 +861,14 @@ function PropertyRow({
     valueFontSize: number;
     pillFontSize: number;
     onChange?: (nextValue: FrontmatterValue) => void;
+    onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
     const type = detectType(name, value);
     return (
         <div
             className="flex items-start gap-2 pl-3 pr-4 py-1"
             style={{ borderTop: "1px solid var(--border)" }}
+            onContextMenu={onContextMenu}
         >
             <div
                 className="flex items-center gap-1.5 flex-shrink-0"
@@ -1089,6 +1089,12 @@ export function FrontmatterPanel({
     const [collapsed, setCollapsed] = useState(
         () => localStorage.getItem(FM_COLLAPSED_KEY) === "true",
     );
+    const [contextMenu, setContextMenu] = useState<
+        ContextMenuState<
+            | { kind: "panel" }
+            | { kind: "entry"; key: string; value: FrontmatterValue }
+        > | null
+    >(null);
 
     const headerFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
     const labelFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
@@ -1127,6 +1133,14 @@ export function FrontmatterPanel({
         >
             <button
                 onClick={toggleCollapsed}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        payload: { kind: "panel" },
+                    });
+                }}
                 className="flex items-center gap-1.5 w-full text-left pl-3 pr-4"
                 style={{ height: 28, color: "var(--text-secondary)" }}
                 onMouseEnter={(e) =>
@@ -1190,12 +1204,78 @@ export function FrontmatterPanel({
                                       handleEntryChange(key, nextValue)
                                 : undefined
                         }
+                        onContextMenu={(event) => {
+                            event.preventDefault();
+                            setContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                payload: { kind: "entry", key, value },
+                            });
+                        }}
                     />
                 ))}
             {!collapsed && onChange && (
                 <AddPropertyComposer
                     fontSize={valueFontSize}
                     onAdd={handleAddProperty}
+                />
+            )}
+            {contextMenu && (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={
+                        contextMenu.payload.kind === "panel"
+                            ? [
+                                  {
+                                      label: collapsed
+                                          ? "Expand Properties"
+                                          : "Collapse Properties",
+                                      action: toggleCollapsed,
+                                  },
+                                  {
+                                      label: "Copy Raw Frontmatter",
+                                      action: () =>
+                                          void navigator.clipboard.writeText(
+                                              raw,
+                                          ),
+                                      disabled: !raw.trim(),
+                                  },
+                              ]
+                            : [
+                                  {
+                                      label: "Copy Value",
+                                      action: () =>
+                                          void navigator.clipboard.writeText(
+                                              Array.isArray(
+                                                  contextMenu.payload.value,
+                                              )
+                                                  ? contextMenu.payload.value.join(
+                                                        ", ",
+                                                    )
+                                                  : (contextMenu.payload.value ??
+                                                    "").toString(),
+                                          ),
+                                  },
+                                  {
+                                      label: "Delete Property",
+                                      action: () => {
+                                          if (!onChange) return;
+                                          onChange(
+                                              serializeFrontmatterRaw(
+                                                  entries.filter(
+                                                      (entry) =>
+                                                          entry.key !==
+                                                          contextMenu.payload.key,
+                                                  ),
+                                              ),
+                                          );
+                                      },
+                                      danger: true,
+                                      disabled: !onChange,
+                                  },
+                              ]
+                    }
                 />
             )}
         </div>
