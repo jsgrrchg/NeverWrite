@@ -741,6 +741,24 @@ export default function App() {
 
         void listen<VaultNoteChange>("vault://note-changed", (event) => {
             applyVaultNoteChange(event.payload);
+
+            // Reload editor content for open tabs when file changes externally
+            const change = event.payload;
+            if (change.kind === "upsert" && change.note) {
+                const noteId = change.note.id;
+                const openTab = useEditorStore
+                    .getState()
+                    .tabs.find((t) => t.noteId === noteId);
+                if (openTab && !openTab.isDirty) {
+                    void invoke<{ content: string }>("read_note", { noteId }).then(
+                        (detail) => {
+                            useEditorStore
+                                .getState()
+                                .reloadNoteContent(noteId, detail.content);
+                        },
+                    );
+                }
+            }
         }).then((cleanup) => {
             unlisten = cleanup;
         });

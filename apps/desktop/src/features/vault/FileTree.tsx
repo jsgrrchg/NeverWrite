@@ -23,6 +23,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 
 // --- Sort ---
 
@@ -943,6 +944,12 @@ export function FileTree() {
         setDraggingNoteIds(new Set());
         setDraggingFolderPath(null);
         setDragLabel(null);
+        emitFileTreeNoteDrag({
+            phase: "cancel",
+            x: 0,
+            y: 0,
+            notes: [],
+        });
     }, []);
 
     // Mouse-based drag and drop
@@ -959,6 +966,13 @@ export function FileTree() {
                 if (s.item.kind === "folder") {
                     setDraggingFolderPath(s.item.path);
                     setDragLabel(getBaseName(s.item.path));
+                    emitFileTreeNoteDrag({
+                        phase: "start",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: [],
+                        folder: { path: s.item.path, name: getBaseName(s.item.path) },
+                    });
                 } else {
                     setDraggingNoteIds(
                         new Set(s.item.notes.map((note) => note.id)),
@@ -968,10 +982,42 @@ export function FileTree() {
                             ? `${s.item.notes.length} notes`
                             : s.item.notes[0]?.title ?? null,
                     );
+                    emitFileTreeNoteDrag({
+                        phase: "start",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: s.item.notes.map((note) => ({
+                            id: note.id,
+                            title: note.title,
+                            path: note.path,
+                        })),
+                    });
                 }
             }
 
             setDragPos({ x: e.clientX, y: e.clientY });
+            if (s.active) {
+                if (s.item.kind === "notes") {
+                    emitFileTreeNoteDrag({
+                        phase: "move",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: s.item.notes.map((note) => ({
+                            id: note.id,
+                            title: note.title,
+                            path: note.path,
+                        })),
+                    });
+                } else {
+                    emitFileTreeNoteDrag({
+                        phase: "move",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: [],
+                        folder: { path: s.item.path, name: getBaseName(s.item.path) },
+                    });
+                }
+            }
 
             const els = document.elementsFromPoint(e.clientX, e.clientY);
             const folderEl = els.find((el) =>
@@ -989,6 +1035,29 @@ export function FileTree() {
             dragStateRef.current = null;
 
             if (!s?.active) return;
+
+            if (dragPos) {
+                if (s.item.kind === "notes") {
+                    emitFileTreeNoteDrag({
+                        phase: "end",
+                        x: dragPos.x,
+                        y: dragPos.y,
+                        notes: s.item.notes.map((note) => ({
+                            id: note.id,
+                            title: note.title,
+                            path: note.path,
+                        })),
+                    });
+                } else {
+                    emitFileTreeNoteDrag({
+                        phase: "end",
+                        x: dragPos.x,
+                        y: dragPos.y,
+                        notes: [],
+                        folder: { path: s.item.path, name: getBaseName(s.item.path) },
+                    });
+                }
+            }
 
             wasJustDraggingRef.current = true;
             requestAnimationFrame(() => {
@@ -1048,7 +1117,7 @@ export function FileTree() {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
         };
-    }, [applyMoveOperations, getDragTargetFolder, resetDragState]);
+    }, [applyMoveOperations, dragPos, getDragTargetFolder, resetDragState]);
 
     const handleToggleFolder = (path: string) => {
         setExpandedFolders((prev) => {

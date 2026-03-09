@@ -2,7 +2,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    event::{ModifyKind, RenameMode},
+    Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 
 use crate::error::VaultError;
 
@@ -65,6 +68,33 @@ pub fn start_watcher(
                 for path in paths {
                     if !write_tracker.consume(path) {
                         on_event(VaultEvent::FileCreated(path.clone()));
+                    }
+                }
+            }
+            // Rename events: on macOS (FSEvents) these fire as Modify(Name)
+            // for both the old and new paths. We check if the file still exists
+            // to distinguish source (delete) from destination (create).
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+                if paths.len() >= 2 {
+                    let from_consumed = write_tracker.consume(paths[0]);
+                    let to_consumed = write_tracker.consume(paths[1]);
+                    if !from_consumed && !to_consumed {
+                        on_event(VaultEvent::FileRenamed {
+                            from: paths[0].clone(),
+                            to: paths[1].clone(),
+                        });
+                    }
+                }
+            }
+            EventKind::Modify(ModifyKind::Name(_)) => {
+                for path in paths {
+                    if write_tracker.consume(path) {
+                        continue;
+                    }
+                    if path.exists() {
+                        on_event(VaultEvent::FileCreated(path.clone()));
+                    } else {
+                        on_event(VaultEvent::FileDeleted(path.clone()));
                     }
                 }
             }

@@ -9,3 +9,4 @@ members = [
     "crates/state",
     "apps/desktop/src-tauri",
 ]
+exclude = ["vendor/codex-acp"]
