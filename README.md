@@ -30,6 +30,7 @@ Para ejecutar la aplicación en modo desarrollo:
 ```
 
 ```bash
+
 npm run tauri dev
 
 ```

@@ -260,6 +260,58 @@ function NumberStepper({
     );
 }
 
+function SliderField({
+    value,
+    min,
+    max,
+    step = 1,
+    onChange,
+    formatValue,
+}: {
+    value: number;
+    min: number;
+    max: number;
+    step?: number;
+    onChange: (v: number) => void;
+    formatValue?: (value: number) => string;
+}) {
+    return (
+        <div
+            style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                minWidth: 220,
+            }}
+        >
+            <input
+                type="range"
+                min={min}
+                max={max}
+                step={step}
+                value={value}
+                onChange={(event) => onChange(Number(event.target.value))}
+                style={{
+                    width: 160,
+                    accentColor: "var(--accent)",
+                    cursor: "pointer",
+                }}
+            />
+            <span
+                style={{
+                    minWidth: 42,
+                    textAlign: "right",
+                    fontSize: 12,
+                    fontVariantNumeric: "tabular-nums",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                {formatValue ? formatValue(value) : value}
+            </span>
+        </div>
+    );
+}
+
 // --- Theme Picker ---
 
 const THEME_ORDER: ThemeName[] = [
@@ -271,6 +323,10 @@ const THEME_ORDER: ThemeName[] = [
     "lavender",
     "nord",
     "sunset",
+    "catppuccin",
+    "solarized",
+    "tokyoNight",
+    "gruvbox",
 ];
 
 function ThemePicker({
@@ -530,6 +586,7 @@ function EditorSettings() {
     const {
         editorFontSize,
         editorFontFamily,
+        editorLineHeight,
         editorContentWidth,
         lineWrapping,
         justifyText,
@@ -581,6 +638,20 @@ function EditorSettings() {
                     />
                 }
             />
+            <Row
+                label="Line spacing"
+                description="Line height in the editor. 150 means 1.5×."
+                control={
+                    <SliderField
+                        value={editorLineHeight}
+                        min={120}
+                        max={220}
+                        step={5}
+                        onChange={(v) => setSetting("editorLineHeight", v)}
+                        formatValue={(value) => `${value}%`}
+                    />
+                }
+            />
 
             <SectionLabel>Formatting</SectionLabel>
             <Row
@@ -623,11 +694,13 @@ function EditorSettings() {
                 label="Text width"
                 description="Maximum width of the editor content, in pixels."
                 control={
-                    <NumberStepper
+                    <SliderField
                         value={editorContentWidth}
                         min={600}
                         max={1200}
+                        step={10}
                         onChange={(v) => setSetting("editorContentWidth", v)}
+                        formatValue={(value) => `${value}px`}
                     />
                 }
             />

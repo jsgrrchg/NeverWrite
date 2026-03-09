@@ -9,6 +9,17 @@
         "beforeDevCommand": "npm run dev",
         "beforeBuildCommand": "npm run build"
     },
+    "bundle": {
+        "active": true,
+        "targets": ["app"],
+        "icon": [
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.icns",
+            "icons/icon.ico"
+        ]
+    },
     "app": {
         "security": {
             "csp": "default-src 'self'; img-src 'self' asset: https: http: data:; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
@@ -26,7 +37,7 @@
                 "hiddenTitle": true,
                 "trafficLightPosition": {
                     "x": 14,
-                    "y": 18
+                    "y": 20
                 }
             }
         ]

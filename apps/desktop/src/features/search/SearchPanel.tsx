@@ -1,4 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import {
+    useState,
+    useEffect,
+    useRef,
+    useCallback,
+    useDeferredValue,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEditorStore } from "../../app/store/editorStore";
 import {
@@ -6,6 +12,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { revealNoteInTree } from "../../app/utils/navigation";
+import { useVirtualList } from "../../app/hooks/useVirtualList";
 
 interface SearchResultDto {
     id: string;
@@ -15,6 +22,7 @@ interface SearchResultDto {
 }
 
 const DEBOUNCE_MS = 300;
+const SEARCH_ROW_HEIGHT = 44;
 
 export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
     const inputRef = useRef<HTMLInputElement>(null);
@@ -24,23 +32,26 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<SearchResultDto> | null>(null);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const searchRequestIdRef = useRef(0);
+    const resultsRef = useRef<HTMLDivElement>(null);
+    const deferredQuery = useDeferredValue(query);
 
     const openNote = useEditorStore((s) => s.openNote);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
     const doSearch = useCallback(async (q: string) => {
-        if (!q.trim()) {
-            setResults([]);
-            setHasSearched(false);
-            return;
-        }
+        const trimmed = q.trim();
+        const requestId = ++searchRequestIdRef.current;
+        if (!trimmed) return;
         try {
             const res = await invoke<SearchResultDto[]>("search_notes", {
-                query: q.trim(),
+                query: trimmed,
             });
+            if (requestId !== searchRequestIdRef.current) return;
             setResults(res);
             setHasSearched(true);
         } catch {
+            if (requestId !== searchRequestIdRef.current) return;
             setResults([]);
             setHasSearched(true);
         }
@@ -48,15 +59,31 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
 
     useEffect(() => {
         if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => doSearch(query), DEBOUNCE_MS);
+        if (!deferredQuery.trim()) {
+            searchRequestIdRef.current += 1;
+            return;
+        }
+        timerRef.current = setTimeout(
+            () => doSearch(deferredQuery),
+            DEBOUNCE_MS,
+        );
         return () => {
             if (timerRef.current) clearTimeout(timerRef.current);
         };
-    }, [query, doSearch]);
+    }, [deferredQuery, doSearch]);
 
     useEffect(() => {
         if (autoFocus) inputRef.current?.focus();
     }, [autoFocus]);
+
+    const handleQueryChange = (nextQuery: string) => {
+        if (!nextQuery.trim()) {
+            searchRequestIdRef.current += 1;
+            setResults([]);
+            setHasSearched(false);
+        }
+        setQuery(nextQuery);
+    };
 
     const handleOpen = async (id: string, title: string) => {
         const tabs = useEditorStore.getState().tabs;
@@ -99,6 +126,14 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
         }
     };
 
+    const virtual = useVirtualList(
+        resultsRef,
+        results.length,
+        SEARCH_ROW_HEIGHT,
+        8,
+    );
+    const visibleResults = results.slice(virtual.startIndex, virtual.endIndex);
+
     return (
         <div className="h-full flex flex-col overflow-hidden">
             {/* Search input */}
@@ -120,7 +155,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                         strokeWidth="1.5"
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        className="flex-shrink-0"
+                        className="shrink-0"
                     >
                         <circle cx="7" cy="7" r="5" />
                         <path d="M11 11l3.5 3.5" />
@@ -130,14 +165,14 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                         type="text"
                         placeholder="Search notes..."
                         value={query}
-                        onChange={(e) => setQuery(e.target.value)}
+                        onChange={(e) => handleQueryChange(e.target.value)}
                         className="flex-1 bg-transparent text-xs outline-none"
                         style={{ color: "var(--text-primary)" }}
                     />
                     {query && (
                         <button
-                            onClick={() => setQuery("")}
-                            className="flex-shrink-0 opacity-50 hover:opacity-100"
+                            onClick={() => handleQueryChange("")}
+                            className="shrink-0 opacity-50 hover:opacity-100"
                             style={{ color: "var(--text-secondary)" }}
                         >
                             <svg
@@ -156,7 +191,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
             </div>
 
             {/* Results */}
-            <div className="flex-1 overflow-y-auto px-1">
+            <div ref={resultsRef} className="flex-1 overflow-y-auto px-1">
                 {!query.trim() && (
                     <div
                         className="px-3 py-4 text-xs text-center"
@@ -175,41 +210,62 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                     </div>
                 )}
 
-                {results.map((r) => (
-                    <button
-                        key={r.id}
-                        onClick={() => void handleOpen(r.id, r.title)}
-                        onContextMenu={(event) => {
-                            event.preventDefault();
-                            setContextMenu({
-                                x: event.clientX,
-                                y: event.clientY,
-                                payload: r,
-                            });
+                {results.length > 0 && (
+                    <div
+                        style={{
+                            position: "relative",
+                            height: virtual.totalHeight,
                         }}
-                        className="w-full text-left px-3 py-1.5 flex flex-col gap-0.5 rounded-sm"
-                        style={{ color: "var(--text-primary)" }}
-                        onMouseEnter={(e) =>
-                            (e.currentTarget.style.backgroundColor =
-                                "var(--bg-tertiary)")
-                        }
-                        onMouseLeave={(e) =>
-                            (e.currentTarget.style.backgroundColor =
-                                "transparent")
-                        }
                     >
-                        <span className="text-xs truncate">{r.title}</span>
-                        <span
-                            className="text-xs truncate"
+                        <div
                             style={{
-                                color: "var(--text-secondary)",
-                                fontSize: 10,
+                                position: "absolute",
+                                left: 0,
+                                right: 0,
+                                top: virtual.offsetTop,
                             }}
                         >
-                            {r.id}
-                        </span>
-                    </button>
-                ))}
+                            {visibleResults.map((r) => (
+                                <button
+                                    key={r.id}
+                                    onClick={() => void handleOpen(r.id, r.title)}
+                                    onContextMenu={(event) => {
+                                        event.preventDefault();
+                                        setContextMenu({
+                                            x: event.clientX,
+                                            y: event.clientY,
+                                            payload: r,
+                                        });
+                                    }}
+                                    className="w-full text-left px-3 py-1.5 flex flex-col gap-0.5 rounded-sm"
+                                    style={{
+                                        color: "var(--text-primary)",
+                                        minHeight: SEARCH_ROW_HEIGHT,
+                                    }}
+                                    onMouseEnter={(e) =>
+                                        (e.currentTarget.style.backgroundColor =
+                                            "var(--bg-tertiary)")
+                                    }
+                                    onMouseLeave={(e) =>
+                                        (e.currentTarget.style.backgroundColor =
+                                            "transparent")
+                                    }
+                                >
+                                    <span className="text-xs truncate">{r.title}</span>
+                                    <span
+                                        className="text-xs truncate"
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                            fontSize: 10,
+                                        }}
+                                    >
+                                        {r.id}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
             {contextMenu && (
                 <ContextMenu

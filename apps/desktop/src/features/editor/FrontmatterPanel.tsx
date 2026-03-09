@@ -871,7 +871,7 @@ function PropertyRow({
             onContextMenu={onContextMenu}
         >
             <div
-                className="flex items-center gap-1.5 flex-shrink-0"
+                className="flex items-center gap-1.5 shrink-0"
                 style={{
                     width: 80,
                     color: "var(--text-secondary)",
@@ -1224,58 +1224,53 @@ export function FrontmatterPanel({
                 <ContextMenu
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
-                    entries={
-                        contextMenu.payload.kind === "panel"
-                            ? [
-                                  {
-                                      label: collapsed
-                                          ? "Expand Properties"
-                                          : "Collapse Properties",
-                                      action: toggleCollapsed,
-                                  },
-                                  {
-                                      label: "Copy Raw Frontmatter",
-                                      action: () =>
-                                          void navigator.clipboard.writeText(
-                                              raw,
-                                          ),
-                                      disabled: !raw.trim(),
-                                  },
-                              ]
-                            : [
-                                  {
-                                      label: "Copy Value",
-                                      action: () =>
-                                          void navigator.clipboard.writeText(
-                                              Array.isArray(
-                                                  contextMenu.payload.value,
-                                              )
-                                                  ? contextMenu.payload.value.join(
-                                                        ", ",
-                                                    )
-                                                  : (contextMenu.payload.value ??
-                                                    "").toString(),
-                                          ),
-                                  },
-                                  {
-                                      label: "Delete Property",
-                                      action: () => {
-                                          if (!onChange) return;
-                                          onChange(
-                                              serializeFrontmatterRaw(
-                                                  entries.filter(
-                                                      (entry) =>
-                                                          entry.key !==
-                                                          contextMenu.payload.key,
-                                                  ),
-                                              ),
-                                          );
-                                      },
-                                      danger: true,
-                                      disabled: !onChange,
-                                  },
-                              ]
-                    }
+                    entries={(() => {
+                        if (contextMenu.payload.kind === "panel") {
+                            return [
+                                {
+                                    label: collapsed
+                                        ? "Expand Properties"
+                                        : "Collapse Properties",
+                                    action: toggleCollapsed,
+                                },
+                                {
+                                    label: "Copy Raw Frontmatter",
+                                    action: () =>
+                                        void navigator.clipboard.writeText(raw),
+                                    disabled: !raw.trim(),
+                                },
+                            ];
+                        }
+
+                        const { key, value } = contextMenu.payload;
+
+                        return [
+                            {
+                                label: "Copy Value",
+                                action: () =>
+                                    void navigator.clipboard.writeText(
+                                        Array.isArray(value)
+                                            ? value.join(", ")
+                                            : (value ?? "").toString(),
+                                    ),
+                            },
+                            {
+                                label: "Delete Property",
+                                action: () => {
+                                    if (!onChange) return;
+                                    onChange(
+                                        serializeFrontmatterRaw(
+                                            entries.filter(
+                                                (entry) => entry.key !== key,
+                                            ),
+                                        ),
+                                    );
+                                },
+                                danger: true,
+                                disabled: !onChange,
+                            },
+                        ];
+                    })()}
                 />
             )}
         </div>

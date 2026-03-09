@@ -4339,6 +4339,7 @@ dependencies = [
 name = "vault-ai-desktop"
 version = "0.1.0"
 dependencies = [
+ "notify",
  "serde",
  "serde_json",
  "tauri",
@@ -4364,6 +4365,7 @@ dependencies = [
 name = "vault-ai-index"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "vault-ai-types",
  "vault-ai-vault",
 ]

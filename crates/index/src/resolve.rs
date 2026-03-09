@@ -7,8 +7,8 @@ impl VaultIndex {
     /// `link_text`: el target del wikilink (ej: "Mi Nota" o "carpeta/nota").
     /// `from_note`: el NoteId de la nota que contiene el wikilink.
     pub fn resolve_wikilink(&self, link_text: &str, from_note: &NoteId) -> Option<NoteId> {
-        let from_path = self.notes.get(from_note).map(|n| &n.path)?;
-        self.resolve_link_target(link_text, from_path)
+        let from_parent_dir = self.parent_dirs.get(from_note)?;
+        self.resolve_link_target(link_text, from_parent_dir)
     }
 
     /// Devuelve las notas que apuntan a esta nota (backlinks).

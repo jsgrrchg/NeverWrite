@@ -115,7 +115,7 @@ export function ActivityBar({
                 style={{
                     width: 36,
                     height: 36,
-                    marginBottom: 4,
+                    marginBottom: 1,
                     color: "var(--text-secondary)",
                     backgroundColor: "transparent",
                     opacity: 0.5,
@@ -124,8 +124,8 @@ export function ActivityBar({
                 onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
             >
                 <svg
-                    width="18"
-                    height="18"
+                    width="16"
+                    height="16"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"

@@ -10,6 +10,7 @@ export interface Settings {
     // Editor
     editorFontSize: number; // 10–24
     editorFontFamily: EditorFontFamily;
+    editorLineHeight: number; // 120–220 (percentage)
     editorContentWidth: number; // 600–1200
     lineWrapping: boolean;
     justifyText: boolean;
@@ -62,6 +63,7 @@ const defaults: Settings = {
     openLastVaultOnLaunch: true,
     editorFontSize: 14,
     editorFontFamily: "system",
+    editorLineHeight: 150,
     editorContentWidth: 860,
     lineWrapping: true,
     justifyText: false,
@@ -123,6 +125,12 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             editorFontFamily: normalizeEditorFontFamily(
                 parsed.state.editorFontFamily,
             ),
+            editorLineHeight: normalizeIntInRange(
+                parsed.state.editorLineHeight,
+                defaults.editorLineHeight,
+                120,
+                220,
+            ),
             editorContentWidth: normalizeIntInRange(
                 parsed.state.editorContentWidth,
                 defaults.editorContentWidth,
@@ -151,6 +159,7 @@ function pickSettings(state: SettingsStore): Settings {
         openLastVaultOnLaunch: state.openLastVaultOnLaunch,
         editorFontSize: state.editorFontSize,
         editorFontFamily: state.editorFontFamily,
+        editorLineHeight: state.editorLineHeight,
         editorContentWidth: state.editorContentWidth,
         lineWrapping: state.lineWrapping,
         justifyText: state.justifyText,

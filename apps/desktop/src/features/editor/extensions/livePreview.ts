@@ -13,6 +13,7 @@ import { livePreviewTheme } from "./livePreviewTheme";
 
 const INTERACTIVE_PREVIEW_SELECTOR = [
     ".cm-lp-link",
+    ".cm-lp-task-line",
     ".cm-inline-image-link",
     ".cm-youtube-link",
     ".cm-note-embed",
@@ -21,9 +22,30 @@ const INTERACTIVE_PREVIEW_SELECTOR = [
 ].join(", ");
 
 function cycleTaskMarker(marker: string): string {
-    if (marker === " ") return "~";
-    if (marker === "~" || marker === "/") return "x";
-    return " ";
+    return marker === "x" || marker === "X" ? " " : "x";
+}
+
+function collapsePreviewSelection(view: EditorView) {
+    const selection = view.state.selection.main;
+    if (!selection.empty) {
+        view.dispatch({
+            selection: { anchor: selection.head },
+        });
+    }
+
+    const domSelection = view.dom.ownerDocument.getSelection();
+    if (!domSelection || domSelection.rangeCount === 0) return;
+    if (domSelection.isCollapsed) return;
+
+    const anchorNode = domSelection.anchorNode;
+    const focusNode = domSelection.focusNode;
+    const touchesEditor =
+        (!!anchorNode && view.dom.contains(anchorNode)) ||
+        (!!focusNode && view.dom.contains(focusNode));
+
+    if (touchesEditor) {
+        domSelection.removeAllRanges();
+    }
 }
 
 function toggleTaskAtLine(view: EditorView, lineFrom: number, currentMarker: string) {
@@ -52,6 +74,7 @@ export function livePreviewExtension(
             const target = event.target as HTMLElement;
             if (target.closest(INTERACTIVE_PREVIEW_SELECTOR)) {
                 event.preventDefault();
+                collapsePreviewSelection(view);
                 view.focus();
                 return true;
             }
@@ -71,6 +94,7 @@ export function livePreviewExtension(
             if (!Number.isFinite(sourceFrom)) return false;
 
             event.preventDefault();
+            collapsePreviewSelection(view);
             view.dispatch({ selection: { anchor: sourceFrom } });
             view.focus();
             return true;
