@@ -1,0 +1,36 @@
+{
+  "fill" : "automatic",
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "glass" : true,
+          "image-name" : "ChatGPT Image 8 mar 2026, 16_18_11.png",
+          "name" : "ChatGPT Image 8 mar 2026, 16_18_11",
+          "position" : {
+            "scale" : 1.35,
+            "translation-in-points" : [
+              28,
+              -18
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

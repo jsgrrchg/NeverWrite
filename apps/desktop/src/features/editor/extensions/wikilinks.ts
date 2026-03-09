@@ -58,13 +58,6 @@ function findWikilinkAtPosition(
 export type WikilinkResolver = (target: string) => boolean;
 export type WikilinkNavigator = (target: string) => void;
 
-const validLinkMark = Decoration.mark({
-    class: "cm-wikilink cm-wikilink-valid",
-});
-const brokenLinkMark = Decoration.mark({
-    class: "cm-wikilink cm-wikilink-broken",
-});
-
 export function wikilinkExtension(
     resolveLink: WikilinkResolver,
     navigateToLink: WikilinkNavigator,
@@ -103,7 +96,14 @@ export function wikilinkExtension(
                     builder.add(
                         link.from,
                         link.to,
-                        exists ? validLinkMark : brokenLinkMark,
+                        Decoration.mark({
+                            class: exists
+                                ? "cm-wikilink cm-wikilink-valid"
+                                : "cm-wikilink cm-wikilink-broken",
+                            attributes: {
+                                "data-wikilink-target": link.target,
+                            },
+                        }),
                     );
                 }
                 return builder.finish();

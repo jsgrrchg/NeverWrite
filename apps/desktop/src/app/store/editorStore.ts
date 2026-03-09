@@ -1,15 +1,29 @@
 import { create } from "zustand";
+import { useVaultStore } from "./vaultStore";
 
 const SESSION_KEY = "vaultai.session.tabs";
+const SESSION_KEY_PREFIX = "vaultai.session.tabs:";
 
 interface PersistedSession {
     noteIds: Array<{ noteId: string; title: string }>;
     activeNoteId: string | null;
 }
 
-export function readPersistedSession(): PersistedSession | null {
+function pushTabToHistory(history: string[], tabId: string) {
+    return [...history.filter((id) => id !== tabId), tabId];
+}
+
+function getSessionKey(vaultPath: string) {
+    return `${SESSION_KEY_PREFIX}${vaultPath}`;
+}
+
+export function readPersistedSession(
+    vaultPath: string | null,
+): PersistedSession | null {
     try {
-        const raw = localStorage.getItem(SESSION_KEY);
+        const raw =
+            (vaultPath ? localStorage.getItem(getSessionKey(vaultPath)) : null) ??
+            localStorage.getItem(SESSION_KEY);
         if (!raw) return null;
         return JSON.parse(raw) as PersistedSession;
     } catch {
@@ -47,13 +61,23 @@ export interface PendingSelectionReveal {
     head: number;
 }
 
+export interface OpenNoteOptions {
+    placement?: "end" | "afterActive";
+}
+
 interface EditorStore {
     tabs: Tab[];
     activeTabId: string | null;
+    activationHistory: string[];
     editorMode: EditorMode;
     pendingReveal: PendingReveal | null;
     pendingSelectionReveal: PendingSelectionReveal | null;
-    openNote: (noteId: string, title: string, content: string) => void;
+    openNote: (
+        noteId: string,
+        title: string,
+        content: string,
+        options?: OpenNoteOptions,
+    ) => void;
     closeTab: (tabId: string) => void;
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
@@ -72,11 +96,12 @@ interface EditorStore {
 export const useEditorStore = create<EditorStore>((set, get) => ({
     tabs: [],
     activeTabId: null,
+    activationHistory: [],
     editorMode: "preview",
     pendingReveal: null,
     pendingSelectionReveal: null,
 
-    openNote: (noteId, title, content) => {
+    openNote: (noteId, title, content, options) => {
         const existing = get().tabs.find((t) => t.noteId === noteId);
         if (existing) {
             set({ activeTabId: existing.id });
@@ -89,7 +114,43 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             content,
             isDirty: false,
         };
-        set((state) => ({ tabs: [...state.tabs, tab], activeTabId: tab.id }));
+        set((state) => {
+            if (options?.placement !== "afterActive") {
+                return {
+                    tabs: [...state.tabs, tab],
+                    activeTabId: tab.id,
+                    activationHistory: pushTabToHistory(
+                        state.activationHistory,
+                        tab.id,
+                    ),
+                };
+            }
+
+            const activeIndex = state.tabs.findIndex(
+                (item) => item.id === state.activeTabId,
+            );
+            if (activeIndex === -1) {
+                return {
+                    tabs: [...state.tabs, tab],
+                    activeTabId: tab.id,
+                    activationHistory: pushTabToHistory(
+                        state.activationHistory,
+                        tab.id,
+                    ),
+                };
+            }
+
+            const tabs = [...state.tabs];
+            tabs.splice(activeIndex + 1, 0, tab);
+            return {
+                tabs,
+                activeTabId: tab.id,
+                activationHistory: pushTabToHistory(
+                    state.activationHistory,
+                    tab.id,
+                ),
+            };
+        });
     },
 
     closeTab: (tabId) => {
@@ -97,14 +158,26 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const idx = state.tabs.findIndex((t) => t.id === tabId);
             const tabs = state.tabs.filter((t) => t.id !== tabId);
             let activeTabId = state.activeTabId;
+            const activationHistory = state.activationHistory.filter(
+                (id) => id !== tabId,
+            );
             if (activeTabId === tabId) {
-                activeTabId = tabs[Math.min(idx, tabs.length - 1)]?.id ?? null;
+                activeTabId =
+                    [...activationHistory]
+                        .reverse()
+                        .find((id) => tabs.some((tab) => tab.id === id)) ??
+                    tabs[Math.min(idx, tabs.length - 1)]?.id ??
+                    null;
             }
-            return { tabs, activeTabId };
+            return { tabs, activeTabId, activationHistory };
         });
     },
 
-    switchTab: (tabId) => set({ activeTabId: tabId }),
+    switchTab: (tabId) =>
+        set((state) => ({
+            activeTabId: tabId,
+            activationHistory: pushTabToHistory(state.activationHistory, tabId),
+        })),
 
     updateTabContent: (tabId, content) => {
         set((state) => ({
@@ -149,12 +222,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     hydrateTabs: (tabs, activeTabId) => {
+        const nextActiveTabId =
+            activeTabId && tabs.some((tab) => tab.id === activeTabId)
+                ? activeTabId
+                : (tabs[0]?.id ?? null);
         set({
             tabs,
-            activeTabId:
-                activeTabId && tabs.some((tab) => tab.id === activeTabId)
-                    ? activeTabId
-                    : (tabs[0]?.id ?? null),
+            activeTabId: nextActiveTabId,
+            activationHistory: nextActiveTabId ? [nextActiveTabId] : [],
         });
     },
 
@@ -169,7 +244,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                     : Math.max(0, Math.min(index, tabs.length));
 
             tabs.splice(boundedIndex, 0, tab);
-            return { tabs, activeTabId: tab.id };
+            return {
+                tabs,
+                activeTabId: tab.id,
+                activationHistory: pushTabToHistory(
+                    state.activationHistory,
+                    tab.id,
+                ),
+            };
         });
     },
 
@@ -186,10 +268,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
 useEditorStore.subscribe((state) => {
     if (!sessionReady) return;
+
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) return;
+
     const session: PersistedSession = {
         noteIds: state.tabs.map((t) => ({ noteId: t.noteId, title: t.title })),
         activeNoteId:
             state.tabs.find((t) => t.id === state.activeTabId)?.noteId ?? null,
     };
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    localStorage.setItem(getSessionKey(vaultPath), JSON.stringify(session));
 });

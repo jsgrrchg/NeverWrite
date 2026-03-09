@@ -13,6 +13,12 @@ import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import {
+    buildFolderMoveOperations,
+    buildNoteMoveOperations,
+    canMoveFolderToTarget,
+    getBaseName,
+} from "./fileTreeMoves";
+import {
     ContextMenu,
     type ContextMenuEntry,
     type ContextMenuState,
@@ -60,6 +66,10 @@ interface TreeNode {
     children?: Record<string, TreeNode>;
     note?: NoteDto;
 }
+
+type FlatTreeRow =
+    | { kind: "folder"; name: string; path: string; depth: number }
+    | { kind: "note"; note: NoteDto; path: string; depth: number };
 
 function buildTree(notes: NoteDto[]): Record<string, TreeNode> {
     const root: Record<string, TreeNode> = {};
@@ -119,6 +129,42 @@ function flattenVisible(
         }
     }
     return result;
+}
+
+function flattenTreeRows(
+    map: Record<string, TreeNode>,
+    expandedFolders: Set<string>,
+    sortMode: SortMode,
+    prefix = "",
+    depth = 0,
+): FlatTreeRow[] {
+    const rows: FlatTreeRow[] = [];
+
+    for (const [key, node] of sortedEntries(map, sortMode)) {
+        const path = prefix ? `${prefix}/${key}` : key;
+
+        if (node.children) {
+            rows.push({ kind: "folder", name: key, path, depth });
+            if (expandedFolders.has(path)) {
+                rows.push(
+                    ...flattenTreeRows(
+                        node.children,
+                        expandedFolders,
+                        sortMode,
+                        path,
+                        depth + 1,
+                    ),
+                );
+            }
+            continue;
+        }
+
+        if (node.note) {
+            rows.push({ kind: "note", note: node.note, path, depth });
+        }
+    }
+
+    return rows;
 }
 
 function sortedEntries(
@@ -377,19 +423,17 @@ type FileTreeContextPayload =
 
 // --- Tree node ---
 
-interface TreeNodeViewProps {
-    name: string;
-    path: string;
-    node: TreeNode;
+interface FlatTreeRowViewProps {
+    row: FlatTreeRow;
     metrics: TreeMetrics;
     activeNoteId: string | null;
-    depth: number;
-    sortMode: SortMode;
     expandedFolders: Set<string>;
     selectedNoteIds: Set<string>;
-    draggingNoteId: string | null;
+    draggingNoteIds: Set<string>;
+    draggingFolderPath: string | null;
     dragOverPath: string | null;
-    onToggleFolder: (path: string) => void;
+    onFolderClick: (path: string) => void;
+    onFolderMouseDown: (path: string, e: React.MouseEvent) => void;
     onFolderContextMenu: (e: React.MouseEvent, path: string) => void;
     onNoteClick: (
         note: NoteDto,
@@ -402,19 +446,17 @@ interface TreeNodeViewProps {
     onRenameCancel: () => void;
 }
 
-function TreeNodeView({
-    name,
-    path,
-    node,
+function FlatTreeRowView({
+    row,
     metrics,
     activeNoteId,
-    depth,
-    sortMode,
     expandedFolders,
     selectedNoteIds,
-    draggingNoteId,
+    draggingNoteIds,
+    draggingFolderPath,
     dragOverPath,
-    onToggleFolder,
+    onFolderClick,
+    onFolderMouseDown,
     onFolderContextMenu,
     onNoteClick,
     onNoteMouseDown,
@@ -422,18 +464,18 @@ function TreeNodeView({
     renamingNoteId,
     onRenameConfirm,
     onRenameCancel,
-}: TreeNodeViewProps) {
+}: FlatTreeRowViewProps) {
     const renameInputRef = useRef<HTMLInputElement>(null);
-
-    const isDir = !!node.children;
-    const isExpanded = expandedFolders.has(path);
-    const isActive = node.note?.id === activeNoteId;
-    const isSelected = !!node.note && selectedNoteIds.has(node.note.id);
-    const isDragOver = dragOverPath === path;
-    const isRenaming = node.note?.id === renamingNoteId;
-    const label = node.note?.title || name;
-    const paddingLeft = depth * metrics.indentStep + metrics.basePadding;
+    const paddingLeft = row.depth * metrics.indentStep + metrics.basePadding;
     const noteOffset = Math.round(14 * metrics.scale);
+
+    const isFolder = row.kind === "folder";
+    const isDragOver = dragOverPath === row.path;
+    const isDraggingFolder =
+        row.kind === "folder" && draggingFolderPath === row.path;
+    const isExpanded = row.kind === "folder" && expandedFolders.has(row.path);
+    const isRenaming =
+        row.kind === "note" && row.note.id === renamingNoteId;
 
     useEffect(() => {
         if (isRenaming && renameInputRef.current) {
@@ -442,79 +484,47 @@ function TreeNodeView({
         }
     }, [isRenaming]);
 
-    if (isDir) {
+    if (isFolder) {
         return (
-            <div>
-                <button
-                    onClick={() => onToggleFolder(path)}
-                    onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onFolderContextMenu(event, path);
-                    }}
-                    data-folder-path={path}
-                    className="flex items-center gap-1.5 w-full text-left text-xs rounded"
-                    style={{
-                        position: "sticky",
-                        top: depth * metrics.rowHeight,
-                        zIndex: 200 - depth,
-                        paddingLeft,
-                        color: "var(--text-secondary)",
-                        height: metrics.rowHeight,
-                        fontSize: metrics.fontSize,
-                        boxSizing: "border-box",
-                        backgroundColor: isDragOver
-                            ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
-                            : "var(--bg-secondary)",
-                        outline: isDragOver
-                            ? "1px solid var(--accent)"
-                            : "none",
-                        boxShadow:
-                            depth === 0
-                                ? "0 1px 0 color-mix(in srgb, var(--border) 88%, transparent)"
-                                : "inset 0 -1px 0 color-mix(in srgb, var(--border) 72%, transparent)",
-                    }}
-                >
-                    <ChevronIcon open={isExpanded} size={metrics.smallIcon} />
-                    <FolderIcon
-                        open={isExpanded || isDragOver}
-                        size={metrics.mediumIcon}
-                    />
-                    <span className="truncate">{name}</span>
-                </button>
-                {isExpanded &&
-                    sortedEntries(node.children!, sortMode).map(
-                        ([key, child]) => (
-                            <TreeNodeView
-                                key={key}
-                                name={key}
-                                path={`${path}/${key}`}
-                                node={child}
-                                metrics={metrics}
-                                activeNoteId={activeNoteId}
-                                depth={depth + 1}
-                                sortMode={sortMode}
-                                expandedFolders={expandedFolders}
-                                selectedNoteIds={selectedNoteIds}
-                                draggingNoteId={draggingNoteId}
-                                dragOverPath={dragOverPath}
-                                onToggleFolder={onToggleFolder}
-                                onFolderContextMenu={onFolderContextMenu}
-                                onNoteClick={onNoteClick}
-                                onNoteMouseDown={onNoteMouseDown}
-                                onNoteContextMenu={onNoteContextMenu}
-                                renamingNoteId={renamingNoteId}
-                                onRenameConfirm={onRenameConfirm}
-                                onRenameCancel={onRenameCancel}
-                            />
-                        ),
-                    )}
-            </div>
+            <button
+                onMouseDown={(event) => onFolderMouseDown(row.path, event)}
+                onClick={() => onFolderClick(row.path)}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onFolderContextMenu(event, row.path);
+                }}
+                data-folder-path={row.path}
+                className="flex items-center gap-1.5 w-full text-left text-xs rounded"
+                style={{
+                    paddingLeft,
+                    color: "var(--text-secondary)",
+                    height: metrics.rowHeight,
+                    fontSize: metrics.fontSize,
+                    boxSizing: "border-box",
+                    backgroundColor: isDragOver
+                        ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
+                        : "transparent",
+                    outline: isDragOver ? "1px solid var(--accent)" : "none",
+                    opacity: isDraggingFolder ? 0.4 : 1,
+                }}
+            >
+                <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
+                <FolderIcon
+                    open={!!isExpanded || isDragOver}
+                    size={metrics.mediumIcon}
+                />
+                <span className="truncate">{row.name}</span>
+            </button>
         );
     }
 
-    if (isRenaming && node.note) {
-        const note = node.note;
+    const note = row.note;
+    const isActive = note.id === activeNoteId;
+    const isSelected = selectedNoteIds.has(note.id);
+    const isDraggingThis = draggingNoteIds.has(note.id);
+
+    if (isRenaming) {
         return (
             <div
                 className="flex items-center gap-1.5 mx-1 py-0.5"
@@ -522,23 +532,24 @@ function TreeNodeView({
                     paddingLeft: paddingLeft + noteOffset,
                     width: "calc(100% - 8px)",
                     fontSize: metrics.fontSize,
+                    minHeight: metrics.rowHeight,
                 }}
             >
                 <NoteIcon size={metrics.smallIcon} />
                 <input
                     ref={renameInputRef}
-                    defaultValue={label}
+                    defaultValue={note.title}
                     onKeyDown={(e) => {
                         if (e.key === "Enter") {
-                            const v = e.currentTarget.value.trim();
-                            if (v) onRenameConfirm(note, v);
+                            const value = e.currentTarget.value.trim();
+                            if (value) onRenameConfirm(note, value);
                             else onRenameCancel();
                         }
                         if (e.key === "Escape") onRenameCancel();
                     }}
                     onBlur={() => {
-                        const v = renameInputRef.current?.value.trim() ?? "";
-                        if (v) onRenameConfirm(note, v);
+                        const value = renameInputRef.current?.value.trim() ?? "";
+                        if (value) onRenameConfirm(note, value);
                         else onRenameCancel();
                     }}
                     className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
@@ -553,45 +564,40 @@ function TreeNodeView({
         );
     }
 
-    const bgColor = isActive
-        ? "var(--accent)"
-        : isSelected
-          ? "color-mix(in srgb, var(--accent) 22%, transparent)"
-          : "transparent";
-    const textColor = isActive ? "#fff" : "var(--text-primary)";
-    const isDraggingThis = draggingNoteId === node.note?.id;
-
     return (
         <div
             role="button"
             tabIndex={0}
-            data-note-id={node.note?.id}
-            onMouseDown={(e) => node.note && onNoteMouseDown(node.note, e)}
+            data-note-id={note.id}
+            onMouseDown={(e) => onNoteMouseDown(note, e)}
             onClick={(e) =>
-                node.note &&
-                onNoteClick(node.note, {
+                onNoteClick(note, {
                     cmd: e.metaKey || e.ctrlKey,
                     shift: e.shiftKey,
                 })
             }
             onKeyDown={(e) => {
-                if ((e.key === "Enter" || e.key === " ") && node.note) {
+                if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    onNoteClick(node.note, { cmd: false, shift: false });
+                    onNoteClick(note, { cmd: false, shift: false });
                 }
             }}
             onContextMenu={(event) => {
-                if (!node.note) return;
                 event.preventDefault();
                 event.stopPropagation();
-                onNoteContextMenu(event, node.note);
+                onNoteContextMenu(event, note);
             }}
             className="flex items-center gap-1.5 w-full text-left py-1 text-xs rounded mx-1 cursor-pointer"
             style={{
                 paddingLeft: paddingLeft + noteOffset,
                 width: "calc(100% - 8px)",
-                backgroundColor: bgColor,
-                color: textColor,
+                backgroundColor: isSelected
+                    ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                    : "transparent",
+                color: "var(--text-primary)",
+                boxShadow: isActive
+                    ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
+                    : "none",
                 opacity: isDraggingThis ? 0.4 : 1,
                 minHeight: metrics.rowHeight,
                 fontSize: metrics.fontSize,
@@ -599,7 +605,7 @@ function TreeNodeView({
             }}
         >
             <NoteIcon size={metrics.smallIcon} />
-            <span className="truncate">{label}</span>
+            <span className="truncate">{note.title}</span>
         </div>
     );
 }
@@ -608,8 +614,13 @@ function TreeNodeView({
 
 function OpenVaultForm() {
     const openVault = useVaultStore((s) => s.openVault);
+    const cancelOpenVault = useVaultStore((s) => s.cancelOpenVault);
     const isLoading = useVaultStore((s) => s.isLoading);
+    const vaultOpenState = useVaultStore((s) => s.vaultOpenState);
     const error = useVaultStore((s) => s.error);
+    const progressUnit = vaultOpenState.message.toLowerCase().includes("link")
+        ? "links"
+        : "notes";
 
     const handleOpen = async () => {
         const selected = await open({
@@ -635,6 +646,36 @@ function OpenVaultForm() {
             >
                 {isLoading ? "Opening…" : "Select folder"}
             </button>
+            {isLoading && (
+                <div
+                    className="rounded-md p-3 text-xs"
+                    style={{
+                        backgroundColor: "var(--bg-secondary)",
+                        border: "1px solid var(--border)",
+                        color: "var(--text-secondary)",
+                    }}
+                >
+                    <div style={{ color: "var(--text-primary)" }}>
+                        {vaultOpenState.message || "Preparing vault..."}
+                    </div>
+                    <div className="mt-1">
+                        {vaultOpenState.total > 0
+                            ? `${vaultOpenState.processed.toLocaleString()} / ${vaultOpenState.total.toLocaleString()} ${progressUnit}`
+                            : "Calculating progress..."}
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => void cancelOpenVault()}
+                        className="mt-3 text-xs py-1 px-2 rounded"
+                        style={{
+                            border: "1px solid var(--border)",
+                            color: "var(--text-primary)",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                </div>
+            )}
             {error && (
                 <p className="text-xs" style={{ color: "#ef4444" }}>
                     {error}
@@ -647,7 +688,9 @@ function OpenVaultForm() {
 // --- Drag state ---
 
 interface DragState {
-    note: NoteDto;
+    item:
+        | { kind: "notes"; notes: NoteDto[] }
+        | { kind: "folder"; path: string };
     startX: number;
     startY: number;
     active: boolean;
@@ -662,6 +705,7 @@ export function FileTree() {
     const deleteNote = useVaultStore((s) => s.deleteNote);
     const renameNote = useVaultStore((s) => s.renameNote);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
+    const touchVault = useVaultStore((s) => s.touchVault);
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const openNote = useEditorStore((s) => s.openNote);
@@ -684,11 +728,17 @@ export function FileTree() {
     const [lastClickedNoteId, setLastClickedNoteId] = useState<string | null>(
         null,
     );
-    const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
+    const [draggingNoteIds, setDraggingNoteIds] = useState<Set<string>>(
+        new Set(),
+    );
+    const [draggingFolderPath, setDraggingFolderPath] = useState<string | null>(
+        null,
+    );
     const [dragOverPath, setDragOverPath] = useState<string | null>(null);
     const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(
         null,
     );
+    const [dragLabel, setDragLabel] = useState<string | null>(null);
     const [sortMenuOpen, setSortMenuOpen] = useState(false);
     const [creatingMode, setCreatingMode] = useState<"note" | "folder" | null>(
         null,
@@ -713,7 +763,7 @@ export function FileTree() {
         if (selectedNoteIds.size <= 1) return new Set([activeNoteId]);
         return selectedNoteIds;
     }, [activeNoteId, selectedNoteIds]);
-    const tree = buildTree(notes);
+    const tree = useMemo(() => buildTree(notes), [notes]);
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {
         if (!revealActive || !activeNoteId) return [];
@@ -728,6 +778,10 @@ export function FileTree() {
         revealedFolders.forEach((path) => next.add(path));
         return next;
     }, [expandedFolders, revealedFolders]);
+    const flatRows = useMemo(
+        () => flattenTreeRows(tree, visibleExpandedFolders, sortMode),
+        [sortMode, tree, visibleExpandedFolders],
+    );
     const canCollapseAll = expandedFolders.size > 0;
     const treeScale = fileTreeScale / 100;
     const metrics: TreeMetrics = {
@@ -742,7 +796,6 @@ export function FileTree() {
         toolbarIconScale: treeScale,
         inputFontSize: Math.max(12, Math.round(12 * treeScale)),
     };
-
     // Reveal active: keep the active note roughly centered once parent folders are visible.
     useEffect(() => {
         if (!revealActive) return;
@@ -824,6 +877,74 @@ export function FileTree() {
             window.removeEventListener(REVEAL_NOTE_IN_TREE_EVENT, handleReveal);
     }, []);
 
+    const applyMovedIds = useCallback((movedIds: Map<string, string>) => {
+        if (movedIds.size === 0) return;
+
+        setSelectedNoteIds((prev) => {
+            const next = new Set(prev);
+            for (const [fromId, toId] of movedIds) {
+                if (!next.delete(fromId)) continue;
+                next.add(toId);
+            }
+            return next;
+        });
+        setLastClickedNoteId((prev) =>
+            prev ? (movedIds.get(prev) ?? prev) : prev,
+        );
+    }, []);
+
+    const applyMoveOperations = useCallback(
+        async (operations: { fromId: string; note: NoteDto; toPath: string }[]) => {
+            const movedIds = new Map<string, string>();
+
+            for (const operation of operations) {
+                const updated = await renameNote(operation.fromId, operation.toPath);
+                if (!updated) continue;
+
+                movedIds.set(operation.fromId, updated.id);
+                useEditorStore.setState((s) => ({
+                    tabs: s.tabs.map((tab) =>
+                        tab.noteId === operation.fromId
+                            ? {
+                                  ...tab,
+                                  noteId: updated.id,
+                                  title: updated.title,
+                              }
+                            : tab,
+                    ),
+                }));
+            }
+
+            applyMovedIds(movedIds);
+            return movedIds;
+        },
+        [applyMovedIds, renameNote],
+    );
+
+    const getDragTargetFolder = useCallback(
+        (item: DragState["item"], hoveredFolder: string | null) => {
+            if (hoveredFolder === null) return null;
+
+            if (item.kind === "folder") {
+                return canMoveFolderToTarget(item.path, hoveredFolder)
+                    ? hoveredFolder
+                    : null;
+            }
+
+            return buildNoteMoveOperations(item.notes, hoveredFolder).length > 0
+                ? hoveredFolder
+                : null;
+        },
+        [],
+    );
+
+    const resetDragState = useCallback(() => {
+        setDragPos(null);
+        setDraggingNoteIds(new Set());
+        setDraggingFolderPath(null);
+        setDragLabel(null);
+    }, []);
+
     // Mouse-based drag and drop
     useEffect(() => {
         const onMove = (e: MouseEvent) => {
@@ -835,7 +956,19 @@ export function FileTree() {
                 const dy = e.clientY - s.startY;
                 if (Math.sqrt(dx * dx + dy * dy) < 5) return;
                 s.active = true;
-                setDraggingNoteId(s.note.id);
+                if (s.item.kind === "folder") {
+                    setDraggingFolderPath(s.item.path);
+                    setDragLabel(getBaseName(s.item.path));
+                } else {
+                    setDraggingNoteIds(
+                        new Set(s.item.notes.map((note) => note.id)),
+                    );
+                    setDragLabel(
+                        s.item.notes.length > 1
+                            ? `${s.item.notes.length} notes`
+                            : s.item.notes[0]?.title ?? null,
+                    );
+                }
             }
 
             setDragPos({ x: e.clientX, y: e.clientY });
@@ -844,7 +977,9 @@ export function FileTree() {
             const folderEl = els.find((el) =>
                 el.hasAttribute("data-folder-path"),
             );
-            const folder = folderEl?.getAttribute("data-folder-path") ?? null;
+            const hoveredFolder =
+                folderEl?.getAttribute("data-folder-path") ?? null;
+            const folder = getDragTargetFolder(s.item, hoveredFolder);
             dragOverPathRef.current = folder;
             setDragOverPath(folder);
         };
@@ -860,8 +995,7 @@ export function FileTree() {
                 wasJustDraggingRef.current = false;
             });
 
-            setDragPos(null);
-            setDraggingNoteId(null);
+            resetDragState();
 
             const folder = dragOverPathRef.current;
             dragOverPathRef.current = null;
@@ -869,26 +1003,43 @@ export function FileTree() {
 
             if (folder === null) return;
 
-            const note = s.note;
-            const filename = note.id.split("/").pop()!;
-            const currentParent = note.id.includes("/")
-                ? note.id.split("/").slice(0, -1).join("/")
-                : "";
-            if (currentParent === folder) return;
+            if (s.item.kind === "folder") {
+                const folderPath = s.item.path;
+                const operations = buildFolderMoveOperations(
+                    useVaultStore.getState().notes,
+                    folderPath,
+                    folder,
+                );
+                const movedIds = await applyMoveOperations(operations);
+                if (movedIds.size === 0) return;
 
-            const newPath = folder ? `${folder}/${filename}` : filename;
-            const updated = await useVaultStore
-                .getState()
-                .renameNote(note.id, newPath);
-            if (updated) {
-                useEditorStore.setState((st) => ({
-                    tabs: st.tabs.map((t) =>
-                        t.noteId === note.id
-                            ? { ...t, noteId: updated.id, title: updated.title }
-                            : t,
-                    ),
-                }));
+                const folderName = getBaseName(folderPath);
+                const nextFolderPath = folder
+                    ? `${folder}/${folderName}`
+                    : folderName;
+                setExpandedFolders((prev) => {
+                    const next = new Set(prev);
+                    for (const path of prev) {
+                        if (
+                            path === folderPath ||
+                            path.startsWith(`${folderPath}/`)
+                        ) {
+                            next.delete(path);
+                            next.add(
+                                path === folderPath
+                                    ? nextFolderPath
+                                    : `${nextFolderPath}/${path.slice(folderPath.length + 1)}`,
+                            );
+                        }
+                    }
+                    return next;
+                });
+                return;
             }
+
+            await applyMoveOperations(
+                buildNoteMoveOperations(s.item.notes, folder),
+            );
         };
 
         window.addEventListener("mousemove", onMove);
@@ -897,7 +1048,7 @@ export function FileTree() {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
         };
-    }, []);
+    }, [applyMoveOperations, getDragTargetFolder, resetDragState]);
 
     const handleToggleFolder = (path: string) => {
         setExpandedFolders((prev) => {
@@ -907,6 +1058,14 @@ export function FileTree() {
             return next;
         });
     };
+
+    const handleFolderClick = useCallback(
+        (path: string) => {
+            if (wasJustDraggingRef.current) return;
+            handleToggleFolder(path);
+        },
+        [],
+    );
 
     const handleSortSelect = (mode: SortMode) => {
         setSortMode(mode);
@@ -932,8 +1091,26 @@ export function FileTree() {
         (note: NoteDto, e: React.MouseEvent) => {
             if (e.button !== 0) return;
             e.preventDefault(); // prevent text selection during drag
+            const dragNotes =
+                selectedNoteIds.size > 1 && selectedNoteIds.has(note.id)
+                    ? notes.filter((item) => selectedNoteIds.has(item.id))
+                    : [note];
             dragStateRef.current = {
-                note,
+                item: { kind: "notes", notes: dragNotes },
+                startX: e.clientX,
+                startY: e.clientY,
+                active: false,
+            };
+        },
+        [notes, selectedNoteIds],
+    );
+
+    const handleFolderMouseDown = useCallback(
+        (path: string, e: React.MouseEvent) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            dragStateRef.current = {
+                item: { kind: "folder", path },
                 startX: e.clientX,
                 startY: e.clientY,
                 active: false,
@@ -1032,8 +1209,15 @@ export function FileTree() {
 
     const handleNoteContextMenu = (e: React.MouseEvent, note: NoteDto) => {
         e.preventDefault();
-        setSelectedNoteIds(new Set([note.id]));
-        setLastClickedNoteId(note.id);
+
+        const preserveSelection =
+            selectedNoteIds.size > 1 && selectedNoteIds.has(note.id);
+
+        if (!preserveSelection) {
+            setSelectedNoteIds(new Set([note.id]));
+            setLastClickedNoteId(note.id);
+        }
+
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -1063,28 +1247,23 @@ export function FileTree() {
         });
     };
 
-    const applyMove = useCallback(
-        async (note: NoteDto, targetFolder: string) => {
-            const filename = note.id.split("/").pop()!;
-            const currentParent = note.id.includes("/")
-                ? note.id.split("/").slice(0, -1).join("/")
-                : "";
-            if (currentParent === targetFolder) return;
-            const newPath = targetFolder
-                ? `${targetFolder}/${filename}`
-                : filename;
-            const updated = await renameNote(note.id, newPath);
-            if (updated) {
-                useEditorStore.setState((s) => ({
-                    tabs: s.tabs.map((t) =>
-                        t.noteId === note.id
-                            ? { ...t, noteId: updated.id, title: updated.title }
-                            : t,
-                    ),
-                }));
+    const getContextTargetNotes = useCallback(
+        (note: NoteDto) => {
+            if (selectedNoteIds.size > 1 && selectedNoteIds.has(note.id)) {
+                return notes.filter((item) => selectedNoteIds.has(item.id));
             }
+            return [note];
         },
-        [renameNote],
+        [notes, selectedNoteIds],
+    );
+
+    const applyMove = useCallback(
+        async (notesToMove: NoteDto[], targetFolder: string) => {
+            await applyMoveOperations(
+                buildNoteMoveOperations(notesToMove, targetFolder),
+            );
+        },
+        [applyMoveOperations],
     );
 
     const startCreating = useCallback(
@@ -1162,10 +1341,27 @@ export function FileTree() {
     };
 
     const handleDelete = useCallback(
-        async (note: NoteDto) => {
-            const tab = tabs.find((t) => t.noteId === note.id);
-            if (tab) closeTab(tab.id);
-            await deleteNote(note.id);
+        async (notesToDelete: NoteDto[]) => {
+            const noteIds = new Set(notesToDelete.map((note) => note.id));
+
+            tabs.forEach((tab) => {
+                if (noteIds.has(tab.noteId)) {
+                    closeTab(tab.id);
+                }
+            });
+
+            for (const note of notesToDelete) {
+                await deleteNote(note.id);
+            }
+
+            setSelectedNoteIds((prev) => {
+                const next = new Set(prev);
+                noteIds.forEach((noteId) => next.delete(noteId));
+                return next;
+            });
+            setLastClickedNoteId((prev) =>
+                prev && noteIds.has(prev) ? null : prev,
+            );
         },
         [closeTab, deleteNote, tabs],
     );
@@ -1212,11 +1408,12 @@ export function FileTree() {
                     path: detail.path,
                     modified_at: Math.floor(Date.now() / 1000),
                 });
+                touchVault();
             } catch (error) {
                 console.error("Error duplicating note:", error);
             }
         },
-        [createNote, notes, readNoteContent, tabs, updateNoteMetadata],
+        [createNote, notes, readNoteContent, tabs, touchVault, updateNoteMetadata],
     );
 
     const handleRevealNoteInFinder = useCallback((note: NoteDto) => {
@@ -1235,9 +1432,12 @@ export function FileTree() {
     const openMoveMenu = useCallback(
         (menu: ContextMenuState<FileTreeContextPayload>) => {
             if (menu.payload.kind !== "note") return;
-            setContextMenu({
-                ...menu,
-                payload: { kind: "move-note", note: menu.payload.note },
+            const note = menu.payload.note;
+            queueMicrotask(() => {
+                setContextMenu({
+                    ...menu,
+                    payload: { kind: "move-note", note },
+                });
             });
         },
         [],
@@ -1266,91 +1466,104 @@ export function FileTree() {
                         disabled: expandedFolders.size === 0,
                     },
                 ];
-            case "folder":
+            case "folder": {
+                const { path, expanded } = contextMenu.payload;
                 return [
                     {
                         label: "New Note Here",
-                        action: () =>
-                            startCreating("note", contextMenu.payload.path),
+                        action: () => startCreating("note", path),
                     },
                     {
                         label: "New Folder Here",
-                        action: () =>
-                            startCreating("folder", contextMenu.payload.path),
+                        action: () => startCreating("folder", path),
                     },
                     { type: "separator" },
                     {
-                        label: contextMenu.payload.expanded
-                            ? "Collapse"
-                            : "Expand",
-                        action: () => handleToggleFolder(contextMenu.payload.path),
+                        label: expanded ? "Collapse" : "Expand",
+                        action: () => handleToggleFolder(path),
                     },
                     {
                         label: "Reveal in Finder",
-                        action: () =>
-                            handleRevealFolderInFinder(contextMenu.payload.path),
+                        action: () => handleRevealFolderInFinder(path),
                     },
                     {
                         label: "Copy Folder Path",
-                        action: () =>
-                            void navigator.clipboard.writeText(
-                                contextMenu.payload.path,
-                            ),
+                        action: () => void navigator.clipboard.writeText(path),
                     },
                 ];
-            case "note":
+            }
+            case "note": {
+                const { note } = contextMenu.payload;
+                const contextTargetNotes = getContextTargetNotes(note);
+                const deleteTargets = contextTargetNotes;
+                const deleteLabel =
+                    deleteTargets.length > 1
+                        ? "Delete Selected Notes"
+                        : "Delete Note";
+                const moveLabel =
+                    contextTargetNotes.length > 1
+                        ? "Move Selected Notes to…"
+                        : "Move Note to…";
+
                 return [
                     {
                         label: "Open",
-                        action: () => void openTreeNote(contextMenu.payload.note),
+                        action: () => void openTreeNote(note),
                     },
                     {
                         label: "Open in New Tab",
-                        action: () =>
-                            void handleOpenNoteInNewTab(contextMenu.payload.note),
+                        action: () => void handleOpenNoteInNewTab(note),
                     },
                     { type: "separator" },
                     {
                         label: "Rename",
-                        action: () => handleRenameStart(contextMenu.payload.note),
+                        action: () => handleRenameStart(note),
                     },
                     {
-                        label: "Move to…",
+                        label: moveLabel,
                         action: () => openMoveMenu(contextMenu),
                         disabled: allFolderPaths.length === 0,
                     },
                     {
                         label: "Duplicate",
-                        action: () =>
-                            void handleDuplicateNote(contextMenu.payload.note),
+                        action: () => void handleDuplicateNote(note),
                     },
                     { type: "separator" },
                     {
                         label: "Reveal in Finder",
-                        action: () =>
-                            handleRevealNoteInFinder(contextMenu.payload.note),
+                        action: () => handleRevealNoteInFinder(note),
                     },
                     {
                         label: "Copy Note Path",
-                        action: () =>
-                            void navigator.clipboard.writeText(
-                                contextMenu.payload.note.id,
-                            ),
+                        action: () => void navigator.clipboard.writeText(note.id),
                     },
                     { type: "separator" },
                     {
-                        label: "Delete",
-                        action: () => void handleDelete(contextMenu.payload.note),
+                        label: deleteLabel,
+                        action: () => void handleDelete(deleteTargets),
                         danger: true,
                     },
                 ];
+            }
             case "move-note": {
-                const currentParent = contextMenu.payload.note.id.includes("/")
-                    ? contextMenu.payload.note.id.split("/").slice(0, -1).join("/")
+                const { note } = contextMenu.payload;
+                const moveTargets = getContextTargetNotes(note);
+                const firstParent = moveTargets[0]?.id.includes("/")
+                    ? moveTargets[0].id.split("/").slice(0, -1).join("/")
                     : "";
-                const folderTargets = allFolderPaths.filter(
-                    (folder) => folder !== currentParent,
-                );
+                const sameParent = moveTargets.every((item) => {
+                    const parent = item.id.includes("/")
+                        ? item.id.split("/").slice(0, -1).join("/")
+                        : "";
+                    return parent === firstParent;
+                });
+                const currentParent = sameParent ? firstParent : null;
+                const folderTargets =
+                    currentParent === null
+                        ? allFolderPaths
+                        : allFolderPaths.filter(
+                              (folder) => folder !== currentParent,
+                          );
 
                 return [
                     {
@@ -1360,21 +1573,19 @@ export function FileTree() {
                                 ...contextMenu,
                                 payload: {
                                     kind: "note",
-                                    note: contextMenu.payload.note,
+                                    note,
                                 },
                             }),
                     },
                     { type: "separator" },
                     {
                         label: "/ Root",
-                        action: () =>
-                            void applyMove(contextMenu.payload.note, ""),
-                        disabled: currentParent === "",
+                        action: () => void applyMove(moveTargets, ""),
+                        disabled: currentParent !== null && currentParent === "",
                     },
                     ...folderTargets.map((folder) => ({
                         label: folder,
-                        action: () =>
-                            void applyMove(contextMenu.payload.note, folder),
+                        action: () => void applyMove(moveTargets, folder),
                     })),
                 ];
             }
@@ -1384,6 +1595,7 @@ export function FileTree() {
         applyMove,
         contextMenu,
         expandedFolders.size,
+        getContextTargetNotes,
         handleDelete,
         handleDuplicateNote,
         handleOpenNoteInNewTab,
@@ -1396,15 +1608,11 @@ export function FileTree() {
 
     if (!vaultPath) return <OpenVaultForm />;
 
-    const draggingNote = draggingNoteId
-        ? notes.find((n) => n.id === draggingNoteId)
-        : null;
-
     return (
         <div className="h-full flex flex-col overflow-hidden">
             {/* Toolbar */}
             <div
-                className="flex items-center justify-center gap-1 flex-shrink-0"
+                className="flex items-center justify-center gap-1 shrink-0"
                 style={{
                     height: Math.max(36, Math.round(36 * treeScale)),
                     borderBottom: "1px solid var(--border)",
@@ -1553,7 +1761,7 @@ export function FileTree() {
             {/* New item input */}
             {creatingMode && (
                 <div
-                    className="px-2 py-1 flex-shrink-0"
+                    className="px-2 py-1 shrink-0"
                     style={{ borderBottom: "1px solid var(--border)" }}
                 >
                     <input
@@ -1584,10 +1792,22 @@ export function FileTree() {
             {/* Tree */}
             <div
                 ref={treeScrollRef}
+                data-folder-path=""
                 className="flex-1 overflow-y-auto pb-1 px-1"
                 onContextMenu={(event) => {
                     if (event.target !== event.currentTarget) return;
                     handleBlankContextMenu(event);
+                }}
+                style={{
+                    backgroundColor:
+                        dragOverPath === ""
+                            ? "color-mix(in srgb, var(--accent) 8%, transparent)"
+                            : undefined,
+                    outline:
+                        dragOverPath === ""
+                            ? "1px solid color-mix(in srgb, var(--accent) 50%, transparent)"
+                            : "none",
+                    outlineOffset: dragOverPath === "" ? -1 : 0,
                 }}
             >
                 {notes.length === 0 ? (
@@ -1597,25 +1817,27 @@ export function FileTree() {
                             color: "var(--text-secondary)",
                             fontSize: metrics.fontSize,
                         }}
-                    >
-                        No notes
-                    </p>
+                        >
+                            No notes
+                        </p>
                 ) : (
-                    sortedEntries(tree, sortMode).map(([key, node]) => (
-                        <TreeNodeView
-                            key={key}
-                            name={key}
-                            path={key}
-                            node={node}
+                    flatRows.map((row) => (
+                        <FlatTreeRowView
+                            key={
+                                row.kind === "folder"
+                                    ? `folder:${row.path}`
+                                    : `note:${row.note.id}`
+                            }
+                            row={row}
                             metrics={metrics}
                             activeNoteId={activeTab?.noteId ?? null}
-                            depth={0}
-                            sortMode={sortMode}
                             expandedFolders={visibleExpandedFolders}
                             selectedNoteIds={visibleSelectedNoteIds}
-                            draggingNoteId={draggingNoteId}
+                            draggingNoteIds={draggingNoteIds}
+                            draggingFolderPath={draggingFolderPath}
                             dragOverPath={dragOverPath}
-                            onToggleFolder={handleToggleFolder}
+                            onFolderClick={handleFolderClick}
+                            onFolderMouseDown={handleFolderMouseDown}
                             onFolderContextMenu={handleFolderContextMenu}
                             onNoteClick={handleNoteClick}
                             onNoteMouseDown={handleNoteMouseDown}
@@ -1629,7 +1851,7 @@ export function FileTree() {
             </div>
 
             {/* Drag ghost */}
-            {dragPos && draggingNote && (
+            {dragPos && dragLabel && (
                 <div
                     style={{
                         position: "fixed",
@@ -1650,7 +1872,7 @@ export function FileTree() {
                         whiteSpace: "nowrap",
                     }}
                 >
-                    {draggingNote.title}
+                    {dragLabel}
                 </div>
             )}
 

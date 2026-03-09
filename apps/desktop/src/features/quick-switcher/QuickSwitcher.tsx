@@ -1,8 +1,18 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import {
+    useState,
+    useEffect,
+    useRef,
+    useCallback,
+    useMemo,
+    useDeferredValue,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
+import { useVirtualList } from "../../app/hooks/useVirtualList";
+
+const QUICK_SWITCHER_ROW_HEIGHT = 48;
 
 function fuzzyScore(query: string, text: string): number {
     const q = query.toLowerCase();
@@ -28,57 +38,71 @@ function fuzzyScore(query: string, text: string): number {
 }
 
 export function QuickSwitcher() {
+    const activeModal = useCommandStore((s) => s.activeModal);
+    if (activeModal !== "quick-switcher") return null;
+
+    return <QuickSwitcherDialog />;
+}
+
+function QuickSwitcherDialog() {
     const [query, setQuery] = useState("");
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
-
-    const activeModal = useCommandStore((s) => s.activeModal);
     const closeModal = useCommandStore((s) => s.closeModal);
     const notes = useVaultStore((s) => s.notes);
+    const tabs = useEditorStore((s) => s.tabs);
     const openNote = useEditorStore((s) => s.openNote);
+    const deferredQuery = useDeferredValue(query);
+    const noteMap = useMemo(
+        () => new Map(notes.map((note) => [note.id, note])),
+        [notes],
+    );
 
-    const open = activeModal === "quick-switcher";
-
-    // Read tabs snapshot only when building results (avoids subscribing to tabs)
-    const results = open
-        ? query.trim()
-            ? notes
-                  .map((note) => ({
-                      note,
-                      score: Math.max(
-                          fuzzyScore(query, note.title),
-                          fuzzyScore(query, note.id),
-                      ),
-                  }))
-                  .filter(({ score }) => score > 0)
-                  .sort((a, b) => b.score - a.score)
-                  .map(({ note }) => note)
-            : // When empty, show open tabs first then remaining notes
-              (() => {
-                  const tabs = useEditorStore.getState().tabs;
-                  return [
-                      ...tabs
-                          .map((t) => notes.find((n) => n.id === t.noteId))
-                          .filter((n): n is NoteDto => !!n),
-                      ...notes.filter(
-                          (n) => !tabs.some((t) => t.noteId === n.id),
-                      ),
-                  ];
-              })()
-        : [];
-
-    useEffect(() => {
-        if (open) {
-            setQuery("");
-            setSelectedIndex(0);
-            setTimeout(() => inputRef.current?.focus(), 0);
+    const results = useMemo(() => {
+        if (!deferredQuery.trim()) {
+            return [
+                ...tabs
+                    .map((tab) => noteMap.get(tab.noteId))
+                    .filter((note): note is NoteDto => !!note),
+                ...notes.filter(
+                    (note) => !tabs.some((tab) => tab.noteId === note.id),
+                ),
+            ];
         }
-    }, [open]);
+
+        return notes
+            .map((note) => ({
+                note,
+                score: Math.max(
+                    fuzzyScore(deferredQuery, note.title),
+                    fuzzyScore(deferredQuery, note.id),
+                ),
+            }))
+            .filter(({ score }) => score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map(({ note }) => note);
+    }, [deferredQuery, noteMap, notes, tabs]);
+    const virtual = useVirtualList(
+        listRef,
+        Math.min(results.length, 200),
+        QUICK_SWITCHER_ROW_HEIGHT,
+        6,
+    );
+    const visibleResults = results
+        .slice(0, 200)
+        .slice(virtual.startIndex, virtual.endIndex);
 
     useEffect(() => {
-        setSelectedIndex(0);
-    }, [query]);
+        const frame = window.setTimeout(() => inputRef.current?.focus(), 0);
+        return () => window.clearTimeout(frame);
+    }, []);
+
+    useEffect(() => {
+        setSelectedIndex((current) =>
+            Math.min(current, Math.max(0, Math.min(results.length, 200) - 1)),
+        );
+    }, [results]);
 
     useEffect(() => {
         const list = listRef.current;
@@ -111,9 +135,10 @@ export function QuickSwitcher() {
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
+            const maxIndex = Math.max(0, Math.min(results.length, 200) - 1);
             if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setSelectedIndex((i) => Math.min(i + 1, results.length - 1));
+                setSelectedIndex((i) => Math.min(i + 1, maxIndex));
             } else if (e.key === "ArrowUp") {
                 e.preventDefault();
                 setSelectedIndex((i) => Math.max(i - 1, 0));
@@ -128,8 +153,6 @@ export function QuickSwitcher() {
         },
         [results, selectedIndex, openNoteAndClose, closeModal],
     );
-
-    if (!open) return null;
 
     return (
         <div
@@ -148,7 +171,10 @@ export function QuickSwitcher() {
                 <input
                     ref={inputRef}
                     value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    onChange={(e) => {
+                        setQuery(e.target.value);
+                        setSelectedIndex(0);
+                    }}
                     onKeyDown={handleKeyDown}
                     placeholder="Search notes..."
                     className="w-full px-4 py-3 text-sm outline-none"
@@ -167,34 +193,57 @@ export function QuickSwitcher() {
                             No notes found
                         </div>
                     ) : (
-                        results.slice(0, 20).map((note, i) => (
-                            <button
-                                key={note.id}
-                                onClick={() => void openNoteAndClose(note)}
-                                className="w-full text-left px-4 py-2 text-sm"
+                        <div
+                            style={{
+                                position: "relative",
+                                height: virtual.totalHeight,
+                            }}
+                        >
+                            <div
                                 style={{
-                                    backgroundColor:
-                                        i === selectedIndex
-                                            ? "var(--accent)"
-                                            : "transparent",
-                                    color:
-                                        i === selectedIndex
-                                            ? "#fff"
-                                            : "var(--text-primary)",
+                                    position: "absolute",
+                                    left: 0,
+                                    right: 0,
+                                    top: virtual.offsetTop,
                                 }}
                             >
-                                <div className="truncate">{note.title}</div>
-                                <div
-                                    className="text-xs truncate"
-                                    style={{
-                                        opacity:
-                                            i === selectedIndex ? 0.7 : 0.5,
-                                    }}
-                                >
-                                    {note.id}
-                                </div>
-                            </button>
-                        ))
+                                {visibleResults.map((note, localIndex) => {
+                                    const i = virtual.startIndex + localIndex;
+                                    return (
+                                        <button
+                                            key={note.id}
+                                            onClick={() => void openNoteAndClose(note)}
+                                            className="w-full text-left px-4 py-2 text-sm"
+                                            style={{
+                                                backgroundColor:
+                                                    i === selectedIndex
+                                                        ? "var(--accent)"
+                                                        : "transparent",
+                                                color:
+                                                    i === selectedIndex
+                                                        ? "#fff"
+                                                        : "var(--text-primary)",
+                                                minHeight:
+                                                    QUICK_SWITCHER_ROW_HEIGHT,
+                                            }}
+                                        >
+                                            <div className="truncate">{note.title}</div>
+                                            <div
+                                                className="text-xs truncate"
+                                                style={{
+                                                    opacity:
+                                                        i === selectedIndex
+                                                            ? 0.7
+                                                            : 0.5,
+                                                }}
+                                            >
+                                                {note.id}
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     )}
                 </div>
             </div>

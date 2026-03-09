@@ -57,7 +57,7 @@ fn build_sample_index() -> VaultIndex {
 #[test]
 fn build_index_has_all_notes() {
     let index = build_sample_index();
-    assert_eq!(index.notes.len(), 4);
+    assert_eq!(index.metadata.len(), 4);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn search_by_title() {
     let index = build_sample_index();
     let results = index.search_by_title("Primera");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].note.id.0, "nota1");
+    assert_eq!(results[0].note_id.0, "nota1");
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn reindex_note_updates_index() {
 
     // El título cambió
     assert_eq!(
-        index.notes.get(&NoteId("nota1".into())).unwrap().title,
+        index.metadata.get(&NoteId("nota1".into())).unwrap().title,
         "Nota Actualizada"
     );
 
@@ -386,8 +386,8 @@ fn remove_note_cleans_index() {
     let mut index = build_sample_index();
     index.remove_note(&NoteId("nota1".into()));
 
-    assert_eq!(index.notes.len(), 3);
-    assert!(!index.notes.contains_key(&NoteId("nota1".into())));
+    assert_eq!(index.metadata.len(), 3);
+    assert!(!index.metadata.contains_key(&NoteId("nota1".into())));
 
     // Los backlinks de nota2 ya no incluyen nota1
     let bl = index.get_backlinks(&NoteId("nota2".into()));

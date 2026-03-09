@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { AppLayout } from "./components/layout/AppLayout";
@@ -31,7 +32,10 @@ import {
     readPersistedSession,
     markSessionReady,
 } from "./app/store/editorStore";
-import { useVaultStore } from "./app/store/vaultStore";
+import {
+    useVaultStore,
+    type VaultNoteChange,
+} from "./app/store/vaultStore";
 import { useLayoutStore } from "./app/store/layoutStore";
 import {
     getYouTubeEmbedUrl,
@@ -65,6 +69,120 @@ function RightPanel() {
         return <OutlineRightPanel />;
     }
     return <LinksPanel />;
+}
+
+function VaultOpeningOverlay() {
+    const isLoading = useVaultStore((s) => s.isLoading);
+    const openState = useVaultStore((s) => s.vaultOpenState);
+    const cancelOpenVault = useVaultStore((s) => s.cancelOpenVault);
+
+    if (!isLoading) return null;
+
+    const hasProgress = openState.total > 0;
+    const vaultName = openState.path?.split("/").pop() ?? "Vault";
+    const progressUnit = openState.message.toLowerCase().includes("link")
+        ? "links"
+        : "notes";
+
+    return (
+        <div
+            className="absolute inset-0 flex items-center justify-center p-6"
+            style={{
+                zIndex: 50,
+                background:
+                    "linear-gradient(180deg, rgb(6 10 15 / 0.72), rgb(6 10 15 / 0.82))",
+                backdropFilter: "blur(10px)",
+            }}
+        >
+            <div
+                className="w-full max-w-md rounded-xl p-5"
+                style={{
+                    backgroundColor: "color-mix(in srgb, var(--bg-secondary) 92%, black)",
+                    border: "1px solid color-mix(in srgb, var(--border) 82%, white 6%)",
+                    boxShadow: "0 24px 80px rgb(0 0 0 / 0.35)",
+                }}
+            >
+                <div
+                    className="text-[11px] uppercase tracking-[0.18em]"
+                    style={{ color: "var(--accent)" }}
+                >
+                    Opening vault
+                </div>
+                <div
+                    className="mt-2 text-lg font-semibold"
+                    style={{ color: "var(--text-primary)" }}
+                >
+                    {vaultName}
+                </div>
+                <div
+                    className="mt-1 text-sm"
+                    style={{ color: "var(--text-secondary)" }}
+                >
+                    {openState.message || "Preparing vault..."}
+                </div>
+
+                <div
+                    className="mt-4 h-2 overflow-hidden rounded-full"
+                    style={{ backgroundColor: "var(--bg-primary)" }}
+                >
+                    <div
+                        style={{
+                            width: hasProgress
+                                ? `${Math.min(
+                                      100,
+                                      Math.max(
+                                          6,
+                                          (openState.processed / openState.total) *
+                                              100,
+                                      ),
+                                  )}%`
+                                : "18%",
+                            height: "100%",
+                            background:
+                                "linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 50%, white))",
+                            transition: "width 160ms ease",
+                        }}
+                    />
+                </div>
+
+                <div
+                    className="mt-3 flex items-center justify-between text-xs"
+                    style={{ color: "var(--text-secondary)" }}
+                >
+                    <span>{openState.stage.replaceAll("_", " ")}</span>
+                    <span>
+                        {hasProgress
+                            ? `${openState.processed.toLocaleString()} / ${openState.total.toLocaleString()} ${progressUnit}`
+                            : "Preparing index"}
+                    </span>
+                </div>
+
+                {openState.snapshot_used && (
+                    <div
+                        className="mt-3 text-xs"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        Reusing persisted snapshot before syncing changes.
+                    </div>
+                )}
+
+                <div className="mt-5 flex justify-end">
+                    <button
+                        type="button"
+                        onClick={() => void cancelOpenVault()}
+                        className="rounded-md px-3 py-1.5 text-sm"
+                        style={{
+                            color: "var(--text-primary)",
+                            border: "1px solid var(--border)",
+                            backgroundColor: "var(--bg-primary)",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
 }
 
 function OutlineRightPanel() {
@@ -422,9 +540,113 @@ function useGlobalShortcuts(
     ]);
 }
 
+function canScrollElement(element: HTMLElement) {
+    const style = window.getComputedStyle(element);
+    const canScrollY =
+        (style.overflowY === "auto" ||
+            style.overflowY === "scroll" ||
+            style.overflowY === "overlay") &&
+        element.scrollHeight > element.clientHeight;
+    const canScrollX =
+        (style.overflowX === "auto" ||
+            style.overflowX === "scroll" ||
+            style.overflowX === "overlay") &&
+        element.scrollWidth > element.clientWidth;
+
+    return canScrollY || canScrollX;
+}
+
+function resolveScrollbarActivationTarget(element: HTMLElement) {
+    const editorShell = element.closest(".editor-shell");
+    if (
+        editorShell instanceof HTMLElement &&
+        element.closest(".cm-editor")
+    ) {
+        return editorShell;
+    }
+
+    return element;
+}
+
+function findScrollableAncestor(target: EventTarget | null) {
+    let current = target instanceof HTMLElement ? target : null;
+
+    while (current) {
+        if (canScrollElement(current)) {
+            return resolveScrollbarActivationTarget(current);
+        }
+        current = current.parentElement;
+    }
+
+    return null;
+}
+
+function useDynamicScrollbars() {
+    useEffect(() => {
+        const activeTimers = new Map<HTMLElement, number>();
+
+        const markActive = (element: HTMLElement | null) => {
+            if (!element) return;
+
+            element.dataset.scrollbarActive = "true";
+
+            const existing = activeTimers.get(element);
+            if (existing) {
+                window.clearTimeout(existing);
+            }
+
+            const timeout = window.setTimeout(() => {
+                delete element.dataset.scrollbarActive;
+                activeTimers.delete(element);
+            }, 650);
+
+            activeTimers.set(element, timeout);
+        };
+
+        const handleScroll = (event: Event) => {
+            const element =
+                event.target instanceof HTMLElement ? event.target : null;
+            markActive(
+                element && canScrollElement(element)
+                    ? resolveScrollbarActivationTarget(element)
+                    : null,
+            );
+        };
+
+        const handleWheel = (event: WheelEvent) => {
+            markActive(findScrollableAncestor(event.target));
+        };
+
+        const handleTouchMove = (event: TouchEvent) => {
+            markActive(findScrollableAncestor(event.target));
+        };
+
+        window.addEventListener("scroll", handleScroll, true);
+        window.addEventListener("wheel", handleWheel, {
+            capture: true,
+            passive: true,
+        });
+            window.addEventListener("touchmove", handleTouchMove, {
+                capture: true,
+                passive: true,
+            });
+
+        return () => {
+            window.removeEventListener("scroll", handleScroll, true);
+            window.removeEventListener("wheel", handleWheel, true);
+            window.removeEventListener("touchmove", handleTouchMove, true);
+
+            for (const timeout of activeTimers.values()) {
+                window.clearTimeout(timeout);
+            }
+        };
+    }, []);
+}
+
 export default function App() {
     const [sidebarView, setSidebarView] = useState<SidebarView>("files");
     const restoreVault = useVaultStore((s) => s.restoreVault);
+    const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const windowMode = getWindowMode();
@@ -438,6 +660,38 @@ export default function App() {
 
     useRegisterCommands(openSearchPanel);
     useGlobalShortcuts(openSearchPanel, openSettings);
+    useDynamicScrollbars();
+
+    const restoreSessionForCurrentVault = useCallback(async () => {
+        const vaultPath = useVaultStore.getState().vaultPath;
+        const session = readPersistedSession(vaultPath);
+        if (!session?.noteIds.length) return;
+
+        const restoredTabs: Tab[] = [];
+        for (const { noteId, title } of session.noteIds) {
+            try {
+                const detail = await invoke<{ content: string }>("read_note", {
+                    noteId,
+                });
+                restoredTabs.push({
+                    id: crypto.randomUUID(),
+                    noteId,
+                    title,
+                    content: detail.content,
+                    isDirty: false,
+                });
+            } catch {
+                // Nota eliminada o no encontrada, se omite
+            }
+        }
+
+        if (!restoredTabs.length) return;
+
+        const activeTab = restoredTabs.find(
+            (tab) => tab.noteId === session.activeNoteId,
+        );
+        hydrateTabs(restoredTabs, activeTab?.id ?? null);
+    }, [hydrateTabs]);
 
     useEffect(() => {
         const blockNativeContextMenu = (event: MouseEvent) => {
@@ -467,45 +721,36 @@ export default function App() {
             );
 
             if (vaultParam) {
-                // Opened as a new vault window — skip session restore
                 await useVaultStore
                     .getState()
                     .openVault(decodeURIComponent(vaultParam));
+                await restoreSessionForCurrentVault();
             } else {
                 await restoreVault();
-
-                const session = readPersistedSession();
-                if (session?.noteIds.length) {
-                    const restoredTabs: Tab[] = [];
-                    for (const { noteId, title } of session.noteIds) {
-                        try {
-                            const detail = await invoke<{ content: string }>(
-                                "read_note",
-                                { noteId },
-                            );
-                            restoredTabs.push({
-                                id: crypto.randomUUID(),
-                                noteId,
-                                title,
-                                content: detail.content,
-                                isDirty: false,
-                            });
-                        } catch {
-                            // Nota eliminada o no encontrada, se omite
-                        }
-                    }
-                    if (restoredTabs.length > 0) {
-                        const activeTab = restoredTabs.find(
-                            (t) => t.noteId === session.activeNoteId,
-                        );
-                        hydrateTabs(restoredTabs, activeTab?.id ?? null);
-                    }
-                }
+                await restoreSessionForCurrentVault();
             }
 
             markSessionReady();
         })();
-    }, [hydrateTabs, restoreVault, windowMode]);
+    }, [hydrateTabs, restoreSessionForCurrentVault, restoreVault, windowMode]);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        let unlisten: (() => void) | undefined;
+
+        void listen<VaultNoteChange>("vault://note-changed", (event) => {
+            applyVaultNoteChange(event.payload);
+        }).then((cleanup) => {
+            unlisten = cleanup;
+        });
+
+        return () => {
+            if (unlisten) {
+                void unlisten();
+            }
+        };
+    }, [applyVaultNoteChange, windowMode]);
 
     useEffect(() => {
         let unlisten: (() => void) | undefined;
@@ -550,7 +795,7 @@ export default function App() {
         <div className="h-full flex flex-col overflow-hidden">
             <UnifiedBar windowMode="main" />
 
-            <div className="flex-1 flex overflow-hidden">
+            <div className="relative flex-1 flex overflow-hidden">
                 <ActivityBar
                     active={sidebarView}
                     onChange={setSidebarView}
@@ -563,6 +808,7 @@ export default function App() {
                         right={<RightPanel />}
                     />
                 </div>
+                <VaultOpeningOverlay />
             </div>
 
             <YouTubeModalHost />

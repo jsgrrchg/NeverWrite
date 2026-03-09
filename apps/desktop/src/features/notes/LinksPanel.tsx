@@ -224,7 +224,7 @@ function NoteItem({
                 (e.currentTarget.style.backgroundColor = "transparent")
             }
         >
-            <div className="mt-[2px]">
+            <div className="mt-0.5">
                 {broken ? <BrokenLinkIcon /> : <LinkIcon />}
             </div>
             <div className="min-w-0">
@@ -515,15 +515,23 @@ export function LinksPanel() {
         useState<BacklinkContextMenuState | null>(null);
     const [outgoingContextMenu, setOutgoingContextMenu] =
         useState<OutgoingContextMenuState | null>(null);
+    const backlinkRequestIdRef = useRef(0);
 
     useEffect(() => {
         if (!activeNoteId) {
-            setBacklinks([]);
+            backlinkRequestIdRef.current += 1;
             return;
         }
+        const requestId = ++backlinkRequestIdRef.current;
         invoke<BacklinkDto[]>("get_backlinks", { noteId: activeNoteId })
-            .then(setBacklinks)
-            .catch(() => setBacklinks([]));
+            .then((nextBacklinks) => {
+                if (requestId !== backlinkRequestIdRef.current) return;
+                setBacklinks(nextBacklinks);
+            })
+            .catch(() => {
+                if (requestId !== backlinkRequestIdRef.current) return;
+                setBacklinks([]);
+            });
     }, [activeNoteId]);
 
     const noteIndex = useMemo(() => buildNoteIndex(notes), [notes]);
@@ -581,7 +589,9 @@ export function LinksPanel() {
             const detail = await invoke<{ content: string }>("read_note", {
                 noteId: id,
             });
-            openNote(id, title, detail.content);
+            openNote(id, title, detail.content, {
+                placement: "afterActive",
+            });
         } catch (e) {
             console.error("Error opening note:", e);
         }
@@ -685,7 +695,9 @@ export function LinksPanel() {
             .createNote(link.target)
             .then((created) => {
                 if (created) {
-                    openNote(created.id, created.title, "");
+                    openNote(created.id, created.title, "", {
+                        placement: "afterActive",
+                    });
                 }
             });
     };

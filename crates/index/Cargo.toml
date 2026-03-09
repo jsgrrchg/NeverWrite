@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 vault-ai-types = { path = "../types" }
 vault-ai-vault = { path = "../vault" }
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 vault-ai-vault = { path = "../vault" }

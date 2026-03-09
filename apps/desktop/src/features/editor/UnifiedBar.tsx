@@ -26,6 +26,7 @@ import {
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { revealNoteInTree } from "../../app/utils/navigation";
 import { useTabDragReorder } from "./useTabDragReorder";
+import { getTabStripScrollTarget } from "./tabStrip";
 
 const appWindow = getCurrentWindow();
 
@@ -237,9 +238,18 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             return;
         }
 
-        activeNode.scrollIntoView({
-            block: "nearest",
-            inline: "center",
+        const target = getTabStripScrollTarget({
+            stripLeft,
+            stripWidth: strip.clientWidth,
+            scrollWidth: strip.scrollWidth,
+            nodeLeft,
+            nodeWidth: activeNode.offsetWidth,
+        });
+
+        if (target === null || Math.abs(target - strip.scrollLeft) < 1) return;
+
+        strip.scrollTo({
+            left: target,
             behavior: "smooth",
         });
     }, [activeTabId, draggingTabId, tabOrderKey, tabStripRef]);
@@ -428,11 +438,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                     maxWidth: "210px",
                                                     height: 30,
                                                     borderRadius: 9,
-                                                    flexShrink:
-                                                        isActive &&
-                                                        visualTabs.length > 5
-                                                            ? 0
-                                                            : 1,
+                                                    flexShrink: 0,
                                                     backgroundColor: isActive
                                                         ? "var(--bg-primary)"
                                                         : "color-mix(in srgb, var(--bg-primary) 44%, transparent)",

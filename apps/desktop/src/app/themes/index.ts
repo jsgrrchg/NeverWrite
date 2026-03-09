@@ -6,6 +6,10 @@ import { amberTheme } from "./amber";
 import { lavenderTheme } from "./lavender";
 import { nordTheme } from "./nord";
 import { sunsetTheme } from "./sunset";
+import { catppuccinTheme } from "./catppuccin";
+import { solarizedTheme } from "./solarized";
+import { tokyoNightTheme } from "./tokyoNight";
+import { gruvboxTheme } from "./gruvbox";
 
 export interface ThemeColors {
     bgPrimary: string;
@@ -33,7 +37,11 @@ export type ThemeName =
     | "amber"
     | "lavender"
     | "nord"
-    | "sunset";
+    | "sunset"
+    | "catppuccin"
+    | "solarized"
+    | "tokyoNight"
+    | "gruvbox";
 
 export const themes: Record<ThemeName, ThemePalette> = {
     default: defaultTheme,
@@ -44,6 +52,10 @@ export const themes: Record<ThemeName, ThemePalette> = {
     lavender: lavenderTheme,
     nord: nordTheme,
     sunset: sunsetTheme,
+    catppuccin: catppuccinTheme,
+    solarized: solarizedTheme,
+    tokyoNight: tokyoNightTheme,
+    gruvbox: gruvboxTheme,
 };
 
 const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {

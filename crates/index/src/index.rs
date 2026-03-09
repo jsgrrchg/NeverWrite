@@ -1,133 +1,155 @@
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc, Arc, Mutex,
+};
+use std::thread;
 
-use vault_ai_types::{IndexedNote, NoteDocument, NoteId, NotePath};
+use vault_ai_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata};
 
+const PROGRESS_REPORT_EVERY: usize = 256;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchEntry {
+    pub title_lower: String,
+    pub path_lower: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum UniqueNoteMatch {
+    Unique(NoteId),
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VaultIndex {
+    pub metadata: HashMap<NoteId, NoteMetadata>,
     pub notes: HashMap<NoteId, IndexedNote>,
     pub backlinks: HashMap<NoteId, Vec<NoteId>>,
     pub forward_links: HashMap<NoteId, Vec<NoteId>>,
     pub tags: HashMap<String, Vec<NoteId>>,
-    /// Mapa de nombre de archivo (sin extensión, lowercase) → lista de NoteIds.
-    /// Usado para resolver wikilinks.
     pub names: HashMap<String, Vec<NoteId>>,
+    pub path_suffixes: HashMap<String, Vec<NoteId>>,
+    pub exact_ids: HashMap<String, NoteId>,
+    pub exact_titles: HashMap<String, UniqueNoteMatch>,
+    pub exact_filenames: HashMap<String, UniqueNoteMatch>,
+    pub parent_dirs: HashMap<NoteId, String>,
+    pub search_index: HashMap<NoteId, SearchEntry>,
 }
 
 impl VaultIndex {
-    /// Construye el índice completo a partir de las notas escaneadas.
-    /// Usa dos pasadas: primero registra todas las notas, luego resuelve links.
     pub fn build(notes: Vec<NoteDocument>) -> Self {
+        Self::build_with_progress(notes, |_| {})
+    }
+
+    pub fn build_with_progress(
+        notes: Vec<NoteDocument>,
+        mut on_progress: impl FnMut(IndexBuildProgress),
+    ) -> Self {
+        let prepared_notes: Vec<PreparedNote> =
+            notes.into_iter().map(PreparedNote::from_note).collect();
+
         let mut index = VaultIndex {
+            metadata: HashMap::new(),
             notes: HashMap::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
             tags: HashMap::new(),
             names: HashMap::new(),
+            path_suffixes: HashMap::new(),
+            exact_ids: HashMap::new(),
+            exact_titles: HashMap::new(),
+            exact_filenames: HashMap::new(),
+            parent_dirs: HashMap::new(),
+            search_index: HashMap::new(),
         };
 
-        // Pasada 1: registrar notas, names y tags
-        for note in &notes {
-            let note_id = note.id.clone();
-            index.register_note_names(note);
-
-            for tag in &note.tags {
-                index
-                    .tags
-                    .entry(tag.clone())
-                    .or_default()
-                    .push(note_id.clone());
-            }
-
-            index.notes.insert(
-                note_id,
-                IndexedNote {
-                    id: note.id.clone(),
-                    path: note.path.clone(),
-                    title: note.title.clone(),
-                    tags: note.tags.clone(),
-                    links: note.links.iter().map(|l| l.target.clone()).collect(),
-                },
-            );
+        let total_notes = prepared_notes.len();
+        for (current, note) in prepared_notes.iter().enumerate() {
+            index.register_note(note);
+            on_progress(IndexBuildProgress {
+                phase: IndexBuildPhase::RegisteringNotes,
+                current: current + 1,
+                total: total_notes.max(1),
+            });
         }
 
-        // Pasada 2: resolver links y construir backlinks/forward_links
-        for note in &notes {
-            let note_id = &note.id;
-            let mut resolved_targets = Vec::new();
+        let total_links = prepared_notes
+            .iter()
+            .map(|note| note.prepared_links.len())
+            .sum::<usize>()
+            .max(1);
 
-            for link in &note.links {
-                if let Some(target_id) = index.resolve_link_target(&link.target, &note.path) {
-                    resolved_targets.push(target_id.clone());
-                    index
-                        .backlinks
-                        .entry(target_id)
-                        .or_default()
-                        .push(note_id.clone());
-                }
-            }
-
-            index
-                .forward_links
-                .insert(note_id.clone(), resolved_targets);
-        }
-
+        index.resolve_links_parallel(&prepared_notes, total_links, &mut on_progress);
         index
     }
 
-    /// Reindexar una nota (tras edición o cambio externo).
-    /// Primero elimina la nota vieja del índice, luego la agrega de nuevo.
     pub fn reindex_note(&mut self, note: NoteDocument) {
         self.remove_note(&note.id);
         self.add_note(note);
     }
 
-    /// Elimina una nota del índice.
     pub fn remove_note(&mut self, note_id: &NoteId) {
-        // Remover forward links y los backlinks correspondientes
         if let Some(targets) = self.forward_links.remove(note_id) {
             for target_id in &targets {
-                if let Some(bl) = self.backlinks.get_mut(target_id) {
-                    bl.retain(|id| id != note_id);
+                if let Some(backlinks) = self.backlinks.get_mut(target_id) {
+                    backlinks.retain(|id| id != note_id);
                 }
             }
         }
 
-        // Remover backlinks que apuntan a esta nota desde otras
         self.backlinks.remove(note_id);
 
-        // Remover de tags
         for tag_notes in self.tags.values_mut() {
             tag_notes.retain(|id| id != note_id);
         }
-        self.tags.retain(|_, v| !v.is_empty());
+        self.tags.retain(|_, ids| !ids.is_empty());
 
-        // Remover de names
         for name_notes in self.names.values_mut() {
             name_notes.retain(|id| id != note_id);
         }
-        self.names.retain(|_, v| !v.is_empty());
+        self.names.retain(|_, ids| !ids.is_empty());
 
-        // Remover la nota
+        for suffix_notes in self.path_suffixes.values_mut() {
+            suffix_notes.retain(|id| id != note_id);
+        }
+        self.path_suffixes.retain(|_, ids| !ids.is_empty());
+
+        self.parent_dirs.remove(note_id);
+        self.search_index.remove(note_id);
+        self.metadata.remove(note_id);
         self.notes.remove(note_id);
+
+        self.exact_ids.retain(|_, id| id != note_id);
+        self.rebuild_unique_match_maps();
+    }
+
+    pub fn get_note_metadata(&self, note_id: &NoteId) -> Option<&NoteMetadata> {
+        self.metadata.get(note_id)
+    }
+
+    pub(crate) fn resolve_link_target(
+        &self,
+        link_text: &str,
+        from_parent_dir: &str,
+    ) -> Option<NoteId> {
+        let prepared_link = PreparedLink::from_raw(link_text);
+        let resolver = self.resolver_context();
+        resolver.resolve_prepared_link(&prepared_link, from_parent_dir, None)
     }
 
     fn add_note(&mut self, note: NoteDocument) {
-        let note_id = note.id.clone();
-        let link_targets: Vec<String> = note.links.iter().map(|l| l.target.clone()).collect();
+        let prepared = PreparedNote::from_note(note);
+        let note_id = prepared.id.clone();
 
-        self.register_note_names(&note);
+        self.register_note(&prepared);
+        let resolver = self.resolver_context();
 
-        // Registrar tags
-        for tag in &note.tags {
-            self.tags
-                .entry(tag.clone())
-                .or_default()
-                .push(note_id.clone());
-        }
-
-        // Resolver forward links y construir backlinks
         let mut resolved_targets = Vec::new();
-        for link_text in &link_targets {
-            if let Some(target_id) = self.resolve_link_target(link_text, &note.path) {
+        for link in &prepared.prepared_links {
+            if let Some(target_id) =
+                resolver.resolve_prepared_link(link, &prepared.parent_dir, None)
+            {
                 resolved_targets.push(target_id.clone());
                 self.backlinks
                     .entry(target_id)
@@ -135,43 +157,455 @@ impl VaultIndex {
                     .push(note_id.clone());
             }
         }
-        self.forward_links.insert(note_id.clone(), resolved_targets);
 
-        // Guardar nota indexada
+        self.forward_links.insert(note_id, resolved_targets);
+    }
+
+    fn register_note(&mut self, note: &PreparedNote) {
+        self.register_note_names(note);
+        self.register_path_suffixes(note);
+        self.register_exact_matches(note);
+        self.register_metadata(note);
+
+        for tag in &note.tags {
+            self.tags
+                .entry(tag.clone())
+                .or_default()
+                .push(note.id.clone());
+        }
+
         self.notes.insert(
-            note_id,
+            note.id.clone(),
             IndexedNote {
-                id: note.id,
-                path: note.path,
-                title: note.title,
-                tags: note.tags,
-                links: link_targets,
+                tags: note.tags.clone(),
+                links: note.raw_links.clone(),
             },
         );
     }
 
-    /// Resuelve el target de un wikilink a un NoteId.
-    pub(crate) fn resolve_link_target(
-        &self,
-        link_text: &str,
-        from_path: &NotePath,
-    ) -> Option<NoteId> {
-        let normalized_links = normalize_link_target_variants(link_text);
+    fn resolve_links_parallel(
+        &mut self,
+        prepared_notes: &[PreparedNote],
+        total_links: usize,
+        on_progress: &mut impl FnMut(IndexBuildProgress),
+    ) {
+        if prepared_notes.is_empty() {
+            on_progress(IndexBuildProgress {
+                phase: IndexBuildPhase::ResolvingLinks,
+                current: total_links,
+                total: total_links,
+            });
+            return;
+        }
 
-        for normalized_link in &normalized_links {
-            // Si el link tiene path (contiene /), intentar match exacto por id
-            if normalized_link.contains('/') {
-                let target_id = NoteId(normalized_link.clone());
-                if self.notes.contains_key(&target_id) {
-                    return Some(target_id);
+        let worker_count = thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4)
+            .min(prepared_notes.len().max(1));
+        let chunk_size = prepared_notes.len().div_ceil(worker_count);
+        let chunk_count = prepared_notes.chunks(chunk_size).len();
+
+        let (tx, rx) = mpsc::channel::<WorkerMessage>();
+        let cache = Arc::new(Mutex::new(HashMap::<ResolveCacheKey, Option<NoteId>>::new()));
+        let progress = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(self.resolver_context());
+
+        thread::scope(|scope| {
+            for chunk in prepared_notes.chunks(chunk_size) {
+                let tx = tx.clone();
+                let cache = Arc::clone(&cache);
+                let progress = Arc::clone(&progress);
+                let resolver = Arc::clone(&resolver);
+
+                scope.spawn(move || {
+                    let mut forward_links = Vec::with_capacity(chunk.len());
+                    let mut backlinks = Vec::new();
+                    let mut pending_progress = 0_usize;
+
+                    for note in chunk {
+                        let mut resolved_targets = Vec::new();
+
+                        for link in &note.prepared_links {
+                            if let Some(target_id) =
+                                resolver.resolve_prepared_link(link, &note.parent_dir, Some(&cache))
+                            {
+                                resolved_targets.push(target_id.clone());
+                                backlinks.push((target_id, note.id.clone()));
+                            }
+
+                            pending_progress += 1;
+                            if pending_progress >= PROGRESS_REPORT_EVERY {
+                                let current = progress
+                                    .fetch_add(pending_progress, Ordering::Relaxed)
+                                    + pending_progress;
+                                let _ = tx.send(WorkerMessage::Progress(current));
+                                pending_progress = 0;
+                            }
+                        }
+
+                        forward_links.push((note.id.clone(), resolved_targets));
+                    }
+
+                    if pending_progress > 0 {
+                        let current = progress.fetch_add(pending_progress, Ordering::Relaxed)
+                            + pending_progress;
+                        let _ = tx.send(WorkerMessage::Progress(current));
+                    }
+
+                    let _ = tx.send(WorkerMessage::Chunk(ResolvedChunk {
+                        forward_links,
+                        backlinks,
+                    }));
+                });
+            }
+
+            drop(tx);
+
+            let mut received_chunks = 0_usize;
+            while received_chunks < chunk_count {
+                match rx.recv() {
+                    Ok(WorkerMessage::Progress(current)) => on_progress(IndexBuildProgress {
+                        phase: IndexBuildPhase::ResolvingLinks,
+                        current,
+                        total: total_links,
+                    }),
+                    Ok(WorkerMessage::Chunk(chunk)) => {
+                        for (note_id, targets) in chunk.forward_links {
+                            self.forward_links.insert(note_id, targets);
+                        }
+
+                        for (target_id, source_id) in chunk.backlinks {
+                            self.backlinks.entry(target_id).or_default().push(source_id);
+                        }
+
+                        received_chunks += 1;
+                    }
+                    Err(_) => break,
                 }
-                // También buscar como sufijo de path
-                for (id, _note) in &self.notes {
-                    if id.0.to_lowercase().ends_with(normalized_link.as_str()) {
-                        return Some(id.clone());
+            }
+        });
+
+        on_progress(IndexBuildProgress {
+            phase: IndexBuildPhase::ResolvingLinks,
+            current: total_links,
+            total: total_links,
+        });
+    }
+
+    fn register_note_names(&mut self, note: &PreparedNote) {
+        let aliases = [
+            Some(note.filename.clone()),
+            Some(note.title.clone()),
+            Some(note.id.0.clone()),
+            note.id.0.split('/').next_back().map(str::to_string),
+        ];
+
+        for alias in aliases.into_iter().flatten() {
+            for normalized in normalize_note_alias_variants(&alias) {
+                let entry = self.names.entry(normalized).or_default();
+                if !entry.contains(&note.id) {
+                    entry.push(note.id.clone());
+                }
+            }
+        }
+    }
+
+    fn register_path_suffixes(&mut self, note: &PreparedNote) {
+        let parts: Vec<&str> = note.normalized_id.split('/').collect();
+        for start in 0..parts.len() {
+            let suffix = parts[start..].join("/");
+            let entry = self.path_suffixes.entry(suffix).or_default();
+            if !entry.contains(&note.id) {
+                entry.push(note.id.clone());
+            }
+        }
+    }
+
+    fn register_exact_matches(&mut self, note: &PreparedNote) {
+        self.exact_ids
+            .insert(note.normalized_id.clone(), note.id.clone());
+        record_unique_match(
+            &mut self.exact_titles,
+            &note.normalized_title,
+            note.id.clone(),
+        );
+        record_unique_match(
+            &mut self.exact_filenames,
+            &note.normalized_filename,
+            note.id.clone(),
+        );
+    }
+
+    fn register_metadata(&mut self, note: &PreparedNote) {
+        self.parent_dirs
+            .insert(note.id.clone(), note.parent_dir.clone());
+
+        self.search_index.insert(
+            note.id.clone(),
+            SearchEntry {
+                title_lower: note.title.to_lowercase(),
+                path_lower: note.id.0.to_lowercase(),
+            },
+        );
+
+        self.metadata.insert(
+            note.id.clone(),
+            NoteMetadata {
+                id: note.id.clone(),
+                path: note.path.clone(),
+                title: note.title.clone(),
+                modified_at: note.modified_at,
+                created_at: note.created_at,
+                size: note.size,
+            },
+        );
+    }
+
+    fn rebuild_unique_match_maps(&mut self) {
+        self.exact_titles.clear();
+        self.exact_filenames.clear();
+
+        for note in self.metadata.values() {
+            let normalized_title = normalize_alias(&note.title);
+            if !normalized_title.is_empty() {
+                record_unique_match(&mut self.exact_titles, &normalized_title, note.id.clone());
+            }
+
+            let normalized_filename = note
+                .path
+                .0
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(normalize_alias)
+                .unwrap_or_default();
+
+            if !normalized_filename.is_empty() {
+                record_unique_match(
+                    &mut self.exact_filenames,
+                    &normalized_filename,
+                    note.id.clone(),
+                );
+            }
+        }
+    }
+
+    fn resolver_context(&self) -> ResolverContext {
+        let prefix_entries = self
+            .metadata
+            .values()
+            .map(|note| PrefixEntry {
+                note_id: note.id.clone(),
+                aliases: [
+                    Some(normalize_alias(&note.title)),
+                    note.path
+                        .0
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(normalize_alias),
+                    note.id.0.split('/').next_back().map(normalize_alias),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|alias| !alias.is_empty())
+                .collect(),
+            })
+            .collect();
+
+        ResolverContext {
+            names: self.names.clone(),
+            path_suffixes: self.path_suffixes.clone(),
+            exact_ids: self.exact_ids.clone(),
+            exact_titles: self.exact_titles.clone(),
+            exact_filenames: self.exact_filenames.clone(),
+            parent_dirs: self.parent_dirs.clone(),
+            prefix_entries,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum IndexBuildPhase {
+    RegisteringNotes,
+    ResolvingLinks,
+}
+
+pub struct IndexBuildProgress {
+    pub phase: IndexBuildPhase,
+    pub current: usize,
+    pub total: usize,
+}
+
+struct PreparedNote {
+    id: NoteId,
+    path: vault_ai_types::NotePath,
+    title: String,
+    filename: String,
+    tags: Vec<String>,
+    raw_links: Vec<String>,
+    prepared_links: Vec<PreparedLink>,
+    normalized_id: String,
+    normalized_title: String,
+    normalized_filename: String,
+    parent_dir: String,
+    modified_at: u64,
+    created_at: u64,
+    size: u64,
+}
+
+impl PreparedNote {
+    fn from_note(note: NoteDocument) -> Self {
+        let raw_links: Vec<String> = note.links.iter().map(|link| link.target.clone()).collect();
+        let prepared_links = raw_links
+            .iter()
+            .map(|target| PreparedLink::from_raw(target))
+            .collect();
+        let filename = note
+            .path
+            .0
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let (modified_at, created_at, size) = read_note_file_stats(&note.path.0);
+
+        Self {
+            normalized_id: normalize_alias(&note.id.0),
+            normalized_title: normalize_alias(&note.title),
+            normalized_filename: normalize_alias(&filename),
+            parent_dir: parent_dir_from_note_id(&note.id),
+            id: note.id,
+            path: note.path,
+            title: note.title,
+            filename,
+            tags: note.tags,
+            raw_links,
+            prepared_links,
+            modified_at,
+            created_at,
+            size,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PreparedLink {
+    normalized_variants: Vec<String>,
+    strong_prefix_variants: Vec<String>,
+    cache_key: String,
+    is_path_like: bool,
+}
+
+impl PreparedLink {
+    fn from_raw(target: &str) -> Self {
+        let normalized_variants = normalize_link_target_variants(target);
+        let cache_key = normalized_variants
+            .first()
+            .cloned()
+            .unwrap_or_else(|| normalize_link_target(target));
+        let strong_prefix_variants = normalized_variants
+            .iter()
+            .filter(|variant| is_strong_prefix_candidate(variant))
+            .cloned()
+            .collect();
+        let is_path_like = normalized_variants
+            .iter()
+            .any(|variant| variant.contains('/'));
+
+        Self {
+            normalized_variants,
+            strong_prefix_variants,
+            cache_key,
+            is_path_like,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ResolveCacheKey {
+    target: String,
+    from_parent_dir: String,
+}
+
+struct ResolvedChunk {
+    forward_links: Vec<(NoteId, Vec<NoteId>)>,
+    backlinks: Vec<(NoteId, NoteId)>,
+}
+
+enum WorkerMessage {
+    Progress(usize),
+    Chunk(ResolvedChunk),
+}
+
+struct ResolverContext {
+    names: HashMap<String, Vec<NoteId>>,
+    path_suffixes: HashMap<String, Vec<NoteId>>,
+    exact_ids: HashMap<String, NoteId>,
+    exact_titles: HashMap<String, UniqueNoteMatch>,
+    exact_filenames: HashMap<String, UniqueNoteMatch>,
+    parent_dirs: HashMap<NoteId, String>,
+    prefix_entries: Vec<PrefixEntry>,
+}
+
+struct PrefixEntry {
+    note_id: NoteId,
+    aliases: Vec<String>,
+}
+
+impl ResolverContext {
+    fn resolve_prepared_link(
+        &self,
+        link: &PreparedLink,
+        from_parent_dir: &str,
+        cache: Option<&Arc<Mutex<HashMap<ResolveCacheKey, Option<NoteId>>>>>,
+    ) -> Option<NoteId> {
+        if let Some(cache) = cache {
+            let key = ResolveCacheKey {
+                target: link.cache_key.clone(),
+                from_parent_dir: from_parent_dir.to_string(),
+            };
+
+            if let Some(cached) = cache.lock().ok().and_then(|guard| guard.get(&key).cloned()) {
+                return cached;
+            }
+
+            let resolved = self.resolve_prepared_link_uncached(link, from_parent_dir);
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(key, resolved.clone());
+            }
+            return resolved;
+        }
+
+        self.resolve_prepared_link_uncached(link, from_parent_dir)
+    }
+
+    fn resolve_prepared_link_uncached(
+        &self,
+        link: &PreparedLink,
+        from_parent_dir: &str,
+    ) -> Option<NoteId> {
+        for normalized_link in &link.normalized_variants {
+            if link.is_path_like {
+                if let Some(id) = self.exact_ids.get(normalized_link) {
+                    return Some(id.clone());
+                }
+
+                if let Some(candidates) = self.path_suffixes.get(normalized_link) {
+                    if candidates.len() == 1 {
+                        return Some(candidates[0].clone());
+                    }
+                    if let Some(id) = self.closest_by_parent_dir(candidates, from_parent_dir) {
+                        return Some(id);
                     }
                 }
                 continue;
+            }
+
+            if let Some(id) = self.resolve_unique_match(&self.exact_titles, normalized_link) {
+                return Some(id);
+            }
+
+            if let Some(id) = self.resolve_unique_match(&self.exact_filenames, normalized_link) {
+                return Some(id);
             }
 
             let Some(candidates) = self.names.get(normalized_link.as_str()) else {
@@ -182,12 +616,12 @@ impl VaultIndex {
                 return Some(candidates[0].clone());
             }
 
-            if let Some(id) = self.closest_by_path(candidates, from_path) {
+            if let Some(id) = self.closest_by_parent_dir(candidates, from_parent_dir) {
                 return Some(id);
             }
         }
 
-        for normalized_link in &normalized_links {
+        for normalized_link in &link.strong_prefix_variants {
             if let Some(id) = self.resolve_unique_prefix_match(normalized_link) {
                 return Some(id);
             }
@@ -196,43 +630,33 @@ impl VaultIndex {
         None
     }
 
-    /// Elige el candidato más cercano al path de origen.
-    fn closest_by_path(&self, candidates: &[NoteId], from_path: &NotePath) -> Option<NoteId> {
-        let from_dir = from_path.0.parent()?;
+    fn resolve_unique_match(
+        &self,
+        map: &HashMap<String, UniqueNoteMatch>,
+        key: &str,
+    ) -> Option<NoteId> {
+        match map.get(key) {
+            Some(UniqueNoteMatch::Unique(id)) => Some(id.clone()),
+            _ => None,
+        }
+    }
 
+    fn closest_by_parent_dir(
+        &self,
+        candidates: &[NoteId],
+        from_parent_dir: &str,
+    ) -> Option<NoteId> {
         candidates
             .iter()
             .filter_map(|id| {
-                let note = self.notes.get(id)?;
-                let distance = path_distance(from_dir, &note.path.0);
-                Some((id.clone(), distance))
+                let target_parent_dir = self.parent_dirs.get(id)?;
+                Some((
+                    id.clone(),
+                    path_distance(from_parent_dir, target_parent_dir),
+                ))
             })
-            .min_by_key(|(_, dist)| *dist)
+            .min_by_key(|(_, distance)| *distance)
             .map(|(id, _)| id)
-    }
-
-    fn register_note_names(&mut self, note: &NoteDocument) {
-        let note_id = note.id.clone();
-
-        let aliases = [
-            note.path
-                .0
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_string),
-            Some(note.title.clone()),
-            Some(note.id.0.clone()),
-            note.id.0.split('/').next_back().map(str::to_string),
-        ];
-
-        for alias in aliases.into_iter().flatten() {
-            for normalized in normalize_note_alias_variants(&alias) {
-                let entry = self.names.entry(normalized).or_default();
-                if !entry.contains(&note_id) {
-                    entry.push(note_id.clone());
-                }
-            }
-        }
     }
 
     fn resolve_unique_prefix_match(&self, normalized_link: &str) -> Option<NoteId> {
@@ -242,24 +666,17 @@ impl VaultIndex {
 
         let mut matches = Vec::new();
 
-        for note in self.notes.values() {
-            let aliases = [
-                Some(note.title.as_str()),
-                note.path.0.file_stem().and_then(|s| s.to_str()),
-                note.id.0.split('/').next_back(),
-            ];
-
-            let matched = aliases
-                .into_iter()
-                .flatten()
-                .map(normalize_alias)
-                .any(|alias| is_prefix_expansion(&alias, normalized_link));
+        for entry in &self.prefix_entries {
+            let matched = entry
+                .aliases
+                .iter()
+                .any(|alias| is_prefix_expansion(alias, normalized_link));
 
             if matched {
-                if matches.iter().any(|id: &NoteId| id == &note.id) {
+                if matches.iter().any(|id: &NoteId| id == &entry.note_id) {
                     continue;
                 }
-                matches.push(note.id.clone());
+                matches.push(entry.note_id.clone());
                 if matches.len() > 1 {
                     return None;
                 }
@@ -268,6 +685,51 @@ impl VaultIndex {
 
         matches.into_iter().next()
     }
+}
+
+fn record_unique_match(map: &mut HashMap<String, UniqueNoteMatch>, key: &str, note_id: NoteId) {
+    if key.is_empty() {
+        return;
+    }
+
+    match map.get(key) {
+        None => {
+            map.insert(key.to_string(), UniqueNoteMatch::Unique(note_id));
+        }
+        Some(UniqueNoteMatch::Unique(existing)) if existing == &note_id => {}
+        _ => {
+            map.insert(key.to_string(), UniqueNoteMatch::Ambiguous);
+        }
+    }
+}
+
+fn parent_dir_from_note_id(note_id: &NoteId) -> String {
+    note_id
+        .0
+        .rsplit_once('/')
+        .map(|(parent, _)| normalize_alias(parent))
+        .unwrap_or_default()
+}
+
+fn read_note_file_stats(path: &std::path::Path) -> (u64, u64, u64) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return (0, 0, 0);
+    };
+
+    let modified_at = metadata.modified().map(system_time_to_secs).unwrap_or(0);
+    let created_at = metadata
+        .created()
+        .map(system_time_to_secs)
+        .unwrap_or(modified_at);
+
+    (modified_at, created_at, metadata.len())
+}
+
+fn system_time_to_secs(value: std::time::SystemTime) -> u64 {
+    value
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn normalize_alias(value: &str) -> String {
@@ -360,20 +822,23 @@ fn normalize_char(ch: char) -> char {
     }
 }
 
-/// Calcula la "distancia" entre dos paths contando componentes diferentes.
-fn path_distance(from_dir: &std::path::Path, to_path: &std::path::Path) -> usize {
-    let to_dir = to_path.parent().unwrap_or(to_path);
+fn path_distance(from_parent_dir: &str, target_parent_dir: &str) -> usize {
+    let from_components: Vec<&str> = if from_parent_dir.is_empty() {
+        Vec::new()
+    } else {
+        from_parent_dir.split('/').collect()
+    };
+    let target_components: Vec<&str> = if target_parent_dir.is_empty() {
+        Vec::new()
+    } else {
+        target_parent_dir.split('/').collect()
+    };
 
-    let from_parts: Vec<_> = from_dir.components().collect();
-    let to_parts: Vec<_> = to_dir.components().collect();
-
-    // Encontrar el prefijo común
-    let common = from_parts
+    let shared = from_components
         .iter()
-        .zip(to_parts.iter())
-        .take_while(|(a, b)| a == b)
+        .zip(target_components.iter())
+        .take_while(|(left, right)| left == right)
         .count();
 
-    // Distancia = subidas desde from + bajadas hacia to
-    (from_parts.len() - common) + (to_parts.len() - common)
+    (from_components.len() - shared) + (target_components.len() - shared)
 }

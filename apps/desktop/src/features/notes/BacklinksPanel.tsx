@@ -133,30 +133,40 @@ export function BacklinksPanel() {
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const queueReveal = useEditorStore((s) => s.queueReveal);
     const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+    const activeNoteId = activeTab?.noteId ?? null;
+    const activeTitle = activeTab?.title ?? null;
     const [backlinks, setBacklinks] = useState<BacklinkDto[]>([]);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
         null,
     );
+    const requestIdRef = useRef(0);
 
     useEffect(() => {
-        if (!activeTab) {
-            setBacklinks([]);
+        if (!activeNoteId) {
+            requestIdRef.current += 1;
             return;
         }
 
-        invoke<BacklinkDto[]>("get_backlinks", { noteId: activeTab.noteId })
-            .then(setBacklinks)
-            .catch(() => setBacklinks([]));
-    }, [activeTab?.noteId]);
+        const requestId = ++requestIdRef.current;
+        invoke<BacklinkDto[]>("get_backlinks", { noteId: activeNoteId })
+            .then((nextBacklinks) => {
+                if (requestId !== requestIdRef.current) return;
+                setBacklinks(nextBacklinks);
+            })
+            .catch(() => {
+                if (requestId !== requestIdRef.current) return;
+                setBacklinks([]);
+            });
+    }, [activeNoteId]);
 
     const revealTargets = useMemo(() => {
-        if (!activeTab) return [];
+        if (!activeNoteId) return [];
         return [
-            activeTab.noteId,
-            activeTab.title,
-            activeTab.noteId.split("/").pop() ?? activeTab.noteId,
+            activeNoteId,
+            activeTitle ?? activeNoteId,
+            activeNoteId.split("/").pop() ?? activeNoteId,
         ];
-    }, [activeTab]);
+    }, [activeNoteId, activeTitle]);
 
     if (!activeTab) return null;
 
@@ -173,7 +183,9 @@ export function BacklinksPanel() {
         }
         try {
             const detail = await readBacklink(bl);
-            openNote(bl.id, bl.title, detail.content);
+            openNote(bl.id, bl.title, detail.content, {
+                placement: "afterActive",
+            });
         } catch (e) {
             console.error("Error reading backlink note:", e);
         }
@@ -219,7 +231,7 @@ export function BacklinksPanel() {
 
     return (
         <div
-            className="flex-shrink-0"
+            className="shrink-0"
             style={{ borderTop: "1px solid var(--border)" }}
         >
             <div

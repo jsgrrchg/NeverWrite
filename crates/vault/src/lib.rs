@@ -5,5 +5,5 @@ pub mod vault;
 pub mod watcher;
 
 pub use error::VaultError;
-pub use vault::Vault;
+pub use vault::{DiscoveredNoteFile, Vault};
 pub use watcher::{start_watcher, VaultEvent, WriteTracker};

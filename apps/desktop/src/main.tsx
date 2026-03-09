@@ -1,5 +1,5 @@
 // Capture full stack traces for debugging deep recursion / stack overflow
-Error.stackTraceLimit = 300;
+(Error as ErrorConstructor & { stackTraceLimit?: number }).stackTraceLimit = 300;
 
 import { Component, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";

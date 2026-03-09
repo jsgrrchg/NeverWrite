@@ -7,7 +7,7 @@ import {
     type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, drawSelection, keymap } from "@codemirror/view";
 import {
     ChangeSet,
     EditorSelection,
@@ -64,11 +64,32 @@ import { urlLinksExtension } from "./extensions/urlLinks";
 import { searchTheme } from "./extensions/searchTheme";
 import { livePreviewExtension } from "./extensions/livePreview";
 import {
+    activateWikilinkSuggesterAnnotation,
+    markdownAutopairExtension,
+} from "./extensions/markdownAutopair";
+import {
+    getWikilinkContext,
+    getWikilinkSuggestions,
+    type WikilinkSuggestionItem,
+} from "./extensions/wikilinkSuggester";
+import {
+    FloatingSelectionToolbar,
+    type FloatingSelectionToolbarState,
+} from "./FloatingSelectionToolbar";
+import {
     FrontmatterPanel,
     parseFrontmatterRaw,
     serializeFrontmatterRaw,
     type FrontmatterEntry,
 } from "./FrontmatterPanel";
+import {
+    getSelectionTransform,
+    type SelectionToolbarAction,
+} from "./selectionTransforms";
+import {
+    WikilinkSuggester,
+    type WikilinkSuggesterState,
+} from "./WikilinkSuggester";
 
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/;
 const appWindow = getCurrentWindow();
@@ -232,6 +253,37 @@ function resolveWikilink(target: string): boolean {
     return findNoteByWikilink(target) !== null;
 }
 
+function clearEditorDomSelection(view: EditorView | null) {
+    if (!view) return;
+
+    const selection = view.dom.ownerDocument.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    if (selection.isCollapsed) return;
+
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    const touchesEditor =
+        (!!anchorNode && view.dom.contains(anchorNode)) ||
+        (!!focusNode && view.dom.contains(focusNode));
+
+    if (touchesEditor) {
+        selection.removeAllRanges();
+    }
+}
+
+function syncSelectionLayerVisibility(view: EditorView | null) {
+    if (!view) return;
+
+    const layer = view.dom.querySelector(".cm-selectionLayer");
+    if (!(layer instanceof HTMLElement)) return;
+
+    const hasSelection = view.hasFocus
+        ? view.state.selection.ranges.some((range) => !range.empty)
+        : false;
+
+    layer.style.opacity = hasSelection ? "1" : "0";
+}
+
 function matchesRevealTarget(target: string, revealTargets: string[]) {
     const targetVariants = new Set(getWikilinkVariants(target));
     return revealTargets.some((candidate) =>
@@ -254,7 +306,9 @@ function navigateWikilink(target: string) {
             .then((detail) => {
                 useEditorStore
                     .getState()
-                    .openNote(note.id, note.title, detail.content);
+                    .openNote(note.id, note.title, detail.content, {
+                        placement: "afterActive",
+                    });
             })
             .catch((e) => console.error("Error reading linked note:", e));
     } else {
@@ -264,10 +318,45 @@ function navigateWikilink(target: string) {
             if (created) {
                 useEditorStore
                     .getState()
-                    .openNote(created.id, created.title, "");
+                    .openNote(created.id, created.title, "", {
+                        placement: "afterActive",
+                    });
             }
         });
     }
+}
+
+function openWikilinkInNewTab(target: string) {
+    const note = findNoteByWikilink(target);
+    if (!note) return;
+
+    const { tabs, insertExternalTab } = useEditorStore.getState();
+    const existing = tabs.find((tab) => tab.noteId === note.id);
+
+    if (existing) {
+        insertExternalTab({
+            id: crypto.randomUUID(),
+            noteId: note.id,
+            title: note.title,
+            content: existing.content,
+            isDirty: false,
+        });
+        return;
+    }
+
+    void invoke<{ content: string }>("read_note", { noteId: note.id })
+        .then((detail) => {
+            useEditorStore.getState().insertExternalTab({
+                id: crypto.randomUUID(),
+                noteId: note.id,
+                title: note.title,
+                content: detail.content,
+                isDirty: false,
+            });
+        })
+        .catch((error) =>
+            console.error("Error opening linked note in new tab:", error),
+        );
 }
 
 function resolveRelativeNotePath(baseNoteId: string | null, href: string): string {
@@ -367,6 +456,10 @@ function LinkContextMenu({
         };
     }, [onClose]);
 
+    const linkedNote = menu.noteTarget
+        ? findNoteByWikilink(menu.noteTarget)
+        : null;
+
     const menuItem = (label: string, action: () => void) => (
         <button
             key={label}
@@ -414,6 +507,10 @@ function LinkContextMenu({
                 : menuItem("Open link", () => {
                       void openUrl(menu.href);
                   })}
+            {linkedNote &&
+                menuItem("Open in new tab", () => {
+                    openWikilinkInNewTab(linkedNote.id);
+                })}
             {menuItem("Copy link", () => {
                 void navigator.clipboard.writeText(menu.href);
             })}
@@ -445,7 +542,7 @@ const baseTheme = EditorView.theme({
         fontFamily: "inherit",
         flexWrap: "wrap",
         paddingBottom: "72px",
-        scrollbarColor: "var(--border) transparent",
+        scrollbarColor: "var(--app-scrollbar-thumb) transparent",
         minWidth: 0,
     },
     ".cm-lp-scroll-header": {
@@ -473,10 +570,18 @@ const baseTheme = EditorView.theme({
         borderLeftWidth: "1.6px",
         marginLeft: "-0.8px",
     },
-    ".cm-selectionBackground, ::selection": {
+    ".cm-selectionBackground": {
         backgroundColor:
             "color-mix(in srgb, var(--accent) 22%, transparent) !important",
     },
+    ".cm-line::selection, .cm-line > span::selection, .cm-content ::selection":
+        {
+            backgroundColor: "transparent",
+        },
+    ".cm-line::-moz-selection, .cm-line > span::-moz-selection, .cm-content ::-moz-selection":
+        {
+            backgroundColor: "transparent",
+        },
     ".cm-activeLine": {
         backgroundColor: "color-mix(in srgb, var(--accent) 3.5%, transparent)",
         borderRadius: "8px",
@@ -1124,7 +1229,10 @@ export function Editor({
         null,
     );
     const restoreScrollFrameRef = useRef<number | null>(null);
+    const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
     const activeTabRef = useRef<Tab | null>(null);
+    const wikilinkSuggesterArmedRef = useRef(false);
+    const wikilinkSuggesterRef = useRef<WikilinkSuggesterState | null>(null);
     const isInternalRef = useRef(false);
     // Save/restore full EditorState per tab (preserves undo history + selection)
     const tabStatesRef = useRef<Map<string, EditorState>>(new Map());
@@ -1145,7 +1253,15 @@ export function Editor({
         useState<ContextMenuState<EditorContextMenuPayload> | null>(null);
     const [titleContextMenu, setTitleContextMenu] =
         useState<ContextMenuState<void> | null>(null);
+    const [selectionToolbar, setSelectionToolbar] =
+        useState<FloatingSelectionToolbarState | null>(null);
+    const [wikilinkSuggester, setWikilinkSuggester] =
+        useState<WikilinkSuggesterState | null>(null);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        wikilinkSuggesterRef.current = wikilinkSuggester;
+    }, [wikilinkSuggester]);
 
     // Extract and strip frontmatter from content. Stores the raw block in the ref.
     // Returns the body (content after the frontmatter block).
@@ -1181,10 +1297,12 @@ export function Editor({
     const autoSaveDelay = useSettingsStore((s) => s.autoSaveDelay);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
+    const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const justifyText = useSettingsStore((s) => s.justifyText);
     const tabSize = useSettingsStore((s) => s.tabSize);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
+    const touchVault = useVaultStore((s) => s.touchVault);
 
     // Only re-renders when the active tab identity changes, not on content/isDirty updates
     const activeTabInfo = useEditorStore(
@@ -1273,11 +1391,18 @@ export function Editor({
                     setEditableTitle(detail.title);
                 }
                 markTabClean(tab.id);
+                touchVault();
             } catch (e) {
                 console.error("Error al guardar nota:", e);
             }
         },
-        [markTabClean, stripFrontmatter, updateNoteMetadata, updateTabTitle],
+        [
+            markTabClean,
+            stripFrontmatter,
+            touchVault,
+            updateNoteMetadata,
+            updateTabTitle,
+        ],
     );
 
     const scheduleSave = useCallback(
@@ -1455,11 +1580,183 @@ export function Editor({
 
     const handleOpenLinkContextMenu = useCallback(
         (menu: LinkContextMenuState | null) => {
+            setSelectionToolbar(null);
+            wikilinkSuggesterArmedRef.current = false;
+            setWikilinkSuggester(null);
             setEditorContextMenu(null);
             setLinkContextMenu(menu);
         },
         [],
     );
+
+    const updateSelectionToolbar = useCallback((view: EditorView | null) => {
+        if (!view || !activeTabRef.current || !view.hasFocus) {
+            clearEditorDomSelection(view);
+            syncSelectionLayerVisibility(view);
+            setSelectionToolbar(null);
+            return;
+        }
+
+        if (view.state.selection.ranges.length !== 1) {
+            clearEditorDomSelection(view);
+            syncSelectionLayerVisibility(view);
+            setSelectionToolbar(null);
+            return;
+        }
+
+        const selection = view.state.selection.main;
+        if (selection.empty) {
+            clearEditorDomSelection(view);
+            syncSelectionLayerVisibility(view);
+            setSelectionToolbar(null);
+            return;
+        }
+
+        const selectionStart = view.coordsAtPos(selection.from, 1);
+        const selectionEnd = view.coordsAtPos(
+            Math.max(selection.from, selection.to - 1),
+            -1,
+        );
+        if (!selectionStart || !selectionEnd) {
+            clearEditorDomSelection(view);
+            syncSelectionLayerVisibility(view);
+            setSelectionToolbar(null);
+            return;
+        }
+
+        syncSelectionLayerVisibility(view);
+        const startLine = view.state.doc.lineAt(selection.from).number;
+        const endLine = view.state.doc.lineAt(
+            Math.max(selection.from, selection.to - 1),
+        ).number;
+        const sameLine = startLine === endLine;
+
+        setSelectionToolbar({
+            x: sameLine
+                ? (selectionStart.left + selectionEnd.right) / 2
+                : (selectionStart.left + selectionStart.right) / 2,
+            top: selectionStart.top,
+            bottom: Math.max(selectionStart.bottom, selectionEnd.bottom),
+            selectionFrom: selection.from,
+            selectionTo: selection.to,
+        });
+    }, []);
+
+    const handleSelectionToolbarAction = useCallback(
+        (action: SelectionToolbarAction) => {
+            const view = viewRef.current;
+            if (!view) return;
+
+            const transform = getSelectionTransform(view.state, action);
+            if (!transform) return;
+
+            view.dispatch({
+                changes: transform.changes,
+                selection: transform.selection,
+                scrollIntoView: true,
+                userEvent: transform.userEvent,
+            });
+            view.focus();
+            updateSelectionToolbar(view);
+        },
+        [updateSelectionToolbar],
+    );
+
+    const updateWikilinkSuggester = useCallback((view: EditorView | null) => {
+        if (!view || !activeTabRef.current || !view.hasFocus) {
+            wikilinkSuggesterArmedRef.current = false;
+            setWikilinkSuggester(null);
+            return;
+        }
+
+        const context = getWikilinkContext(view.state);
+        if (!context) {
+            wikilinkSuggesterArmedRef.current = false;
+            setWikilinkSuggester(null);
+            return;
+        }
+
+        if (!wikilinkSuggesterArmedRef.current) {
+            setWikilinkSuggester(null);
+            return;
+        }
+
+        const caret = view.coordsAtPos(view.state.selection.main.head);
+        if (!caret) {
+            setWikilinkSuggester(null);
+            return;
+        }
+
+        const items = getWikilinkSuggestions(
+            useVaultStore.getState().notes,
+            context.query,
+        );
+
+        setWikilinkSuggester((previous) => ({
+            x: caret.left,
+            y: caret.top,
+            query: context.query,
+            selectedIndex: previous
+                ? Math.min(previous.selectedIndex, Math.max(items.length - 1, 0))
+                : 0,
+            items,
+            wholeFrom: context.wholeFrom,
+            wholeTo: context.wholeTo,
+        }));
+    }, []);
+
+    const moveWikilinkSuggesterSelection = useCallback((direction: 1 | -1) => {
+        const suggester = wikilinkSuggesterRef.current;
+        if (!suggester || !suggester.items.length) return false;
+
+        setWikilinkSuggester((previous) => {
+            if (!previous || !previous.items.length) return previous;
+            const itemCount = previous.items.length;
+            return {
+                ...previous,
+                selectedIndex:
+                    (previous.selectedIndex + direction + itemCount) % itemCount,
+            };
+        });
+        return true;
+    }, []);
+
+    const commitWikilinkSuggestion = useCallback(
+        (item?: WikilinkSuggestionItem) => {
+            const view = viewRef.current;
+            const suggester = wikilinkSuggesterRef.current;
+            if (!view || !suggester) return false;
+
+            const nextItem = item ?? suggester.items[suggester.selectedIndex];
+            if (!nextItem) return false;
+
+            const insert = `[[${nextItem.insertText}]]`;
+            view.dispatch({
+                changes: {
+                    from: suggester.wholeFrom,
+                    to: suggester.wholeTo,
+                    insert,
+                },
+                selection: EditorSelection.cursor(
+                    suggester.wholeFrom + insert.length,
+                ),
+                scrollIntoView: true,
+                userEvent: "input",
+            });
+            view.focus();
+            wikilinkSuggesterArmedRef.current = false;
+            setWikilinkSuggester(null);
+            return true;
+        },
+        [],
+    );
+
+    const closeWikilinkSuggester = useCallback(() => {
+        if (!wikilinkSuggesterRef.current) return false;
+        wikilinkSuggesterArmedRef.current = false;
+        setWikilinkSuggester(null);
+        return true;
+    }, []);
 
     const handleEditorContextMenu = useCallback(
         (event: { clientX: number; clientY: number; target: EventTarget | null; preventDefault: () => void }) => {
@@ -1474,6 +1771,73 @@ export function Editor({
                     : rawTarget instanceof Node
                       ? rawTarget.parentElement
                       : null;
+
+            const liveLink = target?.closest(".cm-lp-link") as HTMLElement | null;
+            if (liveLink?.dataset.href) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: liveLink.dataset.href,
+                    noteTarget: getNoteLinkTarget(liveLink.dataset.href),
+                });
+                return true;
+            }
+
+            const wikilink = target?.closest(".cm-wikilink") as HTMLElement | null;
+            if (wikilink?.dataset.wikilinkTarget) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: wikilink.dataset.wikilinkTarget,
+                    noteTarget: wikilink.dataset.wikilinkTarget,
+                });
+                return true;
+            }
+
+            const linkedImage = target?.closest(
+                ".cm-inline-image-link",
+            ) as HTMLElement | null;
+            if (linkedImage?.dataset.href) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: linkedImage.dataset.href,
+                    noteTarget: null,
+                });
+                return true;
+            }
+
+            const tableUrl = target?.closest(".cm-lp-table-url") as HTMLElement | null;
+            if (tableUrl?.dataset.url) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: tableUrl.dataset.url,
+                    noteTarget: null,
+                });
+                return true;
+            }
+
             if (target?.closest(EDITOR_INTERACTIVE_PREVIEW_SELECTOR)) {
                 return false;
             }
@@ -1494,6 +1858,9 @@ export function Editor({
             }
 
             event.preventDefault();
+            setSelectionToolbar(null);
+            wikilinkSuggesterArmedRef.current = false;
+            setWikilinkSuggester(null);
             setLinkContextMenu(null);
             setTitleContextMenu(null);
             setEditorContextMenu({
@@ -1521,6 +1888,7 @@ export function Editor({
                         getSyntaxExtension(useThemeStore.getState().isDark),
                     ),
                     EditorView.lineWrapping,
+                    drawSelection(),
                     alignmentCompartment.of(
                         getAlignmentExtension(
                             useSettingsStore.getState().justifyText,
@@ -1542,7 +1910,24 @@ export function Editor({
                     ),
                     search({ top: true }),
                     searchTheme,
+                    markdownAutopairExtension,
                     keymap.of([
+                        {
+                            key: "ArrowDown",
+                            run: () => moveWikilinkSuggesterSelection(1),
+                        },
+                        {
+                            key: "ArrowUp",
+                            run: () => moveWikilinkSuggesterSelection(-1),
+                        },
+                        {
+                            key: "Enter",
+                            run: () => commitWikilinkSuggestion(),
+                        },
+                        {
+                            key: "Escape",
+                            run: () => closeWikilinkSuggester(),
+                        },
                         {
                             key: "Mod-f",
                             run: (view) => {
@@ -1588,10 +1973,36 @@ export function Editor({
                         }, 300);
                         scheduleSave(tab, content);
                     }),
+                    EditorView.updateListener.of((update) => {
+                        if (
+                            update.transactions.some((transaction) =>
+                                transaction.annotation(
+                                    activateWikilinkSuggesterAnnotation,
+                                ),
+                            )
+                        ) {
+                            wikilinkSuggesterArmedRef.current = true;
+                        }
+
+                        if (
+                            update.docChanged ||
+                            update.selectionSet ||
+                            update.viewportChanged ||
+                            update.focusChanged
+                        ) {
+                            updateSelectionToolbar(update.view);
+                            updateWikilinkSuggester(update.view);
+                        }
+                    }),
                 ],
             });
         },
         [
+            closeWikilinkSuggester,
+            commitWikilinkSuggestion,
+            moveWikilinkSuggesterSelection,
+            updateSelectionToolbar,
+            updateWikilinkSuggester,
             handleOpenLinkContextMenu,
             scheduleSave,
             markTabDirty,
@@ -1606,6 +2017,9 @@ export function Editor({
         const previousView = viewRef.current;
         const shouldRestoreFocus = previousView?.hasFocus ?? false;
 
+        selectionToolbarCleanupRef.current?.();
+        selectionToolbarCleanupRef.current = null;
+        clearEditorDomSelection(previousView);
         previousView?.destroy();
 
         const nextView = new EditorView({
@@ -1630,8 +2044,46 @@ export function Editor({
             nextView.focus();
         }
 
+        const handleScrollOrResize = () => {
+            updateSelectionToolbar(nextView);
+            updateWikilinkSuggester(nextView);
+        };
+        const handleNativeContextMenu = (event: MouseEvent) => {
+            const handled = handleEditorContextMenu(event);
+            if (!handled) return;
+            event.stopPropagation();
+        };
+
+        nextView.scrollDOM.addEventListener("scroll", handleScrollOrResize, {
+            passive: true,
+        });
+        window.addEventListener("resize", handleScrollOrResize);
+        nextView.dom.addEventListener(
+            "contextmenu",
+            handleNativeContextMenu,
+            true,
+        );
+        selectionToolbarCleanupRef.current = () => {
+            nextView.scrollDOM.removeEventListener(
+                "scroll",
+                handleScrollOrResize,
+            );
+            window.removeEventListener("resize", handleScrollOrResize);
+            nextView.dom.removeEventListener(
+                "contextmenu",
+                handleNativeContextMenu,
+                true,
+            );
+        };
+        updateSelectionToolbar(nextView);
+        updateWikilinkSuggester(nextView);
+
         return nextView;
-    }, []);
+    }, [
+        handleEditorContextMenu,
+        updateSelectionToolbar,
+        updateWikilinkSuggester,
+    ]);
 
     // Initialize CodeMirror once — container is always in the DOM
     useEffect(() => {
@@ -1669,10 +2121,15 @@ export function Editor({
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
             }
+            selectionToolbarCleanupRef.current?.();
+            selectionToolbarCleanupRef.current = null;
             scrollHeaderRef.current?.remove();
             scrollHeaderRef.current = null;
             viewRef.current?.destroy();
             viewRef.current = null;
+            setSelectionToolbar(null);
+            wikilinkSuggesterArmedRef.current = false;
+            setWikilinkSuggester(null);
         };
         // stable deps — createEditorState, replaceEditorView and stripFrontmatter only depend on stable refs
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1716,6 +2173,8 @@ export function Editor({
         isInternalRef.current = false;
         if (!nextView) return;
         restoreTabScrollPosition(activeTabId, nextView);
+        updateSelectionToolbar(nextView);
+        updateWikilinkSuggester(nextView);
 
         // Update frontmatter panel for this tab
         setActiveFrontmatter(
@@ -1744,7 +2203,20 @@ export function Editor({
             ],
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTabId, restoreTabScrollPosition, saveTabScrollPosition]);
+    }, [
+        activeTabId,
+        restoreTabScrollPosition,
+        saveTabScrollPosition,
+        updateSelectionToolbar,
+        updateWikilinkSuggester,
+    ]);
+
+    useEffect(() => {
+        if (activeTabInfo) return;
+        setSelectionToolbar(null);
+        wikilinkSuggesterArmedRef.current = false;
+        setWikilinkSuggester(null);
+    }, [activeTabInfo]);
 
     // Reconfigure syntax theme when isDark changes
     useEffect(() => {
@@ -1916,6 +2388,7 @@ export function Editor({
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,
         "--editor-font-family": getEditorFontFamily(editorFontFamily),
+        "--text-input-line-height": String(editorLineHeight / 100),
         "--editor-content-width": `${editorContentWidth}px`,
     } as CSSProperties;
 
@@ -1932,14 +2405,14 @@ export function Editor({
             <div className="min-h-0 flex-1 relative">
                 <div
                     ref={containerRef}
-                    className="h-full relative z-[1]"
+                    className="h-full relative z-1"
                     onContextMenu={(event) => {
                         void handleEditorContextMenu(event);
                     }}
                 />
                 {!activeTabInfo && (
                     <div
-                        className="absolute inset-0 z-[2] flex items-center justify-center"
+                        className="absolute inset-0 z-2 flex items-center justify-center"
                         style={{ background: "transparent" }}
                     >
                         <div
@@ -2006,6 +2479,33 @@ export function Editor({
                             </div>
                         </div>
                     </div>
+                )}
+                {selectionToolbar && (
+                    <FloatingSelectionToolbar
+                        toolbar={selectionToolbar}
+                        editorElement={viewRef.current?.dom ?? null}
+                        onAction={handleSelectionToolbarAction}
+                        onClose={() => setSelectionToolbar(null)}
+                    />
+                )}
+                {wikilinkSuggester && (
+                    <WikilinkSuggester
+                        suggester={wikilinkSuggester}
+                        editorElement={viewRef.current?.dom ?? null}
+                        onHoverIndex={(index) => {
+                            setWikilinkSuggester((previous) =>
+                                previous
+                                    ? { ...previous, selectedIndex: index }
+                                    : previous,
+                            );
+                        }}
+                        onSelect={(item) => {
+                            void commitWikilinkSuggestion(item);
+                        }}
+                        onClose={() => {
+                            void closeWikilinkSuggester();
+                        }}
+                    />
                 )}
             </div>
             {scrollHeaderRef.current &&

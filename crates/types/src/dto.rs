@@ -82,6 +82,38 @@ pub struct BacklinkDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultOpenMetricsDto {
+    pub scan_ms: u64,
+    pub snapshot_load_ms: u64,
+    pub parse_ms: u64,
+    pub index_ms: u64,
+    pub snapshot_save_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultOpenStateDto {
+    pub path: Option<String>,
+    pub stage: String,
+    pub message: String,
+    pub processed: usize,
+    pub total: usize,
+    pub note_count: usize,
+    pub snapshot_used: bool,
+    pub cancelled: bool,
+    pub started_at_ms: Option<u64>,
+    pub finished_at_ms: Option<u64>,
+    pub metrics: VaultOpenMetricsDto,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultNoteChangeDto {
+    pub kind: String,
+    pub note: Option<NoteDto>,
+    pub note_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppErrorDto {
     pub code: String,
     pub message: String,

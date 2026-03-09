@@ -3,6 +3,7 @@ import {
     getAllWebviewWindows,
     getCurrentWebviewWindow,
 } from "@tauri-apps/api/webviewWindow";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { Tab } from "./store/editorStore";
 
 const DETACHED_WINDOW_PREFIX = "note";
@@ -15,6 +16,10 @@ const TAB_DROP_ZONE_TOP_PADDING = 22;
 const TAB_DROP_ZONE_SIDE_PADDING = 28;
 const DETACHED_WINDOW_CURSOR_OFFSET_X = 120;
 const DETACHED_WINDOW_CURSOR_OFFSET_Y = 18;
+const TRAFFIC_LIGHT_X = 14;
+const TRAFFIC_LIGHT_Y = 22;
+const SETTINGS_TRAFFIC_LIGHT_Y = 20;
+const VAULT_TRAFFIC_LIGHT_Y = 20;
 export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
 
 export interface DetachedWindowPayload {
@@ -36,6 +41,18 @@ export function getWindowMode() {
 
 export function getCurrentWindowLabel() {
     return getCurrentWebviewWindow().label;
+}
+
+function getTrafficLightPosition() {
+    return new LogicalPosition(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
+}
+
+function getSettingsTrafficLightPosition() {
+    return new LogicalPosition(TRAFFIC_LIGHT_X, SETTINGS_TRAFFIC_LIGHT_Y);
+}
+
+function getVaultTrafficLightPosition() {
+    return new LogicalPosition(TRAFFIC_LIGHT_X, VAULT_TRAFFIC_LIGHT_Y);
 }
 
 function getDetachedWindowStorageKey(label: string) {
@@ -161,7 +178,7 @@ export async function openSettingsWindow() {
         focus: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
-        trafficLightPosition: { x: 14, y: 18 },
+        trafficLightPosition: getSettingsTrafficLightPosition(),
     });
     await new Promise<void>((resolve, reject) => {
         void win.once("tauri://created", () => resolve());
@@ -182,7 +199,7 @@ export async function openVaultWindow(vaultPath: string) {
         focus: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
-        trafficLightPosition: { x: 14, y: 18 },
+        trafficLightPosition: getVaultTrafficLightPosition(),
     });
 
     return await new Promise<void>((resolve, reject) => {
@@ -218,7 +235,7 @@ export async function openDetachedNoteWindow(
         preventOverflow: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
-        trafficLightPosition: { x: 14, y: 18 },
+        trafficLightPosition: getTrafficLightPosition(),
     });
 
     return await new Promise<WebviewWindow>((resolve, reject) => {

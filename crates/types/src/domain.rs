@@ -37,10 +37,17 @@ pub struct WikiLink {
 // --- Index ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexedNote {
+pub struct NoteMetadata {
     pub id: NoteId,
     pub path: NotePath,
     pub title: String,
+    pub modified_at: u64,
+    pub created_at: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexedNote {
     pub tags: Vec<String>,
     pub links: Vec<String>,
 }

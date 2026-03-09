@@ -15,6 +15,9 @@
     --highlight-bg: color-mix(in srgb, var(--accent) 20%, rgb(255 235 130 / 0.85));
     --highlight-text: #1c1c1c;
     --text-input-line-height: 1.5;
+    --scrollbar-thumb-idle: transparent;
+    --scrollbar-thumb-active: color-mix(in srgb, var(--border) 76%, transparent);
+    --scrollbar-thumb-hover: color-mix(in srgb, var(--text-secondary) 38%, transparent);
 }
 
 .dark {
@@ -29,6 +32,10 @@
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
     --highlight-bg: rgba(202, 162, 0, 0.35);
     --highlight-text: #f5e082;
+}
+
+* {
+    --app-scrollbar-thumb: var(--scrollbar-thumb-idle);
 }
 
 body {
@@ -114,6 +121,15 @@ body.dragging-tab * {
     user-select: none !important;
 }
 
+[data-scrollbar-active="true"] {
+    --app-scrollbar-thumb: var(--scrollbar-thumb-active);
+    scrollbar-color: var(--scrollbar-thumb-active) transparent;
+}
+
+* {
+    scrollbar-color: transparent transparent;
+}
+
 *::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -124,18 +140,34 @@ body.dragging-tab * {
 }
 
 *::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--border) 76%, transparent);
+    background: var(--app-scrollbar-thumb);
     border: 2px solid transparent;
     border-radius: 999px;
     background-clip: padding-box;
+    transition: background-color 140ms ease, opacity 140ms ease;
 }
 
-*::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+[data-scrollbar-active="true"]::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
     border: 2px solid transparent;
     background-clip: padding-box;
 }
 
 .editor-shell {
     background: var(--bg-primary);
+}
+
+.editor-shell[data-scrollbar-active="true"] .cm-scroller {
+    scrollbar-color: var(--scrollbar-thumb-active) transparent;
+}
+
+.editor-shell[data-scrollbar-active="true"] .cm-scroller::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb-active);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.editor-shell[data-scrollbar-active="true"]
+    .cm-scroller::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
 }

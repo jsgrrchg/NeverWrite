@@ -3,7 +3,6 @@ use std::fs;
 use vault_ai_types::NoteDocument;
 
 use crate::error::VaultError;
-use crate::parser;
 use crate::vault::Vault;
 
 impl Vault {
@@ -13,8 +12,7 @@ impl Vault {
         if !path.exists() {
             return Err(VaultError::NoteNotFound(note_id.to_string()));
         }
-        let content = fs::read_to_string(&path)?;
-        Ok(parser::parse_note(note_id, &path, &content))
+        self.read_note_from_path(&path)
     }
 
     /// Escribe contenido a una nota existente.
@@ -42,8 +40,7 @@ impl Vault {
             fs::create_dir_all(parent)?;
         }
         fs::write(&path, content)?;
-        let id = self.path_to_id(&path);
-        Ok(parser::parse_note(&id, &path, content))
+        self.read_note_from_path(&path)
     }
 
     /// Elimina una nota por su ID.
@@ -76,8 +73,6 @@ impl Vault {
         }
         fs::rename(&old_path, &new_path)?;
 
-        let content = fs::read_to_string(&new_path)?;
-        let new_id = self.path_to_id(&new_path);
-        Ok(parser::parse_note(&new_id, &new_path, &content))
+        self.read_note_from_path(&new_path)
     }
 }

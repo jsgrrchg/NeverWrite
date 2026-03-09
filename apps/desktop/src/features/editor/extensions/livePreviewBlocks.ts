@@ -30,6 +30,7 @@ import {
 import { selectionTouchesRange } from "./selectionActivity";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
+const MAX_REMOTE_IMAGE_URL_LENGTH = 4096;
 const TABLE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const TABLE_BOLD_RE = /\*\*(?=\S)(.+?\S)\*\*/g;
@@ -99,17 +100,51 @@ class ImageWidget extends WidgetType {
         img.alt = this.alt;
         img.className = "cm-inline-image";
         img.draggable = false;
+        img.loading = "lazy";
+        img.decoding = "async";
         if (this.title) img.title = this.title;
 
         img.onerror = () => {
             img.style.display = "none";
             const fallback = document.createElement("span");
             fallback.className = "cm-inline-image-fallback";
-            fallback.textContent = `Image not found: ${this.alt || this.src}`;
+            fallback.textContent = `Image not found: ${truncateInlineImageLabel(
+                this.alt || this.src,
+            )}`;
             wrapper.appendChild(fallback);
         };
 
         wrapper.appendChild(img);
+        return wrapper;
+    }
+
+    ignoreEvent() {
+        return false;
+    }
+}
+
+class SkippedImageWidget extends WidgetType {
+    private label: string;
+
+    constructor(label: string) {
+        super();
+        this.label = label;
+    }
+
+    eq(other: SkippedImageWidget) {
+        return this.label === other.label;
+    }
+
+    toDOM() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cm-inline-image-wrapper";
+        wrapper.setAttribute("contenteditable", "false");
+
+        const fallback = document.createElement("span");
+        fallback.className = "cm-inline-image-fallback";
+        fallback.textContent = this.label;
+
+        wrapper.appendChild(fallback);
         return wrapper;
     }
 
@@ -622,6 +657,18 @@ function resolveImageUrl(rawUrl: string, vaultRoot: string | null): string {
     return convertFileSrc(path);
 }
 
+function truncateInlineImageLabel(value: string, maxLength = 160): string {
+    if (value.length <= maxLength) return value;
+    return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function isSuspiciousRemoteImageUrl(url: string): boolean {
+    return (
+        (url.startsWith("http://") || url.startsWith("https://")) &&
+        url.length > MAX_REMOTE_IMAGE_URL_LENGTH
+    );
+}
+
 function isRenderableImageUrl(url: string): boolean {
     return (
         url.startsWith("http://") ||
@@ -777,6 +824,20 @@ function buildBlockDecorations(
             }
 
             if (!isRenderableImageUrl(resolvedImageHref)) {
+                return;
+            }
+
+            if (isSuspiciousRemoteImageUrl(resolvedImageHref)) {
+                decos.push({
+                    from: node.from,
+                    to: node.to,
+                    deco: Decoration.replace({
+                        widget: new SkippedImageWidget(
+                            "Image preview skipped: URL too long",
+                        ),
+                        block: false,
+                    }),
+                });
                 return;
             }
 

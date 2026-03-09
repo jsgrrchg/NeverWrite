@@ -1,31 +1,28 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useCommandStore, type Command } from "./store/commandStore";
 
 export function CommandPalette() {
+    const activeModal = useCommandStore((s) => s.activeModal);
+
+    if (activeModal !== "command-palette") return null;
+
+    return <CommandPaletteDialog />;
+}
+
+function CommandPaletteDialog() {
     const [query, setQuery] = useState("");
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
-    const activeModal = useCommandStore((s) => s.activeModal);
     const search = useCommandStore((s) => s.search);
     const closeModal = useCommandStore((s) => s.closeModal);
-
-    const open = activeModal === "command-palette";
-    const results = search(query);
+    const results = useMemo(() => search(query), [query, search]);
 
     useEffect(() => {
-        if (open) {
-            setQuery("");
-            setSelectedIndex(0);
-            setTimeout(() => inputRef.current?.focus(), 0);
-        }
-    }, [open]);
+        const frame = window.setTimeout(() => inputRef.current?.focus(), 0);
+        return () => window.clearTimeout(frame);
+    }, []);
 
-    useEffect(() => {
-        setSelectedIndex(0);
-    }, [query]);
-
-    // Scroll selected item into view
     useEffect(() => {
         const list = listRef.current;
         if (!list) return;
@@ -81,7 +78,10 @@ export function CommandPalette() {
                 <input
                     ref={inputRef}
                     value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    onChange={(e) => {
+                        setQuery(e.target.value);
+                        setSelectedIndex(0);
+                    }}
                     onKeyDown={handleKeyDown}
                     placeholder="Type a command..."
                     className="w-full px-4 py-3 text-sm outline-none"

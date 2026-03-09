@@ -43,6 +43,33 @@ fn scan_finds_all_notes() {
 }
 
 #[test]
+fn discover_markdown_files_ignores_internal_dirs() {
+    let (dir, vault) = setup_vault();
+    fs::create_dir_all(dir.path().join(".obsidian/plugins")).unwrap();
+    fs::write(dir.path().join(".obsidian/plugins/ignored.md"), "# Ignored").unwrap();
+
+    let files = vault.discover_markdown_files().unwrap();
+    let ids: Vec<&str> = files.iter().map(|file| file.id.as_str()).collect();
+
+    assert_eq!(files.len(), 3);
+    assert!(!ids.contains(&".obsidian/plugins/ignored"));
+}
+
+#[test]
+fn parse_discovered_files_reports_progress() {
+    let (_dir, vault) = setup_vault();
+    let files = vault.discover_markdown_files().unwrap();
+    let mut progress = Vec::new();
+
+    let notes = vault
+        .parse_discovered_files(&files, |processed| progress.push(processed))
+        .unwrap();
+
+    assert_eq!(notes.len(), files.len());
+    assert_eq!(progress, vec![1, 2, 3]);
+}
+
+#[test]
 fn scan_parses_frontmatter() {
     let (_dir, vault) = setup_vault();
     let notes = vault.scan().unwrap();
