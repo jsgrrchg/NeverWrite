@@ -1,1 +1,3 @@
-pub fn placeholder() {}
+mod domain;
+
+pub use domain::*;

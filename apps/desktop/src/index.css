@@ -43,10 +43,11 @@ body {
     -webkit-user-select: none;
 }
 
-/* Allow text selection in editable content */
+/* Allow text selection in editable content and chat messages */
 .cm-editor .cm-content,
 input,
-textarea {
+textarea,
+[data-selectable="true"] {
     user-select: text;
     -webkit-user-select: text;
 }
@@ -170,4 +171,15 @@ body.dragging-tab * {
 .editor-shell[data-scrollbar-active="true"]
     .cm-scroller::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover);
+}
+
+@keyframes ai-bounce {
+    0%,
+    60%,
+    100% {
+        transform: translateY(0);
+    }
+    30% {
+        transform: translateY(-4px);
+    }
 }

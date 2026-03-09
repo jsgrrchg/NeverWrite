@@ -2234,6 +2234,39 @@ export function Editor({
         });
     }, [editorMode, handleOpenLinkContextMenu]);
 
+    // Reload editor content when an external process (e.g. AI agent) writes to the file
+    useEffect(() => {
+        const unsub = useEditorStore.subscribe((state, prev) => {
+            const view = viewRef.current;
+            if (!view) return;
+            const tabId = state.activeTabId;
+            if (!tabId) return;
+
+            const tab = state.tabs.find((t) => t.id === tabId);
+            const prevTab = prev.tabs.find((t) => t.id === tabId);
+            if (!tab || !prevTab) return;
+
+            // Only react when content changed externally (tab is NOT dirty)
+            if (tab.isDirty) return;
+            if (tab.content === prevTab.content) return;
+
+            const currentDoc = view.state.doc.toString();
+            const incoming = stripFrontmatter(tabId, tab.content);
+            if (incoming === currentDoc) return;
+
+            isInternalRef.current = true;
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: currentDoc.length,
+                    insert: incoming,
+                },
+            });
+            isInternalRef.current = false;
+        });
+        return unsub;
+    }, [stripFrontmatter]);
+
     useEffect(() => {
         if (autoSave) return;
         if (saveTimerRef.current) {

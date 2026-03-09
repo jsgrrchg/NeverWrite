@@ -91,6 +91,7 @@ interface EditorStore {
     clearPendingReveal: () => void;
     queueSelectionReveal: (reveal: PendingSelectionReveal) => void;
     clearPendingSelectionReveal: () => void;
+    reloadNoteContent: (noteId: string, content: string) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -264,6 +265,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     clearPendingSelectionReveal: () =>
         set({ pendingSelectionReveal: null }),
+
+    reloadNoteContent: (noteId, content) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) => {
+                if (t.noteId !== noteId) return t;
+                // Don't overwrite unsaved user edits
+                if (t.isDirty) return t;
+                if (t.content === content) return t;
+                return { ...t, content };
+            }),
+        }));
+    },
 }));
 
 useEditorStore.subscribe((state) => {
