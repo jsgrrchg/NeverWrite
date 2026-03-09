@@ -1,3 +1,5 @@
+mod ai;
+
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -351,7 +353,7 @@ fn load_snapshot(app: &AppHandle, vault_root: &Path) -> Option<LoadedSnapshot> {
     Some(LoadedSnapshot { metadata, payload })
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "Snapshot path without parent directory".to_string())?;
@@ -425,7 +427,17 @@ fn handle_external_vault_event(app: &AppHandle, event: VaultEvent) {
                             note_id: Some(note_id),
                         })
                     }
-                    Err(_) => None,
+                    Err(_) => {
+                        // File can't be read — likely moved/renamed away.
+                        // Treat as delete so stale entries are removed.
+                        let note_id = vault.path_to_id(&path);
+                        index.remove_note(&NoteId(note_id.clone()));
+                        Some(VaultNoteChangeDto {
+                            kind: "delete".to_string(),
+                            note: None,
+                            note_id: Some(note_id),
+                        })
+                    }
                 }
             }
             VaultEvent::FileDeleted(path) => {
@@ -1021,6 +1033,7 @@ pub fn run() {
             open_cancel: None,
             open_state: VaultOpenState::idle(),
         }))
+        .manage(Mutex::new(ai::AiManager::new()))
         .invoke_handler(tauri::generate_handler![
             open_vault,
             start_open_vault,
@@ -1035,6 +1048,21 @@ pub fn run() {
             search_notes,
             get_backlinks,
             get_tags,
+            ai::commands::ai_list_runtimes,
+            ai::commands::ai_get_setup_status,
+            ai::commands::ai_update_setup,
+            ai::commands::ai_start_auth,
+            ai::commands::ai_list_sessions,
+            ai::commands::ai_load_session,
+            ai::commands::ai_create_session,
+            ai::commands::ai_set_model,
+            ai::commands::ai_set_mode,
+            ai::commands::ai_set_config_option,
+            ai::commands::ai_cancel_turn,
+            ai::commands::ai_send_message,
+            ai::commands::ai_respond_permission,
+            ai::commands::ai_save_session_history,
+            ai::commands::ai_load_session_histories,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
