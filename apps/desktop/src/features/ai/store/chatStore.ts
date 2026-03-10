@@ -9,6 +9,7 @@ import {
     aiListRuntimes,
     aiLoadSession,
     aiLoadSessionHistories,
+    aiPruneSessionHistories,
     aiRespondPermission,
     aiSaveSessionHistory,
     aiSendMessage,
@@ -52,6 +53,7 @@ interface AiPreferences {
     requireCmdEnterToSend?: boolean;
     composerFontSize?: number;
     chatFontSize?: number;
+    historyRetentionDays?: number;
 }
 
 interface AIRuntimeCatalogSnapshot {
@@ -221,6 +223,7 @@ interface ChatStore {
     requireCmdEnterToSend: boolean;
     composerFontSize: number;
     chatFontSize: number;
+    historyRetentionDays: number;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
     initialize: () => Promise<void>;
     refreshSetupStatus: () => Promise<void>;
@@ -288,6 +291,7 @@ interface ChatStore {
     toggleRequireCmdEnterToSend: () => void;
     setComposerFontSize: (size: number) => void;
     setChatFontSize: (size: number) => void;
+    setHistoryRetentionDays: (days: number) => Promise<void>;
     openNotePicker: () => void;
     closeNotePicker: () => void;
 }
@@ -607,40 +611,11 @@ function mergeSession(
     });
 }
 
-function hasInProgressMessage(messages: AIChatMessage[]) {
-    return messages.some((message) => message.inProgress);
-}
-
-function hasRunningTool(messages: AIChatMessage[]) {
-    return messages.some(
-        (message) =>
-            message.kind === "tool" &&
-            (message.meta?.status === "pending" ||
-                message.meta?.status === "in_progress"),
-    );
-}
-
 function normalizeSessionState(session: AIChatSession): AIChatSession {
-    if (session.status !== "streaming") {
-        return session;
-    }
-
-    if (
-        hasInProgressMessage(session.messages) ||
-        hasRunningTool(session.messages)
-    ) {
-        return session;
-    }
-
-    const lastMessage = session.messages.at(-1);
-    if (!lastMessage || lastMessage.role === "user") {
-        return session;
-    }
-
-    return {
-        ...session,
-        status: "idle",
-    };
+    // Only applyMessageCompleted should transition streaming → idle.
+    // This function now just passes through; the stale-streaming timer
+    // acts as the safety net for truly stuck sessions.
+    return session;
 }
 
 function getDefaultRuntimeId(runtimes: AIRuntimeDescriptor[]) {
@@ -707,7 +682,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
 // If no new events arrive within STALE_STREAMING_MS, and there is no
 // genuinely active work, the session is forced back to "idle".
 // ---------------------------------------------------------------------------
-const STALE_STREAMING_MS = 15_000;
+// Safety net: if the backend dies and never sends message-completed,
+// force idle after a long silence so the UI doesn't stay stuck forever.
+const STALE_STREAMING_MS = 120_000;
 const _staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function scheduleStaleStreamingCheck(sessionId: string) {
@@ -716,15 +693,6 @@ function scheduleStaleStreamingCheck(sessionId: string) {
         sessionId,
         setTimeout(() => {
             _staleTimers.delete(sessionId);
-            const state = useChatStore.getState();
-            const session = state.sessionsById[sessionId];
-            if (!session || session.status !== "streaming") return;
-
-            // Running tools can legitimately take a long time — don't
-            // force idle while waiting for a tool to finish.
-            if (hasRunningTool(session.messages)) return;
-
-            // No streaming events for STALE_STREAMING_MS → force idle
             useChatStore.setState((s) => {
                 const sess = s.sessionsById[sessionId];
                 if (!sess || sess.status !== "streaming") return s;
@@ -760,9 +728,22 @@ function persistSession(session: AIChatSession) {
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath || session.messages.length === 0) return;
 
-    aiSaveSessionHistory(vaultPath, toPersistedHistory(session)).catch(
-        (error) => console.warn("Failed to persist session history:", error),
-    );
+    const historyRetentionDays = useChatStore.getState().historyRetentionDays;
+    aiSaveSessionHistory(vaultPath, toPersistedHistory(session))
+        .then(() =>
+            historyRetentionDays > 0
+                ? aiPruneSessionHistories(vaultPath, historyRetentionDays)
+                : undefined,
+        )
+        .catch((error) =>
+            console.warn("Failed to persist session history:", error),
+        );
+}
+
+async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath || maxAgeDays <= 0) return 0;
+    return aiPruneSessionHistories(vaultPath, maxAgeDays);
 }
 
 function restoreMessagesFromHistory(
@@ -790,7 +771,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     autoContextEnabled: loadAiPreferences().autoContextEnabled !== false,
     requireCmdEnterToSend: loadAiPreferences().requireCmdEnterToSend === true,
     composerFontSize: loadAiPreferences().composerFontSize ?? 14,
-    chatFontSize: loadAiPreferences().chatFontSize ?? 14,
+    chatFontSize: loadAiPreferences().chatFontSize ?? 20,
+    historyRetentionDays: loadAiPreferences().historyRetentionDays ?? 0,
     composerPartsBySessionId: {},
 
     initialize: async () => {
@@ -835,6 +817,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             >();
             if (vaultPath) {
                 try {
+                    const retentionDays = get().historyRetentionDays;
+                    if (retentionDays > 0) {
+                        await aiPruneSessionHistories(vaultPath, retentionDays);
+                    }
                     histories = await aiLoadSessionHistories(vaultPath);
                     persistedBySessionId = new Map(
                         histories.map((h) => [h.session_id, h]),
@@ -1352,19 +1338,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 (message) => message.id === messageId,
             );
 
-            const nextSession = normalizeSessionState({
-                ...session,
-                messages: exists
-                    ? session.messages.map((message) =>
-                          message.id === messageId ? nextMessage : message,
-                      )
-                    : [...session.messages, nextMessage],
-            });
-
             return {
                 sessionsById: {
                     ...state.sessionsById,
-                    [payload.session_id]: nextSession,
+                    [payload.session_id]: {
+                        ...session,
+                        messages: exists
+                            ? session.messages.map((message) =>
+                                  message.id === messageId
+                                      ? nextMessage
+                                      : message,
+                              )
+                            : [...session.messages, nextMessage],
+                    },
                 },
                 sessionOrder: touchSessionOrder(
                     state.sessionOrder,
@@ -1868,6 +1854,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         const { activeSessionId } = get();
         if (!activeSessionId) return;
 
+        clearStaleStreamingCheck(activeSessionId);
+
         try {
             const session = await aiCancelTurn(activeSessionId);
             get().upsertSession(session);
@@ -1880,6 +1868,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 ),
             });
         }
+
+        // Explicitly transition to idle — same as applyMessageCompleted.
+        set((state) => {
+            const sess = state.sessionsById[activeSessionId];
+            if (!sess || sess.status === "idle") return state;
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [activeSessionId]: {
+                        ...sess,
+                        status: "idle",
+                        messages: sess.messages.map((m) =>
+                            m.inProgress ? { ...m, inProgress: false } : m,
+                        ),
+                    },
+                },
+            };
+        });
     },
 
     respondPermission: async (requestId, optionId) => {
@@ -2066,7 +2072,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                     id: crypto.randomUUID(),
                     type: "folder",
                     noteId: folderPath,
-                    label: `📁 ${name}`,
+                    label: name,
                     path: null,
                 }),
             })),
@@ -2140,6 +2146,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         saveAiPreferences({ chatFontSize: size });
     },
 
+    setHistoryRetentionDays: async (days) => {
+        const next = Math.max(0, Math.round(days));
+        set({ historyRetentionDays: next });
+        saveAiPreferences({ historyRetentionDays: next });
+
+        if (next <= 0) return;
+        try {
+            await pruneSessionHistoriesForCurrentVault(next);
+            await get().initialize();
+        } catch (error) {
+            console.warn("Failed to prune expired session histories:", error);
+        }
+    },
+
     openNotePicker: () => set({ notePickerOpen: true }),
 
     closeNotePicker: () => set({ notePickerOpen: false }),
@@ -2154,7 +2174,8 @@ if (typeof window !== "undefined") {
                 autoContextEnabled: prefs.autoContextEnabled !== false,
                 requireCmdEnterToSend: prefs.requireCmdEnterToSend === true,
                 composerFontSize: prefs.composerFontSize ?? 14,
-                chatFontSize: prefs.chatFontSize ?? 14,
+                chatFontSize: prefs.chatFontSize ?? 20,
+                historyRetentionDays: prefs.historyRetentionDays ?? 0,
             });
         }
     });

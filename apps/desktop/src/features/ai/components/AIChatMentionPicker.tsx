@@ -5,6 +5,7 @@ import type { AIMentionSuggestion } from "../types";
 
 function suggestionKey(item: AIMentionSuggestion) {
     if (item.kind === "fetch") return "fetch";
+    if (item.kind === "plan") return "plan";
     return item.kind === "note"
         ? `note:${item.note.id}`
         : `folder:${item.folderPath}`;
@@ -29,7 +30,7 @@ function FolderIcon() {
     );
 }
 
-function NoteIcon() {
+function NoteIcon({ color = "var(--text-secondary)" }: { color?: string }) {
     return (
         <svg
             width="13"
@@ -41,7 +42,7 @@ function NoteIcon() {
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
-            style={{ color: "var(--text-secondary)", opacity: 0.6 }}
+            style={{ color, opacity: color === "var(--text-secondary)" ? 0.6 : 1 }}
         >
             <path d="M8 1.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5L8 1.5z" />
             <path d="M8 1.5V5h3.5" />
@@ -65,6 +66,28 @@ function FetchIcon() {
         >
             <circle cx="7" cy="7" r="5.5" />
             <path d="M1.5 7h11M7 1.5a8.5 8.5 0 0 1 2 5.5 8.5 8.5 0 0 1-2 5.5M7 1.5a8.5 8.5 0 0 0-2 5.5 8.5 8.5 0 0 0 2 5.5" />
+        </svg>
+    );
+}
+
+function PlanIcon() {
+    return (
+        <svg
+            width="13"
+            height="13"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="shrink-0"
+            style={{ color: "var(--accent)" }}
+        >
+            <path d="M3 3.5h8M3 7h8M3 10.5h5" />
+            <circle cx="1.75" cy="3.5" r="0.75" fill="currentColor" stroke="none" />
+            <circle cx="1.75" cy="7" r="0.75" fill="currentColor" stroke="none" />
+            <circle cx="1.75" cy="10.5" r="0.75" fill="currentColor" stroke="none" />
         </svg>
     );
 }
@@ -169,6 +192,8 @@ export function AIChatMentionPicker({
                     items.map((item, index) => {
                         const isActive = index === selectedIndex;
                         const isFetch = item.kind === "fetch";
+                        const isPlan = item.kind === "plan";
+                        const isNote = item.kind === "note";
                         return (
                             <button
                                 key={suggestionKey(item)}
@@ -190,6 +215,10 @@ export function AIChatMentionPicker({
                                     background: isActive
                                         ? isFetch
                                             ? "color-mix(in srgb, #10b981 10%, var(--bg-secondary))"
+                                            : isPlan
+                                              ? "color-mix(in srgb, var(--accent) 12%, var(--bg-secondary))"
+                                              : isNote
+                                                ? "color-mix(in srgb, #d97706 10%, var(--bg-secondary))"
                                             : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
                                         : "transparent",
                                     padding: "6px 10px",
@@ -200,18 +229,27 @@ export function AIChatMentionPicker({
                             >
                                 {isFetch ? (
                                     <FetchIcon />
+                                ) : isPlan ? (
+                                    <PlanIcon />
                                 ) : item.kind === "folder" ? (
                                     <FolderIcon />
                                 ) : (
-                                    <NoteIcon />
+                                    <NoteIcon color="#d97706" />
                                 )}
                                 <span
                                     style={{
                                         color: isFetch
                                             ? "#10b981"
+                                            : isPlan
+                                              ? "var(--accent)"
+                                              : isNote
+                                                ? "#d97706"
                                             : "var(--text-primary)",
                                         fontSize: 13,
-                                        fontWeight: isFetch ? 600 : 500,
+                                        fontWeight:
+                                            isFetch || isPlan || isNote
+                                                ? 600
+                                                : 500,
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
@@ -221,11 +259,13 @@ export function AIChatMentionPicker({
                                 >
                                     {isFetch
                                         ? "fetch"
+                                        : isPlan
+                                          ? "/plan"
                                         : item.kind === "note"
                                           ? item.note.title
                                           : item.name}
                                 </span>
-                                {isFetch && (
+                                {(isFetch || isPlan) && (
                                     <span
                                         style={{
                                             fontSize: 11,
@@ -234,7 +274,7 @@ export function AIChatMentionPicker({
                                             flexShrink: 0,
                                         }}
                                     >
-                                        web search
+                                        {isFetch ? "web search" : "planning"}
                                     </span>
                                 )}
                             </button>

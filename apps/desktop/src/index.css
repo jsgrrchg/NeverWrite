@@ -130,6 +130,12 @@ body.resizing-sidebar * {
     user-select: none !important;
 }
 
+body.resizing-composer,
+body.resizing-composer * {
+    cursor: row-resize !important;
+    user-select: none !important;
+}
+
 body.dragging-tab,
 body.dragging-tab * {
     user-select: none !important;

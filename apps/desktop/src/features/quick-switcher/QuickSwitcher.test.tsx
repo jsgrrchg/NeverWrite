@@ -43,14 +43,12 @@ describe("QuickSwitcher", () => {
                 noteId: "notes/open-a",
                 title: "Open A",
                 content: "A",
-                isDirty: false,
             },
             {
                 id: "tab-b",
                 noteId: "notes/open-b",
                 title: "Open B",
                 content: "B",
-                isDirty: false,
             },
         ]);
         setCommands([], "quick-switcher");
@@ -96,7 +94,6 @@ describe("QuickSwitcher", () => {
                     noteId: "notes/plan",
                     title: "Plan",
                     content: "cached",
-                    isDirty: false,
                 },
             ],
             "tab-plan",

@@ -4,6 +4,7 @@ import {
     useEditorStore,
     type PendingReveal,
 } from "../../app/store/editorStore";
+import { useShallow } from "zustand/react/shallow";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { revealNoteInTree } from "../../app/utils/navigation";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
@@ -493,21 +494,26 @@ function OutgoingLinksContextMenu({
 }
 
 export function LinksPanel() {
-    const openNote = useEditorStore((s) => s.openNote);
-    const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
-    const queueReveal = useEditorStore((s) => s.queueReveal);
+    const { openNote, insertExternalTab, queueReveal } = useEditorStore(
+        useShallow((s) => ({
+            openNote: s.openNote,
+            insertExternalTab: s.insertExternalTab,
+            queueReveal: s.queueReveal,
+        })),
+    );
     const notes = useVaultStore((s) => s.notes);
     const tabs = useEditorStore((s) => s.tabs);
 
-    // Only re-render when noteId or content of the active tab changes
-    const activeNoteId = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
-    );
-    const activeContent = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.content ?? null,
-    );
-    const activeTitle = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.title ?? null,
+    // Single shallow selector — re-renders only when these 3 values change
+    const { activeNoteId, activeContent, activeTitle } = useEditorStore(
+        useShallow((s) => {
+            const tab = s.tabs.find((t) => t.id === s.activeTabId);
+            return {
+                activeNoteId: tab?.noteId ?? null,
+                activeContent: tab?.content ?? null,
+                activeTitle: tab?.title ?? null,
+            };
+        }),
     );
 
     const [backlinks, setBacklinks] = useState<BacklinkDto[]>([]);
@@ -613,7 +619,6 @@ export function LinksPanel() {
                 noteId: bl.id,
                 title: bl.title,
                 content,
-                isDirty: false,
             });
         } catch (e) {
             console.error("Error opening backlink in new tab:", e);
@@ -673,7 +678,6 @@ export function LinksPanel() {
                 noteId: link.note.id,
                 title: link.note.title,
                 content,
-                isDirty: false,
             });
         } catch (e) {
             console.error("Error opening outgoing link in new tab:", e);

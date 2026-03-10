@@ -45,7 +45,6 @@ export interface Tab {
     noteId: string;
     title: string;
     content: string;
-    isDirty: boolean;
 }
 
 export interface PendingReveal {
@@ -92,9 +91,7 @@ interface EditorStore {
     closeTab: (tabId: string) => void;
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
-    markTabDirty: (tabId: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
-    markTabClean: (tabId: string) => void;
     reorderTabs: (fromIndex: number, toIndex: number) => void;
     hydrateTabs: (tabs: Tab[], activeTabId: string | null) => void;
     insertExternalTab: (tab: Tab, index?: number) => void;
@@ -126,7 +123,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             noteId,
             title,
             content,
-            isDirty: false,
         };
         set((state) => {
             if (options?.placement !== "afterActive") {
@@ -196,33 +192,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     updateTabContent: (tabId, content) => {
         set((state) => ({
             tabs: state.tabs.map((t) =>
-                t.id === tabId ? { ...t, content, isDirty: true } : t,
+                t.id === tabId ? { ...t, content } : t,
             ),
         }));
-    },
-
-    markTabDirty: (tabId) => {
-        const tab = get().tabs.find((t) => t.id === tabId);
-        if (tab && !tab.isDirty) {
-            set((state) => ({
-                tabs: state.tabs.map((t) =>
-                    t.id === tabId ? { ...t, isDirty: true } : t,
-                ),
-            }));
-        }
     },
 
     updateTabTitle: (tabId, title) => {
         set((state) => ({
             tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
-        }));
-    },
-
-    markTabClean: (tabId) => {
-        set((state) => ({
-            tabs: state.tabs.map((t) =>
-                t.id === tabId ? { ...t, isDirty: false } : t,
-            ),
         }));
     },
 
@@ -286,8 +263,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             tabs: state.tabs.map((t) => {
                 if (t.noteId !== noteId) return t;
-                // Don't overwrite unsaved user edits
-                if (t.isDirty) return t;
                 if (t.content === detail.content && t.title === detail.title) {
                     return t;
                 }
@@ -296,6 +271,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 }));
+
+// Debounced session persistence — only write when tab list or active tab changes
+let _sessionTimer: ReturnType<typeof setTimeout> | null = null;
+let _lastSessionJson = "";
 
 useEditorStore.subscribe((state) => {
     if (!sessionReady) return;
@@ -308,5 +287,12 @@ useEditorStore.subscribe((state) => {
         activeNoteId:
             state.tabs.find((t) => t.id === state.activeTabId)?.noteId ?? null,
     };
-    localStorage.setItem(getSessionKey(vaultPath), JSON.stringify(session));
+    const json = JSON.stringify(session);
+    if (json === _lastSessionJson) return;
+
+    if (_sessionTimer) clearTimeout(_sessionTimer);
+    _sessionTimer = setTimeout(() => {
+        _lastSessionJson = json;
+        localStorage.setItem(getSessionKey(vaultPath), json);
+    }, 500);
 });

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,64 @@ pub fn delete_all_session_histories(vault_root: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn now_ms() -> Result<u64, String> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?;
+    Ok(duration.as_millis() as u64)
+}
+
+pub fn prune_expired_session_histories(
+    vault_root: &Path,
+    max_age_days: u32,
+) -> Result<usize, String> {
+    if max_age_days == 0 {
+        return Ok(0);
+    }
+
+    let dir = sessions_dir(vault_root);
+    if !dir.exists() {
+        return Ok(0);
+    }
+
+    let max_age_ms = u64::from(max_age_days) * 24 * 60 * 60 * 1000;
+    let cutoff_ms = now_ms()?.saturating_sub(max_age_ms);
+    let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let mut deleted = 0;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let raw = match fs::read_to_string(&path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        let history = match serde_json::from_str::<PersistedSessionHistory>(&raw) {
+            Ok(history) if history.version == 1 => history,
+            _ => continue,
+        };
+
+        if history.updated_at >= cutoff_ms {
+            continue;
+        }
+
+        if fs::remove_file(&path).is_ok() {
+            deleted += 1;
+        }
+    }
+
+    Ok(deleted)
 }
 
 pub fn load_all_session_histories(

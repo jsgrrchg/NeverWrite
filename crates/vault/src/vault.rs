@@ -1,10 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use vault_ai_types::NoteDocument;
 use walkdir::WalkDir;
 
 use crate::error::VaultError;
 use crate::parser;
+
+const IGNORED_DIR_NAMES: &[&str] = &[
+    ".obsidian",
+    ".git",
+    ".vaultai",
+    ".vaultai-cache",
+    ".trash",
+    "target",
+    "node_modules",
+    "vendor",
+    ".cargo-home",
+    ".claude",
+];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiscoveredNoteFile {
@@ -38,10 +51,7 @@ impl Vault {
             }
 
             let name = entry.file_name().to_string_lossy();
-            !matches!(
-                name.as_ref(),
-                ".obsidian" | ".git" | ".vaultai" | ".vaultai-cache" | ".trash"
-            )
+            !is_ignored_dir_name(name.as_ref())
         });
 
         for entry in walker.filter_map(|entry| entry.ok()) {
@@ -113,6 +123,21 @@ impl Vault {
         let id = self.path_to_id(path);
         Ok(parser::parse_note(&id, path, &content))
     }
+}
+
+pub(crate) fn is_ignored_dir_name(name: &str) -> bool {
+    IGNORED_DIR_NAMES.contains(&name)
+}
+
+pub(crate) fn path_is_ignored(root: &Path, path: &Path) -> bool {
+    let Ok(relative_path) = path.strip_prefix(root) else {
+        return false;
+    };
+
+    relative_path.components().any(|component| match component {
+        Component::Normal(name) => is_ignored_dir_name(&name.to_string_lossy()),
+        _ => false,
+    })
 }
 
 fn system_time_to_secs(value: std::time::SystemTime) -> u64 {

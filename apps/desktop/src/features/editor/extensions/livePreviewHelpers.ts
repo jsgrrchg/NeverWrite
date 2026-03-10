@@ -41,8 +41,7 @@ export interface LinkInfo {
 /** Removes element from layout (for block-level marks: list markers, heading marks, link brackets). */
 export const hideMark = Decoration.mark({ class: "cm-lp-hidden" });
 
-/** Makes element invisible but keeps it in the layout (for inline marks: **, *, ~~, `).
- *  Prevents text reflow when cursor enters/leaves the line. */
+/** Hides inline syntax marks while collapsing their visual width. */
 export const hideInlineMark = Decoration.mark({ class: "cm-lp-hidden-inline" });
 
 // ---------------------------------------------------------------------------

@@ -36,7 +36,7 @@ export function AIChatNotePicker({
             }}
         >
             <div
-                className="mt-8 w-full max-w-md overflow-hidden rounded-2xl"
+                className="mt-8 w-full max-w-sm overflow-hidden rounded-xl"
                 style={{
                     backgroundColor: "var(--bg-elevated)",
                     border: "1px solid var(--border)",
@@ -44,22 +44,14 @@ export function AIChatNotePicker({
                 }}
             >
                 <div
-                    className="flex items-center justify-between px-3 py-3"
+                    className="flex items-center justify-between px-3 py-2"
                     style={{ borderBottom: "1px solid var(--border)" }}
                 >
-                    <div>
-                        <div
-                            className="text-[11px] uppercase tracking-[0.14em]"
-                            style={{ color: "var(--text-secondary)" }}
-                        >
-                            Context
-                        </div>
-                        <div
-                            className="mt-1 text-sm font-semibold"
-                            style={{ color: "var(--text-primary)" }}
-                        >
-                            Attach note
-                        </div>
+                    <div
+                        className="text-xs font-semibold"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        Attach note
                     </div>
                     <button
                         type="button"
@@ -75,13 +67,13 @@ export function AIChatNotePicker({
                     </button>
                 </div>
 
-                <div className="p-3">
+                <div className="px-3 py-2">
                     <input
                         autoFocus
                         value={query}
                         onChange={(event) => setQuery(event.target.value)}
                         placeholder="Filter notes..."
-                        className="w-full rounded-md px-3 py-2 text-sm"
+                        className="w-full rounded-md px-2.5 py-1.5 text-xs"
                         style={{
                             color: "var(--text-primary)",
                             backgroundColor: "var(--bg-secondary)",
@@ -95,10 +87,10 @@ export function AIChatNotePicker({
                     className="max-h-[420px] overflow-y-auto px-3 pb-3"
                     data-scrollbar-active="true"
                 >
-                    <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-1">
                         {filteredNotes.length === 0 ? (
                             <div
-                                className="rounded-xl px-3 py-4 text-sm"
+                                className="rounded-md px-3 py-3 text-xs"
                                 style={{
                                     color: "var(--text-secondary)",
                                     backgroundColor: "var(--bg-secondary)",
@@ -116,21 +108,21 @@ export function AIChatNotePicker({
                                         onPick(note);
                                         setQuery("");
                                     }}
-                                    className="rounded-xl px-3 py-2 text-left"
+                                    className="rounded-md px-2.5 py-1.5 text-left truncate"
                                     style={{
                                         backgroundColor: "var(--bg-secondary)",
                                         border: "1px solid var(--border)",
                                         color: "var(--text-primary)",
                                     }}
                                 >
-                                    <div className="text-sm font-medium">
+                                    <div className="text-xs font-medium truncate">
                                         {note.title}
                                     </div>
                                     <div
-                                        className="mt-1 text-xs"
+                                        className="text-[11px] truncate"
                                         style={{ color: "var(--text-secondary)" }}
                                     >
-                                        {note.path}
+                                        {note.id}
                                     </div>
                                 </button>
                             ))

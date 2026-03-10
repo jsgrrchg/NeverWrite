@@ -1,20 +1,21 @@
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useShallow } from "zustand/react/shallow";
 
 export function StatusBar() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const mode = useThemeStore((s) => s.mode);
     const setMode = useThemeStore((s) => s.setMode);
 
-    const activeTabTitle = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.title ?? null,
-    );
-    const activeTabNoteId = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
-    );
-    const activeTabIsDirty = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.isDirty ?? false,
+    const { activeTabTitle, activeTabNoteId } = useEditorStore(
+        useShallow((s) => {
+            const tab = s.tabs.find((t) => t.id === s.activeTabId);
+            return {
+                activeTabTitle: tab?.title ?? null,
+                activeTabNoteId: tab?.noteId ?? null,
+            };
+        }),
     );
 
     const nextMode = {
@@ -65,17 +66,6 @@ export function StatusBar() {
                         >
                             {activeTabTitle}
                         </span>
-                        {activeTabIsDirty && (
-                            <span
-                                style={{
-                                    width: 7,
-                                    height: 7,
-                                    borderRadius: 999,
-                                    background: "var(--accent)",
-                                    flexShrink: 0,
-                                }}
-                            />
-                        )}
                     </>
                 )}
             </div>

@@ -242,3 +242,8 @@ pub fn ai_delete_session_history(vault_path: String, session_id: String) -> Resu
 pub fn ai_delete_all_session_histories(vault_path: String) -> Result<(), String> {
     persistence::delete_all_session_histories(&PathBuf::from(vault_path))
 }
+
+#[tauri::command]
+pub fn ai_prune_session_histories(vault_path: String, max_age_days: u32) -> Result<usize, String> {
+    persistence::prune_expired_session_histories(&PathBuf::from(vault_path), max_age_days)
+}

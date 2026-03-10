@@ -67,7 +67,6 @@ describe("TagsPanel", () => {
                 noteId: "notes/roadmap",
                 title: "Roadmap",
                 content: "cached roadmap",
-                isDirty: false,
             },
         ]);
 

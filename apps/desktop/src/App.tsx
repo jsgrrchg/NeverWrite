@@ -685,7 +685,6 @@ export default function App() {
                     noteId,
                     title,
                     content: detail.content,
-                    isDirty: false,
                 });
             } catch {
                 // Nota eliminada o no encontrada, se omite
@@ -757,7 +756,7 @@ export default function App() {
                 const openTab = useEditorStore
                     .getState()
                     .tabs.find((t) => t.noteId === noteId);
-                if (openTab && !openTab.isDirty) {
+                if (openTab) {
                     void invoke<{ title: string; content: string }>(
                         "read_note",
                         {

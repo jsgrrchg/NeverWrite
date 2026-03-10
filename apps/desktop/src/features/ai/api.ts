@@ -395,6 +395,16 @@ export async function aiDeleteAllSessionHistories(
     await invoke("ai_delete_all_session_histories", { vaultPath });
 }
 
+export async function aiPruneSessionHistories(
+    vaultPath: string,
+    maxAgeDays: number,
+): Promise<number> {
+    return invoke<number>("ai_prune_session_histories", {
+        vaultPath,
+        maxAgeDays,
+    });
+}
+
 export async function listenToAiPermissionRequest(
     callback: (payload: AIPermissionRequestPayload) => void,
 ): Promise<UnlistenFn> {

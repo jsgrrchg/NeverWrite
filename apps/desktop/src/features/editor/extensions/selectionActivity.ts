@@ -6,7 +6,14 @@ export function selectionTouchesRange(
     to: number,
 ): boolean {
     for (const range of state.selection.ranges) {
-        if (range.to >= from && range.from <= to) {
+        if (range.empty) {
+            if (range.from >= from && range.from < to) {
+                return true;
+            }
+            continue;
+        }
+
+        if (range.to > from && range.from < to) {
             return true;
         }
     }

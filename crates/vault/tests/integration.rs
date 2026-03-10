@@ -47,12 +47,22 @@ fn discover_markdown_files_ignores_internal_dirs() {
     let (dir, vault) = setup_vault();
     fs::create_dir_all(dir.path().join(".obsidian/plugins")).unwrap();
     fs::write(dir.path().join(".obsidian/plugins/ignored.md"), "# Ignored").unwrap();
+    fs::create_dir_all(dir.path().join("target/docs")).unwrap();
+    fs::write(dir.path().join("target/docs/ignored.md"), "# Ignored").unwrap();
+    fs::create_dir_all(dir.path().join(".cargo-home/registry")).unwrap();
+    fs::write(
+        dir.path().join(".cargo-home/registry/ignored.md"),
+        "# Ignored",
+    )
+    .unwrap();
 
     let files = vault.discover_markdown_files().unwrap();
     let ids: Vec<&str> = files.iter().map(|file| file.id.as_str()).collect();
 
     assert_eq!(files.len(), 3);
     assert!(!ids.contains(&".obsidian/plugins/ignored"));
+    assert!(!ids.contains(&"target/docs/ignored"));
+    assert!(!ids.contains(&".cargo-home/registry/ignored"));
 }
 
 #[test]

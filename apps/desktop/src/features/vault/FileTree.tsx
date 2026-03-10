@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -31,6 +31,7 @@ type SortMode =
 
 const SORT_KEY = "vaultai:sort-mode";
 const REVEAL_KEY = "vaultai:reveal-active";
+const VIRTUAL_OVERSCAN = 15;
 
 const SORT_OPTIONS: { id: SortMode; label: string }[] = [
     { id: "name_asc", label: "Name (A–Z)" },
@@ -162,51 +163,6 @@ function flattenTreeRows(
     return rows;
 }
 
-// --- Sticky tree sections ---
-
-interface TreeSection {
-    folder: FlatTreeRow & { kind: "folder" };
-    children: (FlatTreeRow | TreeSection)[];
-}
-
-function isTreeSection(item: FlatTreeRow | TreeSection): item is TreeSection {
-    return "folder" in item && "children" in item;
-}
-
-function buildTreeSections(
-    flatRows: FlatTreeRow[],
-): (FlatTreeRow | TreeSection)[] {
-    const result: (FlatTreeRow | TreeSection)[] = [];
-    const stack: TreeSection[] = [];
-
-    for (const row of flatRows) {
-        if (row.kind === "folder") {
-            while (
-                stack.length > 0 &&
-                stack[stack.length - 1].folder.depth >= row.depth
-            ) {
-                stack.pop();
-            }
-            const section: TreeSection = { folder: row, children: [] };
-            const parent = stack[stack.length - 1];
-            if (parent) {
-                parent.children.push(section);
-            } else {
-                result.push(section);
-            }
-            stack.push(section);
-        } else {
-            const parent = stack[stack.length - 1];
-            if (parent) {
-                parent.children.push(row);
-            } else {
-                result.push(row);
-            }
-        }
-    }
-
-    return result;
-}
 
 function sortedEntries(
     map: Record<string, TreeNode>,
@@ -488,7 +444,7 @@ interface FlatTreeRowViewProps {
     stickyTop?: number;
 }
 
-function FlatTreeRowView({
+const FlatTreeRowView = memo(function FlatTreeRowView({
     row,
     metrics,
     activeNoteId,
@@ -552,9 +508,6 @@ function FlatTreeRowView({
                     outline: isDragOver ? "1px solid var(--accent)" : "none",
                     opacity: isDraggingFolder ? 0.4 : 1,
                     ...(stickyTop != null && {
-                        position: "sticky" as const,
-                        top: stickyTop,
-                        zIndex: 20 - row.depth,
                         boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
                     }),
                 }}
@@ -659,37 +612,42 @@ function FlatTreeRowView({
             <span className="truncate">{note.title}</span>
         </div>
     );
-}
+}, (prev, next) => {
+    // Custom comparator: only re-render when the row's visual state changes.
+    // Callback props are stable (ref-backed) so they don't need comparison.
+    if (prev.row !== next.row) return false;
+    if (prev.metrics !== next.metrics) return false;
+    if (prev.stickyTop !== next.stickyTop) return false;
+    if (prev.renamingNoteId !== next.renamingNoteId) return false;
 
-// --- Sticky tree rendering ---
+    const path = prev.row.path;
 
-type TreeRowSharedProps = Omit<FlatTreeRowViewProps, "row" | "stickyTop">;
+    if (prev.row.kind === "folder") {
+        if (prev.expandedFolders.has(path) !== next.expandedFolders.has(path))
+            return false;
+        if ((prev.dragOverPath === path) !== (next.dragOverPath === path))
+            return false;
+        if (
+            (prev.draggingFolderPath === path) !==
+            (next.draggingFolderPath === path)
+        )
+            return false;
+        return true;
+    }
 
-function renderTreeSections(
-    items: (FlatTreeRow | TreeSection)[],
-    props: TreeRowSharedProps,
-): React.ReactNode[] {
-    return items.map((item) => {
-        if (isTreeSection(item)) {
-            const stickyTop = item.folder.depth * props.metrics.rowHeight;
-            return (
-                <div key={`section:${item.folder.path}`}>
-                    <FlatTreeRowView
-                        row={item.folder}
-                        stickyTop={stickyTop}
-                        {...props}
-                    />
-                    {renderTreeSections(item.children, props)}
-                </div>
-            );
-        }
-        const key =
-            item.kind === "folder"
-                ? `folder:${item.path}`
-                : `note:${item.note.id}`;
-        return <FlatTreeRowView key={key} row={item} {...props} />;
-    });
-}
+    const noteId = prev.row.note.id;
+    if ((prev.activeNoteId === noteId) !== (next.activeNoteId === noteId))
+        return false;
+    if (prev.selectedNoteIds.has(noteId) !== next.selectedNoteIds.has(noteId))
+        return false;
+    if (prev.draggingNoteIds.has(noteId) !== next.draggingNoteIds.has(noteId))
+        return false;
+    if ((prev.dragOverPath === path) !== (next.dragOverPath === path))
+        return false;
+
+    return true;
+});
+
 
 // --- Open vault form ---
 
@@ -787,8 +745,9 @@ export function FileTree() {
     const renameNote = useVaultStore((s) => s.renameNote);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchVault = useVaultStore((s) => s.touchVault);
-    const tabs = useEditorStore((s) => s.tabs);
-    const activeTabId = useEditorStore((s) => s.activeTabId);
+    const activeNoteId = useEditorStore(
+        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
+    );
     const openNote = useEditorStore((s) => s.openNote);
     const closeTab = useEditorStore((s) => s.closeTab);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
@@ -835,9 +794,14 @@ export function FileTree() {
     const dragStateRef = useRef<DragState | null>(null);
     const dragOverPathRef = useRef<string | null>(null);
     const wasJustDraggingRef = useRef(false);
+    const rafScrollRef = useRef(0);
+    const pendingRevealRef = useRef<string | null>(null);
 
-    const activeTab = tabs.find((t) => t.id === activeTabId);
-    const activeNoteId = activeTab?.noteId ?? null;
+    // Virtualization state
+    const [viewportHeight, setViewportHeight] = useState(600);
+    const [scrollTop, setScrollTop] = useState(0);
+
+    // activeNoteId comes from the targeted store selector above
     const visibleSelectedNoteIds = useMemo(() => {
         if (!activeNoteId) return new Set<string>();
         if (selectedNoteIds.size <= 1) return new Set([activeNoteId]);
@@ -854,6 +818,9 @@ export function FileTree() {
     }, [activeNoteId, revealActive]);
     const visibleExpandedFolders = useMemo(() => {
         if (revealedFolders.length === 0) return expandedFolders;
+        // If all revealed folders are already expanded, keep same reference
+        if (revealedFolders.every((p) => expandedFolders.has(p)))
+            return expandedFolders;
         const next = new Set(expandedFolders);
         revealedFolders.forEach((path) => next.add(path));
         return next;
@@ -862,60 +829,217 @@ export function FileTree() {
         () => flattenTreeRows(tree, visibleExpandedFolders, sortMode),
         [sortMode, tree, visibleExpandedFolders],
     );
-    const treeSections = useMemo(() => buildTreeSections(flatRows), [flatRows]);
     const canCollapseAll = expandedFolders.size > 0;
     const treeScale = fileTreeScale / 100;
-    const metrics: TreeMetrics = {
-        scale: treeScale,
-        rowHeight: Math.round(28 * treeScale),
-        fontSize: Math.max(12, Math.round(12 * treeScale)),
-        indentStep: Math.round(16 * treeScale),
-        basePadding: Math.round(8 * treeScale),
-        smallIcon: Math.max(13, Math.round(13 * treeScale)),
-        mediumIcon: Math.max(15, Math.round(15 * treeScale)),
-        toolbarButton: Math.max(26, Math.round(26 * treeScale)),
-        toolbarIconScale: treeScale,
-        inputFontSize: Math.max(12, Math.round(12 * treeScale)),
-    };
-    // Reveal active: keep the active note roughly centered once parent folders are visible.
+    const metrics: TreeMetrics = useMemo(
+        () => ({
+            scale: treeScale,
+            rowHeight: Math.round(28 * treeScale),
+            fontSize: Math.max(12, Math.round(12 * treeScale)),
+            indentStep: Math.round(16 * treeScale),
+            basePadding: Math.round(8 * treeScale),
+            smallIcon: Math.max(13, Math.round(13 * treeScale)),
+            mediumIcon: Math.max(15, Math.round(15 * treeScale)),
+            toolbarButton: Math.max(26, Math.round(26 * treeScale)),
+            toolbarIconScale: treeScale,
+            inputFontSize: Math.max(12, Math.round(12 * treeScale)),
+        }),
+        [treeScale],
+    );
+    // --- Virtualization ---
+
+    const contentHeight = flatRows.length * metrics.rowHeight;
+    const bottomScrollBuffer =
+        contentHeight > viewportHeight
+            ? Math.max(
+                  metrics.rowHeight * 4,
+                  Math.min(
+                      Math.round(viewportHeight * 0.22),
+                      metrics.rowHeight * 8,
+                  ),
+              )
+            : 0;
+    const totalHeight = contentHeight + bottomScrollBuffer;
+    const startIdx = Math.max(
+        0,
+        Math.floor(scrollTop / metrics.rowHeight) - VIRTUAL_OVERSCAN,
+    );
+    const endIdx = Math.min(
+        flatRows.length,
+        Math.ceil((scrollTop + viewportHeight) / metrics.rowHeight) +
+            VIRTUAL_OVERSCAN,
+    );
+    const visibleRows = flatRows.slice(startIdx, endIdx);
+    const offsetY = startIdx * metrics.rowHeight;
+
+    // --- Sticky folder overlay ---
+
+    // Precompute: for each folder row index, what's the index of its last descendant?
+    const folderLastDescendant = useMemo(() => {
+        const map = new Map<number, number>();
+        const stack: number[] = [];
+        for (let i = 0; i < flatRows.length; i++) {
+            while (
+                stack.length > 0 &&
+                flatRows[stack[stack.length - 1]].depth >= flatRows[i].depth
+            ) {
+                map.set(stack.pop()!, i - 1);
+            }
+            if (flatRows[i].kind === "folder") {
+                stack.push(i);
+            }
+        }
+        while (stack.length > 0) {
+            map.set(stack.pop()!, flatRows.length - 1);
+        }
+        return map;
+    }, [flatRows]);
+
+    // Compute which folders should appear as sticky overlay headers
+    const stickyFolders = useMemo(() => {
+        if (flatRows.length === 0) return [];
+
+        const result: {
+            row: FlatTreeRow & { kind: "folder" };
+            top: number;
+        }[] = [];
+        let searchStart = 0;
+        let searchEnd = flatRows.length - 1;
+
+        for (let depth = 0; depth < 50; depth++) {
+            const stickyPosition = depth * metrics.rowHeight;
+            let best: {
+                row: FlatTreeRow & { kind: "folder" };
+                idx: number;
+                lastIdx: number;
+            } | null = null;
+
+            for (let i = searchStart; i <= searchEnd; i++) {
+                const row = flatRows[i];
+                if (row.kind !== "folder" || row.depth !== depth) continue;
+
+                const rowTop = i * metrics.rowHeight;
+                if (rowTop > scrollTop + stickyPosition) break;
+
+                const lastIdx = folderLastDescendant.get(i) ?? i;
+                const sectionBottom = (lastIdx + 1) * metrics.rowHeight;
+
+                if (
+                    sectionBottom >
+                    scrollTop + stickyPosition + metrics.rowHeight
+                ) {
+                    best = {
+                        row: row as FlatTreeRow & { kind: "folder" },
+                        idx: i,
+                        lastIdx,
+                    };
+                }
+            }
+
+            if (!best) break;
+
+            const sectionBottom = (best.lastIdx + 1) * metrics.rowHeight;
+            const maxTop = sectionBottom - scrollTop - metrics.rowHeight;
+            const top = Math.min(stickyPosition, maxTop);
+
+            result.push({ row: best.row, top });
+
+            searchStart = best.idx + 1;
+            searchEnd = best.lastIdx;
+        }
+
+        return result;
+    }, [flatRows, scrollTop, metrics.rowHeight, folderLastDescendant]);
+
+    const stickyFolderPaths = useMemo(
+        () => new Set(stickyFolders.map((f) => f.row.path)),
+        [stickyFolders],
+    );
+
+    // Track viewport size
     useEffect(() => {
-        if (!revealActive) return;
-        if (!activeNoteId) return;
-
-        const centerActiveNote = () => {
-            const container = treeScrollRef.current;
-            if (!container) return;
-
-            const el = container.querySelector<HTMLElement>(
-                `[data-note-id="${CSS.escape(activeNoteId)}"]`,
-            );
-            if (!el) return;
-
-            const targetTop =
-                el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2;
-            const maxScrollTop = Math.max(
-                0,
-                container.scrollHeight - container.clientHeight,
-            );
-            const nextScrollTop = Math.min(
-                maxScrollTop,
-                Math.max(0, targetTop),
-            );
-
-            container.scrollTo({
-                top: nextScrollTop,
-                behavior: "smooth",
-            });
+        const el = treeScrollRef.current;
+        if (!el) return;
+        const syncViewportHeight = () => {
+            setViewportHeight(el.clientHeight);
         };
 
-        const raf1 = requestAnimationFrame(() => {
-            centerActiveNote();
-            requestAnimationFrame(centerActiveNote);
+        syncViewportHeight();
+
+        if (typeof ResizeObserver === "undefined") {
+            window.addEventListener("resize", syncViewportHeight);
+            return () =>
+                window.removeEventListener("resize", syncViewportHeight);
+        }
+
+        const ro = new ResizeObserver(([entry]) => {
+            setViewportHeight(Math.round(entry.contentRect.height));
         });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
 
-        return () => cancelAnimationFrame(raf1);
-    }, [activeNoteId, revealActive]);
+    // RAF-batched scroll handler
+    const handleTreeScroll = useCallback(() => {
+        cancelAnimationFrame(rafScrollRef.current);
+        rafScrollRef.current = requestAnimationFrame(() => {
+            const el = treeScrollRef.current;
+            if (el) setScrollTop(el.scrollTop);
+        });
+    }, []);
 
+    const handleRenameCancel = useCallback(
+        () => setRenamingNoteId(null),
+        [],
+    );
+
+    // Scroll to row by index helper
+    const scrollToRow = useCallback(
+        (rowIdx: number, behavior: ScrollBehavior = "smooth") => {
+            const container = treeScrollRef.current;
+            if (!container) return;
+            const rowTop = rowIdx * metrics.rowHeight;
+            const targetScrollTop =
+                rowTop -
+                container.clientHeight / 2 +
+                metrics.rowHeight / 2;
+            const maxScrollTop = Math.max(
+                0,
+                totalHeight - container.clientHeight,
+            );
+            container.scrollTo({
+                top: Math.min(maxScrollTop, Math.max(0, targetScrollTop)),
+                behavior,
+            });
+        },
+        [metrics.rowHeight, totalHeight],
+    );
+
+    // Reveal active: scroll to active note using index-based calculation
+    useEffect(() => {
+        if (!revealActive || !activeNoteId) return;
+
+        const rowIdx = flatRows.findIndex(
+            (r) => r.kind === "note" && r.note.id === activeNoteId,
+        );
+        if (rowIdx === -1) return;
+
+        // Skip scroll if the row is already within the visible viewport
+        const container = treeScrollRef.current;
+        if (container) {
+            const rowTop = rowIdx * metrics.rowHeight;
+            const rowBottom = rowTop + metrics.rowHeight;
+            const visibleTop = container.scrollTop;
+            const visibleBottom = visibleTop + container.clientHeight;
+            if (rowTop >= visibleTop && rowBottom <= visibleBottom) return;
+        }
+
+        // Defer to next frame so the DOM has the correct totalHeight
+        const raf = requestAnimationFrame(() => scrollToRow(rowIdx, "instant"));
+        return () => cancelAnimationFrame(raf);
+    }, [activeNoteId, revealActive, flatRows, scrollToRow, metrics.rowHeight]);
+
+    // Handle REVEAL_NOTE_IN_TREE_EVENT: expand folders + defer scroll
     useEffect(() => {
         const handleReveal = (event: Event) => {
             const noteId = (event as CustomEvent<{ noteId?: string }>).detail
@@ -930,33 +1054,27 @@ export function FileTree() {
             setExpandedFolders((prev) => new Set([...prev, ...folders]));
             setSelectedNoteIds(new Set([noteId]));
             setLastClickedNoteId(noteId);
-
-            requestAnimationFrame(() => {
-                const container = treeScrollRef.current;
-                if (!container) return;
-                const el = container.querySelector<HTMLElement>(
-                    `[data-note-id="${CSS.escape(noteId)}"]`,
-                );
-                if (!el) return;
-                const targetTop =
-                    el.offsetTop -
-                    container.clientHeight / 2 +
-                    el.clientHeight / 2;
-                const maxScrollTop = Math.max(
-                    0,
-                    container.scrollHeight - container.clientHeight,
-                );
-                container.scrollTo({
-                    top: Math.min(maxScrollTop, Math.max(0, targetTop)),
-                    behavior: "smooth",
-                });
-            });
+            pendingRevealRef.current = noteId;
         };
 
         window.addEventListener(REVEAL_NOTE_IN_TREE_EVENT, handleReveal);
         return () =>
             window.removeEventListener(REVEAL_NOTE_IN_TREE_EVENT, handleReveal);
     }, []);
+
+    // Scroll to pending reveal note after flatRows updates
+    useEffect(() => {
+        const noteId = pendingRevealRef.current;
+        if (!noteId) return;
+
+        const rowIdx = flatRows.findIndex(
+            (r) => r.kind === "note" && r.note.id === noteId,
+        );
+        if (rowIdx === -1) return;
+
+        pendingRevealRef.current = null;
+        requestAnimationFrame(() => scrollToRow(rowIdx));
+    }, [flatRows, scrollToRow]);
 
     const applyMovedIds = useCallback((movedIds: Map<string, string>) => {
         if (movedIds.size === 0) return;
@@ -1235,6 +1353,10 @@ export function FileTree() {
 
     const handleRevealToggle = () => {
         const next = !revealActive;
+        if (!next) {
+            // Preserve the currently visible tree state so nothing collapses
+            setExpandedFolders(new Set(visibleExpandedFolders));
+        }
         setRevealActive(next);
         localStorage.setItem(REVEAL_KEY, String(next));
     };
@@ -1287,7 +1409,10 @@ export function FileTree() {
 
     const openTreeNote = useCallback(
         async (note: NoteDto) => {
-            const existing = tabs.find((tab) => tab.noteId === note.id);
+            const { tabs: currentTabs } = useEditorStore.getState();
+            const existing = currentTabs.find(
+                (tab) => tab.noteId === note.id,
+            );
             if (existing) {
                 openNote(note.id, note.title, existing.content);
                 return;
@@ -1299,13 +1424,16 @@ export function FileTree() {
                 console.error("Error opening tree note:", error);
             }
         },
-        [openNote, readNoteContent, tabs],
+        [openNote, readNoteContent],
     );
 
     const handleOpenNoteInNewTab = useCallback(
         async (note: NoteDto) => {
             try {
-                const existing = tabs.find((tab) => tab.noteId === note.id);
+                const { tabs: currentTabs } = useEditorStore.getState();
+                const existing = currentTabs.find(
+                    (tab) => tab.noteId === note.id,
+                );
                 const content =
                     existing?.content ??
                     (await readNoteContent(note.id)).content;
@@ -1315,13 +1443,12 @@ export function FileTree() {
                     noteId: note.id,
                     title: note.title,
                     content,
-                    isDirty: false,
                 });
             } catch (error) {
                 console.error("Error opening tree note in new tab:", error);
             }
         },
-        [insertExternalTab, readNoteContent, tabs],
+        [insertExternalTab, readNoteContent],
     );
 
     const handleNoteClick = async (
@@ -1506,7 +1633,8 @@ export function FileTree() {
         async (notesToDelete: NoteDto[]) => {
             const noteIds = new Set(notesToDelete.map((note) => note.id));
 
-            tabs.forEach((tab) => {
+            const { tabs: currentTabs } = useEditorStore.getState();
+            currentTabs.forEach((tab) => {
                 if (noteIds.has(tab.noteId)) {
                     closeTab(tab.id);
                 }
@@ -1525,7 +1653,7 @@ export function FileTree() {
                 prev && noteIds.has(prev) ? null : prev,
             );
         },
-        [closeTab, deleteNote, tabs],
+        [closeTab, deleteNote],
     );
 
     const handleDuplicateNote = useCallback(
@@ -1551,7 +1679,10 @@ export function FileTree() {
             }
 
             try {
-                const existing = tabs.find((tab) => tab.noteId === note.id);
+                const { tabs: currentTabs } = useEditorStore.getState();
+                const existing = currentTabs.find(
+                    (tab) => tab.noteId === note.id,
+                );
                 const content =
                     existing?.content ??
                     (await readNoteContent(note.id)).content;
@@ -1580,7 +1711,6 @@ export function FileTree() {
             createNote,
             notes,
             readNoteContent,
-            tabs,
             touchVault,
             updateNoteMetadata,
         ],
@@ -1779,6 +1909,47 @@ export function FileTree() {
         startCreating,
     ]);
 
+    // Ref-backed stable callbacks so memo'd FlatTreeRowView stays fresh
+    const noteClickRef = useRef(handleNoteClick);
+    noteClickRef.current = handleNoteClick;
+    const stableNoteClick = useCallback(
+        (note: NoteDto, modifiers: { cmd: boolean; shift: boolean }) =>
+            noteClickRef.current(note, modifiers),
+        [],
+    );
+
+    const noteMouseDownRef = useRef(handleNoteMouseDown);
+    noteMouseDownRef.current = handleNoteMouseDown;
+    const stableNoteMouseDown = useCallback(
+        (note: NoteDto, e: React.MouseEvent) =>
+            noteMouseDownRef.current(note, e),
+        [],
+    );
+
+    const noteContextMenuRef = useRef(handleNoteContextMenu);
+    noteContextMenuRef.current = handleNoteContextMenu;
+    const stableNoteContextMenu = useCallback(
+        (e: React.MouseEvent, note: NoteDto) =>
+            noteContextMenuRef.current(e, note),
+        [],
+    );
+
+    const folderContextMenuRef = useRef(handleFolderContextMenu);
+    folderContextMenuRef.current = handleFolderContextMenu;
+    const stableFolderContextMenu = useCallback(
+        (e: React.MouseEvent, path: string) =>
+            folderContextMenuRef.current(e, path),
+        [],
+    );
+
+    const renameConfirmRef = useRef(handleRenameConfirm);
+    renameConfirmRef.current = handleRenameConfirm;
+    const stableRenameConfirm = useCallback(
+        (note: NoteDto, newName: string) =>
+            renameConfirmRef.current(note, newName),
+        [],
+    );
+
     if (!vaultPath) return <OpenVaultForm />;
 
     return (
@@ -1962,11 +2133,12 @@ export function FileTree() {
                 </div>
             )}
 
-            {/* Tree */}
+            {/* Tree (virtualized) */}
             <div
                 ref={treeScrollRef}
                 data-folder-path=""
-                className="flex-1 overflow-y-auto pb-1 px-1"
+                className="flex-1 overflow-y-auto px-1"
+                onScroll={handleTreeScroll}
                 onContextMenu={(event) => {
                     if (event.target !== event.currentTarget) return;
                     handleBlankContextMenu(event);
@@ -1994,24 +2166,155 @@ export function FileTree() {
                         No notes
                     </p>
                 ) : (
-                    renderTreeSections(treeSections, {
-                        metrics,
-                        activeNoteId: activeTab?.noteId ?? null,
-                        expandedFolders: visibleExpandedFolders,
-                        selectedNoteIds: visibleSelectedNoteIds,
-                        draggingNoteIds,
-                        draggingFolderPath,
-                        dragOverPath,
-                        onFolderClick: handleFolderClick,
-                        onFolderMouseDown: handleFolderMouseDown,
-                        onFolderContextMenu: handleFolderContextMenu,
-                        onNoteClick: handleNoteClick,
-                        onNoteMouseDown: handleNoteMouseDown,
-                        onNoteContextMenu: handleNoteContextMenu,
-                        renamingNoteId,
-                        onRenameConfirm: handleRenameConfirm,
-                        onRenameCancel: () => setRenamingNoteId(null),
-                    })
+                    <>
+                        {/* Sticky folder overlay */}
+                        {stickyFolders.length > 0 && (
+                            <div
+                                style={{
+                                    position: "sticky",
+                                    top: 0,
+                                    height: 0,
+                                    zIndex: 10,
+                                    overflow: "visible",
+                                }}
+                            >
+                                {stickyFolders.map(({ row, top }) => (
+                                    <div
+                                        key={`sticky:${row.path}`}
+                                        style={{
+                                            position: "absolute",
+                                            top,
+                                            left: 0,
+                                            right: 0,
+                                            zIndex: 20 - row.depth,
+                                        }}
+                                    >
+                                        <FlatTreeRowView
+                                            row={row}
+                                            stickyTop={0}
+                                            metrics={metrics}
+                                            activeNoteId={activeNoteId}
+                                            expandedFolders={
+                                                visibleExpandedFolders
+                                            }
+                                            selectedNoteIds={
+                                                visibleSelectedNoteIds
+                                            }
+                                            draggingNoteIds={draggingNoteIds}
+                                            draggingFolderPath={
+                                                draggingFolderPath
+                                            }
+                                            dragOverPath={dragOverPath}
+                                            onFolderClick={handleFolderClick}
+                                            onFolderMouseDown={
+                                                handleFolderMouseDown
+                                            }
+                                            onFolderContextMenu={
+                                                stableFolderContextMenu
+                                            }
+                                            onNoteClick={stableNoteClick}
+                                            onNoteMouseDown={
+                                                stableNoteMouseDown
+                                            }
+                                            onNoteContextMenu={
+                                                stableNoteContextMenu
+                                            }
+                                            renamingNoteId={renamingNoteId}
+                                            onRenameConfirm={
+                                                stableRenameConfirm
+                                            }
+                                            onRenameCancel={handleRenameCancel}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {/* Virtualized rows */}
+                        <div
+                            style={{
+                                height: contentHeight,
+                                minHeight: "100%",
+                                position: "relative",
+                            }}
+                        >
+                            <div
+                                style={{
+                                    position: "absolute",
+                                    top: offsetY,
+                                    left: 0,
+                                    right: 0,
+                                }}
+                            >
+                                {visibleRows.map((row) => {
+                                    const key =
+                                        row.kind === "folder"
+                                            ? `folder:${row.path}`
+                                            : `note:${row.note.id}`;
+                                    if (
+                                        row.kind === "folder" &&
+                                        stickyFolderPaths.has(row.path)
+                                    ) {
+                                        return (
+                                            <div
+                                                key={key}
+                                                aria-hidden="true"
+                                                style={{
+                                                    height: metrics.rowHeight,
+                                                }}
+                                            />
+                                        );
+                                    }
+                                    return (
+                                        <FlatTreeRowView
+                                            key={key}
+                                            row={row}
+                                            metrics={metrics}
+                                            activeNoteId={activeNoteId}
+                                            expandedFolders={
+                                                visibleExpandedFolders
+                                            }
+                                            selectedNoteIds={
+                                                visibleSelectedNoteIds
+                                            }
+                                            draggingNoteIds={draggingNoteIds}
+                                            draggingFolderPath={
+                                                draggingFolderPath
+                                            }
+                                            dragOverPath={dragOverPath}
+                                            onFolderClick={handleFolderClick}
+                                            onFolderMouseDown={
+                                                handleFolderMouseDown
+                                            }
+                                            onFolderContextMenu={
+                                                stableFolderContextMenu
+                                            }
+                                            onNoteClick={stableNoteClick}
+                                            onNoteMouseDown={
+                                                stableNoteMouseDown
+                                            }
+                                            onNoteContextMenu={
+                                                stableNoteContextMenu
+                                            }
+                                            renamingNoteId={renamingNoteId}
+                                            onRenameConfirm={
+                                                stableRenameConfirm
+                                            }
+                                            onRenameCancel={handleRenameCancel}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        {bottomScrollBuffer > 0 && (
+                            <div
+                                aria-hidden="true"
+                                style={{
+                                    height: bottomScrollBuffer,
+                                    pointerEvents: "none",
+                                }}
+                            />
+                        )}
+                    </>
                 )}
             </div>
 

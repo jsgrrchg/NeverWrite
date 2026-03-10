@@ -41,14 +41,12 @@ describe("FileTree", () => {
                 noteId: "notes/alpha",
                 title: "Alpha",
                 content: "Alpha",
-                isDirty: false,
             },
             {
                 id: "tab-beta",
                 noteId: "notes/beta",
                 title: "Beta",
                 content: "Beta",
-                isDirty: false,
             },
         ]);
         renderComponent(<FileTree />);
@@ -89,14 +87,12 @@ describe("FileTree", () => {
                 noteId: "notes/alpha",
                 title: "Alpha",
                 content: "Alpha",
-                isDirty: false,
             },
             {
                 id: "tab-beta",
                 noteId: "notes/beta",
                 title: "Beta",
                 content: "Beta",
-                isDirty: false,
             },
         ]);
 
@@ -157,14 +153,12 @@ describe("FileTree", () => {
                 noteId: "notes/alpha",
                 title: "Alpha",
                 content: "Alpha",
-                isDirty: false,
             },
             {
                 id: "tab-beta",
                 noteId: "notes/beta",
                 title: "Beta",
                 content: "Beta",
-                isDirty: false,
             },
         ]);
 
@@ -190,5 +184,49 @@ describe("FileTree", () => {
         });
         expect(renameNote).toHaveBeenCalledWith("notes/alpha", "archive/alpha");
         expect(renameNote).toHaveBeenCalledWith("notes/beta", "archive/beta");
+    });
+
+    it("opens a note when clicked in the tree", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/beta",
+                path: "/vault/notes/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "notes/alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "notes/beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+        await user.click(getNoteRow("Beta"));
+
+        expect(useEditorStore.getState().activeTabId).toBe("tab-beta");
     });
 });

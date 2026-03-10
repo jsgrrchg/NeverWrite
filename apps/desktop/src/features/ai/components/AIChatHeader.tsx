@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import { AIChatSessionList } from "./AIChatSessionList";
 import { getSessionRuntimeName, getSessionTitle } from "../sessionPresentation";
 import type {
@@ -10,6 +12,7 @@ import type {
 interface AIChatHeaderProps {
     activeSessionId: string | null;
     currentSession: AIChatSession | null;
+    panelExpanded: boolean;
     sessions: AIChatSession[];
     runtimes: AIRuntimeOption[];
     status: AIChatSessionStatus;
@@ -17,6 +20,7 @@ interface AIChatHeaderProps {
     onSelectSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
     onDeleteAllSessions: () => void;
+    onToggleExpanded: () => void;
 }
 
 const STATUS_LABELS: Record<AIChatSessionStatus, string> = {
@@ -35,9 +39,70 @@ const STATUS_COLORS: Record<AIChatSessionStatus, string> = {
     error: "#dc2626",
 };
 
+function HeaderMenu({
+    open,
+    anchorRef,
+    menuRef,
+    children,
+    minWidth,
+    maxWidth,
+}: {
+    open: boolean;
+    anchorRef: React.RefObject<HTMLElement | null>;
+    menuRef: React.RefObject<HTMLDivElement | null>;
+    children: React.ReactNode;
+    minWidth?: number;
+    maxWidth?: number | string;
+}) {
+    const [position, setPosition] = useState({ x: 0, y: 0 });
+
+    useLayoutEffect(() => {
+        if (!open) return;
+        const anchor = anchorRef.current;
+        const menu = menuRef.current;
+        if (!anchor || !menu) return;
+
+        const anchorRect = anchor.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        const safe = getViewportSafeMenuPosition(
+            anchorRect.right - menuRect.width,
+            anchorRect.bottom + 8,
+            menuRect.width,
+            menuRect.height,
+        );
+
+        setPosition(safe);
+    }, [anchorRef, menuRef, open, children]);
+
+    if (!open) return null;
+
+    return createPortal(
+        <div
+            ref={menuRef}
+            style={{
+                position: "fixed",
+                top: position.y,
+                left: position.x,
+                zIndex: 10010,
+                minWidth,
+                maxWidth,
+                overflow: "hidden",
+                borderRadius: 12,
+                backgroundColor: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+            }}
+        >
+            {children}
+        </div>,
+        document.body,
+    );
+}
+
 export function AIChatHeader({
     activeSessionId,
     currentSession,
+    panelExpanded,
     sessions,
     runtimes,
     status,
@@ -45,11 +110,14 @@ export function AIChatHeader({
     onSelectSession,
     onDeleteSession,
     onDeleteAllSessions,
+    onToggleExpanded,
 }: AIChatHeaderProps) {
     const [newMenuOpen, setNewMenuOpen] = useState(false);
     const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
     const newMenuRef = useRef<HTMLDivElement>(null);
     const sessionMenuRef = useRef<HTMLDivElement>(null);
+    const newMenuContentRef = useRef<HTMLDivElement>(null);
+    const sessionMenuContentRef = useRef<HTMLDivElement>(null);
     const currentRuntime = currentSession
         ? getSessionRuntimeName(currentSession, runtimes)
         : "Agent";
@@ -65,6 +133,8 @@ export function AIChatHeader({
             if (!target) return;
             if (newMenuRef.current?.contains(target)) return;
             if (sessionMenuRef.current?.contains(target)) return;
+            if (newMenuContentRef.current?.contains(target)) return;
+            if (sessionMenuContentRef.current?.contains(target)) return;
             setNewMenuOpen(false);
             setSessionMenuOpen(false);
         };
@@ -147,15 +217,14 @@ export function AIChatHeader({
                     </svg>
                 </button>
 
-                {sessionMenuOpen && (
-                    <div
-                        className="absolute left-0 top-full z-20 mt-2 min-w-[260px] max-w-[320px] overflow-hidden rounded-xl"
-                        style={{
-                            backgroundColor: "var(--bg-secondary)",
-                            border: "1px solid var(--border)",
-                            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-                        }}
-                    >
+                <HeaderMenu
+                    open={sessionMenuOpen}
+                    anchorRef={sessionMenuRef}
+                    menuRef={sessionMenuContentRef}
+                    minWidth={260}
+                    maxWidth={320}
+                >
+                    <div>
                         <AIChatSessionList
                             activeSessionId={activeSessionId}
                             sessions={sessions}
@@ -204,7 +273,7 @@ export function AIChatHeader({
                             </>
                         )}
                     </div>
-                )}
+                </HeaderMenu>
             </div>
 
             <div className="flex items-center gap-2">
@@ -221,6 +290,53 @@ export function AIChatHeader({
                     ref={newMenuRef}
                     className="relative flex items-center gap-2"
                 >
+                    <button
+                        type="button"
+                        onClick={onToggleExpanded}
+                        className="flex h-6 w-6 items-center justify-center rounded"
+                        style={{
+                            color: panelExpanded
+                                ? "var(--accent)"
+                                : "var(--text-secondary)",
+                            backgroundColor: panelExpanded
+                                ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+                                : "transparent",
+                            border: "none",
+                        }}
+                        title={
+                            panelExpanded
+                                ? "Restore chat panel"
+                                : "Expand chat panel"
+                        }
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            {panelExpanded ? (
+                                <>
+                                    <path d="M5 2.5H2.5V5" />
+                                    <path d="M9 2.5h2.5V5" />
+                                    <path d="M5 11.5H2.5V9" />
+                                    <path d="M9 11.5h2.5V9" />
+                                </>
+                            ) : (
+                                <>
+                                    <path d="M5 5 2.5 2.5" />
+                                    <path d="M9 5 11.5 2.5" />
+                                    <path d="M5 9 2.5 11.5" />
+                                    <path d="M9 9 11.5 11.5" />
+                                </>
+                            )}
+                        </svg>
+                    </button>
+
                     <button
                         type="button"
                         onClick={() => {
@@ -248,17 +364,13 @@ export function AIChatHeader({
                         </svg>
                     </button>
 
-                    {newMenuOpen && (
-                        <div
-                            className="absolute right-0 top-full z-20 mt-2 overflow-hidden rounded-xl"
-                            style={{
-                                backgroundColor: "var(--bg-secondary)",
-                                border: "1px solid var(--border)",
-                                boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-                                padding: 4,
-                                minWidth: 160,
-                            }}
-                        >
+                    <HeaderMenu
+                        open={newMenuOpen}
+                        anchorRef={newMenuRef}
+                        menuRef={newMenuContentRef}
+                        minWidth={160}
+                    >
+                        <div style={{ padding: 4 }}>
                             {runtimes.map((runtime) => (
                                 <button
                                     key={runtime.id}
@@ -286,7 +398,7 @@ export function AIChatHeader({
                                 </button>
                             ))}
                         </div>
-                    )}
+                    </HeaderMenu>
                 </div>
             </div>
         </div>

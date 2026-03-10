@@ -29,7 +29,7 @@ function persistSidebarWidth(width: number) {
 const RIGHT_PANEL_WIDTH_KEY = "vaultai.rightpanel.width";
 export const DEFAULT_RIGHT_PANEL_WIDTH = 280;
 export const MIN_RIGHT_PANEL_WIDTH = 200;
-export const MAX_RIGHT_PANEL_WIDTH = 480;
+export const MAX_RIGHT_PANEL_WIDTH = 2000;
 
 function clampRightPanelWidth(width: number) {
     return Math.max(
@@ -65,9 +65,12 @@ interface LayoutStore {
     collapseSidebarToWidth: (width: number) => void;
     // Right panel
     rightPanelCollapsed: boolean;
+    rightPanelExpanded: boolean;
     rightPanelWidth: number;
     rightPanelView: "links" | "outline" | "chat";
     toggleRightPanel: () => void;
+    setRightPanelExpanded: (expanded: boolean) => void;
+    toggleRightPanelExpanded: () => void;
     activateRightView: (view: "links" | "outline" | "chat") => void;
     showRightPanelAtWidth: (width: number) => void;
     collapseRightPanelToWidth: (width: number) => void;
@@ -101,30 +104,60 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
     },
     // Right panel
     rightPanelCollapsed: false,
+    rightPanelExpanded: false,
     rightPanelWidth: initialRightPanelWidth,
     rightPanelView: "outline",
     toggleRightPanel: () =>
         set((state) => ({
             rightPanelCollapsed: !state.rightPanelCollapsed,
+            rightPanelExpanded: false,
+        })),
+    setRightPanelExpanded: (expanded) =>
+        set((state) => ({
+            rightPanelExpanded: expanded,
+            rightPanelCollapsed: expanded ? false : state.rightPanelCollapsed,
+        })),
+    toggleRightPanelExpanded: () =>
+        set((state) => ({
+            rightPanelExpanded: !state.rightPanelExpanded,
+            rightPanelCollapsed: state.rightPanelExpanded
+                ? state.rightPanelCollapsed
+                : false,
         })),
     activateRightView: (view) =>
         set((state) => {
             if (state.rightPanelCollapsed) {
-                return { rightPanelCollapsed: false, rightPanelView: view };
+                return {
+                    rightPanelCollapsed: false,
+                    rightPanelExpanded: false,
+                    rightPanelView: view,
+                };
             }
             if (state.rightPanelView === view) {
-                return { rightPanelCollapsed: true };
+                return { rightPanelCollapsed: true, rightPanelExpanded: false };
             }
-            return { rightPanelView: view };
+            return {
+                rightPanelView: view,
+                rightPanelExpanded:
+                    view === "chat" ? state.rightPanelExpanded : false,
+            };
         }),
     showRightPanelAtWidth: (width) => {
         const nextWidth = clampRightPanelWidth(width);
         persistRightPanelWidth(nextWidth);
-        set({ rightPanelWidth: nextWidth, rightPanelCollapsed: false });
+        set({
+            rightPanelWidth: nextWidth,
+            rightPanelCollapsed: false,
+            rightPanelExpanded: false,
+        });
     },
     collapseRightPanelToWidth: (width) => {
         const nextWidth = clampRightPanelWidth(width);
         persistRightPanelWidth(nextWidth);
-        set({ rightPanelWidth: nextWidth, rightPanelCollapsed: true });
+        set({
+            rightPanelWidth: nextWidth,
+            rightPanelCollapsed: true,
+            rightPanelExpanded: false,
+        });
     },
 }));

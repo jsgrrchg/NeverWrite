@@ -202,7 +202,6 @@ export function BacklinksPanel() {
                 noteId: bl.id,
                 title: bl.title,
                 content,
-                isDirty: false,
             });
         } catch (e) {
             console.error("Error opening backlink in new tab:", e);

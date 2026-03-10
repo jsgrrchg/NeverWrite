@@ -142,6 +142,7 @@ export function Editor({
         new Map(),
     );
     const prevTabIdRef = useRef<string | null>(null);
+    const lastSavedContentByTabId = useRef<Map<string, string>>(new Map());
     // Frontmatter: stores the raw ---...--- block per tab so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
     const [activeFrontmatter, setActiveFrontmatter] = useState<string | null>(
@@ -191,12 +192,8 @@ export function Editor({
         (s) => s.clearPendingSelectionReveal,
     );
     const updateTabContent = useEditorStore((s) => s.updateTabContent);
-    const markTabDirty = useEditorStore((s) => s.markTabDirty);
     const updateTabTitle = useEditorStore((s) => s.updateTabTitle);
-    const markTabClean = useEditorStore((s) => s.markTabClean);
     const isDark = useThemeStore((s) => s.isDark);
-    const autoSave = useSettingsStore((s) => s.autoSave);
-    const autoSaveDelay = useSettingsStore((s) => s.autoSaveDelay);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
@@ -205,12 +202,11 @@ export function Editor({
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const tabSize = useSettingsStore((s) => s.tabSize);
     const vaultPath = useVaultStore((s) => s.vaultPath);
-    const vaultRevision = useVaultStore((s) => s.vaultRevision);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchVault = useVaultStore((s) => s.touchVault);
     const openVault = useVaultStore((s) => s.openVault);
 
-    // Only re-renders when the active tab identity changes, not on content/isDirty updates
+    // Only re-renders when the active tab identity changes, not on content updates
     const activeTabInfo = useEditorStore(
         useShallow((s) => {
             const tab = s.tabs.find((t) => t.id === s.activeTabId) ?? null;
@@ -238,6 +234,26 @@ export function Editor({
             ""
         );
     }, []);
+
+    const serializePersistedContent = useCallback(
+        (tabId: string, body: string) =>
+            `${frontmatterByTabId.current.get(tabId) ?? ""}${body}`,
+        [],
+    );
+
+    const markTabSaved = useCallback(
+        (tabId: string, serializedContent: string) => {
+            lastSavedContentByTabId.current.set(tabId, serializedContent);
+        },
+        [],
+    );
+
+    const isTabDirty = useCallback(
+        (tabId: string, body: string) =>
+            serializePersistedContent(tabId, body) !==
+            lastSavedContentByTabId.current.get(tabId),
+        [serializePersistedContent],
+    );
 
     const saveTabScrollPosition = useCallback(
         (tabId: string, view: EditorView | null) => {
@@ -277,13 +293,17 @@ export function Editor({
                 clearTimeout(saveTimerRef.current);
                 saveTimerRef.current = null;
             }
+            const serializedContent = serializePersistedContent(tab.id, content);
+            if (lastSavedContentByTabId.current.get(tab.id) === serializedContent) {
+                return;
+            }
             try {
-                const fm = frontmatterByTabId.current.get(tab.id) ?? "";
                 const detail = await invoke<SavedNoteDetail>("save_note", {
                     noteId: tab.noteId,
-                    content: fm + content,
+                    content: serializedContent,
                 });
                 stripFrontmatter(tab.id, detail.content);
+                markTabSaved(tab.id, detail.content);
                 updateTabTitle(tab.id, detail.title);
                 updateNoteMetadata(tab.noteId, {
                     title: detail.title,
@@ -296,14 +316,14 @@ export function Editor({
                     );
                     setEditableTitle(detail.title);
                 }
-                markTabClean(tab.id);
                 touchVault();
             } catch (e) {
                 console.error("Error al guardar nota:", e);
             }
         },
         [
-            markTabClean,
+            markTabSaved,
+            serializePersistedContent,
             stripFrontmatter,
             touchVault,
             updateNoteMetadata,
@@ -313,16 +333,15 @@ export function Editor({
 
     const scheduleSave = useCallback(
         (tabId: string, content: string) => {
-            if (!autoSave) return;
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             saveTimerRef.current = setTimeout(() => {
                 const freshTab = useEditorStore
                     .getState()
                     .tabs.find((t) => t.id === tabId);
                 if (freshTab) saveNow(freshTab, content);
-            }, autoSaveDelay);
+            }, 300);
         },
-        [autoSave, autoSaveDelay, saveNow],
+        [saveNow],
     );
     useEffect(() => {
         scheduleSaveRef.current = scheduleSave;
@@ -953,8 +972,6 @@ export function Editor({
                         const tab = activeTabRef.current;
                         if (!tab) return;
                         const content = update.state.doc.toString();
-                        // Mark dirty immediately (cheap — no-ops if already dirty)
-                        markTabDirty(tab.id);
                         // Debounce content propagation to Zustand to avoid
                         // expensive re-renders in LinksPanel on every keystroke
                         if (contentUpdateTimerRef.current)
@@ -995,7 +1012,6 @@ export function Editor({
             updateSelectionToolbar,
             updateWikilinkSuggester,
             handleOpenLinkContextMenu,
-            markTabDirty,
             updateTabContent,
         ],
     );
@@ -1091,6 +1107,9 @@ export function Editor({
         const body = initialTab
             ? stripFrontmatter(initialTab.id, rawContent)
             : rawContent;
+        if (initialTab) {
+            markTabSaved(initialTab.id, rawContent);
+        }
 
         replaceEditorView(createEditorState(body));
 
@@ -1130,7 +1149,7 @@ export function Editor({
         };
         // stable deps — createEditorState, replaceEditorView and stripFrontmatter only depend on stable refs
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [markTabSaved]);
 
     // Switch tabs: save previous state, restore or create new state
     useEffect(() => {
@@ -1169,8 +1188,8 @@ export function Editor({
         if (
             prevId &&
             prevId !== activeTabId &&
-            autoSave &&
-            previousTab?.isDirty
+            previousTab &&
+            isTabDirty(prevId, previousContent)
         ) {
             void saveNow(
                 {
@@ -1183,18 +1202,41 @@ export function Editor({
 
         if (!activeTabId || !activeTab) return;
 
+        if (!lastSavedContentByTabId.current.has(activeTabId)) {
+            markTabSaved(activeTabId, activeTab.content);
+        }
+
         // Restore saved state or create fresh one
         const savedState = tabStatesRef.current.get(activeTabId);
         const nextState =
             savedState ??
             createEditorState(stripFrontmatter(activeTabId, activeTab.content));
+        // Swap state in-place — avoids destroying/recreating the entire DOM.
+        // Falls back to replaceEditorView if setState throws.
+        let view: EditorView | null = currentView;
         isInternalRef.current = true;
-        const nextView = replaceEditorView(nextState);
+        try {
+            currentView.setState(nextState);
+        } catch {
+            view = replaceEditorView(nextState);
+        }
         isInternalRef.current = false;
-        if (!nextView) return;
-        restoreTabScrollPosition(activeTabId, nextView);
-        updateSelectionToolbar(nextView);
-        updateWikilinkSuggester(nextView);
+        if (!view) return;
+
+        // Re-insert scroll header if setState detached it
+        if (
+            scrollHeaderRef.current &&
+            !view.scrollDOM.contains(scrollHeaderRef.current)
+        ) {
+            view.scrollDOM.insertBefore(
+                scrollHeaderRef.current,
+                view.contentDOM,
+            );
+        }
+
+        restoreTabScrollPosition(activeTabId, view);
+        updateSelectionToolbar(view);
+        updateWikilinkSuggester(view);
 
         // Update frontmatter panel for this tab
         setActiveFrontmatter(
@@ -1209,7 +1251,7 @@ export function Editor({
         );
 
         // Ensure syntax theme and live preview match current settings
-        nextView.dispatch({
+        view.dispatch({
             effects: [
                 syntaxCompartment.reconfigure(
                     getSyntaxExtension(useThemeStore.getState().isDark),
@@ -1225,7 +1267,8 @@ export function Editor({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTabId,
-        autoSave,
+        isTabDirty,
+        markTabSaved,
         restoreTabScrollPosition,
         saveNow,
         saveTabScrollPosition,
@@ -1288,7 +1331,6 @@ export function Editor({
     }, [
         handleOpenLinkContextMenu,
         vaultPath,
-        vaultRevision,
         livePreviewEnabled,
     ]);
 
@@ -1304,8 +1346,6 @@ export function Editor({
             const prevTab = prev.tabs.find((t) => t.id === tabId);
             if (!tab || !prevTab) return;
 
-            // Only react when content/title changed externally (tab is NOT dirty)
-            if (tab.isDirty) return;
             if (
                 tab.content === prevTab.content &&
                 tab.title === prevTab.title
@@ -1327,6 +1367,9 @@ export function Editor({
                 setActiveFrontmatter(nextFrontmatter);
                 setEditableTitle(nextTitle);
             }
+            if (incoming !== currentDoc) {
+                markTabSaved(tabId, tab.content);
+            }
             if (incoming === currentDoc) return;
 
             isInternalRef.current = true;
@@ -1340,15 +1383,8 @@ export function Editor({
             isInternalRef.current = false;
         });
         return unsub;
-    }, [stripFrontmatter]);
+    }, [markTabSaved, stripFrontmatter]);
 
-    useEffect(() => {
-        if (autoSave) return;
-        if (saveTimerRef.current) {
-            clearTimeout(saveTimerRef.current);
-            saveTimerRef.current = null;
-        }
-    }, [autoSave]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
@@ -1427,7 +1463,7 @@ export function Editor({
                 e.preventDefault();
                 if (activeTabId) {
                     const tab = tabs.find((t) => t.id === activeTabId);
-                    if (tab?.isDirty) {
+                    if (tab) {
                         const content =
                             viewRef.current?.state.doc.toString() ??
                             tab.content;

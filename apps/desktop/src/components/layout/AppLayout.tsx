@@ -8,7 +8,6 @@ import {
 import {
     DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
-    MAX_RIGHT_PANEL_WIDTH,
     MAX_SIDEBAR_WIDTH,
     MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
@@ -17,10 +16,11 @@ import {
 
 const COLLAPSE_TRIGGER_WIDTH = 168;
 const LEFT_SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH, 320];
-const RIGHT_SNAP_POINTS = [DEFAULT_RIGHT_PANEL_WIDTH, 360];
+const RIGHT_SNAP_POINTS = [DEFAULT_RIGHT_PANEL_WIDTH, 360, 500];
 const SNAP_DISTANCE = 18;
 const RESIZER_HITBOX_WIDTH = 10;
 const RESIZER_VISIBLE_WIDTH = 1;
+const MIN_CENTER_PEEK_WIDTH = 36;
 
 interface ResizeSession {
     pointerId: number;
@@ -44,6 +44,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const showSidebarAtWidth = useLayoutStore((s) => s.showSidebarAtWidth);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
+    const rightPanelExpanded = useLayoutStore((s) => s.rightPanelExpanded);
     const rightPanelWidth = useLayoutStore((s) => s.rightPanelWidth);
     const collapseRightPanelToWidth = useLayoutStore(
         (s) => s.collapseRightPanelToWidth,
@@ -52,6 +53,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         (s) => s.showRightPanelAtWidth,
     );
     const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
+    const rootRef = useRef<HTMLDivElement>(null);
+    const [layoutWidth, setLayoutWidth] = useState(0);
 
     // --- Left panel ---
     const [isResizingLeft, setIsResizingLeft] = useState(false);
@@ -70,6 +73,19 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const rightSessionRef = useRef<ResizeSession | null>(null);
     const rightFrameRef = useRef<number | null>(null);
     const rightCollapsePreviewRef = useRef(false);
+    const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
+    const maxRightWidthForLayout = Math.max(
+        MIN_RIGHT_PANEL_WIDTH,
+        layoutWidth -
+            effectiveLeft -
+            RESIZER_HITBOX_WIDTH * 2 -
+            MIN_CENTER_PEEK_WIDTH,
+    );
+    const effectiveRight = rightPanelCollapsed
+        ? 0
+        : rightPanelExpanded
+          ? maxRightWidthForLayout
+          : Math.min(rightPanelWidth, maxRightWidthForLayout);
 
     // ---- Left resize logic ----
 
@@ -274,7 +290,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             }
             const clamped = Math.max(
                 MIN_RIGHT_PANEL_WIDTH,
-                Math.min(MAX_RIGHT_PANEL_WIDTH, s.pendingWidth),
+                Math.min(maxRightWidthForLayout, s.pendingWidth),
             );
             const snapped =
                 RIGHT_SNAP_POINTS.find(
@@ -285,6 +301,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         [
             applyRightWidth,
             collapseRightPanelToWidth,
+            maxRightWidthForLayout,
             showRightPanelAtWidth,
             syncRightPreview,
         ],
@@ -318,10 +335,21 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         [],
     );
 
+    useEffect(() => {
+        const el = rootRef.current;
+        if (!el) return;
+        setLayoutWidth(el.clientWidth);
+        const ro = new ResizeObserver(([entry]) => {
+            setLayoutWidth(Math.round(entry.contentRect.width));
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+
     const onRightDown = useCallback(
         (e: ReactPointerEvent<HTMLDivElement>) => {
             if (e.button !== 0) return;
-            const startWidth = rightPanelCollapsed ? 0 : rightPanelWidth;
+            const startWidth = rightPanelCollapsed ? 0 : effectiveRight;
             rightSessionRef.current = {
                 pointerId: e.pointerId,
                 startX: e.clientX,
@@ -337,8 +365,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         },
         [
             applyRightWidth,
+            effectiveRight,
             rightPanelCollapsed,
-            rightPanelWidth,
             syncRightPreview,
         ],
     );
@@ -351,13 +379,13 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             s.pendingWidth = Math.max(
                 0,
                 Math.min(
-                    MAX_RIGHT_PANEL_WIDTH,
+                    maxRightWidthForLayout,
                     s.startWidth - (e.clientX - s.startX),
                 ),
             );
             scheduleRightWidth();
         },
-        [scheduleRightWidth],
+        [maxRightWidthForLayout, scheduleRightWidth],
     );
 
     const onRightUp = useCallback(
@@ -374,12 +402,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         }
     }, [rightPanelCollapsed, showRightPanelAtWidth, toggleRightPanel]);
 
-    const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
-    const effectiveRight = rightPanelCollapsed ? 0 : rightPanelWidth;
     const isResizing = isResizingLeft || isResizingRight;
 
     return (
         <div
+            ref={rootRef}
             className="relative flex h-full overflow-hidden"
             style={{ backgroundColor: "var(--bg-primary)" }}
         >
@@ -435,7 +462,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             </div>
 
             {/* Center */}
-            <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <div
+                className="flex-1 flex flex-col overflow-hidden min-w-0"
+                style={{
+                    minWidth: rightPanelExpanded ? MIN_CENTER_PEEK_WIDTH : 0,
+                }}
+            >
                 {center}
             </div>
 
