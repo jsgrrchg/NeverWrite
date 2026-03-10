@@ -8,6 +8,7 @@ use notify::{
 };
 
 use crate::error::VaultError;
+use crate::vault::path_is_ignored;
 
 /// Rastrea archivos escritos por la app para distinguirlos de cambios externos.
 #[derive(Debug, Clone)]
@@ -49,6 +50,7 @@ pub fn start_watcher(
     write_tracker: WriteTracker,
     on_event: impl Fn(VaultEvent) + Send + 'static,
 ) -> Result<RecommendedWatcher, VaultError> {
+    let watch_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         let Ok(event) = res else { return };
 
@@ -56,7 +58,8 @@ pub fn start_watcher(
         let paths: Vec<&PathBuf> = event
             .paths
             .iter()
-            .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
+            .filter(|path| !path_is_ignored(&watch_root, path))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
             .collect();
 
         if paths.is_empty() {

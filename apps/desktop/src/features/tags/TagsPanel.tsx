@@ -135,7 +135,6 @@ export function TagsPanel() {
                 noteId: note.id,
                 title: note.title,
                 content,
-                isDirty: false,
             });
         } catch (error) {
             console.error("Error opening tagged note in new tab:", error);

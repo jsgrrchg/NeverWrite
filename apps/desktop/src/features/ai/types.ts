@@ -270,12 +270,17 @@ export type AIComposerPart =
     | {
           id: string;
           type: "fetch_mention";
+      }
+    | {
+          id: string;
+          type: "plan_mention";
       };
 
 export type AIMentionSuggestion =
     | { kind: "note"; note: AIChatNoteSummary }
     | { kind: "folder"; folderPath: string; name: string }
-    | { kind: "fetch" };
+    | { kind: "fetch" }
+    | { kind: "plan" };
 
 export interface PersistedMessage {
     id: string;

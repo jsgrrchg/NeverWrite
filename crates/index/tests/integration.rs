@@ -394,3 +394,23 @@ fn remove_note_cleans_index() {
     let bl_ids: Vec<&str> = bl.iter().map(|id| id.0.as_str()).collect();
     assert!(!bl_ids.contains(&"nota1"));
 }
+
+#[test]
+fn reindex_updates_exact_title_and_filename_maps() {
+    let mut index = VaultIndex::build(vec![
+        make_note("folder/old-name", "Old Title", vec![], vec![]),
+        make_note("note", "Current", vec![("Old Title", None)], vec![]),
+    ]);
+
+    index.remove_note(&NoteId("folder/old-name".into()));
+    index.reindex_note(make_note("folder/new-name", "New Title", vec![], vec![]));
+
+    let resolved_old = index.resolve_wikilink("Old Title", &NoteId("note".into()));
+    assert_eq!(resolved_old, None);
+
+    let resolved_new = index.resolve_wikilink("New Title", &NoteId("note".into()));
+    assert_eq!(resolved_new, Some(NoteId("folder/new-name".into())));
+
+    let resolved_filename = index.resolve_wikilink("new-name", &NoteId("note".into()));
+    assert_eq!(resolved_filename, Some(NoteId("folder/new-name".into())));
+}

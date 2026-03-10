@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
     useSettingsStore,
     type EditorFontFamily,
 } from "../../app/store/settingsStore";
+import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { useThemeStore } from "../../app/store/themeStore";
 import { themes, type ThemeName } from "../../app/themes/index";
 import {
@@ -127,23 +129,64 @@ function SelectField<T extends string | number>({
 }) {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const [menuPosition, setMenuPosition] = useState<{
+        x: number;
+        y: number;
+        minWidth: number;
+    } | null>(null);
     const currentLabel =
         options.find((o) => o.value === value)?.label ?? String(value);
+
+    useLayoutEffect(() => {
+        if (!open) return;
+        const anchor = ref.current;
+        const menu = menuRef.current;
+        if (!anchor || !menu) return;
+
+        const gap = 4;
+        const anchorRect = anchor.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        const shouldOpenAbove =
+            anchorRect.bottom + gap + menuRect.height >
+                window.innerHeight - 8 &&
+            anchorRect.top - gap - menuRect.height >= 8;
+        const rawY = shouldOpenAbove
+            ? anchorRect.top - gap - menuRect.height
+            : anchorRect.bottom + gap;
+        const safe = getViewportSafeMenuPosition(
+            anchorRect.right - menuRect.width,
+            rawY,
+            menuRect.width,
+            menuRect.height,
+        );
+
+        setMenuPosition({
+            x: safe.x,
+            y: safe.y,
+            minWidth: anchorRect.width,
+        });
+    }, [open, options.length]);
 
     useEffect(() => {
         if (!open) return;
         const handleDown = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node))
-                setOpen(false);
+            const target = e.target as Node;
+            if (ref.current?.contains(target)) return;
+            if (menuRef.current?.contains(target)) return;
+            setOpen(false);
         };
         const handleKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") setOpen(false);
         };
+        const handleResize = () => setOpen(false);
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);
+        window.addEventListener("resize", handleResize);
         return () => {
             document.removeEventListener("mousedown", handleDown);
             document.removeEventListener("keydown", handleKey);
+            window.removeEventListener("resize", handleResize);
         };
     }, [open]);
 
@@ -195,62 +238,65 @@ function SelectField<T extends string | number>({
                 </svg>
             </button>
 
-            {open && (
-                <div
-                    style={{
-                        position: "absolute",
-                        right: 0,
-                        top: "calc(100% + 4px)",
-                        zIndex: 1000,
-                        minWidth: "100%",
-                        padding: 4,
-                        borderRadius: 8,
-                        backgroundColor: "var(--bg-secondary)",
-                        border: "1px solid var(--border)",
-                        boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-                        maxHeight: 280,
-                        overflowY: "auto",
-                    }}
-                >
-                    {options.map((opt) => (
-                        <button
-                            key={String(opt.value)}
-                            type="button"
-                            onClick={() => {
-                                onChange(opt.value);
-                                setOpen(false);
-                            }}
-                            style={{
-                                display: "block",
-                                width: "100%",
-                                textAlign: "left",
-                                padding: "5px 10px",
-                                fontSize: 12,
-                                fontFamily: "inherit",
-                                borderRadius: 4,
-                                border: "none",
-                                color:
-                                    opt.value === value
-                                        ? "var(--accent)"
-                                        : "var(--text-primary)",
-                                backgroundColor: "transparent",
-                                cursor: "pointer",
-                                whiteSpace: "nowrap",
-                            }}
-                            onMouseEnter={(e) => {
-                                e.currentTarget.style.backgroundColor =
-                                    "var(--bg-tertiary)";
-                            }}
-                            onMouseLeave={(e) => {
-                                e.currentTarget.style.backgroundColor =
-                                    "transparent";
-                            }}
-                        >
-                            {opt.label}
-                        </button>
-                    ))}
-                </div>
-            )}
+            {open &&
+                createPortal(
+                    <div
+                        ref={menuRef}
+                        style={{
+                            position: "fixed",
+                            left: menuPosition?.x ?? 8,
+                            top: menuPosition?.y ?? 8,
+                            zIndex: 10010,
+                            minWidth: menuPosition?.minWidth ?? 0,
+                            padding: 4,
+                            borderRadius: 8,
+                            backgroundColor: "var(--bg-secondary)",
+                            border: "1px solid var(--border)",
+                            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+                            maxHeight: 280,
+                            overflowY: "auto",
+                        }}
+                    >
+                        {options.map((opt) => (
+                            <button
+                                key={String(opt.value)}
+                                type="button"
+                                onClick={() => {
+                                    onChange(opt.value);
+                                    setOpen(false);
+                                }}
+                                style={{
+                                    display: "block",
+                                    width: "100%",
+                                    textAlign: "left",
+                                    padding: "5px 10px",
+                                    fontSize: 12,
+                                    fontFamily: "inherit",
+                                    borderRadius: 4,
+                                    border: "none",
+                                    color:
+                                        opt.value === value
+                                            ? "var(--accent)"
+                                            : "var(--text-primary)",
+                                    backgroundColor: "transparent",
+                                    cursor: "pointer",
+                                    whiteSpace: "nowrap",
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor =
+                                        "var(--bg-tertiary)";
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor =
+                                        "transparent";
+                                }}
+                            >
+                                {opt.label}
+                            </button>
+                        ))}
+                    </div>,
+                    document.body,
+                )}
         </div>
     );
 }
@@ -590,41 +636,11 @@ function SectionLabel({ children }: { children: string }) {
 // --- Category content ---
 
 function GeneralSettings() {
-    const { autoSave, autoSaveDelay, openLastVaultOnLaunch, setSetting } =
+    const { openLastVaultOnLaunch, setSetting } =
         useSettingsStore();
 
     return (
         <div>
-            <SectionLabel>Saving</SectionLabel>
-            <Row
-                label="Auto-save"
-                description="Automatically save notes after you stop typing."
-                control={
-                    <Toggle
-                        value={autoSave}
-                        onChange={(v) => setSetting("autoSave", v)}
-                    />
-                }
-            />
-            <Row
-                label="Auto-save delay"
-                description="How long to wait after the last keystroke before saving."
-                disabled={!autoSave}
-                control={
-                    <SelectField
-                        value={autoSaveDelay}
-                        disabled={!autoSave}
-                        options={[
-                            { value: 500, label: "500 ms" },
-                            { value: 1000, label: "1 s" },
-                            { value: 2000, label: "2 s" },
-                            { value: 5000, label: "5 s" },
-                        ]}
-                        onChange={(v) => setSetting("autoSaveDelay", v)}
-                    />
-                }
-            />
-
             <SectionLabel>Startup</SectionLabel>
             <Row
                 label="Open last vault on launch"
@@ -1088,6 +1104,10 @@ function AISettings() {
     const setComposerFontSize = useChatStore((s) => s.setComposerFontSize);
     const chatFontSize = useChatStore((s) => s.chatFontSize);
     const setChatFontSize = useChatStore((s) => s.setChatFontSize);
+    const historyRetentionDays = useChatStore((s) => s.historyRetentionDays);
+    const setHistoryRetentionDays = useChatStore(
+        (s) => s.setHistoryRetentionDays,
+    );
 
     return (
         <div>
@@ -1132,9 +1152,29 @@ function AISettings() {
                 control={
                     <NumberStepper
                         value={chatFontSize}
-                        min={11}
-                        max={20}
+                        min={12}
+                        max={28}
                         onChange={setChatFontSize}
+                    />
+                }
+            />
+            <Row
+                label="Chat history retention"
+                description="How long saved chat histories stay on disk before they are automatically deleted."
+                control={
+                    <SelectField
+                        value={historyRetentionDays}
+                        options={[
+                            { value: 0, label: "Forever" },
+                            { value: 1, label: "1 day" },
+                            { value: 7, label: "7 days" },
+                            { value: 30, label: "30 days" },
+                            { value: 90, label: "90 days" },
+                            { value: 365, label: "1 year" },
+                        ]}
+                        onChange={(value) => {
+                            void setHistoryRetentionDays(value);
+                        }}
                     />
                 }
             />

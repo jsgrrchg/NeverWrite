@@ -119,7 +119,6 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                 noteId: result.id,
                 title: result.title,
                 content,
-                isDirty: false,
             });
         } catch (error) {
             console.error("Error opening search result in new tab:", error);

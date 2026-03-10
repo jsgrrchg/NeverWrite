@@ -38,7 +38,6 @@ describe("LinksPanel", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "[[Reference]] and [[Missing note]]",
-                isDirty: false,
             },
         ]);
 
@@ -86,7 +85,6 @@ describe("LinksPanel", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "[[Missing note]]",
-                isDirty: false,
             },
         ]);
 
@@ -139,7 +137,6 @@ describe("LinksPanel", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "[[Reference]]",
-                isDirty: false,
             },
         ]);
 

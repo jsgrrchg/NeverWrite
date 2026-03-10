@@ -868,13 +868,14 @@ fn save_note(
     let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let path = vault.id_to_path(&note_id);
-    state.write_tracker.track(path);
+    state.write_tracker.track(path.clone());
 
     vault
         .save_note(&note_id, &content)
         .map_err(|e| e.to_string())?;
 
-    let note = vault.read_note(&note_id).map_err(|e| e.to_string())?;
+    // Build NoteDocument from content we already have — skip re-reading from disk
+    let note = vault_ai_vault::parser::parse_note(&note_id, &path, &content);
     let dto = note_to_detail(&note);
     if let Some(index) = state.index.as_mut() {
         index.reindex_note(note);
@@ -1075,6 +1076,7 @@ pub fn run() {
             ai::commands::ai_load_session_histories,
             ai::commands::ai_delete_session_history,
             ai::commands::ai_delete_all_session_histories,
+            ai::commands::ai_prune_session_histories,
             delete_vault_snapshot,
         ])
         .run(tauri::generate_context!())

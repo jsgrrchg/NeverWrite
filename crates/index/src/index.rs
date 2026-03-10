@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
@@ -100,28 +100,25 @@ impl VaultIndex {
 
         self.backlinks.remove(note_id);
 
-        for tag_notes in self.tags.values_mut() {
-            tag_notes.retain(|id| id != note_id);
-        }
-        self.tags.retain(|_, ids| !ids.is_empty());
+        let metadata = self.metadata.get(note_id).cloned();
+        let indexed_note = self.notes.get(note_id).cloned();
 
-        for name_notes in self.names.values_mut() {
-            name_notes.retain(|id| id != note_id);
+        if let Some(note) = indexed_note.as_ref() {
+            for tag in &note.tags {
+                remove_note_id_from_map_list(&mut self.tags, tag, note_id);
+            }
         }
-        self.names.retain(|_, ids| !ids.is_empty());
 
-        for suffix_notes in self.path_suffixes.values_mut() {
-            suffix_notes.retain(|id| id != note_id);
+        if let Some(note_metadata) = metadata.as_ref() {
+            self.unregister_note_names(note_metadata, note_id);
+            self.unregister_path_suffixes(note_metadata, note_id);
+            self.unregister_exact_matches(note_metadata, note_id);
         }
-        self.path_suffixes.retain(|_, ids| !ids.is_empty());
 
         self.parent_dirs.remove(note_id);
         self.search_index.remove(note_id);
         self.metadata.remove(note_id);
         self.notes.remove(note_id);
-
-        self.exact_ids.retain(|_, id| id != note_id);
-        self.rebuild_unique_match_maps();
     }
 
     pub fn get_note_metadata(&self, note_id: &NoteId) -> Option<&NoteMetadata> {
@@ -134,8 +131,7 @@ impl VaultIndex {
         from_parent_dir: &str,
     ) -> Option<NoteId> {
         let prepared_link = PreparedLink::from_raw(link_text);
-        let resolver = self.resolver_context();
-        resolver.resolve_prepared_link(&prepared_link, from_parent_dir, None)
+        self.resolve_prepared_link_in_index(&prepared_link, from_parent_dir)
     }
 
     fn add_note(&mut self, note: NoteDocument) {
@@ -143,12 +139,10 @@ impl VaultIndex {
         let note_id = prepared.id.clone();
 
         self.register_note(&prepared);
-        let resolver = self.resolver_context();
 
         let mut resolved_targets = Vec::new();
         for link in &prepared.prepared_links {
-            if let Some(target_id) =
-                resolver.resolve_prepared_link(link, &prepared.parent_dir, None)
+            if let Some(target_id) = self.resolve_prepared_link_in_index(link, &prepared.parent_dir)
             {
                 resolved_targets.push(target_id.clone());
                 self.backlinks
@@ -361,32 +355,180 @@ impl VaultIndex {
         );
     }
 
-    fn rebuild_unique_match_maps(&mut self) {
-        self.exact_titles.clear();
-        self.exact_filenames.clear();
+    fn unregister_note_names(&mut self, note: &NoteMetadata, note_id: &NoteId) {
+        for alias in note_alias_keys(note) {
+            remove_note_id_from_map_list(&mut self.names, &alias, note_id);
+        }
+    }
 
-        for note in self.metadata.values() {
-            let normalized_title = normalize_alias(&note.title);
-            if !normalized_title.is_empty() {
-                record_unique_match(&mut self.exact_titles, &normalized_title, note.id.clone());
+    fn unregister_path_suffixes(&mut self, note: &NoteMetadata, note_id: &NoteId) {
+        for suffix in note_path_suffix_keys(note) {
+            remove_note_id_from_map_list(&mut self.path_suffixes, &suffix, note_id);
+        }
+    }
+
+    fn unregister_exact_matches(&mut self, note: &NoteMetadata, note_id: &NoteId) {
+        self.exact_ids.remove(&normalize_alias(&note.id.0));
+        self.recompute_unique_title_match(&normalize_alias(&note.title), note_id);
+        self.recompute_unique_filename_match(&normalized_filename(note), note_id);
+    }
+
+    fn recompute_unique_title_match(&mut self, normalized_title: &str, removed_note_id: &NoteId) {
+        let next_match =
+            compute_unique_match_entry(&self.metadata, normalized_title, removed_note_id, |note| {
+                normalize_alias(&note.title)
+            });
+
+        match next_match {
+            Some(value) => {
+                self.exact_titles
+                    .insert(normalized_title.to_string(), value);
             }
-
-            let normalized_filename = note
-                .path
-                .0
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(normalize_alias)
-                .unwrap_or_default();
-
-            if !normalized_filename.is_empty() {
-                record_unique_match(
-                    &mut self.exact_filenames,
-                    &normalized_filename,
-                    note.id.clone(),
-                );
+            None => {
+                self.exact_titles.remove(normalized_title);
             }
         }
+    }
+
+    fn recompute_unique_filename_match(
+        &mut self,
+        normalized_filename_key: &str,
+        removed_note_id: &NoteId,
+    ) {
+        let next_match = compute_unique_match_entry(
+            &self.metadata,
+            normalized_filename_key,
+            removed_note_id,
+            normalized_filename,
+        );
+
+        match next_match {
+            Some(value) => {
+                self.exact_filenames
+                    .insert(normalized_filename_key.to_string(), value);
+            }
+            None => {
+                self.exact_filenames.remove(normalized_filename_key);
+            }
+        }
+    }
+
+    fn resolve_prepared_link_in_index(
+        &self,
+        link: &PreparedLink,
+        from_parent_dir: &str,
+    ) -> Option<NoteId> {
+        for normalized_link in &link.normalized_variants {
+            if link.is_path_like {
+                if let Some(id) = self.exact_ids.get(normalized_link) {
+                    return Some(id.clone());
+                }
+
+                if let Some(candidates) = self.path_suffixes.get(normalized_link) {
+                    if candidates.len() == 1 {
+                        return Some(candidates[0].clone());
+                    }
+                    if let Some(id) =
+                        self.closest_by_parent_dir_in_index(candidates, from_parent_dir)
+                    {
+                        return Some(id);
+                    }
+                }
+                continue;
+            }
+
+            if let Some(id) =
+                self.resolve_unique_match_in_index(&self.exact_titles, normalized_link)
+            {
+                return Some(id);
+            }
+
+            if let Some(id) =
+                self.resolve_unique_match_in_index(&self.exact_filenames, normalized_link)
+            {
+                return Some(id);
+            }
+
+            let Some(candidates) = self.names.get(normalized_link.as_str()) else {
+                continue;
+            };
+
+            if candidates.len() == 1 {
+                return Some(candidates[0].clone());
+            }
+
+            if let Some(id) = self.closest_by_parent_dir_in_index(candidates, from_parent_dir) {
+                return Some(id);
+            }
+        }
+
+        for normalized_link in &link.strong_prefix_variants {
+            if let Some(id) = self.resolve_unique_prefix_match_in_index(normalized_link) {
+                return Some(id);
+            }
+        }
+
+        None
+    }
+
+    fn resolve_unique_match_in_index(
+        &self,
+        map: &HashMap<String, UniqueNoteMatch>,
+        key: &str,
+    ) -> Option<NoteId> {
+        match map.get(key) {
+            Some(UniqueNoteMatch::Unique(id)) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    fn closest_by_parent_dir_in_index(
+        &self,
+        candidates: &[NoteId],
+        from_parent_dir: &str,
+    ) -> Option<NoteId> {
+        candidates
+            .iter()
+            .filter_map(|id| {
+                let target_parent_dir = self.parent_dirs.get(id)?;
+                Some((
+                    id.clone(),
+                    path_distance(from_parent_dir, target_parent_dir),
+                ))
+            })
+            .min_by_key(|(_, distance)| *distance)
+            .map(|(id, _)| id)
+    }
+
+    fn resolve_unique_prefix_match_in_index(&self, normalized_link: &str) -> Option<NoteId> {
+        if !is_strong_prefix_candidate(normalized_link) {
+            return None;
+        }
+
+        let mut matches = Vec::new();
+
+        for note in self.metadata.values() {
+            let aliases = [
+                normalize_alias(&note.title),
+                normalized_filename(note),
+                normalize_alias(note.id.0.split('/').next_back().unwrap_or_default()),
+            ];
+
+            if !aliases
+                .iter()
+                .filter(|alias| !alias.is_empty())
+                .any(|alias| is_prefix_expansion(alias, normalized_link))
+            {
+                continue;
+            }
+
+            matches.push(note.id.clone());
+            if matches.len() > 1 {
+                return None;
+            }
+        }
+
+        matches.into_iter().next()
     }
 
     fn resolver_context(&self) -> ResolverContext {
@@ -700,6 +842,90 @@ fn record_unique_match(map: &mut HashMap<String, UniqueNoteMatch>, key: &str, no
         _ => {
             map.insert(key.to_string(), UniqueNoteMatch::Ambiguous);
         }
+    }
+}
+
+fn remove_note_id_from_map_list(
+    map: &mut HashMap<String, Vec<NoteId>>,
+    key: &str,
+    note_id: &NoteId,
+) {
+    let should_remove = match map.get_mut(key) {
+        Some(entries) => {
+            entries.retain(|id| id != note_id);
+            entries.is_empty()
+        }
+        None => false,
+    };
+
+    if should_remove {
+        map.remove(key);
+    }
+}
+
+fn note_alias_keys(note: &NoteMetadata) -> Vec<String> {
+    let mut aliases = HashSet::new();
+    let filename = note
+        .path
+        .0
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let basename = note
+        .id
+        .0
+        .split('/')
+        .next_back()
+        .unwrap_or_default()
+        .to_string();
+
+    for alias in [filename, note.title.clone(), note.id.0.clone(), basename] {
+        for normalized in normalize_note_alias_variants(&alias) {
+            aliases.insert(normalized);
+        }
+    }
+
+    aliases.into_iter().collect()
+}
+
+fn note_path_suffix_keys(note: &NoteMetadata) -> Vec<String> {
+    let normalized_id = normalize_alias(&note.id.0);
+    let parts: Vec<&str> = normalized_id.split('/').collect();
+    (0..parts.len())
+        .map(|start| parts[start..].join("/"))
+        .collect()
+}
+
+fn normalized_filename(note: &NoteMetadata) -> String {
+    note.path
+        .0
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(normalize_alias)
+        .unwrap_or_default()
+}
+
+fn compute_unique_match_entry(
+    metadata: &HashMap<NoteId, NoteMetadata>,
+    key: &str,
+    removed_note_id: &NoteId,
+    project_key: impl Fn(&NoteMetadata) -> String,
+) -> Option<UniqueNoteMatch> {
+    if key.is_empty() {
+        return None;
+    }
+
+    let mut matches = metadata
+        .values()
+        .filter(|note| &note.id != removed_note_id)
+        .filter(|note| project_key(note) == key)
+        .map(|note| note.id.clone());
+
+    match (matches.next(), matches.next()) {
+        (None, _) => None,
+        (Some(id), None) => Some(UniqueNoteMatch::Unique(id)),
+        _ => Some(UniqueNoteMatch::Ambiguous),
     }
 }
 

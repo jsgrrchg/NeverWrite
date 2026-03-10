@@ -4,10 +4,12 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import type { AIChatMessage } from "../types";
+import type { AIChatMessage, AIChatSessionStatus } from "../types";
+import { getChatPillMetrics } from "./chatPillMetrics";
 
 interface AIChatMessageListProps {
     messages: AIChatMessage[];
+    status: AIChatSessionStatus;
     chatFontSize?: number;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }
@@ -22,7 +24,8 @@ function isNearBottom(el: HTMLElement) {
 
 export function AIChatMessageList({
     messages,
-    chatFontSize = 14,
+    status,
+    chatFontSize = 20,
     onPermissionResponse,
 }: AIChatMessageListProps) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -48,7 +51,7 @@ export function AIChatMessageList({
         } else {
             setShowScrollButton(true);
         }
-    }, [messages]);
+    }, [messages, status]);
 
     const handleScroll = useCallback(() => {
         const container = containerRef.current;
@@ -69,6 +72,7 @@ export function AIChatMessageList({
             payload: { hasSelection },
         });
     }, []);
+    const pillMetrics = getChatPillMetrics(chatFontSize);
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1">
@@ -84,14 +88,29 @@ export function AIChatMessageList({
                     data-selectable="true"
                     style={{ fontSize: chatFontSize }}
                 >
-                    {messages.map((message, index) => (
+                    {messages.map((message) => (
                         <AIChatMessageItem
                             key={message.id}
                             message={message}
-                            isLast={index === messages.length - 1}
+                            pillMetrics={pillMetrics}
                             onPermissionResponse={onPermissionResponse}
                         />
                     ))}
+                    {status === "streaming" && (
+                        <span className="inline-flex items-baseline gap-[3px] py-1">
+                            {[0, 1, 2].map((i) => (
+                                <span
+                                    key={i}
+                                    className="inline-block h-[5px] w-[5px] rounded-full"
+                                    style={{
+                                        backgroundColor: "var(--accent)",
+                                        opacity: 0.6,
+                                        animation: `ai-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
+                                    }}
+                                />
+                            ))}
+                        </span>
+                    )}
                 </div>
             </div>
             {showScrollButton && (

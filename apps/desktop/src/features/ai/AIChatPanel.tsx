@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     listenToAiMessageCompleted,
@@ -27,6 +28,10 @@ export function AIChatPanel() {
     const [savingSetup, setSavingSetup] = useState(false);
     const [composerExpanded, setComposerExpanded] = useState(false);
     const runtimeConnection = useChatStore((state) => state.runtimeConnection);
+    const rightPanelExpanded = useLayoutStore((state) => state.rightPanelExpanded);
+    const toggleRightPanelExpanded = useLayoutStore(
+        (state) => state.toggleRightPanelExpanded,
+    );
     const setupStatus = useChatStore((state) => state.setupStatus);
     const runtimes = useChatStore((state) => state.runtimes);
     const activeSessionId = useChatStore((state) => state.activeSessionId);
@@ -260,6 +265,7 @@ export function AIChatPanel() {
                 currentSession={currentSession}
                 sessions={orderedSessions}
                 runtimes={runtimes.map((descriptor) => descriptor.runtime)}
+                panelExpanded={rightPanelExpanded}
                 status={currentSession?.status ?? "idle"}
                 onNewChat={newSession}
                 onSelectSession={(sessionId) => {
@@ -271,6 +277,7 @@ export function AIChatPanel() {
                 onDeleteAllSessions={() => {
                     void deleteAllSessions();
                 }}
+                onToggleExpanded={toggleRightPanelExpanded}
             />
             <AIChatRuntimeBanner connection={runtimeConnection} />
             {!composerExpanded &&
@@ -293,6 +300,7 @@ export function AIChatPanel() {
                 ) : (
                     <AIChatMessageList
                         messages={currentSession?.messages ?? []}
+                        status={currentSession?.status ?? "idle"}
                         chatFontSize={chatFontSize}
                         onPermissionResponse={(requestId, optionId) => {
                             void respondPermission(requestId, optionId);
@@ -302,7 +310,7 @@ export function AIChatPanel() {
             <div
                 className={
                     composerExpanded
-                        ? "flex min-h-0 flex-1 flex-col px-3 pb-3 pt-2"
+                        ? "flex min-h-0 flex-1 flex-col px-1.5 pb-1.5 pt-1.5"
                         : "px-3 pb-3 pt-2"
                 }
             >

@@ -468,15 +468,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         : undefined,
                                                 }}
                                             >
-                                                {tab.isDirty && (
-                                                    <span
-                                                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                                        style={{
-                                                            backgroundColor:
-                                                                "var(--accent)",
-                                                        }}
-                                                    />
-                                                )}
                                                 <span className="flex-1 truncate text-[12.5px] font-medium">
                                                     {tab.title}
                                                 </span>

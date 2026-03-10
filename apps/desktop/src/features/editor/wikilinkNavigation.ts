@@ -49,7 +49,7 @@ export function openWikilinkInNewTab(target: string) {
             noteId: note.id,
             title: note.title,
             content: existing.content,
-            isDirty: existing.isDirty,
+
         });
         return;
     }
@@ -61,7 +61,7 @@ export function openWikilinkInNewTab(target: string) {
                 noteId: note.id,
                 title: note.title,
                 content: detail.content,
-                isDirty: false,
+
             });
         })
         .catch((error) =>

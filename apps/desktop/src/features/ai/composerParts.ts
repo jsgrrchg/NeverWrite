@@ -14,6 +14,8 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
     return parts
         .map((part) => {
             if (part.type === "text") return part.text;
+            if (part.type === "fetch_mention") return "@fetch";
+            if (part.type === "plan_mention") return "/plan";
             if (part.type === "folder_mention") return `@📁${part.label}`;
             if (part.type === "mention") return `@${part.label}`;
             return "";

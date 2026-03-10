@@ -20,7 +20,6 @@ describe("BacklinksPanel", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "body",
-                isDirty: false,
             },
         ]);
 
@@ -50,14 +49,12 @@ describe("BacklinksPanel", () => {
                     noteId: "notes/current",
                     title: "Current",
                     content: "body",
-                    isDirty: false,
                 },
                 {
                     id: "tab-source",
                     noteId: "notes/source",
                     title: "Source note",
                     content: "cached",
-                    isDirty: false,
                 },
             ],
             "tab-active",
@@ -94,14 +91,12 @@ describe("BacklinksPanel", () => {
                     noteId: "notes/current",
                     title: "Current",
                     content: "body",
-                    isDirty: false,
                 },
                 {
                     id: "tab-source",
                     noteId: "notes/source",
                     title: "Source note",
                     content: "cached",
-                    isDirty: false,
                 },
             ],
             "tab-active",

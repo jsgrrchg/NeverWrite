@@ -142,7 +142,6 @@ describe("SearchPanel", () => {
                 noteId: "notes/roadmap",
                 title: "Roadmap",
                 content: "cached",
-                isDirty: false,
             },
         ]);
 

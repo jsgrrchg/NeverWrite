@@ -18,6 +18,10 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
+import {
+    getChatPillMetrics,
+    type ChatPillMetrics,
+} from "./chatPillMetrics";
 import type {
     AIChatNoteSummary,
     AIChatSessionStatus,
@@ -108,6 +112,12 @@ const SLASH_COMMANDS: AIChatSlashCommand[] = [
         insertText: "/review ",
     },
     {
+        id: "plan",
+        label: "/plan",
+        description: "Create or refine a step-by-step plan before making changes.",
+        insertText: "/plan ",
+    },
+    {
         id: "review-branch",
         label: "/review-branch",
         description: "Review changes against a base branch.",
@@ -139,7 +149,43 @@ const SLASH_COMMANDS: AIChatSlashCommand[] = [
     },
 ];
 
-function createMentionNode(part: Extract<AIComposerPart, { type: "mention" }>) {
+function applyComposerPillStyles(
+    element: HTMLSpanElement,
+    metrics: ChatPillMetrics,
+    palette: { background: string; color: string },
+) {
+    element.style.display = "inline-flex";
+    element.style.alignItems = "center";
+    element.style.padding = `${metrics.paddingY}px ${metrics.paddingX}px`;
+    element.style.margin = `0 ${metrics.gapX}px`;
+    element.style.borderRadius = `${metrics.radius}px`;
+    element.style.border = "none";
+    element.style.background = palette.background;
+    element.style.color = palette.color;
+    element.style.fontSize = `${metrics.fontSize}px`;
+    element.style.lineHeight = String(metrics.lineHeight);
+    element.style.verticalAlign = "baseline";
+    element.style.transform = `translateY(${metrics.offsetY}px)`;
+    element.style.whiteSpace = "nowrap";
+}
+
+function getPillMetricsSignature(metrics: ChatPillMetrics) {
+    return [
+        metrics.fontSize,
+        metrics.lineHeight,
+        metrics.paddingX,
+        metrics.paddingY,
+        metrics.radius,
+        metrics.gapX,
+        metrics.maxWidth,
+        metrics.offsetY,
+    ].join(":");
+}
+
+function createMentionNode(
+    part: Extract<AIComposerPart, { type: "mention" }>,
+    metrics: ChatPillMetrics,
+) {
     const element = document.createElement("span");
     element.dataset.kind = "mention";
     element.dataset.noteId = part.noteId;
@@ -147,64 +193,51 @@ function createMentionNode(part: Extract<AIComposerPart, { type: "mention" }>) {
     element.dataset.path = part.path;
     element.contentEditable = "false";
     element.textContent = part.label;
-    element.style.display = "inline-flex";
-    element.style.alignItems = "center";
-    element.style.padding = "1px 6px";
-    element.style.margin = "0 1px";
-    element.style.borderRadius = "4px";
-    element.style.border = "none";
-    element.style.background =
-        "color-mix(in srgb, var(--accent) 15%, transparent)";
-    element.style.color = "var(--accent)";
-    element.style.fontSize = "0.88em";
-    element.style.lineHeight = "1.3";
-    element.style.verticalAlign = "baseline";
-    element.style.whiteSpace = "nowrap";
+    applyComposerPillStyles(element, metrics, {
+        background: "color-mix(in srgb, var(--accent) 15%, transparent)",
+        color: "var(--accent)",
+    });
     return element;
 }
 
 function createFolderMentionNode(
     part: Extract<AIComposerPart, { type: "folder_mention" }>,
+    metrics: ChatPillMetrics,
 ) {
     const element = document.createElement("span");
     element.dataset.kind = "folder_mention";
     element.dataset.folderPath = part.folderPath;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = `📁 ${part.label}`;
-    element.style.display = "inline-flex";
-    element.style.alignItems = "center";
-    element.style.padding = "1px 6px";
-    element.style.margin = "0 1px";
-    element.style.borderRadius = "4px";
-    element.style.border = "none";
-    element.style.background =
-        "color-mix(in srgb, var(--accent) 15%, transparent)";
-    element.style.color = "var(--accent)";
-    element.style.fontSize = "0.88em";
-    element.style.lineHeight = "1.3";
-    element.style.verticalAlign = "baseline";
-    element.style.whiteSpace = "nowrap";
+    element.textContent = part.label;
+    applyComposerPillStyles(element, metrics, {
+        background: "color-mix(in srgb, var(--accent) 15%, transparent)",
+        color: "var(--accent)",
+    });
     return element;
 }
 
-function createFetchMentionNode() {
+function createFetchMentionNode(metrics: ChatPillMetrics) {
     const element = document.createElement("span");
     element.dataset.kind = "fetch_mention";
     element.contentEditable = "false";
     element.textContent = "@fetch";
-    element.style.display = "inline-flex";
-    element.style.alignItems = "center";
-    element.style.padding = "1px 6px";
-    element.style.margin = "0 1px";
-    element.style.borderRadius = "4px";
-    element.style.border = "none";
-    element.style.background = "color-mix(in srgb, #10b981 15%, transparent)";
-    element.style.color = "#10b981";
-    element.style.fontSize = "0.88em";
-    element.style.lineHeight = "1.3";
-    element.style.verticalAlign = "baseline";
-    element.style.whiteSpace = "nowrap";
+    applyComposerPillStyles(element, metrics, {
+        background: "color-mix(in srgb, #10b981 15%, transparent)",
+        color: "#10b981",
+    });
+    return element;
+}
+
+function createPlanMentionNode(metrics: ChatPillMetrics) {
+    const element = document.createElement("span");
+    element.dataset.kind = "plan_mention";
+    element.contentEditable = "false";
+    element.textContent = "/plan";
+    applyComposerPillStyles(element, metrics, {
+        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+        color: "var(--accent)",
+    });
     return element;
 }
 
@@ -257,6 +290,11 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
 
     if (node.dataset.kind === "fetch_mention") {
         parts.push({ id: crypto.randomUUID(), type: "fetch_mention" });
+        return;
+    }
+
+    if (node.dataset.kind === "plan_mention") {
+        parts.push({ id: crypto.randomUUID(), type: "plan_mention" });
         return;
     }
 
@@ -321,18 +359,29 @@ function selectAllComposerContent(root: HTMLDivElement) {
     selection.addRange(range);
 }
 
-function syncComposerDom(root: HTMLDivElement, parts: AIComposerPart[]) {
+function syncComposerDom(
+    root: HTMLDivElement,
+    parts: AIComposerPart[],
+    metrics: ChatPillMetrics,
+    pillMetricsSignature: string,
+) {
     root.replaceChildren();
 
     for (const part of parts) {
         if (part.type === "text") {
             root.append(document.createTextNode(part.text));
         } else if (part.type === "mention") {
-            root.append(createMentionNode(part));
+            root.append(createMentionNode(part, metrics));
         } else if (part.type === "folder_mention") {
-            root.append(createFolderMentionNode(part));
+            root.append(createFolderMentionNode(part, metrics));
+        } else if (part.type === "fetch_mention") {
+            root.append(createFetchMentionNode(metrics));
+        } else if (part.type === "plan_mention") {
+            root.append(createPlanMentionNode(metrics));
         }
     }
+
+    root.dataset.pillMetricsSignature = pillMetricsSignature;
 }
 
 function isMentionElement(node: Node): node is HTMLElement {
@@ -340,7 +389,8 @@ function isMentionElement(node: Node): node is HTMLElement {
         node instanceof HTMLElement &&
         (node.dataset.kind === "mention" ||
             node.dataset.kind === "folder_mention" ||
-            node.dataset.kind === "fetch_mention")
+            node.dataset.kind === "fetch_mention" ||
+            node.dataset.kind === "plan_mention")
     );
 }
 
@@ -395,6 +445,7 @@ function normalizeForSearch(value: string): string {
 }
 
 const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
+const PLAN_KEYWORDS = ["plan", "planning", "steps", "roadmap"];
 
 function getMentionSuggestions(
     notes: AIChatNoteSummary[],
@@ -413,6 +464,15 @@ function getMentionSuggestions(
         )
     ) {
         results.push({ kind: "fetch" });
+    }
+
+    if (
+        !nq ||
+        PLAN_KEYWORDS.some(
+            (kw) => kw.startsWith(nq) || nq.startsWith(kw.slice(0, nq.length)),
+        )
+    ) {
+        results.push({ kind: "plan" });
     }
 
     // Match folders
@@ -465,11 +525,26 @@ export function AIChatComposer({
     const [externalDragActive, setExternalDragActive] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ComposerContextMenuPayload> | null>(null);
+    const [customHeight, setCustomHeight] = useState<number | null>(null);
+    const resizeSession = useRef<{
+        startY: number;
+        startHeight: number;
+        pointerId: number;
+    } | null>(null);
+    const resizeHandleRef = useRef<HTMLDivElement>(null);
     const serializedValue = useMemo(
         () => serializeComposerParts(parts),
         [parts],
     );
     const folderPaths = useMemo(() => extractFolderPaths(notes), [notes]);
+    const pillMetrics = useMemo(
+        () => getChatPillMetrics(composerFontSize),
+        [composerFontSize],
+    );
+    const pillMetricsSignature = useMemo(
+        () => getPillMetricsSignature(pillMetrics),
+        [pillMetrics],
+    );
 
     useEffect(() => {
         const composer = composerRef.current;
@@ -477,13 +552,14 @@ export function AIChatComposer({
 
         if (
             serializeComposerParts(readPartsFromDom(composer)) ===
-            serializedValue
+                serializedValue &&
+            composer.dataset.pillMetricsSignature === pillMetricsSignature
         ) {
             return;
         }
 
-        syncComposerDom(composer, parts);
-    }, [parts, serializedValue]);
+        syncComposerDom(composer, parts, pillMetrics, pillMetricsSignature);
+    }, [parts, pillMetrics, pillMetricsSignature, serializedValue]);
 
     const isStreaming = status === "streaming";
     const isEmpty = serializedValue.length === 0;
@@ -627,16 +703,18 @@ export function AIChatComposer({
                 noteId: item.note.id,
                 label: item.note.title,
                 path: item.note.path,
-            });
+            }, pillMetrics);
         } else if (item.kind === "folder") {
             span = createFolderMentionNode({
                 id: crypto.randomUUID(),
                 type: "folder_mention",
                 folderPath: item.folderPath,
                 label: item.name,
-            });
+            }, pillMetrics);
+        } else if (item.kind === "plan") {
+            span = createPlanMentionNode(pillMetrics);
         } else {
-            span = createFetchMentionNode();
+            span = createFetchMentionNode(pillMetrics);
         }
 
         const trailingSpace = document.createTextNode(" ");
@@ -662,9 +740,17 @@ export function AIChatComposer({
         if (!composer || !targetRange) return;
 
         targetRange.deleteContents();
-        const textNode = document.createTextNode(command.insertText);
-        targetRange.insertNode(textNode);
-        setCaretAfterNode(textNode);
+        if (command.id === "plan") {
+            const trailingSpace = document.createTextNode(" ");
+            const planNode = createPlanMentionNode(pillMetrics);
+            targetRange.insertNode(trailingSpace);
+            targetRange.insertNode(planNode);
+            setCaretAfterNode(trailingSpace);
+        } else {
+            const textNode = document.createTextNode(command.insertText);
+            targetRange.insertNode(textNode);
+            setCaretAfterNode(textNode);
+        }
         syncFromDom();
         closeSlashPicker();
         composer.focus();
@@ -764,33 +850,103 @@ export function AIChatComposer({
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
     }, [onChange, onMentionAttach, parts]);
 
+    const MIN_COMPOSER_HEIGHT = 64;
+    const MAX_COMPOSER_HEIGHT = 480;
+
+    const onResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const box = e.currentTarget.parentElement;
+        if (!box) return;
+        const startHeight = box.getBoundingClientRect().height;
+        resizeSession.current = {
+            startY: e.clientY,
+            startHeight,
+            pointerId: e.pointerId,
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        document.body.classList.add("resizing-composer");
+    };
+
+    const onResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        const s = resizeSession.current;
+        if (!s) return;
+        const delta = s.startY - e.clientY;
+        const next = Math.max(
+            MIN_COMPOSER_HEIGHT,
+            Math.min(MAX_COMPOSER_HEIGHT, s.startHeight + delta),
+        );
+        setCustomHeight(next);
+    };
+
+    const onResizeUp = () => {
+        const s = resizeSession.current;
+        if (!s) return;
+        const handle = resizeHandleRef.current;
+        if (handle && handle.hasPointerCapture(s.pointerId)) {
+            handle.releasePointerCapture(s.pointerId);
+        }
+        document.body.classList.remove("resizing-composer");
+        resizeSession.current = null;
+    };
+
     return (
         <div
             ref={shellRef}
             className={
-                expanded ? "flex min-h-0 flex-1 flex-col" : "flex flex-col"
+                expanded
+                    ? "flex h-full min-h-0 flex-1 flex-col"
+                    : "flex flex-col"
             }
         >
             {contextBar ? (
-                <div className="px-3 pb-1.5">{contextBar}</div>
+                <div className={expanded ? "px-2 pb-1.5" : "px-3 pb-1.5"}>
+                    {contextBar}
+                </div>
             ) : null}
             <div
                 className={
                     expanded
-                        ? "relative flex min-h-0 flex-1 flex-col"
+                        ? "relative flex h-full min-h-0 flex-1 flex-col"
                         : "relative flex flex-col"
                 }
                 style={{
                     border: "1px solid var(--border)",
-                    borderRadius: 12,
-                    backgroundColor:
-                        "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
+                    borderRadius: expanded ? 10 : 12,
+                    backgroundColor: "var(--bg-tertiary)",
                     boxShadow: externalDragActive
                         ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
                         : "none",
                     transition: "box-shadow 0.15s ease",
+                    ...(expanded || customHeight == null
+                        ? {}
+                        : { height: customHeight }),
                 }}
             >
+                {!expanded && (
+                    <div
+                        ref={resizeHandleRef}
+                        onPointerDown={onResizeDown}
+                        onPointerMove={onResizeMove}
+                        onPointerUp={onResizeUp}
+                        onPointerCancel={onResizeUp}
+                        className="group absolute left-0 right-0 flex cursor-row-resize items-center justify-center touch-none"
+                        style={{
+                            top: -4,
+                            height: 9,
+                            zIndex: 2,
+                            borderRadius: "12px 12px 0 0",
+                        }}
+                    >
+                        <div
+                            className="rounded-full transition-colors duration-150"
+                            style={{
+                                width: 32,
+                                height: 3,
+                                backgroundColor: "var(--border)",
+                            }}
+                        />
+                    </div>
+                )}
                 <button
                     type="button"
                     tabIndex={-1}
@@ -849,6 +1005,8 @@ export function AIChatComposer({
                             color: "var(--text-secondary)",
                             opacity: 0.6,
                             fontSize: composerFontSize,
+                            top: expanded ? 14 : 10,
+                            left: expanded ? 16 : 14,
                         }}
                     >
                         Message {runtimeName} — @ to include context, / for
@@ -1029,23 +1187,39 @@ export function AIChatComposer({
                             closeSlashPicker();
                         }, 0);
                     }}
-                    className={`w-full whitespace-pre-wrap break-words${expanded ? " min-h-0 flex-1" : ""}`}
+                    className={`w-full whitespace-pre-wrap break-words${expanded || customHeight != null ? " min-h-0 flex-1" : ""}`}
                     style={{
                         color: "var(--text-primary)",
                         backgroundColor: "transparent",
                         border: "none",
                         outline: "none",
-                        minHeight: expanded ? undefined : 64,
-                        maxHeight: expanded ? undefined : 200,
+                        minHeight: expanded
+                            ? undefined
+                            : customHeight != null
+                              ? 0
+                              : 64,
+                        maxHeight: expanded
+                            ? undefined
+                            : customHeight != null
+                              ? undefined
+                              : 200,
                         overflowY: "auto",
-                        padding: "10px 36px 10px 14px",
+                        padding: expanded
+                            ? "14px 36px 18px 16px"
+                            : "10px 36px 10px 14px",
                         lineHeight: 1.5,
                         fontSize: composerFontSize,
                         opacity: disabled ? 0.6 : 1,
                         cursor: disabled ? "default" : "text",
                     }}
                 />
-                <div className="flex items-center justify-between gap-2 px-2 pb-1.5">
+                <div
+                    className="mt-auto flex items-center justify-between gap-2 px-2 pb-1.5"
+                    style={{
+                        paddingTop: expanded ? 10 : 0,
+                        minHeight: expanded ? 42 : undefined,
+                    }}
+                >
                     <div className="min-w-0 flex-1">{footer}</div>
                     {hasActiveNote && (
                         <button

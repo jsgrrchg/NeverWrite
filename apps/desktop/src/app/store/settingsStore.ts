@@ -3,8 +3,6 @@ import { persist } from "zustand/middleware";
 
 export interface Settings {
     // General
-    autoSave: boolean;
-    autoSaveDelay: number; // ms: 500 | 1000 | 2000 | 5000
     openLastVaultOnLaunch: boolean;
 
     // Editor
@@ -59,8 +57,6 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
 ];
 
 const defaults: Settings = {
-    autoSave: true,
-    autoSaveDelay: 1000,
     openLastVaultOnLaunch: true,
     editorFontSize: 14,
     editorFontFamily: "system",
@@ -113,8 +109,6 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
         if (!parsed?.state) return null;
 
         return {
-            autoSave: parsed.state.autoSave ?? defaults.autoSave,
-            autoSaveDelay: parsed.state.autoSaveDelay ?? defaults.autoSaveDelay,
             openLastVaultOnLaunch:
                 parsed.state.openLastVaultOnLaunch ??
                 defaults.openLastVaultOnLaunch,
@@ -158,8 +152,6 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
 
 function pickSettings(state: SettingsStore): Settings {
     return {
-        autoSave: state.autoSave,
-        autoSaveDelay: state.autoSaveDelay,
         openLastVaultOnLaunch: state.openLastVaultOnLaunch,
         editorFontSize: state.editorFontSize,
         editorFontFamily: state.editorFontFamily,

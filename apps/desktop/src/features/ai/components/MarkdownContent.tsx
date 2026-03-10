@@ -2,10 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ReactElement, ReactNode } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { ChatInlinePill } from "./ChatInlinePill";
+import type { ChatPillMetrics } from "./chatPillMetrics";
 
 interface MarkdownContentProps {
     content: string;
     className?: string;
+    pillMetrics: ChatPillMetrics;
 }
 
 async function openVaultFile(absolutePath: string) {
@@ -68,11 +71,35 @@ function parseBlocks(text: string): Block[] {
     return blocks;
 }
 
-function renderInlineMarkdown(text: string): Array<string | ReactElement> {
+async function openWikilink(name: string) {
+    const { notes } = useVaultStore.getState();
+    const note =
+        notes.find((n) => n.title === name) ??
+        notes.find((n) => n.title.toLowerCase() === name.toLowerCase()) ??
+        notes.find((n) => n.id.endsWith(name) || n.id.endsWith(name.replace(/ /g, "-")));
+    if (!note) return;
+    const { tabs, openNote } = useEditorStore.getState();
+    const existing = tabs.find((t) => t.noteId === note.id);
+    if (existing) {
+        openNote(note.id, note.title, existing.content);
+        return;
+    }
+    try {
+        const detail = await invoke<{ content: string }>("read_note", { noteId: note.id });
+        openNote(note.id, note.title, detail.content);
+    } catch {
+        // Note might have been deleted
+    }
+}
+
+function renderInlineMarkdown(
+    text: string,
+    pillMetrics: ChatPillMetrics,
+): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
-    // Process: inline code, bold, italic, links, absolute file paths (.md)
+    // Process: wikilinks, inline code, bold, italic, links, absolute file paths (.md)
     const inlineRegex =
-        /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\/[\w][\w\s/~.()-]*\.md)/g;
+        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\/[\w][\w\s/~.()-]*\.md)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let keyIndex = 0;
@@ -86,60 +113,81 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
         const key = keyIndex++;
 
         if (match[1]) {
-            // inline code
+            // wikilink [[Note Name]] or [[Note Name|Alias]]
+            const inner = full.slice(2, -2);
+            const [target, alias] = inner.split("|");
+            const label = alias ?? target;
             parts.push(
-                <code
+                <ChatInlinePill
                     key={key}
-                    className="rounded px-1.5 py-0.5 text-[0.85em]"
-                    style={{
-                        backgroundColor: "var(--bg-tertiary)",
-                        color: "var(--accent)",
-                    }}
-                >
-                    {full.slice(1, -1)}
-                </code>,
+                    label={label.trim()}
+                    metrics={pillMetrics}
+                    interactive
+                    onClick={() => void openWikilink(target.trim())}
+                    title={target.trim()}
+                />,
             );
         } else if (match[2]) {
+            // inline code — render .md files as vault pills
+            const codeText = full.slice(1, -1);
+            if (/\.md$/i.test(codeText)) {
+                const fileName = codeText.replace(/\.md$/i, "");
+                    parts.push(
+                        <ChatInlinePill
+                            key={key}
+                            label={fileName}
+                            metrics={pillMetrics}
+                            interactive
+                            variant="file"
+                            onClick={() => void openWikilink(fileName)}
+                            title={codeText}
+                        />,
+                    );
+            } else {
+                parts.push(
+                    <code
+                        key={key}
+                        className="rounded px-1.5 py-0.5 text-[0.85em]"
+                        style={{
+                            backgroundColor: "var(--bg-tertiary)",
+                            color: "var(--accent)",
+                        }}
+                    >
+                        {codeText}
+                    </code>,
+                );
+            }
+        } else if (match[3]) {
             // bold
             parts.push(
                 <strong key={key} style={{ color: "var(--text-primary)" }}>
                     {full.slice(2, -2)}
                 </strong>,
             );
-        } else if (match[3]) {
+        } else if (match[4]) {
             // italic
             parts.push(<em key={key}>{full.slice(1, -1)}</em>);
-        } else if (match[4]) {
+        } else if (match[5]) {
             // link
             const linkMatch = /\[([^\]]+)\]\(([^)]+)\)/.exec(full);
             if (linkMatch) {
                 const url = linkMatch[2];
                 const isVaultPath = url.startsWith("/") && url.endsWith(".md");
                 if (isVaultPath) {
+                    const decoded = decodeURIComponent(url);
                     const fileName =
-                        url.split("/").pop()?.replace(/\.md$/, "") ??
+                        decoded.split("/").pop()?.replace(/\.md$/, "") ??
                         linkMatch[1];
                     parts.push(
-                        <button
+                        <ChatInlinePill
                             key={key}
-                            type="button"
-                            onClick={() => void openVaultFile(url)}
-                            className="inline cursor-pointer underline"
-                            style={{
-                                color: "var(--accent)",
-                                background: "none",
-                                border: "none",
-                                padding: 0,
-                                font: "inherit",
-                                whiteSpace: "normal",
-                                overflowWrap: "anywhere",
-                                wordBreak: "break-word",
-                                textAlign: "left",
-                            }}
-                            title={url}
-                        >
-                            {fileName}
-                        </button>,
+                            label={fileName}
+                            metrics={pillMetrics}
+                            interactive
+                            variant="file"
+                            onClick={() => void openVaultFile(decoded)}
+                            title={decoded}
+                        />,
                     );
                 } else {
                     parts.push(
@@ -161,32 +209,21 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
                     );
                 }
             }
-        } else if (match[5]) {
+        } else if (match[6]) {
             // absolute file path — clickable vault link
-            const filePath = full;
+            const filePath = decodeURIComponent(full);
             const fileName =
                 filePath.split("/").pop()?.replace(/\.md$/, "") ?? filePath;
             parts.push(
-                <button
+                <ChatInlinePill
                     key={key}
-                    type="button"
+                    label={fileName}
+                    metrics={pillMetrics}
+                    interactive
+                    variant="file"
                     onClick={() => void openVaultFile(filePath)}
-                    className="inline cursor-pointer underline"
-                    style={{
-                        color: "var(--accent)",
-                        background: "none",
-                        border: "none",
-                        padding: 0,
-                        font: "inherit",
-                        whiteSpace: "normal",
-                        overflowWrap: "anywhere",
-                        wordBreak: "break-word",
-                        textAlign: "left",
-                    }}
                     title={filePath}
-                >
-                    {fileName}
-                </button>,
+                />,
             );
         }
 
@@ -200,7 +237,13 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
     return parts;
 }
 
-function TextBlock({ content }: { content: string }) {
+function TextBlock({
+    content,
+    pillMetrics,
+}: {
+    content: string;
+    pillMetrics: ChatPillMetrics;
+}) {
     const lines = content.split("\n");
     const elements: ReactNode[] = [];
     let listItems: { ordered: boolean; text: string }[] = [];
@@ -227,7 +270,7 @@ function TextBlock({ content }: { content: string }) {
                             wordBreak: "break-word",
                         }}
                     >
-                        {renderInlineMarkdown(item.text)}
+                        {renderInlineMarkdown(item.text, pillMetrics)}
                     </li>
                 ))}
             </Tag>,
@@ -242,12 +285,12 @@ function TextBlock({ content }: { content: string }) {
             flushList();
             const level = headerMatch[1].length;
             const sizes = [
-                "text-lg font-semibold",
-                "text-base font-semibold",
-                "text-sm font-semibold",
-                "text-sm font-medium",
-                "text-xs font-medium",
-                "text-xs font-medium",
+                "text-[1.4em] font-semibold",
+                "text-[1.2em] font-semibold",
+                "text-[1.05em] font-semibold",
+                "text-[1.05em] font-medium",
+                "text-[0.9em] font-medium",
+                "text-[0.9em] font-medium",
             ];
             elements.push(
                 <div
@@ -259,7 +302,7 @@ function TextBlock({ content }: { content: string }) {
                         wordBreak: "break-word",
                     }}
                 >
-                    {renderInlineMarkdown(headerMatch[2])}
+                    {renderInlineMarkdown(headerMatch[2], pillMetrics)}
                 </div>,
             );
             continue;
@@ -310,7 +353,7 @@ function TextBlock({ content }: { content: string }) {
                         wordBreak: "break-word",
                     }}
                 >
-                    {renderInlineMarkdown(line.slice(2))}
+                    {renderInlineMarkdown(line.slice(2), pillMetrics)}
                 </blockquote>,
             );
             continue;
@@ -332,7 +375,7 @@ function TextBlock({ content }: { content: string }) {
                     wordBreak: "break-word",
                 }}
             >
-                {renderInlineMarkdown(line)}
+                {renderInlineMarkdown(line, pillMetrics)}
             </div>,
         );
     }
@@ -358,7 +401,7 @@ function CodeBlock({
         >
             {language ? (
                 <div
-                    className="px-3 py-1 text-[10px] uppercase tracking-wider"
+                    className="px-3 py-1 text-[0.6em] uppercase tracking-wider"
                     style={{
                         color: "var(--text-secondary)",
                         borderBottom: "1px solid var(--border)",
@@ -367,14 +410,18 @@ function CodeBlock({
                     {language}
                 </div>
             ) : null}
-            <pre className="max-w-full overflow-x-auto p-3 text-xs leading-relaxed">
+            <pre className="max-w-full overflow-x-auto p-3 text-[0.8em] leading-relaxed">
                 <code style={{ color: "var(--text-primary)" }}>{content}</code>
             </pre>
         </div>
     );
 }
 
-export function MarkdownContent({ content, className }: MarkdownContentProps) {
+export function MarkdownContent({
+    content,
+    className,
+    pillMetrics,
+}: MarkdownContentProps) {
     const blocks = parseBlocks(content);
 
     return (
@@ -395,7 +442,11 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
                         language={block.language}
                     />
                 ) : (
-                    <TextBlock key={i} content={block.content} />
+                    <TextBlock
+                        key={i}
+                        content={block.content}
+                        pillMetrics={pillMetrics}
+                    />
                 ),
             )}
         </div>

@@ -28,7 +28,6 @@ describe("Editor", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "First paragraph\n\nSecond paragraph",
-                isDirty: false,
             },
         ]);
 
@@ -94,14 +93,12 @@ describe("Editor", () => {
                     noteId: "notes/current",
                     title: "Current",
                     content: "Original body",
-                    isDirty: false,
                 },
                 {
                     id: "tab-2",
                     noteId: "notes/other",
                     title: "Other",
                     content: "Other body",
-                    isDirty: false,
                 },
             ],
             "tab-1",
@@ -154,7 +151,6 @@ describe("Editor", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "# Current\n\nBody",
-                isDirty: false,
             },
         ]);
         setVaultNotes([
@@ -179,6 +175,38 @@ describe("Editor", () => {
 
         expect(screen.getAllByDisplayValue("Renamed externally")).toHaveLength(
             2,
+        );
+    });
+
+    it("does not save a clean tab when switching notes", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Original body",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+        });
+        await flushPromises();
+
+        expect(mockInvoke()).not.toHaveBeenCalledWith(
+            "save_note",
+            expect.anything(),
         );
     });
 });
