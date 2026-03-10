@@ -41,6 +41,13 @@ import {
     type OpenYouTubeModalPayload,
 } from "./features/editor/youtube";
 import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
+import {
+    markChatTabsReady,
+    readPersistedChatWorkspace,
+    resetChatTabsStore,
+    useChatTabsStore,
+} from "./features/ai/store/chatTabsStore";
+import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 
 function SidebarPanel({ view }: { view: SidebarView }) {
     return (
@@ -651,15 +658,18 @@ function useDynamicScrollbars() {
 }
 
 export default function App() {
-    const [sidebarView, setSidebarView] = useState<SidebarView>("files");
+    const sidebarView = useLayoutStore((s) => s.sidebarView);
+    const setSidebarView = useLayoutStore((s) => s.setSidebarView);
     const restoreVault = useVaultStore((s) => s.restoreVault);
+    const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
+    const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const windowMode = getWindowMode();
 
     const openSearchPanel = useCallback(() => {
-        setSidebarView("search");
+        useLayoutStore.getState().setSidebarView("search");
         useLayoutStore.getState().expandSidebar();
     }, []);
 
@@ -675,16 +685,33 @@ export default function App() {
         if (!session?.noteIds.length) return;
 
         const restoredTabs: Tab[] = [];
-        for (const { noteId, title } of session.noteIds) {
+        for (const entry of session.noteIds) {
             try {
                 const detail = await invoke<{ content: string }>("read_note", {
-                    noteId,
+                    noteId: entry.noteId,
                 });
+                // Restore history entries (content only for current entry)
+                const history = (entry.history ?? [{ noteId: entry.noteId, title: entry.title }])
+                    .map((h) => ({
+                        noteId: h.noteId,
+                        title: h.title,
+                        content: "",
+                    }));
+                const historyIndex = Math.min(
+                    entry.historyIndex ?? history.length - 1,
+                    history.length - 1,
+                );
+                // Fill in content for the current history entry
+                if (history[historyIndex]) {
+                    history[historyIndex].content = detail.content;
+                }
                 restoredTabs.push({
                     id: crypto.randomUUID(),
-                    noteId,
-                    title,
+                    noteId: entry.noteId,
+                    title: entry.title,
                     content: detail.content,
+                    history,
+                    historyIndex,
                 });
             } catch {
                 // Nota eliminada o no encontrada, se omite
@@ -739,6 +766,39 @@ export default function App() {
             markSessionReady();
         })();
     }, [hydrateTabs, restoreSessionForCurrentVault, restoreVault, windowMode]);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        resetChatStore();
+        resetChatTabsStore();
+
+        if (!vaultPath) return;
+
+        let cancelled = false;
+
+        void (async () => {
+            await useChatStore.getState().initialize();
+            if (cancelled) return;
+
+            const chatState = useChatStore.getState();
+            const workspace = readPersistedChatWorkspace(vaultPath);
+            restoreChatWorkspace(
+                workspace,
+                Object.keys(chatState.sessionsById),
+                chatState.activeSessionId,
+            );
+            markChatTabsReady();
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        restoreChatWorkspace,
+        vaultPath,
+        windowMode,
+    ]);
 
     useEffect(() => {
         if (windowMode !== "main") return;

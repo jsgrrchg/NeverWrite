@@ -136,14 +136,16 @@ export function Editor({
     const wikilinkSuggesterArmedRef = useRef(false);
     const wikilinkSuggesterRef = useRef<WikilinkSuggesterState | null>(null);
     const isInternalRef = useRef(false);
-    // Save/restore full EditorState per tab (preserves undo history + selection)
+    // Save/restore full EditorState per note (preserves undo history + selection)
+    // Keyed by noteId so each note's state is preserved independently, even within the same tab.
     const tabStatesRef = useRef<Map<string, EditorState>>(new Map());
     const tabScrollPositionsRef = useRef<Map<string, TabScrollPosition>>(
         new Map(),
     );
     const prevTabIdRef = useRef<string | null>(null);
+    const prevNoteIdRef = useRef<string | null>(null);
     const lastSavedContentByTabId = useRef<Map<string, string>>(new Map());
-    // Frontmatter: stores the raw ---...--- block per tab so we can restore it on save
+    // Frontmatter: stores the raw ---...--- block per note so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
     const [activeFrontmatter, setActiveFrontmatter] = useState<string | null>(
         null,
@@ -288,13 +290,13 @@ export function Editor({
     );
 
     const saveNow = useCallback(
-        async (tab: Tab, content: string) => {
+        async (tab: Pick<Tab, "id" | "noteId" | "title" | "content">, content: string) => {
             if (saveTimerRef.current) {
                 clearTimeout(saveTimerRef.current);
                 saveTimerRef.current = null;
             }
-            const serializedContent = serializePersistedContent(tab.id, content);
-            if (lastSavedContentByTabId.current.get(tab.id) === serializedContent) {
+            const serializedContent = serializePersistedContent(tab.noteId, content);
+            if (lastSavedContentByTabId.current.get(tab.noteId) === serializedContent) {
                 return;
             }
             try {
@@ -302,8 +304,8 @@ export function Editor({
                     noteId: tab.noteId,
                     content: serializedContent,
                 });
-                stripFrontmatter(tab.id, detail.content);
-                markTabSaved(tab.id, detail.content);
+                stripFrontmatter(tab.noteId, detail.content);
+                markTabSaved(tab.noteId, detail.content);
                 updateTabTitle(tab.id, detail.title);
                 updateNoteMetadata(tab.noteId, {
                     title: detail.title,
@@ -312,7 +314,7 @@ export function Editor({
                 });
                 if (activeTabRef.current?.id === tab.id) {
                     setActiveFrontmatter(
-                        frontmatterByTabId.current.get(tab.id) ?? null,
+                        frontmatterByTabId.current.get(tab.noteId) ?? null,
                     );
                     setEditableTitle(detail.title);
                 }
@@ -353,9 +355,9 @@ export function Editor({
             if (!tab) return;
 
             if (nextFrontmatter) {
-                frontmatterByTabId.current.set(tab.id, nextFrontmatter);
+                frontmatterByTabId.current.set(tab.noteId, nextFrontmatter);
             } else {
-                frontmatterByTabId.current.delete(tab.id);
+                frontmatterByTabId.current.delete(tab.noteId);
             }
 
             const body = getCurrentBody();
@@ -394,7 +396,7 @@ export function Editor({
             if (!title) return;
 
             const currentFrontmatter =
-                frontmatterByTabId.current.get(tab.id) ?? activeFrontmatter;
+                frontmatterByTabId.current.get(tab.noteId) ?? activeFrontmatter;
             if (currentFrontmatter) {
                 applyFrontmatterChange(
                     upsertFrontmatterTitle(currentFrontmatter, title),
@@ -1105,29 +1107,30 @@ export function Editor({
         const initialTab = activeTabRef.current;
         const rawContent = initialTab?.content ?? "";
         const body = initialTab
-            ? stripFrontmatter(initialTab.id, rawContent)
+            ? stripFrontmatter(initialTab.noteId, rawContent)
             : rawContent;
         if (initialTab) {
-            markTabSaved(initialTab.id, rawContent);
+            markTabSaved(initialTab.noteId, rawContent);
         }
 
         replaceEditorView(createEditorState(body));
 
         setActiveFrontmatter(
             initialTab
-                ? (frontmatterByTabId.current.get(initialTab.id) ?? null)
+                ? (frontmatterByTabId.current.get(initialTab.noteId) ?? null)
                 : null,
         );
         setEditableTitle(
             initialTab
                 ? deriveDisplayedTitle(
-                      frontmatterByTabId.current.get(initialTab.id) ?? null,
+                      frontmatterByTabId.current.get(initialTab.noteId) ?? null,
                       body,
                       initialTab.title,
                   )
                 : "",
         );
         prevTabIdRef.current = initialTab?.id ?? null;
+        prevNoteIdRef.current = initialTab?.noteId ?? null;
 
         return () => {
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -1151,21 +1154,29 @@ export function Editor({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [markTabSaved]);
 
-    // Switch tabs: save previous state, restore or create new state
+    // Switch tabs or navigate within tab: save previous state, restore or create new state.
+    // Fires on activeTabId change (tab switch) OR activeTabInfo.noteId change (in-tab navigation).
+    const activeNoteId = activeTabInfo?.noteId ?? null;
     useEffect(() => {
         const currentView = viewRef.current;
         if (!currentView) return;
 
-        const prevId = prevTabIdRef.current;
-        if (prevId === activeTabId) return;
+        const prevTabId = prevTabIdRef.current;
+        const prevNoteId = prevNoteIdRef.current;
+        const tabChanged = prevTabId !== activeTabId;
+        const noteChanged = prevNoteId !== activeNoteId;
+        if (!tabChanged && !noteChanged) return;
+
         prevTabIdRef.current = activeTabId;
+        prevNoteIdRef.current = activeNoteId;
+
         const previousContent = currentView.state.doc.toString();
-        const previousTab = prevId
-            ? (useEditorStore.getState().tabs.find((t) => t.id === prevId) ??
+        const previousTab = prevTabId
+            ? (useEditorStore.getState().tabs.find((t) => t.id === prevTabId) ??
               null)
             : null;
 
-        // Cancel any pending autosave (prevents saving to wrong tab)
+        // Cancel any pending autosave (prevents saving to wrong note)
         if (saveTimerRef.current) {
             clearTimeout(saveTimerRef.current);
             saveTimerRef.current = null;
@@ -1174,43 +1185,45 @@ export function Editor({
         if (contentUpdateTimerRef.current) {
             clearTimeout(contentUpdateTimerRef.current);
             contentUpdateTimerRef.current = null;
-            // Actually flush the content to the store (the timer was debouncing this)
-            if (prevId) {
-                updateTabContent(prevId, previousContent);
+            if (prevTabId) {
+                updateTabContent(prevTabId, previousContent);
             }
         }
 
-        // Save previous tab's EditorState and viewport position
-        if (prevId && prevId !== activeTabId) {
-            tabStatesRef.current.set(prevId, currentView.state);
-            saveTabScrollPosition(prevId, currentView);
+        // Save previous note's EditorState and viewport position (keyed by noteId)
+        if (prevNoteId && (tabChanged || noteChanged)) {
+            tabStatesRef.current.set(prevNoteId, currentView.state);
+            saveTabScrollPosition(prevNoteId, currentView);
         }
         if (
-            prevId &&
-            prevId !== activeTabId &&
+            prevNoteId &&
+            (tabChanged || noteChanged) &&
             previousTab &&
-            isTabDirty(prevId, previousContent)
+            isTabDirty(prevNoteId, previousContent)
         ) {
             void saveNow(
                 {
                     ...previousTab,
+                    // For in-tab navigation, previousTab.noteId may already be updated.
+                    // Use prevNoteId to ensure we save to the correct note.
+                    noteId: prevNoteId,
                     content: previousContent,
                 },
                 previousContent,
             );
         }
 
-        if (!activeTabId || !activeTab) return;
+        if (!activeTabId || !activeTab || !activeNoteId) return;
 
-        if (!lastSavedContentByTabId.current.has(activeTabId)) {
-            markTabSaved(activeTabId, activeTab.content);
+        if (!lastSavedContentByTabId.current.has(activeNoteId)) {
+            markTabSaved(activeNoteId, activeTab.content);
         }
 
-        // Restore saved state or create fresh one
-        const savedState = tabStatesRef.current.get(activeTabId);
+        // Restore saved state or create fresh one (keyed by noteId)
+        const savedState = tabStatesRef.current.get(activeNoteId);
         const nextState =
             savedState ??
-            createEditorState(stripFrontmatter(activeTabId, activeTab.content));
+            createEditorState(stripFrontmatter(activeNoteId, activeTab.content));
         // Swap state in-place — avoids destroying/recreating the entire DOM.
         // Falls back to replaceEditorView if setState throws.
         let view: EditorView | null = currentView;
@@ -1234,39 +1247,43 @@ export function Editor({
             );
         }
 
-        restoreTabScrollPosition(activeTabId, view);
+        restoreTabScrollPosition(activeNoteId, view);
         updateSelectionToolbar(view);
         updateWikilinkSuggester(view);
 
-        // Update frontmatter panel for this tab
+        // Update frontmatter panel for this note
         setActiveFrontmatter(
-            frontmatterByTabId.current.get(activeTabId) ?? null,
+            frontmatterByTabId.current.get(activeNoteId) ?? null,
         );
         setEditableTitle(
             deriveDisplayedTitle(
-                frontmatterByTabId.current.get(activeTabId) ?? null,
+                frontmatterByTabId.current.get(activeNoteId) ?? null,
                 nextState.doc.toString(),
                 activeTab.title,
             ),
         );
 
-        // Ensure syntax theme and live preview match current settings
-        view.dispatch({
-            effects: [
-                syntaxCompartment.reconfigure(
-                    getSyntaxExtension(useThemeStore.getState().isDark),
-                ),
-                livePreviewCompartment.reconfigure(
-                    getLivePreviewExtension(
-                        handleOpenLinkContextMenu,
-                        useSettingsStore.getState().livePreviewEnabled,
+        // Reconfigure syntax/live-preview only on actual tab switch —
+        // within the same tab the compartments are already correct.
+        if (tabChanged) {
+            view.dispatch({
+                effects: [
+                    syntaxCompartment.reconfigure(
+                        getSyntaxExtension(useThemeStore.getState().isDark),
                     ),
-                ),
-            ],
-        });
+                    livePreviewCompartment.reconfigure(
+                        getLivePreviewExtension(
+                            handleOpenLinkContextMenu,
+                            useSettingsStore.getState().livePreviewEnabled,
+                        ),
+                    ),
+                ],
+            });
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTabId,
+        activeNoteId,
         isTabDirty,
         markTabSaved,
         restoreTabScrollPosition,
@@ -1354,9 +1371,9 @@ export function Editor({
             }
 
             const currentDoc = view.state.doc.toString();
-            const incoming = stripFrontmatter(tabId, tab.content);
+            const incoming = stripFrontmatter(tab.noteId, tab.content);
             const nextFrontmatter =
-                frontmatterByTabId.current.get(tabId) ?? null;
+                frontmatterByTabId.current.get(tab.noteId) ?? null;
             const nextTitle = deriveDisplayedTitle(
                 nextFrontmatter,
                 incoming,
@@ -1368,7 +1385,7 @@ export function Editor({
                 setEditableTitle(nextTitle);
             }
             if (incoming !== currentDoc) {
-                markTabSaved(tabId, tab.content);
+                markTabSaved(tab.noteId, tab.content);
             }
             if (incoming === currentDoc) return;
 
@@ -1469,8 +1486,13 @@ export function Editor({
                             tab.content;
                         saveNow(tab, content);
                     }
-                    // Clean up saved EditorState
-                    tabStatesRef.current.delete(activeTabId);
+                    // Clean up saved EditorState for all notes in this tab's history
+                    if (tab) {
+                        for (const entry of tab.history ?? []) {
+                            tabStatesRef.current.delete(entry.noteId);
+                        }
+                    }
+                    tabStatesRef.current.delete(tab?.noteId ?? activeTabId);
                     if (getWindowMode() === "note" && tabs.length === 1) {
                         void appWindow.close().catch((error) => {
                             console.error(
@@ -1528,6 +1550,18 @@ export function Editor({
                     const next = tabs[(idx + offset) % tabs.length];
                     switchTab(next.id);
                 }
+            }
+
+            // Cmd+[ / Ctrl+[: go back in history
+            if ((e.metaKey || e.ctrlKey) && e.key === "[") {
+                e.preventDefault();
+                useEditorStore.getState().goBack();
+            }
+
+            // Cmd+] / Ctrl+]: go forward in history
+            if ((e.metaKey || e.ctrlKey) && e.key === "]") {
+                e.preventDefault();
+                useEditorStore.getState().goForward();
             }
         };
 

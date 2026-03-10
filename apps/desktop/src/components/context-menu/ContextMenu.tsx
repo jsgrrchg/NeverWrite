@@ -25,12 +25,14 @@ export function ContextMenu<T>({
     entries,
     onClose,
     minWidth = 180,
+    maxHeight,
     zIndex = 10000,
 }: {
     menu: ContextMenuState<T>;
     entries: ContextMenuEntry[];
     onClose: () => void;
     minWidth?: number;
+    maxHeight?: number;
     zIndex?: number;
 }) {
     const ref = useRef<HTMLDivElement>(null);
@@ -85,6 +87,7 @@ export function ContextMenu<T>({
                 backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+                ...(maxHeight ? { maxHeight, overflowY: "auto" as const } : {}),
             }}
         >
             {entries.map((entry, index) => {

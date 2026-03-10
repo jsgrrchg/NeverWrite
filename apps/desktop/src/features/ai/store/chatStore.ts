@@ -25,6 +25,7 @@ import {
     createEmptyComposerParts,
     serializeComposerParts,
 } from "../composerParts";
+import { useChatTabsStore } from "./chatTabsStore";
 import type {
     AIChatAttachment,
     AIChatMessage,
@@ -1547,6 +1548,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                     composerPartsBySessionId: nextComposerParts,
                 };
             });
+            useChatTabsStore
+                .getState()
+                .replaceSessionId(sessionId, migratedSession.sessionId);
 
             return migratedSession.sessionId;
         } catch (error) {
@@ -2027,6 +2031,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (vaultPath) {
             await aiDeleteSessionHistory(vaultPath, sessionId).catch(() => {});
         }
+        useChatTabsStore.getState().removeTabsForSession(sessionId);
         const state = get();
         const nextSessionsById = { ...state.sessionsById };
         delete nextSessionsById[sessionId];
@@ -2048,6 +2053,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (vaultPath) {
             await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
         }
+        useChatTabsStore.getState().reset();
         set({ sessionsById: {}, activeSessionId: null });
         await get().newSession();
     },

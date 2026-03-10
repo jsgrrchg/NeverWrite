@@ -78,6 +78,18 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const switchTab = useEditorStore((s) => s.switchTab);
     const closeTab = useEditorStore((s) => s.closeTab);
     const reorderTabs = useEditorStore((s) => s.reorderTabs);
+    const goBack = useEditorStore((s) => s.goBack);
+    const goForward = useEditorStore((s) => s.goForward);
+    const navigateToHistoryIndex = useEditorStore(
+        (s) => s.navigateToHistoryIndex,
+    );
+    const activeTab = useEditorStore((s) =>
+        s.tabs.find((t) => t.id === s.activeTabId),
+    );
+    const canGoBack = activeTab ? activeTab.historyIndex > 0 : false;
+    const canGoForward = activeTab
+        ? activeTab.historyIndex < activeTab.history.length - 1
+        : false;
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
@@ -85,6 +97,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const activateRightView = useLayoutStore((s) => s.activateRightView);
     const [tabContextMenu, setTabContextMenu] = useState<
         ContextMenuState<{ tabId: string }>
+    | null>(null);
+    const [historyContextMenu, setHistoryContextMenu] = useState<
+        ContextMenuState<void>
     | null>(null);
 
     const handleDetachTab = useCallback(
@@ -282,60 +297,138 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 />
 
                 {windowMode === "main" && (
-                    <button
-                        onClick={toggleSidebar}
-                        title={
-                            sidebarCollapsed ? "Show sidebar" : "Hide sidebar"
-                        }
-                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
-                        style={{
-                            alignSelf: "center",
-                            marginLeft: 4,
-                            marginRight: 4,
-                            ...getChromeButtonStyle(!sidebarCollapsed),
-                        }}
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
+                    <>
+                        <button
+                            onClick={toggleSidebar}
+                            title={
+                                sidebarCollapsed ? "Show sidebar" : "Hide sidebar"
+                            }
+                            className="no-drag flex items-center justify-center flex-shrink-0"
+                            style={{
+                                alignSelf: "center",
+                                marginLeft: 4,
+                                marginRight: 2,
+                                width: 30,
+                                height: 30,
+                                borderRadius: 9,
+                                border: "1px solid transparent",
+                                background: "transparent",
+                                color: "var(--text-secondary)",
+                                opacity: sidebarCollapsed ? 0.45 : 0.7,
+                                cursor: "pointer",
+                                transition: "opacity 140ms ease",
+                            }}
                         >
-                            <rect
-                                x="1"
-                                y="2"
-                                width="4"
-                                height="12"
-                                rx="1"
-                                fill="currentColor"
-                                opacity={sidebarCollapsed ? 0.4 : 1}
-                            />
-                            <rect
-                                x="7"
-                                y="2"
-                                width="8"
-                                height="2"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                            <rect
-                                x="7"
-                                y="7"
-                                width="8"
-                                height="2"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                            <rect
-                                x="7"
-                                y="12"
-                                width="8"
-                                height="2"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                        </svg>
-                    </button>
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                            >
+                                <rect
+                                    x="1"
+                                    y="2"
+                                    width="4"
+                                    height="12"
+                                    rx="1"
+                                    fill="currentColor"
+                                    opacity={sidebarCollapsed ? 0.4 : 1}
+                                />
+                                <rect
+                                    x="7"
+                                    y="2"
+                                    width="8"
+                                    height="2"
+                                    rx="1"
+                                    fill="currentColor"
+                                />
+                                <rect
+                                    x="7"
+                                    y="7"
+                                    width="8"
+                                    height="2"
+                                    rx="1"
+                                    fill="currentColor"
+                                />
+                                <rect
+                                    x="7"
+                                    y="12"
+                                    width="8"
+                                    height="2"
+                                    rx="1"
+                                    fill="currentColor"
+                                />
+                            </svg>
+                        </button>
+                        <button
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={goBack}
+                            onContextMenu={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (!activeTab || activeTab.historyIndex <= 0) return;
+                                setHistoryContextMenu({
+                                    x: e.clientX,
+                                    y: e.clientY,
+                                    payload: undefined,
+                                });
+                            }}
+                            disabled={!canGoBack}
+                            title="Go back"
+                            className="no-drag flex items-center justify-center flex-shrink-0"
+                            style={{
+                                alignSelf: "center",
+                                marginRight: 4,
+                                ...getChromeButtonStyle(false),
+                                border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+                                backgroundColor: "color-mix(in srgb, var(--bg-secondary) 55%, transparent)",
+                                opacity: canGoBack ? 0.85 : 0.35,
+                                cursor: canGoBack ? "pointer" : "default",
+                            }}
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M9.5 3L4.5 8l5 5" />
+                            </svg>
+                        </button>
+                        <button
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={goForward}
+                            disabled={!canGoForward}
+                            title="Go forward"
+                            className="no-drag flex items-center justify-center flex-shrink-0"
+                            style={{
+                                alignSelf: "center",
+                                marginRight: 4,
+                                ...getChromeButtonStyle(false),
+                                border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+                                backgroundColor: "color-mix(in srgb, var(--bg-secondary) 55%, transparent)",
+                                opacity: canGoForward ? 0.85 : 0.35,
+                                cursor: canGoForward ? "pointer" : "default",
+                            }}
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M6.5 3L11.5 8l-5 5" />
+                            </svg>
+                        </button>
+                    </>
                 )}
 
                 {hasTabs ? (
@@ -805,6 +898,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     </>
                 )}
             </div>
+            {historyContextMenu && activeTab && (
+                <ContextMenu
+                    menu={historyContextMenu}
+                    onClose={() => setHistoryContextMenu(null)}
+                    minWidth={160}
+                    maxHeight={290}
+                    entries={activeTab.history
+                        .slice(0, activeTab.historyIndex)
+                        .map((entry, idx) => ({
+                            label: entry.title || entry.noteId,
+                            action: () => navigateToHistoryIndex(idx),
+                        }))
+                        .reverse()}
+                />
+            )}
             {tabContextMenu && (
                 <ContextMenu
                     menu={tabContextMenu}

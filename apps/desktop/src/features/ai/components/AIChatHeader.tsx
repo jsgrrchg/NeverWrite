@@ -2,42 +2,27 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import { AIChatSessionList } from "./AIChatSessionList";
-import { getSessionRuntimeName, getSessionTitle } from "../sessionPresentation";
-import type {
-    AIChatSession,
-    AIChatSessionStatus,
-    AIRuntimeOption,
-} from "../types";
+import { AIChatTabs } from "./AIChatTabs";
+import type { AIChatSession, AIRuntimeOption } from "../types";
+import type { ChatWorkspaceTab } from "../store/chatTabsStore";
 
 interface AIChatHeaderProps {
     activeSessionId: string | null;
-    currentSession: AIChatSession | null;
+    activeTabId: string | null;
+    tabs: ChatWorkspaceTab[];
+    sessionsById: Record<string, AIChatSession>;
     panelExpanded: boolean;
     sessions: AIChatSession[];
     runtimes: AIRuntimeOption[];
-    status: AIChatSessionStatus;
     onNewChat: (runtimeId: string) => void;
     onSelectSession: (sessionId: string) => void;
+    onSelectTab: (tabId: string) => void;
+    onCloseTab: (tabId: string) => void;
+    onExportSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
     onDeleteAllSessions: () => void;
     onToggleExpanded: () => void;
 }
-
-const STATUS_LABELS: Record<AIChatSessionStatus, string> = {
-    idle: "Idle",
-    streaming: "Streaming",
-    waiting_permission: "Waiting for approval",
-    review_required: "Review required",
-    error: "Error",
-};
-
-const STATUS_COLORS: Record<AIChatSessionStatus, string> = {
-    idle: "var(--text-secondary)",
-    streaming: "var(--accent)",
-    waiting_permission: "#d97706",
-    review_required: "#0891b2",
-    error: "#dc2626",
-};
 
 function HeaderMenu({
     open,
@@ -101,29 +86,49 @@ function HeaderMenu({
 
 export function AIChatHeader({
     activeSessionId,
-    currentSession,
+    activeTabId,
+    tabs,
+    sessionsById,
     panelExpanded,
     sessions,
     runtimes,
-    status,
     onNewChat,
     onSelectSession,
+    onSelectTab,
+    onCloseTab,
+    onExportSession,
     onDeleteSession,
     onDeleteAllSessions,
     onToggleExpanded,
 }: AIChatHeaderProps) {
     const [newMenuOpen, setNewMenuOpen] = useState(false);
     const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+    const [headerWidth, setHeaderWidth] = useState<number | null>(null);
+    const headerRef = useRef<HTMLDivElement>(null);
     const newMenuRef = useRef<HTMLDivElement>(null);
     const sessionMenuRef = useRef<HTMLDivElement>(null);
     const newMenuContentRef = useRef<HTMLDivElement>(null);
     const sessionMenuContentRef = useRef<HTMLDivElement>(null);
-    const currentRuntime = currentSession
-        ? getSessionRuntimeName(currentSession, runtimes)
-        : "Agent";
-    const currentTitle = currentSession
-        ? getSessionTitle(currentSession)
-        : "New chat";
+    const isCompact = headerWidth !== null && headerWidth < 420;
+    const isTight = headerWidth !== null && headerWidth < 330;
+
+    useEffect(() => {
+        const node = headerRef.current;
+        if (!node) return;
+
+        setHeaderWidth(node.getBoundingClientRect().width);
+        if (typeof ResizeObserver === "undefined") {
+            return;
+        }
+
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            setHeaderWidth(entry.contentRect.width);
+        });
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, []);
 
     useEffect(() => {
         if (!newMenuOpen && !sessionMenuOpen) return;
@@ -156,144 +161,153 @@ export function AIChatHeader({
 
     return (
         <div
-            className="flex items-center justify-between gap-2 px-2 py-1"
+            ref={headerRef}
+            className={`flex items-center justify-between ${
+                isCompact ? "gap-1 px-1.5 py-1" : "gap-2 px-2 py-1"
+            }`}
             style={{ borderBottom: "1px solid var(--border)" }}
         >
-            <div ref={sessionMenuRef} className="relative min-w-0 flex-1">
-                <button
-                    type="button"
-                    onClick={() => {
-                        setSessionMenuOpen((open) => !open);
-                        setNewMenuOpen(false);
-                    }}
-                    className="flex min-w-0 max-w-full items-center gap-1.5 rounded px-1.5 py-1 text-left"
-                    style={{
-                        backgroundColor: "transparent",
-                        border: "none",
-                    }}
-                    title="Recent chats"
-                >
-                    <span
-                        className="truncate text-xs font-medium"
-                        style={{ color: "var(--text-secondary)" }}
-                    >
-                        {currentRuntime}
-                    </span>
-                    <span
-                        style={{
-                            color: "var(--text-secondary)",
-                            opacity: 0.4,
-                            fontSize: 10,
-                        }}
-                    >
-                        ·
-                    </span>
-                    <span
-                        className="truncate text-xs"
-                        style={{ color: "var(--text-primary)" }}
-                    >
-                        {currentTitle}
-                    </span>
-                    <svg
-                        width="8"
-                        height="8"
-                        viewBox="0 0 10 10"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            color: "var(--text-secondary)",
-                            opacity: 0.5,
-                            flexShrink: 0,
-                            transform: sessionMenuOpen
-                                ? "rotate(180deg)"
-                                : "none",
-                            transition: "transform 0.12s ease",
-                        }}
-                    >
-                        <path d="M2.5 4L5 6.5L7.5 4" />
-                    </svg>
-                </button>
+            <AIChatTabs
+                tabs={tabs}
+                activeTabId={activeTabId}
+                sessionsById={sessionsById}
+                runtimes={runtimes}
+                density={
+                    isTight ? "tight" : isCompact ? "compact" : "comfortable"
+                }
+                onSelectTab={onSelectTab}
+                onCloseTab={onCloseTab}
+                onExportSession={onExportSession}
+            />
 
-                <HeaderMenu
-                    open={sessionMenuOpen}
-                    anchorRef={sessionMenuRef}
-                    menuRef={sessionMenuContentRef}
-                    minWidth={260}
-                    maxWidth={320}
-                >
-                    <div>
-                        <AIChatSessionList
-                            activeSessionId={activeSessionId}
-                            sessions={sessions}
-                            runtimes={runtimes}
-                            onSelectSession={(sessionId) => {
-                                onSelectSession(sessionId);
-                                setSessionMenuOpen(false);
-                            }}
-                            onDeleteSession={(sessionId) => {
-                                onDeleteSession(sessionId);
-                            }}
-                        />
-                        {sessions.length > 1 && (
-                            <>
-                                <div
-                                    style={{
-                                        borderTop: "1px solid var(--border)",
-                                        margin: "2px 0",
-                                    }}
-                                />
-                                <div className="p-1">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            onDeleteAllSessions();
-                                            setSessionMenuOpen(false);
-                                        }}
-                                        className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
-                                        style={{
-                                            color: "#ef4444",
-                                            background: "none",
-                                            border: "none",
-                                        }}
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor =
-                                                "var(--bg-tertiary)";
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor =
-                                                "transparent";
-                                        }}
-                                    >
-                                        Clear all chats
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                    </div>
-                </HeaderMenu>
-            </div>
-
-            <div className="flex items-center gap-2">
-                <div
-                    className="h-2 w-2 rounded-full"
-                    style={{
-                        backgroundColor: STATUS_COLORS[status],
-                        opacity: status === "idle" ? 0.45 : 1,
-                    }}
-                    title={STATUS_LABELS[status]}
-                />
-
+            <div
+                className={`flex shrink-0 items-center ${
+                    isCompact ? "gap-1" : "gap-2"
+                }`}
+            >
                 <div
                     ref={newMenuRef}
-                    className="relative flex items-center gap-2"
+                    className={`relative flex items-center ${
+                        isCompact ? "gap-1" : "gap-2"
+                    }`}
                 >
+                    <div ref={sessionMenuRef} className="relative">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSessionMenuOpen((open) => !open);
+                                setNewMenuOpen(false);
+                            }}
+                            className={`flex h-6 items-center rounded ${
+                                isCompact ? "gap-0.5 px-1.5" : "gap-1 px-2"
+                            }`}
+                            style={{
+                                color: sessionMenuOpen
+                                    ? "var(--text-primary)"
+                                    : "var(--text-secondary)",
+                                backgroundColor: sessionMenuOpen
+                                    ? "var(--bg-tertiary)"
+                                    : "transparent",
+                                border: "1px solid var(--border)",
+                            }}
+                            title="Recent chats"
+                        >
+                            <span
+                                className={`font-medium ${
+                                    isCompact ? "text-[10px]" : "text-[11px]"
+                                }`}
+                            >
+                                Recent
+                            </span>
+                            {!isTight && (
+                                <svg
+                                    width="8"
+                                    height="8"
+                                    viewBox="0 0 10 10"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    style={{
+                                        opacity: 0.7,
+                                        transform: sessionMenuOpen
+                                            ? "rotate(180deg)"
+                                            : "none",
+                                        transition: "transform 0.12s ease",
+                                    }}
+                                >
+                                    <path d="M2.5 4L5 6.5L7.5 4" />
+                                </svg>
+                            )}
+                        </button>
+
+                        <HeaderMenu
+                            open={sessionMenuOpen}
+                            anchorRef={sessionMenuRef}
+                            menuRef={sessionMenuContentRef}
+                            minWidth={260}
+                            maxWidth={320}
+                        >
+                            <div>
+                                <AIChatSessionList
+                                    activeSessionId={activeSessionId}
+                                    sessions={sessions}
+                                    runtimes={runtimes}
+                                    onSelectSession={(sessionId) => {
+                                        onSelectSession(sessionId);
+                                        setSessionMenuOpen(false);
+                                    }}
+                                    onDeleteSession={(sessionId) => {
+                                        onDeleteSession(sessionId);
+                                    }}
+                                />
+                                {sessions.length > 1 && (
+                                    <>
+                                        <div
+                                            style={{
+                                                borderTop:
+                                                    "1px solid var(--border)",
+                                                margin: "2px 0",
+                                            }}
+                                        />
+                                        <div className="p-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    onDeleteAllSessions();
+                                                    setSessionMenuOpen(false);
+                                                }}
+                                                className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                                style={{
+                                                    color: "#ef4444",
+                                                    background: "none",
+                                                    border: "none",
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.currentTarget.style.backgroundColor =
+                                                        "var(--bg-tertiary)";
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.currentTarget.style.backgroundColor =
+                                                        "transparent";
+                                                }}
+                                            >
+                                                Clear all chats
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </HeaderMenu>
+                    </div>
+
                     <button
                         type="button"
                         onClick={onToggleExpanded}
-                        className="flex h-6 w-6 items-center justify-center rounded"
+                        className={`flex items-center justify-center rounded ${
+                            isCompact ? "h-5 w-5" : "h-6 w-6"
+                        }`}
                         style={{
                             color: panelExpanded
                                 ? "var(--accent)"
@@ -349,7 +363,7 @@ export function AIChatHeader({
                             backgroundColor: "transparent",
                             border: "none",
                         }}
-                        title={`New chat • ${STATUS_LABELS[status]}`}
+                        title="New chat"
                     >
                         <svg
                             width="14"

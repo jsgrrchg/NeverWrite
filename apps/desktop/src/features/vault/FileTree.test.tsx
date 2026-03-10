@@ -227,6 +227,10 @@ describe("FileTree", () => {
         await expandFolder(user, "notes");
         await user.click(getNoteRow("Beta"));
 
-        expect(useEditorStore.getState().activeTabId).toBe("tab-beta");
+        // openNote now navigates within the active tab instead of switching tabs
+        const activeTab = useEditorStore.getState().tabs.find(
+            (t) => t.id === useEditorStore.getState().activeTabId,
+        );
+        expect(activeTab?.noteId).toBe("notes/beta");
     });
 });

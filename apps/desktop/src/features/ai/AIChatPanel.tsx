@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -22,11 +22,15 @@ import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
 import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
 import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
+import { exportChatSessionToVaultNote } from "./chatExport";
 import { useChatStore } from "./store/chatStore";
+import { useChatTabsStore } from "./store/chatTabsStore";
 
 export function AIChatPanel() {
     const [savingSetup, setSavingSetup] = useState(false);
     const [composerExpanded, setComposerExpanded] = useState(false);
+    const tabDrivenSessionIdRef = useRef<string | null>(null);
+    const suppressedAutoTabSessionIdRef = useRef<string | null>(null);
     const runtimeConnection = useChatStore((state) => state.runtimeConnection);
     const rightPanelExpanded = useLayoutStore((state) => state.rightPanelExpanded);
     const toggleRightPanelExpanded = useLayoutStore(
@@ -40,7 +44,6 @@ export function AIChatPanel() {
     const composerPartsBySessionId = useChatStore(
         (state) => state.composerPartsBySessionId,
     );
-    const initialize = useChatStore((state) => state.initialize);
     const startAuth = useChatStore((state) => state.startAuth);
     const upsertSession = useChatStore((state) => state.upsertSession);
     const applySessionError = useChatStore((state) => state.applySessionError);
@@ -66,6 +69,8 @@ export function AIChatPanel() {
     );
     const respondPermission = useChatStore((state) => state.respondPermission);
     const loadSession = useChatStore((state) => state.loadSession);
+    const resumeSession = useChatStore((state) => state.resumeSession);
+    const setActiveSession = useChatStore((state) => state.setActiveSession);
     const setModel = useChatStore((state) => state.setModel);
     const setMode = useChatStore((state) => state.setMode);
     const setConfigOption = useChatStore((state) => state.setConfigOption);
@@ -88,24 +93,39 @@ export function AIChatPanel() {
     );
     const composerFontSize = useChatStore((state) => state.composerFontSize);
     const chatFontSize = useChatStore((state) => state.chatFontSize);
+    const tabs = useChatTabsStore((state) => state.tabs);
+    const activeTabId = useChatTabsStore((state) => state.activeTabId);
+    const tabsReady = useChatTabsStore((state) => state.isReady);
+    const ensureSessionTab = useChatTabsStore((state) => state.ensureSessionTab);
+    const openSessionTab = useChatTabsStore((state) => state.openSessionTab);
+    const setActiveTab = useChatTabsStore((state) => state.setActiveTab);
+    const closeTab = useChatTabsStore((state) => state.closeTab);
+    const resetTabs = useChatTabsStore((state) => state.reset);
 
     const notes = useVaultStore((state) => state.notes);
+    const createNote = useVaultStore((state) => state.createNote);
+    const openNote = useEditorStore((state) => state.openNote);
     const activeEditorNoteId = useEditorStore(
         (state) =>
             state.tabs.find((tab) => tab.id === state.activeTabId)?.noteId ??
             null,
     );
     const currentSelection = useEditorStore((state) => state.currentSelection);
-    const currentSession = activeSessionId
-        ? (sessionsById[activeSessionId] ?? null)
+    const activeTab = activeTabId
+        ? (tabs.find((tab) => tab.id === activeTabId) ?? null)
+        : null;
+    const activeTabSessionId = activeTab?.sessionId ?? null;
+    const currentSession = activeTabSessionId
+        ? (sessionsById[activeTabSessionId] ?? null)
         : null;
     const orderedSessions = sessionOrder
         .map((sessionId) => sessionsById[sessionId])
         .filter((session): session is NonNullable<typeof session> =>
             Boolean(session),
         );
-    const composerParts = activeSessionId
-        ? (composerPartsBySessionId[activeSessionId] ?? [])
+    const composerSessionId = currentSession?.sessionId ?? null;
+    const composerParts = composerSessionId
+        ? (composerPartsBySessionId[composerSessionId] ?? [])
         : [];
 
     const noteOptions = notes.map((note) => ({
@@ -162,8 +182,6 @@ export function AIChatPanel() {
         currentRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
 
     useEffect(() => {
-        void initialize();
-
         let disposed = false;
         let cleanupFns: Array<() => void> = [];
 
@@ -236,7 +254,9 @@ export function AIChatPanel() {
         return () => {
             disposed = true;
             cleanupFns.forEach((cleanup) => {
-                void cleanup();
+                if (typeof cleanup === "function") {
+                    void cleanup();
+                }
             });
         };
     }, [
@@ -249,11 +269,74 @@ export function AIChatPanel() {
         applyPermissionRequest,
         applySessionError,
         applyToolActivity,
-        initialize,
         respondPermission,
         startAuth,
         upsertSession,
     ]);
+
+    useEffect(() => {
+        if (!tabsReady) return;
+        if (!activeSessionId) return;
+        if (activeTabSessionId && !sessionsById[activeTabSessionId]) return;
+
+        if (
+            suppressedAutoTabSessionIdRef.current === activeSessionId &&
+            (tabs.length === 0 || activeTabSessionId !== activeSessionId)
+        ) {
+            suppressedAutoTabSessionIdRef.current = null;
+            return;
+        }
+
+        if (tabDrivenSessionIdRef.current === activeSessionId) {
+            tabDrivenSessionIdRef.current = null;
+            return;
+        }
+
+        const activeSessionHasTab = tabs.some(
+            (tab) => tab.sessionId === activeSessionId,
+        );
+        if (!activeSessionHasTab || !activeTabId) {
+            const tabId = ensureSessionTab(activeSessionId);
+            setActiveTab(tabId);
+        }
+    }, [
+        activeSessionId,
+        activeTabId,
+        activeTabSessionId,
+        ensureSessionTab,
+        sessionsById,
+        setActiveTab,
+        tabs,
+        tabsReady,
+    ]);
+
+    useEffect(() => {
+        if (!activeTabSessionId || activeTabSessionId === activeSessionId) {
+            return;
+        }
+
+        if (!sessionsById[activeTabSessionId]) return;
+        tabDrivenSessionIdRef.current = activeTabSessionId;
+        setActiveSession(activeTabSessionId);
+    }, [
+        activeSessionId,
+        activeTabSessionId,
+        sessionsById,
+        setActiveSession,
+    ]);
+
+    useEffect(() => {
+        if (!tabsReady || !activeTabSessionId) {
+            return;
+        }
+
+        const session = sessionsById[activeTabSessionId];
+        if (!session?.isPersistedSession || session.isResumingSession) {
+            return;
+        }
+
+        void resumeSession(activeTabSessionId);
+    }, [activeTabSessionId, resumeSession, sessionsById, tabsReady]);
 
     return (
         <div
@@ -261,20 +344,53 @@ export function AIChatPanel() {
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
             <AIChatHeader
-                activeSessionId={activeSessionId}
-                currentSession={currentSession}
+                activeSessionId={currentSession?.sessionId ?? null}
+                activeTabId={activeTabId}
+                tabs={tabs}
+                sessionsById={sessionsById}
                 sessions={orderedSessions}
                 runtimes={runtimes.map((descriptor) => descriptor.runtime)}
                 panelExpanded={rightPanelExpanded}
-                status={currentSession?.status ?? "idle"}
-                onNewChat={newSession}
+                onNewChat={(runtimeId) => {
+                    void newSession(runtimeId);
+                }}
                 onSelectSession={(sessionId) => {
+                    openSessionTab(sessionId, { activate: true });
                     void loadSession(sessionId);
+                }}
+                onSelectTab={(tabId) => {
+                    setActiveTab(tabId);
+                }}
+                onCloseTab={(tabId) => {
+                    const closingTab = tabs.find((tab) => tab.id === tabId) ?? null;
+                    if (closingTab && closingTab.id === activeTabId) {
+                        suppressedAutoTabSessionIdRef.current =
+                            closingTab.sessionId;
+                    }
+
+                    closeTab(tabId);
+                }}
+                onExportSession={(sessionId) => {
+                    const session = sessionsById[sessionId];
+                    if (!session) {
+                        return;
+                    }
+
+                    void exportChatSessionToVaultNote({
+                        session,
+                        runtimes: runtimes.map((descriptor) => descriptor.runtime),
+                        notes,
+                        createNote,
+                        openNote,
+                    }).catch((error) => {
+                        console.error("Failed to export chat session:", error);
+                    });
                 }}
                 onDeleteSession={(sessionId) => {
                     void deleteSession(sessionId);
                 }}
                 onDeleteAllSessions={() => {
+                    resetTabs();
                     void deleteAllSessions();
                 }}
                 onToggleExpanded={toggleRightPanelExpanded}
