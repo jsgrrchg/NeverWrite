@@ -1,8 +1,11 @@
 import { Decoration } from "@codemirror/view";
-import type { EditorState } from "@codemirror/state";
+import { type EditorState, StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
-import { selectionTouchesLine, selectionTouchesRange } from "./selectionActivity";
+import {
+    selectionTouchesLine,
+    selectionTouchesRange,
+} from "./selectionActivity";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,12 +50,20 @@ export const hideInlineMark = Decoration.mark({ class: "cm-lp-hidden-inline" });
 // ---------------------------------------------------------------------------
 
 /** Block-level check: is any cursor/selection on the same line(s) as [from, to]? */
-export function isLineActive(state: EditorState, from: number, to: number): boolean {
+export function isLineActive(
+    state: EditorState,
+    from: number,
+    to: number,
+): boolean {
     return selectionTouchesLine(state, from, to);
 }
 
 /** Inline-level check: does any cursor/selection overlap the range [from, to]? */
-export function isRangeActive(state: EditorState, from: number, to: number): boolean {
+export function isRangeActive(
+    state: EditorState,
+    from: number,
+    to: number,
+): boolean {
     return selectionTouchesRange(state, from, to);
 }
 
@@ -68,7 +79,7 @@ export function hideChildMarks(
     const cursor = parentNode.cursor();
     if (cursor.firstChild()) {
         do {
-            if (cursor.name === markName) {
+            if (cursor.name === markName && cursor.from < cursor.to) {
                 decos.push({
                     from: cursor.from,
                     to: cursor.to,
@@ -87,7 +98,7 @@ export function hideChildInlineMarks(
     const cursor = parentNode.cursor();
     if (cursor.firstChild()) {
         do {
-            if (cursor.name === markName) {
+            if (cursor.name === markName && cursor.from < cursor.to) {
                 decos.push({
                     from: cursor.from,
                     to: cursor.to,
@@ -110,6 +121,7 @@ export function hideInactiveChildMarks(
         do {
             if (
                 cursor.name === markName &&
+                cursor.from < cursor.to &&
                 !selectionTouchesRange(state, cursor.from, cursor.to)
             ) {
                 decos.push({
@@ -145,9 +157,9 @@ export function parseLinkChildren(
                 } else if (ch === "[" || ch === "![") {
                     seenOpenMark = true;
                     textFrom = cur.to;
-                }
-                else if (ch === "]" && textTo < 0) textTo = cur.from;
-                else if (ch === ">" && textTo < 0 && seenOpenMark) textTo = cur.from;
+                } else if (ch === "]" && textTo < 0) textTo = cur.from;
+                else if (ch === ">" && textTo < 0 && seenOpenMark)
+                    textTo = cur.from;
             }
             if (cur.name === "URL") {
                 hasUrl = true;
@@ -203,7 +215,7 @@ export function resolveLinkHref(
     const resolved = directUrl
         ? directUrl
         : info.label && references
-          ? references.get(normalizeReferenceLabel(info.label))?.url ?? null
+          ? (references.get(normalizeReferenceLabel(info.label))?.url ?? null)
           : null;
     if (!resolved) return null;
 
@@ -232,9 +244,14 @@ export function buildLinkReferenceIndex(state: EditorState) {
                     if (cursor.name === "LinkLabel") {
                         label = state.doc.sliceString(cursor.from, cursor.to);
                     } else if (cursor.name === "URL") {
-                        url = state.doc.sliceString(cursor.from, cursor.to).trim();
+                        url = state.doc
+                            .sliceString(cursor.from, cursor.to)
+                            .trim();
                     } else if (cursor.name === "LinkTitle") {
-                        const rawTitle = state.doc.sliceString(cursor.from, cursor.to);
+                        const rawTitle = state.doc.sliceString(
+                            cursor.from,
+                            cursor.to,
+                        );
                         title = rawTitle.slice(1, -1);
                     }
                 } while (cursor.nextSibling());
@@ -247,6 +264,22 @@ export function buildLinkReferenceIndex(state: EditorState) {
 
     return references;
 }
+
+export type LinkReferenceMap = Map<
+    string,
+    { url: string; title: string | null }
+>;
+
+/** StateField that caches the link reference index, rebuilding only on doc changes. */
+export const linkReferenceField = StateField.define<LinkReferenceMap>({
+    create(state) {
+        return buildLinkReferenceIndex(state);
+    },
+    update(refs, transaction) {
+        if (!transaction.docChanged) return refs;
+        return buildLinkReferenceIndex(transaction.state);
+    },
+});
 
 export function findAncestor(
     node: SyntaxNode | null,
@@ -261,16 +294,11 @@ export function findAncestor(
 }
 
 export function hasDescendant(node: SyntaxNode, name: string): boolean {
-    const nodeFrom = node.from;
-    const nodeTo = node.to;
     const cursor = node.cursor();
     if (!cursor.firstChild()) return false;
-
     do {
-        if (cursor.from < nodeFrom || cursor.to > nodeTo) break;
         if (cursor.name === name) return true;
-    } while (cursor.next());
-
+    } while (cursor.next() && cursor.from < node.to);
     return false;
 }
 
@@ -278,7 +306,10 @@ export function hasDescendant(node: SyntaxNode, name: string): boolean {
 // Text / indentation utilities
 // ---------------------------------------------------------------------------
 
-export function extendPastFollowingWhitespace(state: EditorState, to: number): number {
+export function extendPastFollowingWhitespace(
+    state: EditorState,
+    to: number,
+): number {
     let end = to;
     while (end < state.doc.length) {
         const char = state.doc.sliceString(end, end + 1);

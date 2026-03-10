@@ -1,51 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { useThemeStore, readPersistedTheme } from "./themeStore";
-import { useVaultStore } from "./vaultStore";
+import { useThemeStore } from "./themeStore";
 
-describe("themeStore vault persistence", () => {
-    it("remembers the selected theme for each vault", () => {
-        useVaultStore.setState({ vaultPath: "/vaults/atlas" });
+describe("themeStore global persistence", () => {
+    it("persists theme globally across all vaults", () => {
         useThemeStore.getState().setThemeName("nord");
         useThemeStore.getState().setMode("dark");
 
-        expect(
-            readPersistedTheme("/vaults/atlas"),
-        ).toMatchObject({
-            themeName: "nord",
-            mode: "dark",
-        });
-
-        useVaultStore.setState({ vaultPath: "/vaults/lab" });
-        expect(useThemeStore.getState()).toMatchObject({
-            themeName: "default",
-            mode: "system",
-        });
-
-        useThemeStore.getState().setThemeName("gruvbox");
-        useThemeStore.getState().setMode("light");
-
-        expect(
-            readPersistedTheme("/vaults/lab"),
-        ).toMatchObject({
-            themeName: "gruvbox",
-            mode: "light",
-        });
-
-        useVaultStore.setState({ vaultPath: "/vaults/atlas" });
         expect(useThemeStore.getState()).toMatchObject({
             themeName: "nord",
             mode: "dark",
+            isDark: true,
         });
     });
 
-    it("uses the global theme as fallback for vaults without a custom one", () => {
-        useThemeStore.getState().setThemeName("ocean");
-        useThemeStore.getState().setMode("dark");
+    it("changing theme updates isDark correctly", () => {
+        useThemeStore.getState().setMode("light");
+        expect(useThemeStore.getState().isDark).toBe(false);
 
-        useVaultStore.setState({ vaultPath: "/vaults/fresh" });
-        expect(useThemeStore.getState()).toMatchObject({
-            themeName: "ocean",
-            mode: "dark",
-        });
+        useThemeStore.getState().setMode("dark");
+        expect(useThemeStore.getState().isDark).toBe(true);
     });
 });

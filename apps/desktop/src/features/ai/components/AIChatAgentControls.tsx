@@ -1,14 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import type {
-    AIConfigOption,
-    AIModeOption,
-    AIModelOption,
-} from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
 
 interface AIChatAgentControlsProps {
     disabled?: boolean;
     modelId: string;
     modeId: string;
+    effortsByModel?: Record<string, string[]>;
     models: AIModelOption[];
     modes: AIModeOption[];
     configOptions: AIConfigOption[];
@@ -32,8 +29,6 @@ interface DropdownFieldProps {
     onChange: (value: string) => void;
 }
 
-const REASONING_SUFFIX_REGEX = /\s+\((low|medium|high|xhigh)\)$/i;
-
 function DropdownField({
     disabled = false,
     label,
@@ -43,14 +38,14 @@ function DropdownField({
 }: DropdownFieldProps) {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
-    const selected = options.find((o) => o.value === value);
+    const selected = options.find((option) => option.value === value);
+    const isDisabled = disabled || options.length === 0;
 
     useEffect(() => {
         if (!open) return;
-        const handleClick = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node)) {
-                setOpen(false);
-            }
+        const handleClick = (event: MouseEvent) => {
+            if (ref.current?.contains(event.target as Node)) return;
+            setOpen(false);
         };
         document.addEventListener("mousedown", handleClick);
         return () => document.removeEventListener("mousedown", handleClick);
@@ -61,17 +56,17 @@ function DropdownField({
             <button
                 type="button"
                 onClick={() => {
-                    if (!disabled) setOpen(!open);
+                    if (!isDisabled) setOpen((current) => !current);
                 }}
                 className="flex items-center gap-1 rounded-md px-2 py-1 text-xs"
                 style={{
                     color: "var(--text-secondary)",
                     backgroundColor: "transparent",
                     border: "none",
-                    opacity: disabled ? 0.45 : 1,
+                    opacity: isDisabled ? 0.45 : 1,
                 }}
                 title={label}
-                disabled={disabled}
+                disabled={isDisabled}
             >
                 <span className="truncate">{selected?.label ?? value}</span>
                 <svg
@@ -92,7 +87,7 @@ function DropdownField({
                     <path d="M2.5 4L5 6.5L7.5 4" />
                 </svg>
             </button>
-            {open && (
+            {open && options.length > 0 && (
                 <div
                     className="absolute bottom-full left-0 z-50 mb-1 min-w-[140px] overflow-hidden rounded-lg py-1"
                     style={{
@@ -122,13 +117,14 @@ function DropdownField({
                                 border: "none",
                                 opacity: option.disabled ? 0.4 : 1,
                             }}
-                            onMouseEnter={(e) => {
-                                if (!option.disabled)
-                                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                            onMouseEnter={(event) => {
+                                if (!option.disabled) {
+                                    event.currentTarget.style.backgroundColor =
                                         "color-mix(in srgb, var(--text-primary) 8%, transparent)";
+                                }
                             }}
-                            onMouseLeave={(e) => {
-                                (e.currentTarget as HTMLElement).style.backgroundColor =
+                            onMouseLeave={(event) => {
+                                event.currentTarget.style.backgroundColor =
                                     "transparent";
                             }}
                         >
@@ -141,30 +137,43 @@ function DropdownField({
     );
 }
 
-function getModelBaseName(name: string) {
-    return name.replace(REASONING_SUFFIX_REGEX, "");
+function mapConfigOption(option: AIConfigOption): DropdownOption[] {
+    return option.options.map((item) => ({
+        value: item.value,
+        label: item.label,
+        description: item.description,
+    }));
 }
 
-function getModelReasoning(name: string) {
-    const match = name.match(REASONING_SUFFIX_REGEX);
-    return match?.[1]?.toLowerCase() ?? null;
-}
+function filterConfigOptions(
+    option: AIConfigOption,
+    modelId: string,
+    effortsByModel?: Record<string, string[]>,
+) {
+    if (option.category !== "reasoning") {
+        return mapConfigOption(option);
+    }
 
-function prettifyModelLabel(value: string) {
-    return value
-        .split("-")
-        .map((part) => {
-            if (/^gpt$/i.test(part)) return part.toUpperCase();
-            if (/^\d+(\.\d+)?$/.test(part)) return part;
-            return part.charAt(0).toUpperCase() + part.slice(1);
-        })
-        .join("-");
+    const supportedEfforts = effortsByModel?.[modelId];
+    const items =
+        supportedEfforts && supportedEfforts.length > 0
+            ? option.options.filter((item) =>
+                  supportedEfforts.includes(item.value),
+              )
+            : option.options;
+
+    return items.map((item) => ({
+        value: item.value,
+        label: item.label,
+        description: item.description,
+    }));
 }
 
 export function AIChatAgentControls({
     disabled = false,
     modelId,
     modeId,
+    effortsByModel,
     models,
     modes,
     configOptions,
@@ -172,47 +181,32 @@ export function AIChatAgentControls({
     onModeChange,
     onConfigOptionChange,
 }: AIChatAgentControlsProps) {
-    const visibleConfigOptions = configOptions.filter(
-        (option) => option.category !== "mode" && option.category !== "model",
+    const modelConfig = useMemo(
+        () => configOptions.find((option) => option.category === "model"),
+        [configOptions],
     );
-    const reasoningOption = visibleConfigOptions.find(
-        (option) => option.category === "reasoning",
+    const selectedModelId = modelConfig?.value ?? modelId;
+    const extraConfigs = useMemo(
+        () =>
+            [...configOptions]
+                .filter(
+                    (option) =>
+                        option.category !== "mode" &&
+                        option.category !== "model",
+                )
+                .sort((left, right) => {
+                    const rank = (option: AIConfigOption) =>
+                        option.category === "reasoning" ? 0 : 1;
+                    return rank(left) - rank(right);
+                }),
+        [configOptions],
     );
-    const reasoningValue = reasoningOption?.value;
-    const currentModel = models.find((model) => model.id === modelId) ?? null;
-    const currentModelBase = currentModel
-        ? getModelBaseName(currentModel.name)
-        : modelId;
-    const modelsByBaseName = new Map<string, AIModelOption[]>();
-    for (const model of models) {
-        const baseName = getModelBaseName(model.name);
-        const variants = modelsByBaseName.get(baseName) ?? [];
-        variants.push(model);
-        modelsByBaseName.set(baseName, variants);
-    }
-    const modelBaseOptions = Array.from(
-        new Map(
-            models.map((model) => [
-                getModelBaseName(model.name),
-                {
-                    value: getModelBaseName(model.name),
-                    label: prettifyModelLabel(getModelBaseName(model.name)),
-                    description: model.description,
-                },
-            ]),
-        ).values(),
-    );
-    const orderedConfigOptions = visibleConfigOptions.sort((left, right) => {
-        const rank = (option: AIConfigOption) =>
-            option.category === "reasoning" ? 0 : 1;
-        return rank(left) - rank(right);
-    });
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
             <DropdownField
                 disabled={disabled}
-                label="Mode"
+                label="Approval Preset"
                 value={modeId}
                 options={modes.map((mode) => ({
                     value: mode.id,
@@ -225,68 +219,34 @@ export function AIChatAgentControls({
             <DropdownField
                 disabled={disabled}
                 label="Model"
-                value={currentModelBase}
-                options={modelBaseOptions}
-                onChange={(baseName) => {
-                    const variants = modelsByBaseName.get(baseName) ?? [];
-                    const nextModel =
-                        variants.find(
-                            (model) =>
-                                getModelReasoning(model.name) === reasoningValue,
-                        ) ??
-                        variants.find((model) => model.id === modelId) ??
-                        variants[0];
-
-                    if (nextModel) {
-                        const nextReasoning = getModelReasoning(nextModel.name);
-                        if (
-                            reasoningOption &&
-                            nextReasoning &&
-                            nextReasoning !== reasoningValue &&
-                            reasoningOption.options.some(
-                                (option) => option.value === nextReasoning,
-                            )
-                        ) {
-                            onConfigOptionChange(reasoningOption.id, nextReasoning);
-                        }
-                        onModelChange(nextModel.id);
-                    }
-                }}
+                value={selectedModelId}
+                options={
+                    modelConfig
+                        ? mapConfigOption(modelConfig)
+                        : models.map((model) => ({
+                              value: model.id,
+                              label: model.name,
+                              description: model.description,
+                          }))
+                }
+                onChange={(value) =>
+                    modelConfig
+                        ? onConfigOptionChange(modelConfig.id, value)
+                        : onModelChange(value)
+                }
             />
-            {orderedConfigOptions.map((option) => (
+            {extraConfigs.map((option) => (
                 <DropdownField
                     key={option.id}
                     disabled={disabled}
                     label={option.label}
                     value={option.value}
-                    options={option.options
-                        .filter((item) => {
-                            if (option.category !== "reasoning") return true;
-                            const variants =
-                                modelsByBaseName.get(currentModelBase) ?? [];
-                            return variants.some(
-                                (model) =>
-                                    getModelReasoning(model.name) === item.value,
-                            );
-                        })
-                        .map((item) => ({
-                            value: item.value,
-                            label: item.label,
-                            description: item.description,
-                        }))}
-                    onChange={(v) => {
-                        if (option.category === "reasoning") {
-                            const variants =
-                                modelsByBaseName.get(currentModelBase) ?? [];
-                            const nextModel = variants.find(
-                                (model) => getModelReasoning(model.name) === v,
-                            );
-                            if (nextModel && nextModel.id !== modelId) {
-                                onModelChange(nextModel.id);
-                            }
-                        }
-                        onConfigOptionChange(option.id, v);
-                    }}
+                    options={filterConfigOptions(
+                        option,
+                        selectedModelId,
+                        effortsByModel,
+                    )}
+                    onChange={(value) => onConfigOptionChange(option.id, value)}
                 />
             ))}
         </div>

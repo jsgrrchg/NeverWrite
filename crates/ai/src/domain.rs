@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const CODEX_RUNTIME_ID: &str = "codex-acp";
@@ -88,6 +90,7 @@ pub struct AiSession {
     pub model_id: String,
     pub mode_id: String,
     pub status: AiSessionStatus,
+    pub efforts_by_model: HashMap<String, Vec<String>>,
     pub models: Vec<AiModelOption>,
     pub modes: Vec<AiModeOption>,
     pub config_options: Vec<AiConfigOption>,

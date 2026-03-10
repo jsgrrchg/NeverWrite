@@ -10,8 +10,10 @@ import { themes, type ThemeName } from "../../app/themes/index";
 import {
     useVaultStore,
     getRecentVaults,
+    removeVaultFromList,
     type RecentVault,
 } from "../../app/store/vaultStore";
+import { useChatStore } from "../ai/store/chatStore";
 
 // --- Primitives ---
 
@@ -123,34 +125,133 @@ function SelectField<T extends string | number>({
     onChange: (v: T) => void;
     disabled?: boolean;
 }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef<HTMLDivElement>(null);
+    const currentLabel =
+        options.find((o) => o.value === value)?.label ?? String(value);
+
+    useEffect(() => {
+        if (!open) return;
+        const handleDown = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node))
+                setOpen(false);
+        };
+        const handleKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setOpen(false);
+        };
+        document.addEventListener("mousedown", handleDown);
+        document.addEventListener("keydown", handleKey);
+        return () => {
+            document.removeEventListener("mousedown", handleDown);
+            document.removeEventListener("keydown", handleKey);
+        };
+    }, [open]);
+
     return (
-        <select
-            value={String(value)}
-            disabled={disabled}
-            onChange={(e) => {
-                const raw = e.target.value;
-                const opt = options.find((o) => String(o.value) === raw);
-                if (opt) onChange(opt.value);
-            }}
-            style={{
-                backgroundColor: "var(--bg-tertiary)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                padding: "3px 8px",
-                fontSize: 12,
-                fontFamily: "inherit",
-                cursor: disabled ? "not-allowed" : "pointer",
-                outline: "none",
-                opacity: disabled ? 0.4 : 1,
-            }}
+        <div
+            ref={ref}
+            style={{ position: "relative", display: "inline-block" }}
         >
-            {options.map((opt) => (
-                <option key={String(opt.value)} value={String(opt.value)}>
-                    {opt.label}
-                </option>
-            ))}
-        </select>
+            <button
+                type="button"
+                disabled={disabled}
+                onClick={() => setOpen((v) => !v)}
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    backgroundColor: "var(--bg-tertiary)",
+                    color: "var(--text-primary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    padding: "3px 8px",
+                    fontSize: 12,
+                    fontFamily: "inherit",
+                    cursor: disabled ? "not-allowed" : "pointer",
+                    outline: "none",
+                    opacity: disabled ? 0.4 : 1,
+                    whiteSpace: "nowrap",
+                }}
+            >
+                {currentLabel}
+                <svg
+                    width="9"
+                    height="9"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{
+                        color: "var(--text-secondary)",
+                        opacity: 0.7,
+                        transform: open ? "rotate(180deg)" : "none",
+                        transition: "transform 0.12s ease",
+                        flexShrink: 0,
+                    }}
+                >
+                    <path d="M2.5 4L5 6.5L7.5 4" />
+                </svg>
+            </button>
+
+            {open && (
+                <div
+                    style={{
+                        position: "absolute",
+                        right: 0,
+                        top: "calc(100% + 4px)",
+                        zIndex: 1000,
+                        minWidth: "100%",
+                        padding: 4,
+                        borderRadius: 8,
+                        backgroundColor: "var(--bg-secondary)",
+                        border: "1px solid var(--border)",
+                        boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+                        maxHeight: 280,
+                        overflowY: "auto",
+                    }}
+                >
+                    {options.map((opt) => (
+                        <button
+                            key={String(opt.value)}
+                            type="button"
+                            onClick={() => {
+                                onChange(opt.value);
+                                setOpen(false);
+                            }}
+                            style={{
+                                display: "block",
+                                width: "100%",
+                                textAlign: "left",
+                                padding: "5px 10px",
+                                fontSize: 12,
+                                fontFamily: "inherit",
+                                borderRadius: 4,
+                                border: "none",
+                                color:
+                                    opt.value === value
+                                        ? "var(--accent)"
+                                        : "var(--text-primary)",
+                                backgroundColor: "transparent",
+                                cursor: "pointer",
+                                whiteSpace: "nowrap",
+                            }}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                    "var(--bg-tertiary)";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                    "transparent";
+                            }}
+                        >
+                            {opt.label}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -593,7 +694,6 @@ function EditorSettings() {
         tabSize,
         setSetting,
     } = useSettingsStore();
-
     return (
         <div>
             <SectionLabel>Typography</SectionLabel>
@@ -713,6 +813,13 @@ function VaultSettings() {
     const [recents, setRecents] = useState<RecentVault[]>(() =>
         getRecentVaults(),
     );
+    const [confirmPath, setConfirmPath] = useState<string | null>(null);
+
+    const handleRemoveVault = async (path: string) => {
+        await removeVaultFromList(path);
+        setRecents(getRecentVaults());
+        setConfirmPath(null);
+    };
 
     const handleClearRecents = () => {
         localStorage.removeItem("vaultai:recentVaults");
@@ -791,6 +898,93 @@ function VaultSettings() {
                                     {vault.path}
                                 </div>
                             </div>
+                            {confirmPath === vault.path ? (
+                                <div
+                                    style={{
+                                        display: "flex",
+                                        gap: 4,
+                                        flexShrink: 0,
+                                    }}
+                                >
+                                    <button
+                                        onClick={() =>
+                                            handleRemoveVault(vault.path)
+                                        }
+                                        style={{
+                                            fontSize: 11,
+                                            color: "#fff",
+                                            backgroundColor: "#ef4444",
+                                            border: "none",
+                                            borderRadius: 5,
+                                            padding: "3px 8px",
+                                            cursor: "pointer",
+                                        }}
+                                    >
+                                        Confirm
+                                    </button>
+                                    <button
+                                        onClick={() => setConfirmPath(null)}
+                                        style={{
+                                            fontSize: 11,
+                                            color: "var(--text-secondary)",
+                                            backgroundColor:
+                                                "var(--bg-tertiary)",
+                                            border: "1px solid var(--border)",
+                                            borderRadius: 5,
+                                            padding: "3px 8px",
+                                            cursor: "pointer",
+                                        }}
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => setConfirmPath(vault.path)}
+                                    title="Remove vault from list and delete cached data"
+                                    style={{
+                                        width: 24,
+                                        height: 24,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        borderRadius: 5,
+                                        border: "none",
+                                        background: "transparent",
+                                        cursor: "pointer",
+                                        color: "var(--text-secondary)",
+                                        opacity: 0.5,
+                                        flexShrink: 0,
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        e.currentTarget.style.opacity = "1";
+                                        e.currentTarget.style.color = "#ef4444";
+                                        e.currentTarget.style.backgroundColor =
+                                            "var(--bg-tertiary)";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        e.currentTarget.style.opacity = "0.5";
+                                        e.currentTarget.style.color =
+                                            "var(--text-secondary)";
+                                        e.currentTarget.style.backgroundColor =
+                                            "transparent";
+                                    }}
+                                >
+                                    <svg
+                                        width="14"
+                                        height="14"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                    >
+                                        <path
+                                            d="M4 4l8 8M12 4l-8 8"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                        />
+                                    </svg>
+                                </button>
+                            )}
                         </div>
                     ))}
                     <div style={{ paddingTop: 12 }}>
@@ -821,6 +1015,7 @@ const SHORTCUTS: { label: string; shortcut: string; category: string }[] = [
     { category: "Navigation", label: "Search in Vault", shortcut: "⌘⇧F" },
     { category: "Vault", label: "New Note", shortcut: "⌘N" },
     { category: "Vault", label: "Open Vault", shortcut: "⌘⇧O" },
+    { category: "Editor", label: "Toggle Live Preview", shortcut: "⌘E" },
     { category: "Editor", label: "Save Note", shortcut: "⌘⇧S (manual)" },
     { category: "Editor", label: "Close Tab", shortcut: "⌘W" },
     { category: "View", label: "Toggle Sidebar", shortcut: "⌘S" },
@@ -882,9 +1077,80 @@ function ShortcutsSettings() {
     );
 }
 
+function AISettings() {
+    const autoContextEnabled = useChatStore((s) => s.autoContextEnabled);
+    const toggleAutoContext = useChatStore((s) => s.toggleAutoContext);
+    const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
+    const toggleRequireCmdEnterToSend = useChatStore(
+        (s) => s.toggleRequireCmdEnterToSend,
+    );
+    const composerFontSize = useChatStore((s) => s.composerFontSize);
+    const setComposerFontSize = useChatStore((s) => s.setComposerFontSize);
+    const chatFontSize = useChatStore((s) => s.chatFontSize);
+    const setChatFontSize = useChatStore((s) => s.setChatFontSize);
+
+    return (
+        <div>
+            <SectionLabel>Context</SectionLabel>
+            <Row
+                label="Include current note"
+                description="Automatically include the active note as context when sending messages."
+                control={
+                    <Toggle
+                        value={autoContextEnabled}
+                        onChange={() => toggleAutoContext()}
+                    />
+                }
+            />
+            <SectionLabel>Composer</SectionLabel>
+            <Row
+                label="Require ⌘ Enter to send"
+                description="Press ⌘ Enter to send messages. Enter alone adds a new line, making it easier to write longer messages."
+                control={
+                    <Toggle
+                        value={requireCmdEnterToSend}
+                        onChange={() => toggleRequireCmdEnterToSend()}
+                    />
+                }
+            />
+            <Row
+                label="Composer font size"
+                description="Font size of the message input box, in pixels."
+                control={
+                    <NumberStepper
+                        value={composerFontSize}
+                        min={11}
+                        max={20}
+                        onChange={setComposerFontSize}
+                    />
+                }
+            />
+            <SectionLabel>Chat</SectionLabel>
+            <Row
+                label="Chat font size"
+                description="Font size of messages in the chat, in pixels."
+                control={
+                    <NumberStepper
+                        value={chatFontSize}
+                        min={11}
+                        max={20}
+                        onChange={setChatFontSize}
+                    />
+                }
+            />
+        </div>
+    );
+}
+
 // --- Categories ---
 
-type Category = "general" | "appearance" | "editor" | "vault" | "shortcuts";
+type Category =
+    | "general"
+    | "appearance"
+    | "editor"
+    | "vault"
+    | "shortcuts"
+    | "ai";
 
 const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
     {
@@ -990,6 +1256,26 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
             </svg>
         ),
     },
+    {
+        id: "ai",
+        label: "AI",
+        icon: (
+            <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Z" />
+                <path d="M5.5 8.5c.5 1 1.5 1.5 2.5 1.5s2-.5 2.5-1.5" />
+                <path d="M6 6.5h.01M10 6.5h.01" />
+            </svg>
+        ),
+    },
 ];
 
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
@@ -998,6 +1284,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     editor: "Typography and text editing behavior",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
+    ai: "AI assistant preferences",
 };
 
 // --- Main panel ---
@@ -1280,6 +1567,7 @@ export function SettingsPanel({
                         {active === "editor" && <EditorSettings />}
                         {active === "vault" && <VaultSettings />}
                         {active === "shortcuts" && <ShortcutsSettings />}
+                        {active === "ai" && <AISettings />}
                     </div>
                 </div>
             </div>

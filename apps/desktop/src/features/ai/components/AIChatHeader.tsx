@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AIChatSessionList } from "./AIChatSessionList";
-import {
-    getSessionRuntimeName,
-    getSessionTitle,
-} from "../sessionPresentation";
+import { getSessionRuntimeName, getSessionTitle } from "../sessionPresentation";
 import type {
     AIChatSession,
     AIChatSessionStatus,
@@ -18,6 +15,8 @@ interface AIChatHeaderProps {
     status: AIChatSessionStatus;
     onNewChat: (runtimeId: string) => void;
     onSelectSession: (sessionId: string) => void;
+    onDeleteSession: (sessionId: string) => void;
+    onDeleteAllSessions: () => void;
 }
 
 const STATUS_LABELS: Record<AIChatSessionStatus, string> = {
@@ -44,6 +43,8 @@ export function AIChatHeader({
     status,
     onNewChat,
     onSelectSession,
+    onDeleteSession,
+    onDeleteAllSessions,
 }: AIChatHeaderProps) {
     const [newMenuOpen, setNewMenuOpen] = useState(false);
     const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -52,7 +53,9 @@ export function AIChatHeader({
     const currentRuntime = currentSession
         ? getSessionRuntimeName(currentSession, runtimes)
         : "Agent";
-    const currentTitle = currentSession ? getSessionTitle(currentSession) : "New chat";
+    const currentTitle = currentSession
+        ? getSessionTitle(currentSession)
+        : "New chat";
 
     useEffect(() => {
         if (!newMenuOpen && !sessionMenuOpen) return;
@@ -83,7 +86,7 @@ export function AIChatHeader({
 
     return (
         <div
-            className="flex items-center justify-between gap-3 px-3 py-2"
+            className="flex items-center justify-between gap-2 px-2 py-1"
             style={{ borderBottom: "1px solid var(--border)" }}
         >
             <div ref={sessionMenuRef} className="relative min-w-0 flex-1">
@@ -93,32 +96,37 @@ export function AIChatHeader({
                         setSessionMenuOpen((open) => !open);
                         setNewMenuOpen(false);
                     }}
-                    className="flex min-w-0 max-w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left"
+                    className="flex min-w-0 max-w-full items-center gap-1.5 rounded px-1.5 py-1 text-left"
                     style={{
                         backgroundColor: "transparent",
-                        border: "1px solid transparent",
+                        border: "none",
                     }}
                     title="Recent chats"
                 >
-                    <div className="min-w-0">
-                        <div
-                            className="truncate text-sm font-medium"
-                            style={{ color: "var(--text-primary)" }}
-                        >
-                            {currentTitle}
-                        </div>
-                        <div
-                            className="mt-0.5 flex items-center gap-2 text-[11px]"
-                            style={{ color: "var(--text-secondary)" }}
-                        >
-                            <span>{currentRuntime}</span>
-                            <span>•</span>
-                            <span>{sessions.length} chats</span>
-                        </div>
-                    </div>
+                    <span
+                        className="truncate text-xs font-medium"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        {currentRuntime}
+                    </span>
+                    <span
+                        style={{
+                            color: "var(--text-secondary)",
+                            opacity: 0.4,
+                            fontSize: 10,
+                        }}
+                    >
+                        ·
+                    </span>
+                    <span
+                        className="truncate text-xs"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        {currentTitle}
+                    </span>
                     <svg
-                        width="10"
-                        height="10"
+                        width="8"
+                        height="8"
                         viewBox="0 0 10 10"
                         fill="none"
                         stroke="currentColor"
@@ -127,9 +135,11 @@ export function AIChatHeader({
                         strokeLinejoin="round"
                         style={{
                             color: "var(--text-secondary)",
-                            opacity: 0.7,
+                            opacity: 0.5,
                             flexShrink: 0,
-                            transform: sessionMenuOpen ? "rotate(180deg)" : "none",
+                            transform: sessionMenuOpen
+                                ? "rotate(180deg)"
+                                : "none",
                             transition: "transform 0.12s ease",
                         }}
                     >
@@ -139,32 +149,13 @@ export function AIChatHeader({
 
                 {sessionMenuOpen && (
                     <div
-                        className="absolute left-0 top-full z-20 mt-2 min-w-[320px] max-w-[360px] overflow-hidden rounded-xl"
+                        className="absolute left-0 top-full z-20 mt-2 min-w-[260px] max-w-[320px] overflow-hidden rounded-xl"
                         style={{
-                            backgroundColor: "var(--bg-elevated)",
+                            backgroundColor: "var(--bg-secondary)",
                             border: "1px solid var(--border)",
-                            boxShadow: "var(--shadow-soft)",
+                            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
                         }}
                     >
-                        <div
-                            className="flex items-center justify-between gap-3 px-3 py-2"
-                            style={{ borderBottom: "1px solid var(--border)" }}
-                        >
-                            <div>
-                                <div
-                                    className="text-[11px] uppercase tracking-[0.14em]"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    Chats
-                                </div>
-                                <div
-                                    className="mt-1 text-xs"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    Switch between recent conversations
-                                </div>
-                            </div>
-                        </div>
                         <AIChatSessionList
                             activeSessionId={activeSessionId}
                             sessions={sessions}
@@ -173,7 +164,45 @@ export function AIChatHeader({
                                 onSelectSession(sessionId);
                                 setSessionMenuOpen(false);
                             }}
+                            onDeleteSession={(sessionId) => {
+                                onDeleteSession(sessionId);
+                            }}
                         />
+                        {sessions.length > 1 && (
+                            <>
+                                <div
+                                    style={{
+                                        borderTop: "1px solid var(--border)",
+                                        margin: "2px 0",
+                                    }}
+                                />
+                                <div className="p-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            onDeleteAllSessions();
+                                            setSessionMenuOpen(false);
+                                        }}
+                                        className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                        style={{
+                                            color: "#ef4444",
+                                            background: "none",
+                                            border: "none",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor =
+                                                "var(--bg-tertiary)";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor =
+                                                "transparent";
+                                        }}
+                                    >
+                                        Clear all chats
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 )}
             </div>
@@ -188,73 +217,74 @@ export function AIChatHeader({
                     title={STATUS_LABELS[status]}
                 />
 
-                <div ref={newMenuRef} className="relative flex items-center gap-2">
+                <div
+                    ref={newMenuRef}
+                    className="relative flex items-center gap-2"
+                >
                     <button
                         type="button"
                         onClick={() => {
                             setNewMenuOpen((open) => !open);
                             setSessionMenuOpen(false);
                         }}
-                        className="rounded-md px-2 py-1 text-xs"
+                        className="flex h-6 w-6 items-center justify-center rounded"
                         style={{
-                            color:
-                                status === "idle"
-                                    ? "var(--text-secondary)"
-                                    : "var(--text-primary)",
+                            color: "var(--text-secondary)",
                             backgroundColor: "transparent",
-                            border: "1px solid transparent",
+                            border: "none",
                         }}
                         title={`New chat • ${STATUS_LABELS[status]}`}
                     >
-                        New agent
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                        >
+                            <path d="M7 2v10M2 7h10" />
+                        </svg>
                     </button>
 
                     {newMenuOpen && (
                         <div
-                            className="absolute right-0 top-full z-20 mt-2 min-w-[220px] overflow-hidden rounded-xl"
+                            className="absolute right-0 top-full z-20 mt-2 overflow-hidden rounded-xl"
                             style={{
-                                backgroundColor: "var(--bg-elevated)",
+                                backgroundColor: "var(--bg-secondary)",
                                 border: "1px solid var(--border)",
-                                boxShadow: "var(--shadow-soft)",
+                                boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+                                padding: 4,
+                                minWidth: 160,
                             }}
                         >
-                            <div
-                                className="px-3 py-2 text-[11px] uppercase tracking-[0.14em]"
-                                style={{
-                                    color: "var(--text-secondary)",
-                                    borderBottom: "1px solid var(--border)",
-                                }}
-                            >
-                                Start new chat
-                            </div>
-                            <div className="p-2">
-                                {runtimes.map((runtime) => (
-                                    <button
-                                        key={runtime.id}
-                                        type="button"
-                                        onClick={() => {
-                                            onNewChat(runtime.id);
-                                            setNewMenuOpen(false);
-                                        }}
-                                        className="flex w-full flex-col rounded-lg px-3 py-2 text-left"
-                                        style={{
-                                            color: "var(--text-primary)",
-                                            backgroundColor: "transparent",
-                                            border: "none",
-                                        }}
-                                    >
-                                        <span className="text-sm font-medium">
-                                            {runtime.name}
-                                        </span>
-                                        <span
-                                            className="mt-0.5 text-xs"
-                                            style={{ color: "var(--text-secondary)" }}
-                                        >
-                                            {runtime.description}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
+                            {runtimes.map((runtime) => (
+                                <button
+                                    key={runtime.id}
+                                    type="button"
+                                    onClick={() => {
+                                        onNewChat(runtime.id);
+                                        setNewMenuOpen(false);
+                                    }}
+                                    className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                    style={{
+                                        color: "var(--text-primary)",
+                                        backgroundColor: "transparent",
+                                        border: "none",
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        e.currentTarget.style.backgroundColor =
+                                            "var(--bg-tertiary)";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        e.currentTarget.style.backgroundColor =
+                                            "transparent";
+                                    }}
+                                >
+                                    {runtime.name}
+                                </button>
+                            ))}
                         </div>
                     )}
                 </div>

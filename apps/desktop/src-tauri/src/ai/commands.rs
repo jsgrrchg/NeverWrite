@@ -232,3 +232,13 @@ pub fn ai_load_session_histories(
 ) -> Result<Vec<PersistedSessionHistory>, String> {
     persistence::load_all_session_histories(&PathBuf::from(vault_path))
 }
+
+#[tauri::command]
+pub fn ai_delete_session_history(vault_path: String, session_id: String) -> Result<(), String> {
+    persistence::delete_session_history(&PathBuf::from(vault_path), &session_id)
+}
+
+#[tauri::command]
+pub fn ai_delete_all_session_histories(vault_path: String) -> Result<(), String> {
+    persistence::delete_all_session_histories(&PathBuf::from(vault_path))
+}

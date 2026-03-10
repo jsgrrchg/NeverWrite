@@ -88,14 +88,29 @@ export function wikilinkExtension(
                         continue;
                     }
 
+                    // Only decorate the visible text (exclude [[ ]] markers).
+                    // This prevents the mousedown handler from intercepting
+                    // clicks on hidden markers at the end of a line.
+                    const inner = view.state.sliceDoc(
+                        link.from + 2,
+                        link.to - 2,
+                    );
+                    const pipeIdx = inner.indexOf("|");
+                    const visibleFrom =
+                        pipeIdx >= 0
+                            ? link.from + 2 + pipeIdx + 1
+                            : link.from + 2;
+                    const visibleTo = link.to - 2;
+                    if (visibleFrom >= visibleTo) continue;
+
                     let exists = resolved.get(link.target);
                     if (exists === undefined) {
                         exists = resolveLink(link.target);
                         resolved.set(link.target, exists);
                     }
                     builder.add(
-                        link.from,
-                        link.to,
+                        visibleFrom,
+                        visibleTo,
                         Decoration.mark({
                             class: exists
                                 ? "cm-wikilink cm-wikilink-valid"

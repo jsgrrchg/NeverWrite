@@ -17,53 +17,49 @@ function ThinkingMessage({ message }: { message: AIChatMessage }) {
     const content = stripMarkdownBold(message.content).trim();
 
     return (
-        <div>
+        <div className="min-w-0 max-w-full">
             <button
                 type="button"
                 onClick={() => {
-                    if (!message.inProgress && content) setExpanded((v) => !v);
+                    if (content || message.inProgress) setExpanded((v) => !v);
                 }}
                 className="flex items-center gap-2 py-0.5 text-xs"
                 style={{
                     color: "var(--text-secondary)",
                     backgroundColor: "transparent",
                     border: "none",
-                    cursor: message.inProgress || !content ? "default" : "pointer",
+                    cursor:
+                        !content && !message.inProgress ? "default" : "pointer",
                     opacity: 0.7,
                 }}
             >
-                {message.inProgress ? (
-                    <span
-                        className="inline-block h-3 w-3 animate-spin rounded-full"
-                        style={{
-                            border: "1.5px solid var(--text-secondary)",
-                            borderTopColor: "var(--accent)",
-                        }}
-                    />
-                ) : (
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 12 12"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            transform: expanded ? "rotate(90deg)" : "none",
-                            transition: "transform 0.12s ease",
-                        }}
-                    >
-                        <path d="M4.5 2.5L8 6L4.5 9.5" />
-                    </svg>
-                )}
+                <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{
+                        transform: expanded ? "rotate(90deg)" : "none",
+                        transition: "transform 0.12s ease",
+                    }}
+                >
+                    <path d="M4.5 2.5L8 6L4.5 9.5" />
+                </svg>
                 <span>Thinking{message.inProgress ? "..." : ""}</span>
             </button>
-            {expanded && content && (
+            {expanded && (content || message.inProgress) && (
                 <div
                     className="mt-1 whitespace-pre-wrap pl-5 text-xs italic"
-                    style={{ color: "var(--text-secondary)", opacity: 0.7 }}
+                    style={{
+                        color: "var(--text-secondary)",
+                        opacity: 0.7,
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                    }}
                 >
                     {content}
                 </div>
@@ -76,7 +72,16 @@ function ToolIcon({ kind }: { kind?: string }) {
     const k = String(kind ?? "");
     if (k === "read" || k === "search") {
         return (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
                 <circle cx="5.5" cy="5.5" r="3" />
                 <path d="M7.5 7.5L10 10" />
             </svg>
@@ -84,14 +89,32 @@ function ToolIcon({ kind }: { kind?: string }) {
     }
     if (k === "edit") {
         return (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
                 <path d="M7 2l3 3-7 7H0V9z" />
             </svg>
         );
     }
     if (k === "execute") {
         return (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
                 <path d="M2 3l4 3-4 3z" />
                 <path d="M7 9h3" />
             </svg>
@@ -99,7 +122,16 @@ function ToolIcon({ kind }: { kind?: string }) {
     }
     // default gear
     return (
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
             <circle cx="6" cy="6" r="1.5" />
             <path d="M6 1v1.5M6 9.5V11M1 6h1.5M9.5 6H11M2.5 2.5l1 1M8.5 8.5l1 1M9.5 2.5l-1 1M3.5 8.5l-1 1" />
         </svg>
@@ -116,14 +148,22 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
 
     return (
         <div
-            className="flex items-center gap-2 py-0.5 text-xs"
+            className="flex min-w-0 max-w-full items-center gap-2 py-0.5 text-xs"
             style={{
                 color: "var(--text-secondary)",
                 opacity: isCompleted ? 0.45 : 0.7,
             }}
         >
             <ToolIcon kind={toolKind} />
-            <span className="truncate">{label}</span>
+            <span
+                className="min-w-0 flex-1"
+                style={{
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
+                {label}
+            </span>
             {!isCompleted && status === "in_progress" ? (
                 <span
                     className="inline-block h-1.5 w-1.5 animate-pulse rounded-full"
@@ -137,7 +177,7 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
 function ErrorMessage({ message }: { message: AIChatMessage }) {
     return (
         <div
-            className="flex items-start gap-2 rounded-lg px-2.5 py-2 text-xs"
+            className="flex min-w-0 max-w-full items-start gap-2 rounded-lg px-2.5 py-2 text-xs"
             style={{
                 color: "#fca5a5",
                 backgroundColor: "color-mix(in srgb, #dc2626 8%, transparent)",
@@ -158,7 +198,15 @@ function ErrorMessage({ message }: { message: AIChatMessage }) {
                 <circle cx="7" cy="7" r="5.5" />
                 <path d="M7 4.5v3M7 9.5h.005" />
             </svg>
-            <span className="whitespace-pre-wrap">{message.content}</span>
+            <span
+                className="min-w-0 whitespace-pre-wrap"
+                style={{
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
+                {message.content}
+            </span>
         </div>
     );
 }
@@ -172,27 +220,52 @@ function PermissionMessage({
 }) {
     const target = message.meta?.target ? String(message.meta.target) : null;
     const shortTarget = target?.split("/").pop() ?? null;
+    const status = String(message.meta?.status ?? "pending");
+    const resolvedOptionId =
+        message.meta?.resolved_option !== undefined &&
+        message.meta?.resolved_option !== null
+            ? String(message.meta.resolved_option)
+            : null;
+    const resolvedOptionLabel =
+        message.permissionOptions?.find(
+            (option) => option.option_id === resolvedOptionId,
+        )?.name ?? null;
+    const isPending = status === "pending";
+    const isResponding = status === "responding";
+    const isResolved = status === "resolved";
 
     return (
         <div
-            className="rounded-lg px-2.5 py-2"
+            className="min-w-0 max-w-full rounded-lg px-2.5 py-2"
             style={{
                 border: "1px solid color-mix(in srgb, #d97706 30%, var(--border))",
                 backgroundColor: "color-mix(in srgb, #d97706 6%, transparent)",
             }}
         >
-            <div className="text-xs" style={{ color: "var(--text-primary)" }}>
+            <div
+                className="text-xs"
+                style={{
+                    color: "var(--text-primary)",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
                 {message.content}
             </div>
             {shortTarget ? (
                 <div
-                    className="mt-1 truncate text-[11px]"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="mt-1 text-[11px]"
+                    style={{
+                        color: "var(--text-secondary)",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                    }}
                 >
                     {shortTarget}
                 </div>
             ) : null}
-            {message.permissionRequestId && message.permissionOptions?.length ? (
+            {message.permissionRequestId &&
+            message.permissionOptions?.length ? (
                 <div className="mt-2 flex flex-wrap gap-2">
                     {message.permissionOptions.map((option) => (
                         <button
@@ -204,20 +277,45 @@ function PermissionMessage({
                                     option.option_id,
                                 )
                             }
+                            disabled={!isPending}
                             className="rounded-full px-3 py-1 text-xs"
                             style={{
                                 color: option.kind.startsWith("reject")
                                     ? "#fecaca"
                                     : "#fff",
-                                backgroundColor: option.kind.startsWith("reject")
+                                backgroundColor: option.kind.startsWith(
+                                    "reject",
+                                )
                                     ? "color-mix(in srgb, #dc2626 35%, transparent)"
                                     : "var(--accent)",
                                 border: "none",
+                                opacity:
+                                    !isPending &&
+                                    resolvedOptionId !== option.option_id
+                                        ? 0.45
+                                        : 1,
                             }}
                         >
                             {option.name}
                         </button>
                     ))}
+                </div>
+            ) : null}
+            {isResponding ? (
+                <div
+                    className="mt-2 text-[11px]"
+                    style={{ color: "var(--text-secondary)" }}
+                >
+                    Sending decision...
+                </div>
+            ) : null}
+            {isResolved ? (
+                <div
+                    className="mt-2 text-[11px]"
+                    style={{ color: "var(--text-secondary)" }}
+                >
+                    Decision sent
+                    {resolvedOptionLabel ? `: ${resolvedOptionLabel}` : "."}
                 </div>
             ) : null}
         </div>
@@ -229,7 +327,7 @@ function ProposedEditMessage({ message }: { message: AIChatMessage }) {
 
     return (
         <div
-            className="rounded-lg px-2.5 py-2"
+            className="min-w-0 max-w-full rounded-lg px-2.5 py-2"
             style={{
                 border: "1px solid color-mix(in srgb, #0891b2 30%, var(--border))",
                 backgroundColor: "color-mix(in srgb, #0891b2 6%, transparent)",
@@ -243,7 +341,11 @@ function ProposedEditMessage({ message }: { message: AIChatMessage }) {
             </div>
             <div
                 className="mt-1 whitespace-pre-wrap text-xs"
-                style={{ color: "var(--text-primary)" }}
+                style={{
+                    color: "var(--text-primary)",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
             >
                 {message.content}
             </div>
@@ -260,11 +362,13 @@ export function AIChatMessageItem({
     if (message.kind === "text" && message.role === "user") {
         return (
             <div
-                className="whitespace-pre-wrap rounded-lg px-3 py-2 text-sm"
+                className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2 text-sm"
                 style={{
                     color: "var(--text-primary)",
                     backgroundColor: "var(--bg-tertiary)",
                     border: "1px solid var(--border)",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
                 }}
             >
                 {message.content}
@@ -298,13 +402,23 @@ export function AIChatMessageItem({
     }
 
     // Proposed edit / new note
-    if (message.kind === "proposed_edit" || message.kind === "proposed_new_note") {
+    if (
+        message.kind === "proposed_edit" ||
+        message.kind === "proposed_new_note"
+    ) {
         return <ProposedEditMessage message={message} />;
     }
 
     // Assistant text — flat, no card
     return (
-        <div className="text-sm" style={{ color: "var(--text-primary)" }}>
+        <div
+            className="min-w-0 max-w-full text-sm"
+            style={{
+                color: "var(--text-primary)",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+        >
             <MarkdownContent content={message.content} />
             {message.inProgress && isLast ? (
                 <span className="ml-1.5 inline-flex items-baseline gap-[3px]">

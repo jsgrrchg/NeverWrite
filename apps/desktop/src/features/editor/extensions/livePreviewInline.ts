@@ -6,7 +6,12 @@ import {
     type ViewUpdate,
     WidgetType,
 } from "@codemirror/view";
-import { type EditorState, RangeSetBuilder } from "@codemirror/state";
+import {
+    type EditorState,
+    RangeSetBuilder,
+    StateEffect,
+    StateField,
+} from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 
@@ -14,9 +19,10 @@ import {
     type DecoEntry,
     type LineDecoEntry,
     hideMark,
+    hideInlineMark,
     hideInactiveChildMarks,
     parseLinkChildren,
-    buildLinkReferenceIndex,
+    linkReferenceField,
     resolveLinkHref,
     findAncestor,
     hasDescendant,
@@ -25,7 +31,11 @@ import {
     measureLineLeadingIndent,
     addLineDecoration,
 } from "./livePreviewHelpers";
-import { selectionTouchesRange } from "./selectionActivity";
+import {
+    selectionTouchesLine,
+    selectionTouchesRange,
+} from "./selectionActivity";
+import { InlineMathWidget } from "./livePreviewBlocks";
 
 const headingMarks: Record<number, Decoration> = {
     1: Decoration.mark({ class: "cm-lp-h1" }),
@@ -55,8 +65,7 @@ const INLINE_MATH_RE = /(^|[^\\$])\$(?!\$)([^\n$]|\\\$)+?\$(?!\$)/g;
 const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
 const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.*)$/;
 const CALLOUT_RE = /^\s*>\s+\[!([a-zA-Z0-9-]+)\]([+-])?(?:\s+(.*))?$/;
-const EXTENDED_TASK_RE =
-    /^(\s*(?:[-+*]|\d+[.)])\s+)\[( |x|X|~|\/)\](\s+.*)?$/;
+const EXTENDED_TASK_RE = /^(\s*(?:[-+*]|\d+[.)])\s+)\[( |x|X|~|\/)\](\s+.*)?$/;
 const UNORDERED_LIST_MARKER_WIDTH = "1.45em";
 const TASK_LIST_MARKER_WIDTH = "1.2em";
 const NARRATIVE_LIST_ITEM_THRESHOLD = 72;
@@ -104,8 +113,7 @@ class InlineBreakWidget extends WidgetType {
 
 function createMathMark(display: "inline" | "block") {
     return Decoration.mark({
-        class:
-            display === "block" ? "cm-lp-math-block" : "cm-lp-math-inline",
+        class: display === "block" ? "cm-lp-math-block" : "cm-lp-math-inline",
     });
 }
 
@@ -143,7 +151,10 @@ function getOrderedListReservedMarkerWidth(
 
             do {
                 if (itemCursor.name !== "ListMark") continue;
-                const marker = state.doc.sliceString(itemCursor.from, itemCursor.to);
+                const marker = state.doc.sliceString(
+                    itemCursor.from,
+                    itemCursor.to,
+                );
                 const normalizedMarker = marker.trim();
                 maxWidth = Math.max(
                     maxWidth,
@@ -191,7 +202,10 @@ function isListLikeLine(text: string): boolean {
     return /^(\s*)(?:[-+*]|\d+[.)]|\[[ xX]\]|[•◦▪‣–—−])\s+/.test(text);
 }
 
-function hasAdjacentListContext(state: EditorState, lineNumber: number): boolean {
+function hasAdjacentListContext(
+    state: EditorState,
+    lineNumber: number,
+): boolean {
     for (let current = lineNumber - 1; current >= 1; current--) {
         const line = state.doc.line(current);
         if (line.text.trim().length === 0) continue;
@@ -213,7 +227,11 @@ function lineHasListDecoration(
 ): boolean {
     const entry = lineDecos.get(lineFrom);
     if (!entry) return false;
-    return entry.classes.has("cm-lp-li-line") || entry.classes.has("cm-lp-task-line");
+    return (
+        entry.classes.has("cm-lp-li-line") ||
+        entry.classes.has("cm-lp-task-line") ||
+        entry.classes.has("cm-lp-list-continuation")
+    );
 }
 
 function getListItemPresentation(
@@ -373,6 +391,7 @@ function hideRangeUnlessEditing(
     to: number,
     deco: Decoration = hideMark,
 ) {
+    if (from >= to) return;
     if (!selectionTouchesRange(context.state, from, to)) {
         pushDeco(context, from, to, deco);
     }
@@ -391,7 +410,13 @@ function addLineClassForRange(
 
     for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
         const line = context.state.doc.line(lineNumber);
-        addLineDecoration(context.lineDecos, line.from, className, attrs, styles);
+        addLineDecoration(
+            context.lineDecos,
+            line.from,
+            className,
+            attrs,
+            styles,
+        );
     }
 }
 
@@ -408,7 +433,7 @@ function createInlineFormattingRule(
             markerName,
             context.state,
             context.decos,
-            hideMark,
+            hideInlineMark,
         );
     };
 }
@@ -417,25 +442,50 @@ const headingRule: NodeRule = (node, context) => {
     const headingLevel = getHeadingLevel(node.name);
     if (headingLevel === null) return;
 
-    if (headingLevel === 1 && isLeadingDocumentHeading(context.state, node.from)) {
+    if (
+        headingLevel === 1 &&
+        isLeadingDocumentHeading(context.state, node.from)
+    ) {
         const hideTo = getLeadingHeadingHideTo(context.state, node.to);
         hideRangeUnlessEditing(context, node.from, hideTo);
         return;
     }
 
-    const mark = headingMarks[headingLevel];
-    if (mark) {
-        pushDeco(context, node.from, node.to, mark);
+    const isSetext = node.name.startsWith("SetextHeading");
+
+    // Collect header marks in a single pass
+    const headerMarks: Array<{ from: number; to: number }> = [];
+    const childCursor = node.node.cursor();
+    if (childCursor.firstChild()) {
+        do {
+            if (childCursor.name === "HeaderMark") {
+                headerMarks.push({
+                    from: childCursor.from,
+                    to: childCursor.to,
+                });
+            }
+        } while (childCursor.nextSibling());
     }
 
-    const cursor = node.node.cursor();
-    if (!cursor.firstChild()) return;
+    // For setext headings, don't apply heading style while editing the
+    // underline.  This prevents the paragraph from suddenly becoming an h2
+    // when the user types "-" to start a list below it.
+    const editingUnderline =
+        isSetext &&
+        headerMarks.some((m) =>
+            selectionTouchesLine(context.state, m.from, m.to),
+        );
 
-    do {
-        if (cursor.name !== "HeaderMark") continue;
+    if (!editingUnderline) {
+        const mark = headingMarks[headingLevel];
+        if (mark) {
+            pushDeco(context, node.from, node.to, mark);
+        }
+    }
 
-        let hideFrom = cursor.from;
-        let hideTo = cursor.to;
+    for (const hm of headerMarks) {
+        let hideFrom = hm.from;
+        let hideTo = hm.to;
 
         if (node.name.startsWith("ATXHeading")) {
             if (
@@ -447,7 +497,7 @@ const headingRule: NodeRule = (node, context) => {
         }
 
         if (
-            node.name.startsWith("SetextHeading") &&
+            isSetext &&
             hideFrom > node.from &&
             context.state.doc.sliceString(hideFrom - 1, hideFrom) === "\n"
         ) {
@@ -455,7 +505,7 @@ const headingRule: NodeRule = (node, context) => {
         }
 
         hideRangeUnlessEditing(context, hideFrom, hideTo);
-    } while (cursor.nextSibling());
+    }
 };
 
 const linkRule: NodeRule = (node, context) => {
@@ -471,6 +521,8 @@ const linkRule: NodeRule = (node, context) => {
         class: "cm-lp-link",
         attributes: {
             "data-href": href,
+            tabindex: "0",
+            role: "link",
             ...(info.title ? { title: info.title } : {}),
         },
     });
@@ -560,9 +612,37 @@ const listMarkRule: NodeRule = (node, context) => {
 const blockquoteRule: NodeRule = (node, context) => {
     if (node.name !== "Blockquote") return;
 
-    pushDeco(context, node.from, node.to, quoteContentMark);
-    addLineClassForRange(context, node.from, node.to, "cm-lp-blockquote-line");
+    const firstLine = context.state.doc.lineAt(node.from);
+    if (CALLOUT_RE.test(firstLine.text)) return;
 
+    // Calculate nesting level
+    let level = 0;
+    let cur: SyntaxNode | null = node.node;
+    while (cur) {
+        if (cur.name === "Blockquote") level++;
+        cur = cur.parent;
+    }
+
+    if (level === 1) {
+        // Outermost blockquote: text styling + border line
+        pushDeco(context, node.from, node.to, quoteContentMark);
+        addLineClassForRange(
+            context,
+            node.from,
+            node.to,
+            "cm-lp-blockquote-line",
+        );
+    } else {
+        // Nested: add level class (border via pseudo-elements in CSS)
+        addLineClassForRange(
+            context,
+            node.from,
+            node.to,
+            `cm-lp-blockquote-level-${Math.min(level, 3)}`,
+        );
+    }
+
+    // Hide QuoteMarks for all levels
     const cursor = node.node.cursor();
     if (!cursor.firstChild()) return;
 
@@ -606,7 +686,7 @@ const fencedCodeRule: NodeRule = (node, context) => {
         hideRangeUnlessEditing(context, node.from, openEnd);
     }
 
-    if (closeFrom > 0 && closeFrom < node.to) {
+    if (closeFrom >= 0 && closeFrom < node.to) {
         const hideFrom =
             closeFrom > 0 &&
             context.state.doc.sliceString(closeFrom - 1, closeFrom) === "\n"
@@ -648,6 +728,9 @@ const taskMarkerRule: NodeRule = (node, context) => {
             "data-lp-task-from": String(line.from),
             "data-lp-task-marker": checked ? "x" : " ",
             "data-lp-editing-marker": isEditingMarker ? "true" : "false",
+            tabindex: "0",
+            role: "checkbox",
+            "aria-checked": checked ? "true" : "false",
         },
         {
             "--cm-lp-indent": `${indentWidth}ch`,
@@ -711,18 +794,18 @@ const regexRules: Array<{
                     context,
                     absFrom,
                     absFrom + 2 + pipeIndex + 1,
-                    hideMark,
+                    hideInlineMark,
                 );
             } else {
                 hideRangeUnlessEditing(
                     context,
                     absFrom,
                     absFrom + 2,
-                    hideMark,
+                    hideInlineMark,
                 );
             }
 
-            hideRangeUnlessEditing(context, absTo - 2, absTo, hideMark);
+            hideRangeUnlessEditing(context, absTo - 2, absTo, hideInlineMark);
         },
     },
     {
@@ -732,15 +815,10 @@ const regexRules: Array<{
                 context,
                 absFrom,
                 absFrom + 2,
-                hideMark,
+                hideInlineMark,
             );
             pushDeco(context, absFrom + 2, absTo - 2, highlightMark);
-            hideRangeUnlessEditing(
-                context,
-                absTo - 2,
-                absTo,
-                hideMark,
-            );
+            hideRangeUnlessEditing(context, absTo - 2, absTo, hideInlineMark);
         },
     },
 ];
@@ -752,9 +830,12 @@ function applyNodeRules(context: BuildContext) {
         from: context.vpFrom,
         to: context.vpTo,
         enter(node) {
-            if (node.name === "Table") {
+            if (node.name === "Table" || node.name === "FencedCode") {
                 context.blockRanges.push({ from: node.from, to: node.to });
-                return false;
+                if (node.name === "Table") return false;
+            }
+            if (node.name === "InlineCode") {
+                context.blockRanges.push({ from: node.from, to: node.to });
             }
 
             const liveNode: LivePreviewNode = {
@@ -771,11 +852,7 @@ function applyNodeRules(context: BuildContext) {
     });
 }
 
-function rangeOverlapsBlock(
-    context: BuildContext,
-    from: number,
-    to: number,
-) {
+function rangeOverlapsBlock(context: BuildContext, from: number, to: number) {
     return context.blockRanges.some(
         (range) => to >= range.from && from <= range.to,
     );
@@ -813,7 +890,8 @@ function applyLooseListFallback(context: BuildContext) {
         const shouldTreatAsList =
             marker !== "–" && marker !== "—" && marker !== "−"
                 ? true
-                : indentWidth > 0 || hasAdjacentListContext(context.state, line.number);
+                : indentWidth > 0 ||
+                  hasAdjacentListContext(context.state, line.number);
 
         if (!shouldTreatAsList) continue;
 
@@ -866,13 +944,53 @@ function applyLooseListFallback(context: BuildContext) {
     }
 }
 
+export const toggleCalloutFold = StateEffect.define<number>();
+
+export const calloutFoldState = StateField.define<Map<number, boolean>>({
+    create: () => new Map(),
+    update(folds, tr) {
+        if (!tr.docChanged && tr.effects.length === 0) return folds;
+
+        let result = folds;
+        if (tr.docChanged) {
+            const newFolds = new Map<number, boolean>();
+            for (const [pos, collapsed] of folds) {
+                const mapped = tr.changes.mapPos(pos, 1);
+                newFolds.set(mapped, collapsed);
+            }
+            result = newFolds;
+        }
+        for (const effect of tr.effects) {
+            if (effect.is(toggleCalloutFold)) {
+                if (result === folds) result = new Map(folds);
+                const current = result.get(effect.value) ?? false;
+                result.set(effect.value, !current);
+            }
+        }
+        return result;
+    },
+});
+
+const CALLOUT_ALIASES: Record<string, string> = {
+    info: "note",
+    check: "success",
+    done: "success",
+    faq: "question",
+    help: "question",
+    cite: "quote",
+    tldr: "abstract",
+    summary: "abstract",
+};
+
 function normalizeCalloutType(type: string): string {
-    return type.trim().toLowerCase();
+    const normalized = type.trim().toLowerCase();
+    return CALLOUT_ALIASES[normalized] ?? normalized;
 }
 
 function applyCalloutDecorations(context: BuildContext) {
     const startLine = context.state.doc.lineAt(context.vpFrom).number;
     const endLine = context.state.doc.lineAt(context.vpTo).number;
+    const folds = context.state.field(calloutFoldState, false);
 
     for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
         const line = context.state.doc.line(lineNumber);
@@ -880,6 +998,7 @@ function applyCalloutDecorations(context: BuildContext) {
         if (!match) continue;
 
         const calloutType = normalizeCalloutType(match[1]);
+        const foldMarker = match[2] as "+" | "-" | undefined;
         const markerStart = line.text.indexOf("[!");
         const markerEnd = line.text.indexOf("]", markerStart);
         if (markerStart < 0 || markerEnd < 0) continue;
@@ -890,6 +1009,12 @@ function applyCalloutDecorations(context: BuildContext) {
             if (!nextLine || !/^\s*>/.test(nextLine.text)) break;
             blockEnd++;
         }
+
+        const isCollapsible = foldMarker === "+" || foldMarker === "-";
+        const defaultCollapsed = foldMarker === "-";
+        const isCollapsed = isCollapsible
+            ? (folds?.get(line.from) ?? defaultCollapsed)
+            : false;
 
         addLineClassForRange(
             context,
@@ -907,6 +1032,18 @@ function applyCalloutDecorations(context: BuildContext) {
             `cm-lp-callout-${calloutType}`,
         );
 
+        if (isCollapsible) {
+            addLineDecoration(
+                context.lineDecos,
+                line.from,
+                "cm-lp-callout-collapsible",
+                {
+                    "data-callout-from": String(line.from),
+                    "data-callout-collapsed": isCollapsed ? "true" : "false",
+                },
+            );
+        }
+
         const absoluteMarkerFrom = line.from + markerStart;
         let absoluteMarkerTo = line.from + markerEnd + 1;
         if (match[2]) {
@@ -914,12 +1051,26 @@ function applyCalloutDecorations(context: BuildContext) {
         }
         if (
             absoluteMarkerTo < line.to &&
-            context.state.doc.sliceString(absoluteMarkerTo, absoluteMarkerTo + 1) ===
-                " "
+            context.state.doc.sliceString(
+                absoluteMarkerTo,
+                absoluteMarkerTo + 1,
+            ) === " "
         ) {
             absoluteMarkerTo++;
         }
         hideRangeUnlessEditing(context, absoluteMarkerFrom, absoluteMarkerTo);
+
+        // Hide body lines when collapsed
+        if (isCollapsed && blockEnd > lineNumber) {
+            const bodyFrom = context.state.doc.line(lineNumber + 1).from - 1;
+            const bodyTo = context.state.doc.line(blockEnd).to;
+            if (
+                bodyFrom < bodyTo &&
+                !selectionTouchesRange(context.state, bodyFrom, bodyTo)
+            ) {
+                pushDeco(context, bodyFrom, bodyTo, Decoration.replace({}));
+            }
+        }
     }
 }
 
@@ -998,7 +1149,12 @@ function applyExtendedTaskFallback(context: BuildContext) {
         const taskState = "partial";
 
         if (!isEditingMarker) {
-            pushDeco(context, line.from, Math.min(line.to, markerEnd + 1), hideMark);
+            pushDeco(
+                context,
+                line.from,
+                Math.min(line.to, markerEnd + 1),
+                hideMark,
+            );
         }
 
         addLineDecoration(
@@ -1010,6 +1166,9 @@ function applyExtendedTaskFallback(context: BuildContext) {
                 "data-lp-task-from": String(line.from),
                 "data-lp-task-marker": markerState,
                 "data-lp-editing-marker": isEditingMarker ? "true" : "false",
+                tabindex: "0",
+                role: "checkbox",
+                "aria-checked": "mixed",
             },
             {
                 "--cm-lp-indent": `${indentWidth}ch`,
@@ -1035,7 +1194,11 @@ function applyRichRegexRules(context: BuildContext) {
             absTo,
             Decoration.mark({
                 class: "cm-lp-footnote-ref",
-                attributes: { "data-footnote-id": id },
+                attributes: {
+                    "data-footnote-id": id,
+                    tabindex: "0",
+                    role: "button",
+                },
             }),
         );
     }
@@ -1083,18 +1246,32 @@ function applyRichRegexRules(context: BuildContext) {
         );
     }
 
+    // Block math ($$...$$) that spans multiple lines is handled by
+    // createBlockMathLivePreviewExtension (StateField in livePreviewBlocks.ts).
+    // Single-line block math still gets styled here.
     BLOCK_MATH_RE.lastIndex = 0;
     let blockMathMatch: RegExpExecArray | null;
     while ((blockMathMatch = BLOCK_MATH_RE.exec(context.vpText)) !== null) {
         const absFrom = context.vpFrom + blockMathMatch.index;
         const absTo = absFrom + blockMathMatch[0].length;
         if (rangeOverlapsBlock(context, absFrom, absTo)) continue;
-        if (!blockMathMatch[1].includes("\n")) continue;
+        if (blockMathMatch[1].includes("\n")) continue; // handled by StateField
 
-        pushDeco(context, absFrom, absTo, createMathMark("block"));
-        hideRangeUnlessEditing(context, absFrom, absFrom + 2);
-        hideRangeUnlessEditing(context, absTo - 2, absTo);
-        addLineClassForRange(context, absFrom, absTo, "cm-lp-math-block-line");
+        const tex = blockMathMatch[1].trim();
+        if (!tex) continue;
+
+        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
+            pushDeco(
+                context,
+                absFrom,
+                absTo,
+                Decoration.replace({
+                    widget: new InlineMathWidget(tex),
+                }),
+            );
+        } else {
+            pushDeco(context, absFrom + 2, absTo - 2, createMathMark("block"));
+        }
     }
 
     INLINE_MATH_RE.lastIndex = 0;
@@ -1102,16 +1279,33 @@ function applyRichRegexRules(context: BuildContext) {
     while ((inlineMathMatch = INLINE_MATH_RE.exec(context.vpText)) !== null) {
         const prefixLength = inlineMathMatch[1]?.length ?? 0;
         const absFrom = context.vpFrom + inlineMathMatch.index + prefixLength;
-        const absTo = context.vpFrom + inlineMathMatch.index + inlineMathMatch[0].length;
+        const absTo =
+            context.vpFrom + inlineMathMatch.index + inlineMathMatch[0].length;
         if (rangeOverlapsBlock(context, absFrom, absTo)) continue;
 
         const contentFrom = absFrom + 1;
         const contentTo = absTo - 1;
         if (contentTo <= contentFrom) continue;
 
-        hideRangeUnlessEditing(context, absFrom, contentFrom);
-        pushDeco(context, contentFrom, contentTo, createMathMark("inline"));
-        hideRangeUnlessEditing(context, contentTo, absTo);
+        const tex = context.state.doc
+            .sliceString(contentFrom, contentTo)
+            .trim();
+        if (!tex) continue;
+
+        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
+            pushDeco(
+                context,
+                absFrom,
+                absTo,
+                Decoration.replace({
+                    widget: new InlineMathWidget(tex),
+                }),
+            );
+        } else {
+            hideRangeUnlessEditing(context, absFrom, contentFrom);
+            pushDeco(context, contentFrom, contentTo, createMathMark("inline"));
+            hideRangeUnlessEditing(context, contentTo, absTo);
+        }
     }
 }
 
@@ -1151,7 +1345,7 @@ function buildInlineDecorations(
         lineDecos: new Map<number, LineDecoEntry>(),
         blockRanges: [],
         orderedListMarkerWidths: new Map<string, string>(),
-        linkReferences: buildLinkReferenceIndex(state),
+        linkReferences: state.field(linkReferenceField),
         vpFrom,
         vpTo,
         vpText: state.doc.sliceString(vpFrom, vpTo),
@@ -1166,7 +1360,12 @@ function buildInlineDecorations(
     applyCalloutDecorations(context);
     appendLineDecorations(context);
 
-    context.decos.sort((left, right) => left.from - right.from || left.to - right.to);
+    context.decos.sort(
+        (left, right) =>
+            left.from - right.from ||
+            left.deco.startSide - right.deco.startSide ||
+            left.to - right.to,
+    );
 
     const builder = new RangeSetBuilder<Decoration>();
     for (const deco of context.decos) {

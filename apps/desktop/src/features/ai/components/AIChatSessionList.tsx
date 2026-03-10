@@ -1,7 +1,6 @@
+import { useState } from "react";
 import {
     formatSessionTime,
-    getSessionPreview,
-    getSessionRuntimeName,
     getSessionTitle,
     getSessionUpdatedAt,
 } from "../sessionPresentation";
@@ -12,26 +11,21 @@ interface AIChatSessionListProps {
     sessions: AIChatSession[];
     runtimes: AIRuntimeOption[];
     onSelectSession: (sessionId: string) => void;
+    onDeleteSession: (sessionId: string) => void;
 }
-
-const STATUS_COLORS = {
-    idle: "var(--text-secondary)",
-    streaming: "var(--accent)",
-    waiting_permission: "#d97706",
-    review_required: "#0891b2",
-    error: "#dc2626",
-} as const;
 
 export function AIChatSessionList({
     activeSessionId,
     sessions,
-    runtimes,
     onSelectSession,
+    onDeleteSession,
 }: AIChatSessionListProps) {
+    const [hoveredId, setHoveredId] = useState<string | null>(null);
+
     if (!sessions.length) {
         return (
             <div
-                className="px-3 py-6 text-center text-sm"
+                className="px-3 py-4 text-center text-xs"
                 style={{ color: "var(--text-secondary)" }}
             >
                 No chats yet.
@@ -40,72 +34,88 @@ export function AIChatSessionList({
     }
 
     return (
-        <div className="max-h-[360px] overflow-y-auto p-2" data-scrollbar-active="true">
-            <div className="flex flex-col gap-1">
-                {sessions.map((session) => {
-                    const isActive = session.sessionId === activeSessionId;
-                    const updatedAt = getSessionUpdatedAt(session);
+        <div
+            className="max-h-[300px] overflow-y-auto p-1"
+            data-scrollbar-active="true"
+        >
+            {sessions.map((session) => {
+                const isActive = session.sessionId === activeSessionId;
+                const isHovered = hoveredId === session.sessionId;
+                const updatedAt = getSessionUpdatedAt(session);
 
-                    return (
+                return (
+                    <div
+                        key={session.sessionId}
+                        className="group flex w-full items-center gap-1 rounded"
+                        style={{
+                            backgroundColor:
+                                isActive || isHovered
+                                    ? "var(--bg-tertiary)"
+                                    : "transparent",
+                        }}
+                        onMouseEnter={() => setHoveredId(session.sessionId)}
+                        onMouseLeave={() => setHoveredId(null)}
+                    >
                         <button
-                            key={session.sessionId}
                             type="button"
                             onClick={() => onSelectSession(session.sessionId)}
-                            className="w-full rounded-xl px-3 py-2 text-left"
-                            style={{
-                                backgroundColor: isActive
-                                    ? "color-mix(in srgb, var(--accent) 10%, transparent)"
-                                    : "transparent",
-                                border: `1px solid ${
-                                    isActive
-                                        ? "color-mix(in srgb, var(--accent) 32%, var(--border))"
-                                        : "transparent"
-                                }`,
-                            }}
+                            className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left"
+                            style={{ background: "none", border: "none" }}
                         >
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0 flex-1">
-                                    <div
-                                        className="truncate text-sm font-medium"
-                                        style={{ color: "var(--text-primary)" }}
-                                    >
-                                        {getSessionTitle(session)}
-                                    </div>
-                                    <div
-                                        className="mt-1 truncate text-xs"
-                                        style={{ color: "var(--text-secondary)" }}
-                                    >
-                                        {getSessionPreview(session)}
-                                    </div>
-                                </div>
-                                {updatedAt ? (
-                                    <div
-                                        className="shrink-0 text-[11px]"
-                                        style={{ color: "var(--text-secondary)" }}
-                                    >
-                                        {formatSessionTime(updatedAt)}
-                                    </div>
-                                ) : null}
-                            </div>
-                            <div className="mt-2 flex items-center gap-2">
-                                <div
-                                    className="h-1.5 w-1.5 rounded-full"
-                                    style={{
-                                        backgroundColor: STATUS_COLORS[session.status],
-                                        opacity: session.status === "idle" ? 0.55 : 1,
-                                    }}
-                                />
+                            <span
+                                className="min-w-0 flex-1 truncate text-xs"
+                                style={{
+                                    color: isActive
+                                        ? "var(--accent)"
+                                        : "var(--text-primary)",
+                                }}
+                            >
+                                {getSessionTitle(session)}
+                            </span>
+                            {updatedAt > 0 && !isHovered && (
                                 <span
-                                    className="truncate text-[11px]"
-                                    style={{ color: "var(--text-secondary)" }}
+                                    className="shrink-0 text-[11px]"
+                                    style={{
+                                        color: "var(--text-secondary)",
+                                        opacity: 0.7,
+                                    }}
                                 >
-                                    {getSessionRuntimeName(session, runtimes)}
+                                    {formatSessionTime(updatedAt)}
                                 </span>
-                            </div>
+                            )}
                         </button>
-                    );
-                })}
-            </div>
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteSession(session.sessionId);
+                            }}
+                            className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded"
+                            style={{
+                                background: "none",
+                                border: "none",
+                                color: "var(--text-secondary)",
+                                opacity: 0.6,
+                                visibility: isHovered ? "visible" : "hidden",
+                            }}
+                            title="Delete chat"
+                        >
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 12 12"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M2 3h8M5 3V2h2v1M4.5 3v6.5h3V3" />
+                            </svg>
+                        </button>
+                    </div>
+                );
+            })}
         </div>
     );
 }

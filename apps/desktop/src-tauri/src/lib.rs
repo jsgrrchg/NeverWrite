@@ -1020,6 +1020,16 @@ fn get_backlinks(
         .collect())
 }
 
+#[tauri::command]
+fn delete_vault_snapshot(app: AppHandle, vault_path: String) -> Result<(), String> {
+    let root = Path::new(&vault_path);
+    let dir = snapshot_directory(&app, root)?;
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1063,6 +1073,9 @@ pub fn run() {
             ai::commands::ai_respond_permission,
             ai::commands::ai_save_session_history,
             ai::commands::ai_load_session_histories,
+            ai::commands::ai_delete_session_history,
+            ai::commands::ai_delete_all_session_histories,
+            delete_vault_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

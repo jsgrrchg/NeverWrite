@@ -3,7 +3,10 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import { FILE_TREE_NOTE_DRAG_EVENT, type FileTreeNoteDragDetail } from "../dragEvents";
+import {
+    FILE_TREE_NOTE_DRAG_EVENT,
+    type FileTreeNoteDragDetail,
+} from "../dragEvents";
 import { getWikilinkSuggestions } from "../../editor/extensions/wikilinkSuggester";
 import {
     appendMentionParts,
@@ -29,11 +32,18 @@ interface AIChatComposerProps {
     status: AIChatSessionStatus;
     runtimeName: string;
     disabled?: boolean;
+    autoContextEnabled?: boolean;
+    hasActiveNote?: boolean;
+    requireCmdEnterToSend?: boolean;
+    composerFontSize?: number;
+    expanded?: boolean;
     contextBar?: ReactNode;
     footer?: ReactNode;
     onChange: (parts: AIComposerPart[]) => void;
     onMentionAttach: (note: AIChatNoteSummary) => void;
     onFolderAttach: (folderPath: string, name: string) => void;
+    onToggleAutoContext?: () => void;
+    onToggleExpanded?: () => void;
     onSubmit: () => void;
     onStop: () => void;
 }
@@ -93,7 +103,8 @@ const SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "review",
         label: "/review",
-        description: "Review current uncommitted changes or add instructions after it.",
+        description:
+            "Review current uncommitted changes or add instructions after it.",
         insertText: "/review ",
     },
     {
@@ -152,7 +163,9 @@ function createMentionNode(part: Extract<AIComposerPart, { type: "mention" }>) {
     return element;
 }
 
-function createFolderMentionNode(part: Extract<AIComposerPart, { type: "folder_mention" }>) {
+function createFolderMentionNode(
+    part: Extract<AIComposerPart, { type: "folder_mention" }>,
+) {
     const element = document.createElement("span");
     element.dataset.kind = "folder_mention";
     element.dataset.folderPath = part.folderPath;
@@ -175,49 +188,103 @@ function createFolderMentionNode(part: Extract<AIComposerPart, { type: "folder_m
     return element;
 }
 
+function createFetchMentionNode() {
+    const element = document.createElement("span");
+    element.dataset.kind = "fetch_mention";
+    element.contentEditable = "false";
+    element.textContent = "@fetch";
+    element.style.display = "inline-flex";
+    element.style.alignItems = "center";
+    element.style.padding = "1px 6px";
+    element.style.margin = "0 1px";
+    element.style.borderRadius = "4px";
+    element.style.border = "none";
+    element.style.background = "color-mix(in srgb, #10b981 15%, transparent)";
+    element.style.color = "#10b981";
+    element.style.fontSize = "0.88em";
+    element.style.lineHeight = "1.3";
+    element.style.verticalAlign = "baseline";
+    element.style.whiteSpace = "nowrap";
+    return element;
+}
+
+function appendTextPart(parts: AIComposerPart[], text: string) {
+    if (!text) return;
+    parts.push({
+        id: crypto.randomUUID(),
+        type: "text",
+        text,
+    });
+}
+
+function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
+    if (node.nodeType === Node.TEXT_NODE) {
+        appendTextPart(parts, node.textContent ?? "");
+        return;
+    }
+
+    if (!(node instanceof HTMLElement)) return;
+
+    if (
+        node.dataset.kind === "mention" &&
+        node.dataset.noteId &&
+        node.dataset.label &&
+        node.dataset.path
+    ) {
+        parts.push({
+            id: crypto.randomUUID(),
+            type: "mention",
+            noteId: node.dataset.noteId,
+            label: node.dataset.label,
+            path: node.dataset.path,
+        });
+        return;
+    }
+
+    if (
+        node.dataset.kind === "folder_mention" &&
+        node.dataset.folderPath &&
+        node.dataset.label
+    ) {
+        parts.push({
+            id: crypto.randomUUID(),
+            type: "folder_mention",
+            folderPath: node.dataset.folderPath,
+            label: node.dataset.label,
+        });
+        return;
+    }
+
+    if (node.dataset.kind === "fetch_mention") {
+        parts.push({ id: crypto.randomUUID(), type: "fetch_mention" });
+        return;
+    }
+
+    if (node.tagName === "BR") {
+        appendTextPart(parts, "\n");
+        return;
+    }
+
+    const isBlock = /^(DIV|P|LI)$/.test(node.tagName);
+    node.childNodes.forEach((child) => readPartsFromNode(child, parts));
+    const lastPart = parts.at(-1);
+
+    if (isBlock && lastPart?.type === "text" && !lastPart.text.endsWith("\n")) {
+        appendTextPart(parts, "\n");
+    }
+}
+
 function readPartsFromDom(root: HTMLElement): AIComposerPart[] {
     const parts: AIComposerPart[] = [];
+    root.childNodes.forEach((node) => readPartsFromNode(node, parts));
 
-    root.childNodes.forEach((node) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-            parts.push({
-                id: crypto.randomUUID(),
-                type: "text",
-                text: node.textContent ?? "",
-            });
-            return;
-        }
+    const normalized = normalizeComposerParts(parts);
+    const last = normalized.at(-1);
+    if (last?.type === "text") {
+        last.text = last.text.replace(/\n+$/, "");
+    }
 
-        if (node instanceof HTMLElement) {
-            if (
-                node.dataset.kind === "mention" &&
-                node.dataset.noteId &&
-                node.dataset.label &&
-                node.dataset.path
-            ) {
-                parts.push({
-                    id: crypto.randomUUID(),
-                    type: "mention",
-                    noteId: node.dataset.noteId,
-                    label: node.dataset.label,
-                    path: node.dataset.path,
-                });
-            } else if (
-                node.dataset.kind === "folder_mention" &&
-                node.dataset.folderPath &&
-                node.dataset.label
-            ) {
-                parts.push({
-                    id: crypto.randomUUID(),
-                    type: "folder_mention",
-                    folderPath: node.dataset.folderPath,
-                    label: node.dataset.label,
-                });
-            }
-        }
-    });
-
-    return normalizeComposerParts(parts);
+    return normalizeComposerParts(normalized);
 }
 
 function setCaretAfterNode(node: Node) {
@@ -271,13 +338,16 @@ function syncComposerDom(root: HTMLDivElement, parts: AIComposerPart[]) {
 function isMentionElement(node: Node): node is HTMLElement {
     return (
         node instanceof HTMLElement &&
-        (node.dataset.kind === "mention" || node.dataset.kind === "folder_mention")
+        (node.dataset.kind === "mention" ||
+            node.dataset.kind === "folder_mention" ||
+            node.dataset.kind === "fetch_mention")
     );
 }
 
 function removeAdjacentMention(root: HTMLDivElement) {
     const selection = window.getSelection();
-    if (!selection || !selection.rangeCount || !selection.isCollapsed) return false;
+    if (!selection || !selection.rangeCount || !selection.isCollapsed)
+        return false;
 
     const range = selection.getRangeAt(0);
     const container = range.startContainer;
@@ -324,6 +394,8 @@ function normalizeForSearch(value: string): string {
         .trim();
 }
 
+const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
+
 function getMentionSuggestions(
     notes: AIChatNoteSummary[],
     folderPaths: string[],
@@ -332,6 +404,16 @@ function getMentionSuggestions(
 ): AIMentionSuggestion[] {
     const nq = normalizeForSearch(query);
     const results: AIMentionSuggestion[] = [];
+
+    // Always show @fetch at the top when query is empty or matches fetch keywords
+    if (
+        !nq ||
+        FETCH_KEYWORDS.some(
+            (kw) => kw.startsWith(nq) || nq.startsWith(kw.slice(0, nq.length)),
+        )
+    ) {
+        results.push({ kind: "fetch" });
+    }
 
     // Match folders
     for (const fp of folderPaths) {
@@ -360,31 +442,43 @@ export function AIChatComposer({
     status,
     runtimeName,
     disabled = false,
+    autoContextEnabled = true,
+    hasActiveNote = false,
+    requireCmdEnterToSend = false,
+    composerFontSize = 14,
+    expanded = false,
     contextBar,
     footer,
     onChange,
     onMentionAttach,
     onFolderAttach,
+    onToggleAutoContext,
+    onToggleExpanded,
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
-    const [mentionState, setMentionState] = useState<MentionState>(
-        EMPTY_MENTION_STATE,
-    );
+    const [mentionState, setMentionState] =
+        useState<MentionState>(EMPTY_MENTION_STATE);
     const [slashState, setSlashState] = useState<SlashState>(EMPTY_SLASH_STATE);
     const [externalDragActive, setExternalDragActive] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ComposerContextMenuPayload> | null>(null);
-    const serializedValue = useMemo(() => serializeComposerParts(parts), [parts]);
+    const serializedValue = useMemo(
+        () => serializeComposerParts(parts),
+        [parts],
+    );
     const folderPaths = useMemo(() => extractFolderPaths(notes), [notes]);
 
     useEffect(() => {
         const composer = composerRef.current;
         if (!composer) return;
 
-        if (serializeComposerParts(readPartsFromDom(composer)) === serializedValue) {
+        if (
+            serializeComposerParts(readPartsFromDom(composer)) ===
+            serializedValue
+        ) {
             return;
         }
 
@@ -406,7 +500,12 @@ export function AIChatComposer({
     const updateMentionPicker = () => {
         const composer = composerRef.current;
         const selection = window.getSelection();
-        if (!composer || !selection || !selection.rangeCount || !selection.isCollapsed) {
+        if (
+            !composer ||
+            !selection ||
+            !selection.rangeCount ||
+            !selection.isCollapsed
+        ) {
             closeMentionPicker();
             return;
         }
@@ -433,7 +532,12 @@ export function AIChatComposer({
         }
 
         const query = match[2] ?? "";
-        const suggestions = getMentionSuggestions(notes, folderPaths, query, 10);
+        const suggestions = getMentionSuggestions(
+            notes,
+            folderPaths,
+            query,
+            10,
+        );
 
         const mentionRange = document.createRange();
         mentionRange.setStart(textNode, range.startOffset - query.length - 1);
@@ -454,7 +558,12 @@ export function AIChatComposer({
     const updateSlashPicker = () => {
         const composer = composerRef.current;
         const selection = window.getSelection();
-        if (!composer || !selection || !selection.rangeCount || !selection.isCollapsed) {
+        if (
+            !composer ||
+            !selection ||
+            !selection.rangeCount ||
+            !selection.isCollapsed
+        ) {
             closeSlashPicker();
             return;
         }
@@ -462,7 +571,10 @@ export function AIChatComposer({
         const range = selection.getRangeAt(0);
         const anchorNode = range.startContainer;
 
-        if (!composer.contains(anchorNode) || anchorNode.nodeType !== Node.TEXT_NODE) {
+        if (
+            !composer.contains(anchorNode) ||
+            anchorNode.nodeType !== Node.TEXT_NODE
+        ) {
             closeSlashPicker();
             return;
         }
@@ -516,13 +628,15 @@ export function AIChatComposer({
                 label: item.note.title,
                 path: item.note.path,
             });
-        } else {
+        } else if (item.kind === "folder") {
             span = createFolderMentionNode({
                 id: crypto.randomUUID(),
                 type: "folder_mention",
                 folderPath: item.folderPath,
                 label: item.name,
             });
+        } else {
+            span = createFetchMentionNode();
         }
 
         const trailingSpace = document.createTextNode(" ");
@@ -534,7 +648,7 @@ export function AIChatComposer({
 
         if (item.kind === "note") {
             onMentionAttach(item.note);
-        } else {
+        } else if (item.kind === "folder") {
             onFolderAttach(item.folderPath, item.name);
         }
 
@@ -651,12 +765,21 @@ export function AIChatComposer({
     }, [onChange, onMentionAttach, parts]);
 
     return (
-        <div ref={shellRef} className="flex flex-col">
+        <div
+            ref={shellRef}
+            className={
+                expanded ? "flex min-h-0 flex-1 flex-col" : "flex flex-col"
+            }
+        >
             {contextBar ? (
                 <div className="px-3 pb-1.5">{contextBar}</div>
             ) : null}
             <div
-                className="relative flex flex-col"
+                className={
+                    expanded
+                        ? "relative flex min-h-0 flex-1 flex-col"
+                        : "relative flex flex-col"
+                }
                 style={{
                     border: "1px solid var(--border)",
                     borderRadius: 12,
@@ -668,12 +791,68 @@ export function AIChatComposer({
                     transition: "box-shadow 0.15s ease",
                 }}
             >
+                <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={onToggleExpanded}
+                    onMouseDown={(e) => e.preventDefault()}
+                    className="absolute right-2 top-2 flex items-center justify-center rounded"
+                    style={{
+                        width: 22,
+                        height: 22,
+                        color: "var(--text-secondary)",
+                        backgroundColor: "transparent",
+                        border: "none",
+                        opacity: 0.45,
+                        outline: "none",
+                        zIndex: 1,
+                    }}
+                    title={expanded ? "Collapse composer" : "Expand composer"}
+                    aria-label={
+                        expanded ? "Collapse composer" : "Expand composer"
+                    }
+                >
+                    {expanded ? (
+                        <svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                        >
+                            <path d="M9 1h4v4M5 13H1V9M1 1l5 5M13 13l-5-5" />
+                        </svg>
+                    ) : (
+                        <svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                        >
+                            <path d="M1 5V1h4M9 13h4V9M6 1l-5 5M8 13l5-5" />
+                        </svg>
+                    )}
+                </button>
                 {isEmpty && (
                     <div
-                        className="pointer-events-none absolute left-3.5 top-2.5 text-sm"
-                        style={{ color: "var(--text-secondary)", opacity: 0.6 }}
+                        className="pointer-events-none absolute left-3.5 top-2.5"
+                        style={{
+                            right: 32,
+                            overflow: "hidden",
+                            whiteSpace: "nowrap",
+                            textOverflow: "ellipsis",
+                            color: "var(--text-secondary)",
+                            opacity: 0.6,
+                            fontSize: composerFontSize,
+                        }}
                     >
-                        Message {runtimeName} — @ to include context, / for commands
+                        Message {runtimeName} — @ to include context, / for
+                        commands
                     </div>
                 )}
                 <div
@@ -682,6 +861,9 @@ export function AIChatComposer({
                     suppressContentEditableWarning
                     role="textbox"
                     aria-label="Message VaultAI"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     onContextMenu={(event) => {
                         event.preventDefault();
                         const composer = composerRef.current;
@@ -704,7 +886,10 @@ export function AIChatComposer({
                         event.preventDefault();
                         const text = event.clipboardData.getData("text/plain");
                         if (text && composerRef.current) {
-                            insertPlainTextAtSelection(composerRef.current, text);
+                            insertPlainTextAtSelection(
+                                composerRef.current,
+                                text,
+                            );
                             syncFromDom();
                         }
                     }}
@@ -723,7 +908,8 @@ export function AIChatComposer({
                                     selectedIndex:
                                         state.items.length === 0
                                             ? 0
-                                            : (state.selectedIndex + 1) % state.items.length,
+                                            : (state.selectedIndex + 1) %
+                                              state.items.length,
                                 }));
                                 return;
                             }
@@ -735,7 +921,9 @@ export function AIChatComposer({
                                     selectedIndex:
                                         state.items.length === 0
                                             ? 0
-                                            : (state.selectedIndex - 1 + state.items.length) %
+                                            : (state.selectedIndex -
+                                                  1 +
+                                                  state.items.length) %
                                               state.items.length,
                                 }));
                                 return;
@@ -745,7 +933,9 @@ export function AIChatComposer({
                                 if (slashState.items.length > 0) {
                                     event.preventDefault();
                                     insertSlashCommand(
-                                        slashState.items[slashState.selectedIndex]!,
+                                        slashState.items[
+                                            slashState.selectedIndex
+                                        ]!,
                                     );
                                 }
                                 return;
@@ -779,7 +969,9 @@ export function AIChatComposer({
                                     selectedIndex:
                                         state.items.length === 0
                                             ? 0
-                                            : (state.selectedIndex - 1 + state.items.length) %
+                                            : (state.selectedIndex -
+                                                  1 +
+                                                  state.items.length) %
                                               state.items.length,
                                 }));
                                 return;
@@ -789,7 +981,9 @@ export function AIChatComposer({
                                 if (mentionState.items.length > 0) {
                                     event.preventDefault();
                                     insertMentionSuggestion(
-                                        mentionState.items[mentionState.selectedIndex]!,
+                                        mentionState.items[
+                                            mentionState.selectedIndex
+                                        ]!,
                                     );
                                 }
                                 return;
@@ -812,7 +1006,10 @@ export function AIChatComposer({
                             return;
                         }
 
-                        if (event.key === "Enter" && !event.shiftKey) {
+                        const shouldSend = requireCmdEnterToSend
+                            ? event.key === "Enter" && event.metaKey
+                            : event.key === "Enter" && !event.shiftKey;
+                        if (shouldSend) {
                             event.preventDefault();
                             if (isStreaming) onStop();
                             else onSubmit();
@@ -832,23 +1029,90 @@ export function AIChatComposer({
                             closeSlashPicker();
                         }, 0);
                     }}
-                    className="w-full whitespace-pre-wrap break-words text-sm"
+                    className={`w-full whitespace-pre-wrap break-words${expanded ? " min-h-0 flex-1" : ""}`}
                     style={{
                         color: "var(--text-primary)",
                         backgroundColor: "transparent",
                         border: "none",
                         outline: "none",
-                        minHeight: 64,
-                        maxHeight: 200,
+                        minHeight: expanded ? undefined : 64,
+                        maxHeight: expanded ? undefined : 200,
                         overflowY: "auto",
-                        padding: "10px 14px",
+                        padding: "10px 36px 10px 14px",
                         lineHeight: 1.5,
+                        fontSize: composerFontSize,
                         opacity: disabled ? 0.6 : 1,
                         cursor: disabled ? "default" : "text",
                     }}
                 />
                 <div className="flex items-center justify-between gap-2 px-2 pb-1.5">
                     <div className="min-w-0 flex-1">{footer}</div>
+                    {hasActiveNote && (
+                        <button
+                            type="button"
+                            tabIndex={-1}
+                            onClick={onToggleAutoContext}
+                            onMouseDown={(e) => e.preventDefault()}
+                            className="flex shrink-0 items-center justify-center rounded-md"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: autoContextEnabled
+                                    ? "var(--accent)"
+                                    : "var(--text-secondary)",
+                                backgroundColor: autoContextEnabled
+                                    ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                                    : "transparent",
+                                border: "none",
+                                transition: "all 0.15s ease",
+                                outline: "none",
+                                appearance: "none",
+                                WebkitAppearance: "none",
+                            }}
+                            title={
+                                autoContextEnabled
+                                    ? "Active note included as context"
+                                    : "Active note not included as context"
+                            }
+                            aria-label="Toggle active note context"
+                        >
+                            {autoContextEnabled ? (
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <path d="M4 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z" />
+                                    <path d="M5 6h6M5 8.5h6M5 11h3" />
+                                </svg>
+                            ) : (
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <rect
+                                        x="2"
+                                        y="2"
+                                        width="12"
+                                        height="12"
+                                        rx="2"
+                                    />
+                                    <path d="M5 11L11 5" />
+                                </svg>
+                            )}
+                        </button>
+                    )}
                     <button
                         type="button"
                         onClick={isStreaming ? onStop : onSubmit}
@@ -857,24 +1121,49 @@ export function AIChatComposer({
                         style={{
                             width: 28,
                             height: 28,
-                            color: isStreaming ? "#fff" : isEmpty ? "var(--text-secondary)" : "#fff",
+                            color: isStreaming
+                                ? "#fff"
+                                : isEmpty
+                                  ? "var(--text-secondary)"
+                                  : "#fff",
                             backgroundColor: isStreaming
                                 ? "#b91c1c"
                                 : isEmpty
                                   ? "transparent"
                                   : "var(--accent)",
                             border: "none",
-                            opacity: disabled || (isEmpty && !isStreaming) ? 0.4 : 1,
+                            opacity:
+                                disabled || (isEmpty && !isStreaming) ? 0.4 : 1,
                             transition: "all 0.15s ease",
                         }}
                         aria-label={isStreaming ? "Stop" : "Send"}
                     >
                         {isStreaming ? (
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-                                <rect x="2" y="2" width="10" height="10" rx="2" />
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 14 14"
+                                fill="currentColor"
+                            >
+                                <rect
+                                    x="2"
+                                    y="2"
+                                    width="10"
+                                    height="10"
+                                    rx="2"
+                                />
                             </svg>
                         ) : (
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
                                 <path d="M8 12V4M4 7l4-3 4 3" />
                             </svg>
                         )}
@@ -889,7 +1178,10 @@ export function AIChatComposer({
                     items={mentionState.items}
                     anchorElement={composerRef.current}
                     onHoverIndex={(index) =>
-                        setMentionState((state) => ({ ...state, selectedIndex: index }))
+                        setMentionState((state) => ({
+                            ...state,
+                            selectedIndex: index,
+                        }))
                     }
                     onSelect={insertMentionSuggestion}
                     onClose={closeMentionPicker}
@@ -903,7 +1195,10 @@ export function AIChatComposer({
                     items={slashState.items}
                     anchorElement={composerRef.current}
                     onHoverIndex={(index) =>
-                        setSlashState((state) => ({ ...state, selectedIndex: index }))
+                        setSlashState((state) => ({
+                            ...state,
+                            selectedIndex: index,
+                        }))
                     }
                     onSelect={insertSlashCommand}
                     onClose={closeSlashPicker}

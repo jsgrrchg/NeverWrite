@@ -5,11 +5,7 @@ export type AIChatSessionStatus =
     | "review_required"
     | "error";
 
-export type AIRuntimeConnectionStatus =
-    | "idle"
-    | "loading"
-    | "ready"
-    | "error";
+export type AIRuntimeConnectionStatus = "idle" | "loading" | "ready" | "error";
 
 export type AIRuntimeBinarySource =
     | "bundled"
@@ -88,6 +84,7 @@ export interface AIChatAttachment {
     noteId: string | null;
     label: string;
     path: string | null;
+    content?: string;
 }
 
 export type AIChatRole = "user" | "assistant" | "system";
@@ -116,7 +113,10 @@ export interface AIChatMessage {
 
 export interface AIChatSession {
     sessionId: string;
+    historySessionId: string;
     status: AIChatSessionStatus;
+    isResumingSession?: boolean;
+    effortsByModel?: Record<string, string[]>;
     runtimeId: string;
     modelId: string;
     modeId: string;
@@ -125,6 +125,8 @@ export interface AIChatSession {
     configOptions: AIConfigOption[];
     messages: AIChatMessage[];
     attachments: AIChatAttachment[];
+    isPersistedSession?: boolean;
+    resumeContextPending?: boolean;
 }
 
 export interface AIRuntimeDescriptor {
@@ -140,6 +142,7 @@ export interface AIBackendSessionPayload {
     model_id: string;
     mode_id: string;
     status: AIChatSessionStatus;
+    efforts_by_model?: Record<string, string[]>;
     models: AIBackendRuntimeDescriptorPayload["models"];
     modes: AIBackendRuntimeDescriptorPayload["modes"];
     config_options: Array<{
@@ -263,11 +266,16 @@ export type AIComposerPart =
           type: "folder_mention";
           folderPath: string;
           label: string;
+      }
+    | {
+          id: string;
+          type: "fetch_mention";
       };
 
 export type AIMentionSuggestion =
     | { kind: "note"; note: AIChatNoteSummary }
-    | { kind: "folder"; folderPath: string; name: string };
+    | { kind: "folder"; folderPath: string; name: string }
+    | { kind: "fetch" };
 
 export interface PersistedMessage {
     id: string;

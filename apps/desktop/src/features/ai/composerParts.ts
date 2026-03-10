@@ -15,12 +15,15 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
         .map((part) => {
             if (part.type === "text") return part.text;
             if (part.type === "folder_mention") return `@📁${part.label}`;
-            return `@${part.label}`;
+            if (part.type === "mention") return `@${part.label}`;
+            return "";
         })
         .join("");
 }
 
-export function normalizeComposerParts(parts: AIComposerPart[]): AIComposerPart[] {
+export function normalizeComposerParts(
+    parts: AIComposerPart[],
+): AIComposerPart[] {
     const normalized: AIComposerPart[] = [];
 
     for (const part of parts) {

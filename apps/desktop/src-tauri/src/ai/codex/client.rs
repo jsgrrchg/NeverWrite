@@ -211,6 +211,33 @@ impl PermissionState {
     }
 }
 
+/// Drop guard that ensures `emit_message_completed` fires even if the
+/// spawned prompt task panics or is cancelled.
+struct TurnCompletionGuard {
+    app: AppHandle,
+    streaming: StreamingState,
+    session_id: String,
+    fallback_message_id: String,
+    completed: bool,
+}
+
+impl Drop for TurnCompletionGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        // Clean up any lingering thinking state.
+        if let Some(thinking_id) = self.streaming.end_thought(&self.session_id) {
+            emit_thinking_completed(&self.app, self.session_id.clone(), thinking_id);
+        }
+        let completed_id = self
+            .streaming
+            .end_turn(&self.session_id)
+            .unwrap_or_else(|| self.fallback_message_id.clone());
+        emit_message_completed(&self.app, self.session_id.clone(), completed_id);
+    }
+}
+
 struct VaultAiAcpClient {
     app: AppHandle,
     streaming: StreamingState,
@@ -226,6 +253,10 @@ pub struct CodexSessionState {
     pub models: Vec<AiModelOption>,
     pub modes: Vec<AiModeOption>,
     pub config_options: Vec<AiConfigOption>,
+    /// Maps display model id to the effort levels the ACP supports for it.
+    pub efforts_by_model: std::collections::HashMap<String, Vec<String>>,
+    /// Maps display model id → canonical ACP base id (e.g. "gpt-5.1-codex" → "gpt-5.1-codex-max").
+    pub acp_model_ids: std::collections::HashMap<String, String>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -687,24 +718,34 @@ impl RuntimeActor {
             .await
             .map_err(|error| error.to_string())?;
 
+        let current_model_id = response
+            .models
+            .as_ref()
+            .map(|state| strip_effort_suffix(&state.current_model_id.0).to_string())
+            .unwrap_or_default();
+
+        let mapped = response.models.map(map_session_models);
+        let (models, efforts_by_model, acp_model_ids) = match mapped {
+            Some(m) => (m.models, m.efforts_by_model, m.acp_model_ids),
+            None => Default::default(),
+        };
+
         Ok(CodexSessionState {
             session_id: response.session_id.0.to_string(),
-            model_id: response
-                .models
-                .as_ref()
-                .map(|state| state.current_model_id.0.to_string())
-                .unwrap_or_else(|| "gpt-5-codex".to_string()),
+            model_id: current_model_id,
             mode_id: response
                 .modes
                 .as_ref()
                 .map(|state| state.current_mode_id.0.to_string())
                 .unwrap_or_else(|| "default".to_string()),
-            models: response.models.map(map_session_models).unwrap_or_default(),
+            models,
             modes: response.modes.map(map_session_modes).unwrap_or_default(),
             config_options: response
                 .config_options
                 .map(map_session_config_options)
                 .unwrap_or_default(),
+            efforts_by_model,
+            acp_model_ids,
         })
     }
 
@@ -798,6 +839,15 @@ impl RuntimeActor {
             let message_id = streaming.begin_turn(&session_id);
             emit_message_started(&app, session_id.clone(), message_id.clone());
 
+            // Guard ensures emit_message_completed fires even on panic/drop.
+            let mut guard = TurnCompletionGuard {
+                app: app.clone(),
+                streaming: streaming.clone(),
+                session_id: session_id.clone(),
+                fallback_message_id: message_id,
+                completed: false,
+            };
+
             let result = connection
                 .prompt(PromptRequest::new(
                     SessionId::new(session_id.clone()),
@@ -809,8 +859,11 @@ impl RuntimeActor {
             if let Some(thinking_id) = streaming.end_thought(&session_id) {
                 emit_thinking_completed(&app, session_id.clone(), thinking_id);
             }
-            let completed_id = streaming.end_turn(&session_id).unwrap_or(message_id);
-            emit_message_completed(&app, session_id, completed_id);
+            let completed_id = streaming.end_turn(&session_id).unwrap_or_default();
+            if !completed_id.is_empty() {
+                emit_message_completed(&app, session_id, completed_id);
+            }
+            guard.completed = true;
 
             let _ = response_tx.send(result.map_err(|e| e.to_string()));
         });
@@ -843,17 +896,83 @@ impl RuntimeActor {
     }
 }
 
-fn map_session_models(state: agent_client_protocol::SessionModelState) -> Vec<AiModelOption> {
-    state
-        .available_models
-        .into_iter()
-        .map(|model| AiModelOption {
-            id: model.model_id.0.to_string(),
+const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh"];
+/// Strip the reasoning-effort suffix that the ACP bakes into model IDs and names.
+/// IDs use slash format:   "gpt-5.3-codex/medium" → "gpt-5.3-codex"
+/// Names use paren format: "gpt-5.3-codex (medium)" → "gpt-5.3-codex"
+fn strip_effort_suffix(text: &str) -> &str {
+    for level in EFFORT_LEVELS {
+        if let Some(base) = text.strip_suffix(&format!("/{level}")) {
+            return base;
+        }
+        if let Some(base) = text.strip_suffix(&format!(" ({level})")) {
+            return base;
+        }
+    }
+    text
+}
+
+/// Extract the effort level from an ACP model id (e.g. "gpt-5.3-codex/medium" → "medium").
+fn extract_effort(model_id: &str) -> Option<&str> {
+    let suffix = model_id.rsplit('/').next()?;
+    EFFORT_LEVELS.iter().find(|&&l| l == suffix).copied()
+}
+
+/// Deduplicate ACP models (which encode effort AND size variant in the id)
+/// and build an effort map keyed by the canonical model id used in the dropdown.
+///
+/// The canonical id is the ACP base id of the first variant seen (e.g. "gpt-5.1-codex-max").
+/// The display name strips both effort and size variant (e.g. "gpt-5.1-codex").
+struct MappedModels {
+    models: Vec<AiModelOption>,
+    efforts_by_model: std::collections::HashMap<String, Vec<String>>,
+    acp_model_ids: std::collections::HashMap<String, String>,
+}
+
+fn map_session_models(state: agent_client_protocol::SessionModelState) -> MappedModels {
+    // display_id (keeps size variant) → canonical ACP base id (first variant seen)
+    let mut canonical_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut efforts_by_model: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut models = Vec::new();
+
+    for model in state.available_models {
+        let acp_base = strip_effort_suffix(&model.model_id.0).to_string();
+        let display_id = acp_base.clone();
+
+        let canon = canonical_id
+            .entry(display_id.clone())
+            .or_insert_with(|| acp_base.clone());
+
+        if let Some(effort) = extract_effort(&model.model_id.0) {
+            // Only track efforts for the canonical (first) variant.
+            if *canon == acp_base {
+                efforts_by_model
+                    .entry(display_id.clone())
+                    .or_default()
+                    .push(effort.to_string());
+            }
+        }
+
+        // Already added this display model.
+        if canon != &acp_base || models.iter().any(|m: &AiModelOption| m.id == display_id) {
+            continue;
+        }
+
+        models.push(AiModelOption {
+            id: display_id,
             runtime_id: CODEX_RUNTIME_ID.to_string(),
-            name: model.name,
+            name: strip_effort_suffix(&model.name).to_string(),
             description: model.description.unwrap_or_default(),
-        })
-        .collect()
+        });
+    }
+
+    MappedModels {
+        models,
+        efforts_by_model,
+        acp_model_ids: canonical_id,
+    }
 }
 
 fn map_session_modes(state: agent_client_protocol::SessionModeState) -> Vec<AiModeOption> {

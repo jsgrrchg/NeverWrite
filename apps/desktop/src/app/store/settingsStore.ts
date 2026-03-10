@@ -14,6 +14,7 @@ export interface Settings {
     editorContentWidth: number; // 600–1200
     lineWrapping: boolean;
     justifyText: boolean;
+    livePreviewEnabled: boolean;
     tabSize: 2 | 4;
 
     // Navigation
@@ -67,6 +68,7 @@ const defaults: Settings = {
     editorContentWidth: 860,
     lineWrapping: true,
     justifyText: false,
+    livePreviewEnabled: true,
     tabSize: 4,
     fileTreeScale: 100,
 };
@@ -139,6 +141,8 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             ),
             lineWrapping: parsed.state.lineWrapping ?? defaults.lineWrapping,
             justifyText: parsed.state.justifyText ?? defaults.justifyText,
+            livePreviewEnabled:
+                parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
             tabSize: normalizeTabSize(parsed.state.tabSize),
             fileTreeScale: normalizeIntInRange(
                 parsed.state.fileTreeScale,
@@ -163,6 +167,7 @@ function pickSettings(state: SettingsStore): Settings {
         editorContentWidth: state.editorContentWidth,
         lineWrapping: state.lineWrapping,
         justifyText: state.justifyText,
+        livePreviewEnabled: state.livePreviewEnabled,
         tabSize: state.tabSize,
         fileTreeScale: state.fileTreeScale,
     };

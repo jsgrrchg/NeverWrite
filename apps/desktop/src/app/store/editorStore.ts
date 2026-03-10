@@ -22,8 +22,9 @@ export function readPersistedSession(
 ): PersistedSession | null {
     try {
         const raw =
-            (vaultPath ? localStorage.getItem(getSessionKey(vaultPath)) : null) ??
-            localStorage.getItem(SESSION_KEY);
+            (vaultPath
+                ? localStorage.getItem(getSessionKey(vaultPath))
+                : null) ?? localStorage.getItem(SESSION_KEY);
         if (!raw) return null;
         return JSON.parse(raw) as PersistedSession;
     } catch {
@@ -47,8 +48,6 @@ export interface Tab {
     isDirty: boolean;
 }
 
-export type EditorMode = "preview";
-
 export interface PendingReveal {
     noteId: string;
     targets: string[];
@@ -61,17 +60,29 @@ export interface PendingSelectionReveal {
     head: number;
 }
 
+export interface EditorSelectionContext {
+    noteId: string;
+    text: string;
+    from: number;
+    to: number;
+}
+
 export interface OpenNoteOptions {
     placement?: "end" | "afterActive";
+}
+
+interface ReloadedNoteDetail {
+    content: string;
+    title: string;
 }
 
 interface EditorStore {
     tabs: Tab[];
     activeTabId: string | null;
     activationHistory: string[];
-    editorMode: EditorMode;
     pendingReveal: PendingReveal | null;
     pendingSelectionReveal: PendingSelectionReveal | null;
+    currentSelection: EditorSelectionContext | null;
     openNote: (
         noteId: string,
         title: string,
@@ -91,16 +102,18 @@ interface EditorStore {
     clearPendingReveal: () => void;
     queueSelectionReveal: (reveal: PendingSelectionReveal) => void;
     clearPendingSelectionReveal: () => void;
-    reloadNoteContent: (noteId: string, content: string) => void;
+    setCurrentSelection: (selection: EditorSelectionContext) => void;
+    clearCurrentSelection: () => void;
+    reloadNoteContent: (noteId: string, detail: ReloadedNoteDetail) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
     tabs: [],
     activeTabId: null,
     activationHistory: [],
-    editorMode: "preview",
     pendingReveal: null,
     pendingSelectionReveal: null,
+    currentSelection: null,
 
     openNote: (noteId, title, content, options) => {
         const existing = get().tabs.find((t) => t.noteId === noteId);
@@ -263,17 +276,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     queueSelectionReveal: (pendingSelectionReveal) =>
         set({ pendingSelectionReveal }),
 
-    clearPendingSelectionReveal: () =>
-        set({ pendingSelectionReveal: null }),
+    clearPendingSelectionReveal: () => set({ pendingSelectionReveal: null }),
 
-    reloadNoteContent: (noteId, content) => {
+    setCurrentSelection: (currentSelection) => set({ currentSelection }),
+
+    clearCurrentSelection: () => set({ currentSelection: null }),
+
+    reloadNoteContent: (noteId, detail) => {
         set((state) => ({
             tabs: state.tabs.map((t) => {
                 if (t.noteId !== noteId) return t;
                 // Don't overwrite unsaved user edits
                 if (t.isDirty) return t;
-                if (t.content === content) return t;
-                return { ...t, content };
+                if (t.content === detail.content && t.title === detail.title) {
+                    return t;
+                }
+                return { ...t, content: detail.content, title: detail.title };
             }),
         }));
     },
