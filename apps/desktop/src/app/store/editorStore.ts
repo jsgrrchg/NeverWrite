@@ -1,15 +1,22 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useVaultStore } from "./vaultStore";
 
+const MAX_HISTORY = 30;
 const SESSION_KEY = "vaultai.session.tabs";
 const SESSION_KEY_PREFIX = "vaultai.session.tabs:";
 
 interface PersistedSession {
-    noteIds: Array<{ noteId: string; title: string }>;
+    noteIds: Array<{
+        noteId: string;
+        title: string;
+        history?: Array<{ noteId: string; title: string }>;
+        historyIndex?: number;
+    }>;
     activeNoteId: string | null;
 }
 
-function pushTabToHistory(history: string[], tabId: string) {
+function pushTabToActivation(history: string[], tabId: string) {
     return [...history.filter((id) => id !== tabId), tabId];
 }
 
@@ -40,11 +47,43 @@ export function markSessionReady() {
     sessionReady = true;
 }
 
+export interface HistoryEntry {
+    noteId: string;
+    title: string;
+    content: string;
+}
+
 export interface Tab {
     id: string;
     noteId: string;
     title: string;
     content: string;
+    history: HistoryEntry[];
+    historyIndex: number;
+}
+
+/** Tab without required history fields — used when creating tabs externally. */
+export type TabInput = Omit<Tab, "history" | "historyIndex"> &
+    Partial<Pick<Tab, "history" | "historyIndex">>;
+
+function createTab(noteId: string, title: string, content: string): Tab {
+    return {
+        id: crypto.randomUUID(),
+        noteId,
+        title,
+        content,
+        history: [{ noteId, title, content }],
+        historyIndex: 0,
+    };
+}
+
+function ensureTabHistory(tab: Tab): Tab {
+    if (tab.history && tab.history.length > 0) return tab;
+    return {
+        ...tab,
+        history: [{ noteId: tab.noteId, title: tab.title, content: tab.content }],
+        historyIndex: 0,
+    };
 }
 
 export interface PendingReveal {
@@ -66,10 +105,6 @@ export interface EditorSelectionContext {
     to: number;
 }
 
-export interface OpenNoteOptions {
-    placement?: "end" | "afterActive";
-}
-
 interface ReloadedNoteDetail {
     content: string;
     title: string;
@@ -82,19 +117,17 @@ interface EditorStore {
     pendingReveal: PendingReveal | null;
     pendingSelectionReveal: PendingSelectionReveal | null;
     currentSelection: EditorSelectionContext | null;
-    openNote: (
-        noteId: string,
-        title: string,
-        content: string,
-        options?: OpenNoteOptions,
-    ) => void;
+    openNote: (noteId: string, title: string, content: string) => void;
+    goBack: () => void;
+    goForward: () => void;
+    navigateToHistoryIndex: (index: number) => void;
     closeTab: (tabId: string) => void;
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
     reorderTabs: (fromIndex: number, toIndex: number) => void;
-    hydrateTabs: (tabs: Tab[], activeTabId: string | null) => void;
-    insertExternalTab: (tab: Tab, index?: number) => void;
+    hydrateTabs: (tabs: TabInput[], activeTabId: string | null) => void;
+    insertExternalTab: (tab: TabInput, index?: number) => void;
     queueReveal: (reveal: PendingReveal) => void;
     clearPendingReveal: () => void;
     queueSelectionReveal: (reveal: PendingSelectionReveal) => void;
@@ -112,55 +145,110 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     pendingSelectionReveal: null,
     currentSelection: null,
 
-    openNote: (noteId, title, content, options) => {
-        const existing = get().tabs.find((t) => t.noteId === noteId);
-        if (existing) {
-            set({ activeTabId: existing.id });
-            return;
-        }
-        const tab: Tab = {
-            id: crypto.randomUUID(),
-            noteId,
-            title,
-            content,
-        };
+    openNote: (noteId, title, content) => {
         set((state) => {
-            if (options?.placement !== "afterActive") {
-                return {
-                    tabs: [...state.tabs, tab],
-                    activeTabId: tab.id,
-                    activationHistory: pushTabToHistory(
-                        state.activationHistory,
-                        tab.id,
-                    ),
-                };
-            }
-
-            const activeIndex = state.tabs.findIndex(
-                (item) => item.id === state.activeTabId,
+            const activeTab = state.tabs.find(
+                (t) => t.id === state.activeTabId,
             );
-            if (activeIndex === -1) {
+
+            // If active tab already shows this note, no-op
+            if (activeTab && activeTab.noteId === noteId) {
+                return state;
+            }
+
+            // If there's an active tab, navigate within it
+            if (activeTab) {
+                const tab = ensureTabHistory(activeTab);
+                // Save current content to current history entry
+                const history = [...tab.history];
+                history[tab.historyIndex] = {
+                    noteId: tab.noteId,
+                    title: tab.title,
+                    content: tab.content,
+                };
+                // Truncate forward entries
+                const trimmed = history.slice(0, tab.historyIndex + 1);
+                // Push new entry
+                const newEntry: HistoryEntry = { noteId, title, content };
+                trimmed.push(newEntry);
+                // Cap at MAX_HISTORY
+                const capped =
+                    trimmed.length > MAX_HISTORY
+                        ? trimmed.slice(trimmed.length - MAX_HISTORY)
+                        : trimmed;
+                const newIndex = capped.length - 1;
+
                 return {
-                    tabs: [...state.tabs, tab],
-                    activeTabId: tab.id,
-                    activationHistory: pushTabToHistory(
-                        state.activationHistory,
-                        tab.id,
+                    tabs: state.tabs.map((t) =>
+                        t.id === activeTab.id
+                            ? {
+                                  ...t,
+                                  noteId,
+                                  title,
+                                  content,
+                                  history: capped,
+                                  historyIndex: newIndex,
+                              }
+                            : t,
                     ),
                 };
             }
 
-            const tabs = [...state.tabs];
-            tabs.splice(activeIndex + 1, 0, tab);
+            // No tabs — create a new one
+            const newTab = createTab(noteId, title, content);
             return {
-                tabs,
-                activeTabId: tab.id,
-                activationHistory: pushTabToHistory(
+                tabs: [newTab],
+                activeTabId: newTab.id,
+                activationHistory: pushTabToActivation(
                     state.activationHistory,
-                    tab.id,
+                    newTab.id,
                 ),
             };
         });
+    },
+
+    goBack: () => get().navigateToHistoryIndex(
+        (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ?? 1) - 1,
+    ),
+
+    goForward: () => get().navigateToHistoryIndex(
+        (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ?? -1) + 1,
+    ),
+
+    navigateToHistoryIndex: (targetIndex) => {
+        const state = get();
+        const tabIdx = state.tabs.findIndex(
+            (t) => t.id === state.activeTabId,
+        );
+        if (tabIdx === -1) return;
+        const tab = ensureTabHistory(state.tabs[tabIdx]);
+        if (targetIndex < 0 || targetIndex >= tab.history.length) return;
+        if (targetIndex === tab.historyIndex) return;
+
+        // Snapshot current content into history, then jump
+        const history = [...tab.history];
+        history[tab.historyIndex] = {
+            noteId: tab.noteId,
+            title: tab.title,
+            content: tab.content,
+        };
+        const entry = history[targetIndex];
+
+        // Splice updated tab directly — avoids iterating every tab
+        const tabs = [...state.tabs];
+        tabs[tabIdx] = {
+            ...tab,
+            noteId: entry.noteId,
+            title: entry.title,
+            content: entry.content,
+            history,
+            historyIndex: targetIndex,
+        };
+        set({ tabs });
+
+        if (!entry.content) {
+            void loadHistoryEntryContent(tab.id, targetIndex, entry.noteId);
+        }
     },
 
     closeTab: (tabId) => {
@@ -186,20 +274,44 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     switchTab: (tabId) =>
         set((state) => ({
             activeTabId: tabId,
-            activationHistory: pushTabToHistory(state.activationHistory, tabId),
+            activationHistory: pushTabToActivation(
+                state.activationHistory,
+                tabId,
+            ),
         })),
 
     updateTabContent: (tabId, content) => {
         set((state) => ({
-            tabs: state.tabs.map((t) =>
-                t.id === tabId ? { ...t, content } : t,
-            ),
+            tabs: state.tabs.map((t) => {
+                if (t.id !== tabId) return t;
+                // Also update current history entry
+                if (!t.history?.length) return { ...t, content };
+                const history = [...t.history];
+                if (history[t.historyIndex]) {
+                    history[t.historyIndex] = {
+                        ...history[t.historyIndex],
+                        content,
+                    };
+                }
+                return { ...t, content, history };
+            }),
         }));
     },
 
     updateTabTitle: (tabId, title) => {
         set((state) => ({
-            tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
+            tabs: state.tabs.map((t) => {
+                if (t.id !== tabId) return t;
+                if (!t.history?.length) return { ...t, title };
+                const history = [...t.history];
+                if (history[t.historyIndex]) {
+                    history[t.historyIndex] = {
+                        ...history[t.historyIndex],
+                        title,
+                    };
+                }
+                return { ...t, title, history };
+            }),
         }));
     },
 
@@ -213,12 +325,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     hydrateTabs: (tabs, activeTabId) => {
+        const hydratedTabs = tabs.map(ensureTabHistory);
         const nextActiveTabId =
-            activeTabId && tabs.some((tab) => tab.id === activeTabId)
+            activeTabId && hydratedTabs.some((tab) => tab.id === activeTabId)
                 ? activeTabId
-                : (tabs[0]?.id ?? null);
+                : (hydratedTabs[0]?.id ?? null);
         set({
-            tabs,
+            tabs: hydratedTabs,
             activeTabId: nextActiveTabId,
             activationHistory: nextActiveTabId ? [nextActiveTabId] : [],
         });
@@ -226,21 +339,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     insertExternalTab: (tab, index) => {
         set((state) => {
+            const incoming = ensureTabHistory(tab);
             const tabs = state.tabs.filter(
-                (existing) => existing.id !== tab.id,
+                (existing) => existing.id !== incoming.id,
             );
             const boundedIndex =
                 index === undefined
                     ? tabs.length
                     : Math.max(0, Math.min(index, tabs.length));
 
-            tabs.splice(boundedIndex, 0, tab);
+            tabs.splice(boundedIndex, 0, incoming);
             return {
                 tabs,
-                activeTabId: tab.id,
-                activationHistory: pushTabToHistory(
+                activeTabId: incoming.id,
+                activationHistory: pushTabToActivation(
                     state.activationHistory,
-                    tab.id,
+                    incoming.id,
                 ),
             };
         });
@@ -272,6 +386,38 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 }));
 
+// Load content for a history entry that was restored without content (e.g. after session restore)
+async function loadHistoryEntryContent(
+    tabId: string,
+    historyIndex: number,
+    noteId: string,
+) {
+    try {
+        const detail = await invoke<{ content: string }>("read_note", {
+            noteId,
+        });
+        useEditorStore.setState((state) => ({
+            tabs: state.tabs.map((t) => {
+                if (t.id !== tabId) return t;
+                const history = [...t.history];
+                if (history[historyIndex]?.noteId === noteId) {
+                    history[historyIndex] = {
+                        ...history[historyIndex],
+                        content: detail.content,
+                    };
+                }
+                // Also update tab content if still viewing this entry
+                if (t.historyIndex === historyIndex) {
+                    return { ...t, content: detail.content, history };
+                }
+                return { ...t, history };
+            }),
+        }));
+    } catch (e) {
+        console.error("Error loading history entry content:", e);
+    }
+}
+
 // Debounced session persistence — only write when tab list or active tab changes
 let _sessionTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastSessionJson = "";
@@ -283,7 +429,15 @@ useEditorStore.subscribe((state) => {
     if (!vaultPath) return;
 
     const session: PersistedSession = {
-        noteIds: state.tabs.map((t) => ({ noteId: t.noteId, title: t.title })),
+        noteIds: state.tabs.map((t) => ({
+            noteId: t.noteId,
+            title: t.title,
+            history: t.history.map((h) => ({
+                noteId: h.noteId,
+                title: h.title,
+            })),
+            historyIndex: t.historyIndex,
+        })),
         activeNoteId:
             state.tabs.find((t) => t.id === state.activeTabId)?.noteId ?? null,
     };

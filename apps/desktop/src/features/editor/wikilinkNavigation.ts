@@ -16,9 +16,7 @@ export function navigateWikilink(target: string) {
             .then((detail) => {
                 useEditorStore
                     .getState()
-                    .openNote(note.id, note.title, detail.content, {
-                        placement: "afterActive",
-                    });
+                    .openNote(note.id, note.title, detail.content);
             })
             .catch((e) => console.error("Error reading linked note:", e));
     } else {
@@ -28,9 +26,7 @@ export function navigateWikilink(target: string) {
             if (created) {
                 useEditorStore
                     .getState()
-                    .openNote(created.id, created.title, "", {
-                        placement: "afterActive",
-                    });
+                    .openNote(created.id, created.title, "");
             }
         });
     }
@@ -49,7 +45,6 @@ export function openWikilinkInNewTab(target: string) {
             noteId: note.id,
             title: note.title,
             content: existing.content,
-
         });
         return;
     }
@@ -61,7 +56,6 @@ export function openWikilinkInNewTab(target: string) {
                 noteId: note.id,
                 title: note.title,
                 content: detail.content,
-
             });
         })
         .catch((error) =>

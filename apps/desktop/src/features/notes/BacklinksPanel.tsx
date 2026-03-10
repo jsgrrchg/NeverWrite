@@ -183,9 +183,7 @@ export function BacklinksPanel() {
         }
         try {
             const detail = await readBacklink(bl);
-            openNote(bl.id, bl.title, detail.content, {
-                placement: "afterActive",
-            });
+            openNote(bl.id, bl.title, detail.content);
         } catch (e) {
             console.error("Error reading backlink note:", e);
         }

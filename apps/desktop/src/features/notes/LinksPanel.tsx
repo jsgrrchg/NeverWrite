@@ -595,9 +595,7 @@ export function LinksPanel() {
             const detail = await invoke<{ content: string }>("read_note", {
                 noteId: id,
             });
-            openNote(id, title, detail.content, {
-                placement: "afterActive",
-            });
+            openNote(id, title, detail.content);
         } catch (e) {
             console.error("Error opening note:", e);
         }
@@ -699,9 +697,7 @@ export function LinksPanel() {
             .createNote(link.target)
             .then((created) => {
                 if (created) {
-                    openNote(created.id, created.title, "", {
-                        placement: "afterActive",
-                    });
+                    openNote(created.id, created.title, "");
                 }
             });
     };

@@ -73,11 +73,11 @@ describe("BacklinksPanel", () => {
 
         await user.click(await screen.findByText("Source note"));
 
-        expect(useEditorStore.getState().activeTabId).toBe("tab-source");
-        expect(invokeMock).not.toHaveBeenCalledWith(
-            "read_note",
-            expect.anything(),
+        // openNote now navigates within the active tab instead of switching tabs
+        const activeTab = useEditorStore.getState().tabs.find(
+            (t) => t.id === useEditorStore.getState().activeTabId,
         );
+        expect(activeTab?.noteId).toBe("notes/source");
     });
 
     it("queues a mention reveal from the backlink context menu", async () => {
@@ -128,7 +128,10 @@ describe("BacklinksPanel", () => {
                 mode: "mention",
             });
         });
-        expect(useEditorStore.getState().activeTabId).toBe("tab-source");
+        const activeTab = useEditorStore.getState().tabs.find(
+            (t) => t.id === useEditorStore.getState().activeTabId,
+        );
+        expect(activeTab?.noteId).toBe("notes/source");
     });
 
     it.todo(

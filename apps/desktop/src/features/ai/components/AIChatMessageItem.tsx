@@ -1,8 +1,29 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useState, type ReactElement } from "react";
 import type { AIChatMessage } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
+import { useEditorStore } from "../../../app/store/editorStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
+
+function openNoteByAbsolutePath(absPath: string) {
+    const notes = useVaultStore.getState().notes;
+    const note = notes.find((n) => n.path === absPath);
+    if (!note) return;
+
+    const { tabs, openNote } = useEditorStore.getState();
+    const existing = tabs.find((t) => t.noteId === note.id);
+    if (existing) {
+        openNote(note.id, note.title, existing.content);
+        return;
+    }
+    void invoke<{ content: string }>("read_note", { noteId: note.id })
+        .then((detail) => {
+            useEditorStore.getState().openNote(note.id, note.title, detail.content);
+        })
+        .catch((e) => console.error("Error opening note:", e));
+}
 
 /** Parse @mentions and @fetch in serialized user messages into styled pills. */
 function renderUserContent(
@@ -198,6 +219,179 @@ function ToolIcon({ kind }: { kind?: string }) {
     );
 }
 
+/** Compact card for file-mutating tools (edit, delete, move). */
+function FileToolMessage({ message }: { message: AIChatMessage }) {
+    const [expanded, setExpanded] = useState(false);
+    const toolKind = String(message.meta?.tool ?? "edit");
+    const target = message.meta?.target ? String(message.meta.target) : null;
+    const shortTarget = target?.split("/").pop() ?? null;
+    const status = String(message.meta?.status ?? "");
+    const isCompleted = status === "completed";
+    const isInProgress = status === "in_progress";
+
+    const isRead = toolKind === "read" || toolKind === "search";
+    const accent = toolKind === "delete"
+        ? "#ef4444"
+        : "#6b7280"; // neutral gray for read/edit/move
+
+    const actionLabel = isRead
+        ? "Read"
+        : toolKind === "delete"
+          ? "Deleted"
+          : toolKind === "move"
+            ? "Moved"
+            : "Updated";
+
+    // Detail: show summary/content if it provides extra info beyond filename
+    const detail =
+        message.content &&
+        message.content !== shortTarget &&
+        message.content !== (message.title ?? toolKind)
+            ? message.content
+            : null;
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--border))`,
+                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-secondary))`,
+                opacity: isCompleted ? 0.65 : 1,
+                transition: "opacity 0.2s ease",
+            }}
+        >
+            {/* Header */}
+            <div
+                className="flex items-center gap-2 px-3 py-1.5"
+                style={{
+                    cursor: detail ? "pointer" : "default",
+                    borderBottom: detail && expanded
+                        ? `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`
+                        : "none",
+                }}
+                onClick={detail ? () => setExpanded((v) => !v) : undefined}
+            >
+                {/* Icon */}
+                {isRead ? (
+                    <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1.4"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <circle cx="6" cy="6" r="3.5" />
+                        <path d="M8.5 8.5L12 12" />
+                    </svg>
+                ) : (
+                    <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1.3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <path d="M8 1.5H3.5a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L8 1.5z" />
+                        <path d="M8 1.5V5h3.5" />
+                        {toolKind === "delete" ? (
+                            <path d="M5.5 7.5l3 3M8.5 7.5l-3 3" />
+                        ) : (
+                            <path d="M5 8.5l1.5 1.5L9 7" />
+                        )}
+                    </svg>
+                )}
+
+                {/* Filename + action */}
+                <span
+                    className="min-w-0 flex-1 truncate"
+                    title={target ?? undefined}
+                    style={{
+                        color: target ? "var(--accent)" : "var(--text-primary)",
+                        fontSize: "0.83em",
+                        fontWeight: 500,
+                        cursor: target ? "pointer" : "default",
+                        textDecoration: "none",
+                    }}
+                    onClick={target ? (e) => { e.stopPropagation(); openNoteByAbsolutePath(target); } : undefined}
+                    onMouseEnter={target ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; } : undefined}
+                    onMouseLeave={target ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; } : undefined}
+                >
+                    {shortTarget ?? message.title ?? actionLabel}
+                </span>
+
+                {/* Status */}
+                {isInProgress ? (
+                    <span
+                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full shrink-0"
+                        style={{ backgroundColor: accent }}
+                    />
+                ) : isCompleted ? (
+                    <span
+                        style={{
+                            color: accent,
+                            fontSize: "0.75em",
+                            opacity: 0.8,
+                        }}
+                    >
+                        {actionLabel}
+                    </span>
+                ) : null}
+
+                {/* Expand chevron */}
+                {detail && (
+                    <svg
+                        width="10"
+                        height="10"
+                        viewBox="0 0 10 10"
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                        style={{
+                            transform: expanded ? "rotate(180deg)" : "rotate(0)",
+                            transition: "transform 0.15s ease",
+                            opacity: 0.6,
+                        }}
+                    >
+                        <path d="M2.5 4L5 6.5L7.5 4" />
+                    </svg>
+                )}
+            </div>
+
+            {/* Expandable detail */}
+            {expanded && detail && (
+                <div className="px-3 py-1.5">
+                    <pre
+                        className="max-h-32 overflow-auto rounded px-2 py-1.5"
+                        style={{
+                            backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-tertiary))`,
+                            border: `1px solid color-mix(in srgb, ${accent} 10%, var(--border))`,
+                            color: "var(--text-secondary)",
+                            fontSize: "0.78em",
+                            lineHeight: 1.4,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            margin: 0,
+                        }}
+                    >
+                        {detail}
+                    </pre>
+                </div>
+            )}
+        </div>
+    );
+}
+
 function ToolMessage({ message }: { message: AIChatMessage }) {
     const [expanded, setExpanded] = useState(false);
     const toolKind = String(message.meta?.tool ?? "");
@@ -207,6 +401,16 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
     const label = shortTarget ?? title;
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
+
+    // File-mutating tools get card treatment
+    if (toolKind === "edit" || toolKind === "delete" || toolKind === "move") {
+        return <FileToolMessage message={message} />;
+    }
+
+    // Read/search tools with a file target get card treatment
+    if ((toolKind === "read" || toolKind === "search") && target) {
+        return <FileToolMessage message={message} />;
+    }
 
     // Show detail content if it differs from the label (e.g. long shell commands)
     const detail =

@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
+import {
+    resetChatTabsStore,
+    useChatTabsStore,
+} from "./chatTabsStore";
 import { resetChatStore, useChatStore } from "./chatStore";
 
 const invokeMock = vi.mocked(invoke);
@@ -111,6 +115,7 @@ const readySetupStatus = {
 describe("chatStore", () => {
     beforeEach(() => {
         resetChatStore();
+        resetChatTabsStore();
         vi.clearAllMocks();
         useVaultStore.setState({ vaultPath: null, notes: [] });
         useEditorStore.setState({
@@ -453,6 +458,102 @@ describe("chatStore", () => {
         ).toBe("second draft");
     });
 
+    it("keeps drafts, attachments and agent events isolated between sessions", async () => {
+        await useChatStore.getState().initialize();
+
+        useChatStore.getState().upsertSession(
+            {
+                sessionId: "codex-session-2",
+                historySessionId: "codex-session-2",
+                runtimeId: "codex-acp",
+                modelId: "test-model",
+                modeId: "default",
+                status: "idle",
+                models: acpModels.map((model) => ({
+                    id: model.id,
+                    runtimeId: model.runtime_id,
+                    name: model.name,
+                    description: model.description,
+                })),
+                modes: acpModes.map((mode) => ({
+                    id: mode.id,
+                    runtimeId: mode.runtime_id,
+                    name: mode.name,
+                    description: mode.description,
+                    disabled: mode.disabled,
+                })),
+                configOptions: [],
+                messages: [],
+                attachments: [],
+            },
+            true,
+        );
+
+        useChatStore.getState().setActiveSession("codex-session-1");
+        useChatStore.getState().setComposerParts([
+            {
+                id: "draft-1",
+                type: "text",
+                text: "draft session 1",
+            },
+        ]);
+        useChatStore.getState().attachNote({
+            id: "notes/one",
+            title: "Note One",
+            path: "/vault/Note One.md",
+        });
+
+        useChatStore.getState().setActiveSession("codex-session-2");
+        useChatStore.getState().setComposerParts([
+            {
+                id: "draft-2",
+                type: "text",
+                text: "draft session 2",
+            },
+        ]);
+        useChatStore.getState().attachNote({
+            id: "notes/two",
+            title: "Note Two",
+            path: "/vault/Note Two.md",
+        });
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: "codex-session-1",
+            message_id: "assistant-1",
+            delta: "response for session 1",
+        });
+
+        const state = useChatStore.getState();
+
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId["codex-session-1"] ?? [],
+            ),
+        ).toBe("draft session 1");
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId["codex-session-2"] ?? [],
+            ),
+        ).toBe("draft session 2");
+
+        expect(
+            state.sessionsById["codex-session-1"]?.attachments.map(
+                (attachment) => attachment.label,
+            ),
+        ).toEqual(["Note One"]);
+        expect(
+            state.sessionsById["codex-session-2"]?.attachments.map(
+                (attachment) => attachment.label,
+            ),
+        ).toEqual(["Note Two"]);
+
+        expect(
+            state.sessionsById["codex-session-1"]?.messages.at(-1)?.content,
+        ).toBe("response for session 1");
+        expect(state.sessionsById["codex-session-2"]?.messages).toHaveLength(0);
+        expect(state.activeSessionId).toBe("codex-session-2");
+    });
+
     it("loads a session from backend and promotes it to the top of the history", async () => {
         await useChatStore.getState().initialize();
 
@@ -524,6 +625,7 @@ describe("chatStore", () => {
     });
 
     it("returns the session to idle after a completed tool event with no active work left", async () => {
+        vi.useFakeTimers();
         await useChatStore.getState().initialize();
 
         const activeSessionId = useChatStore.getState().activeSessionId!;
@@ -556,6 +658,7 @@ describe("chatStore", () => {
             status: "completed",
             summary: "README.md",
         });
+        vi.runAllTimers();
 
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.status,
@@ -731,6 +834,117 @@ describe("chatStore", () => {
         await initializePromise;
     });
 
+    it("replaces persisted tab session ids when a saved chat is resumed", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "tab-history-1",
+                    sessionId: "persisted:history-1",
+                },
+            ],
+            activeTabId: "tab-history-1",
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [],
+                    },
+                ];
+            }
+            if (command === "ai_create_session") return sessionPayload;
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            {
+                id: "tab-history-1",
+                sessionId: "codex-session-1",
+            },
+        ]);
+        expect(useChatTabsStore.getState().activeTabId).toBe("tab-history-1");
+    });
+
+    it("removes chat tabs when deleting a session", async () => {
+        await useChatStore.getState().initialize();
+
+        useChatStore.getState().upsertSession(
+            {
+                sessionId: "codex-session-2",
+                historySessionId: "codex-session-2",
+                runtimeId: "codex-acp",
+                modelId: "test-model",
+                modeId: "default",
+                status: "idle",
+                messages: [
+                    {
+                        id: "m2",
+                        role: "user",
+                        kind: "text",
+                        content: "Second chat",
+                        timestamp: 30,
+                    },
+                ],
+                attachments: [],
+                models: acpModels.map((model) => ({
+                    id: model.id,
+                    runtimeId: model.runtime_id,
+                    name: model.name,
+                    description: model.description,
+                })),
+                modes: acpModes.map((mode) => ({
+                    id: mode.id,
+                    runtimeId: mode.runtime_id,
+                    name: mode.name,
+                    description: mode.description,
+                    disabled: mode.disabled,
+                })),
+                configOptions: [],
+            },
+            true,
+        );
+
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    sessionId: "codex-session-1",
+                },
+                {
+                    id: "tab-2",
+                    sessionId: "codex-session-2",
+                },
+            ],
+            activeTabId: "tab-2",
+        });
+
+        await useChatStore.getState().deleteSession("codex-session-2");
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            {
+                id: "tab-1",
+                sessionId: "codex-session-1",
+            },
+        ]);
+        expect(useChatTabsStore.getState().activeTabId).toBe("tab-1");
+    });
+
     it("ignores agent changes while the session is busy", async () => {
         await useChatStore.getState().initialize();
 
@@ -785,11 +999,23 @@ describe("chatStore", () => {
             invokeMock.mock.calls.some(
                 ([command, payload]) =>
                     command === "ai_set_config_option" &&
-                    typeof payload === "object" &&
-                    payload !== null &&
-                    "input" in payload &&
-                    payload.input?.option_id === "model" &&
-                    payload.input?.value === "wide-model",
+                    (() => {
+                        if (
+                            typeof payload !== "object" ||
+                            payload === null ||
+                            !("input" in payload)
+                        ) {
+                            return false;
+                        }
+
+                        const input = payload.input as
+                            | { option_id?: string; value?: string }
+                            | undefined;
+                        return (
+                            input?.option_id === "model" &&
+                            input?.value === "wide-model"
+                        );
+                    })(),
             ),
         ).toBe(true);
         expect(
