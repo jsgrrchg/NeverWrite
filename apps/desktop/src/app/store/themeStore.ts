@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { useVaultStore } from "./vaultStore";
 import { type ThemeName, applyThemeColors } from "../themes/index";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -13,13 +12,11 @@ interface ThemeStore {
     mode: ThemeMode;
     themeName: ThemeName;
     isDark: boolean;
-    activeVaultPath: string | null;
     setMode: (mode: ThemeMode) => void;
     setThemeName: (name: ThemeName) => void;
 }
 
 const THEME_STORAGE_KEY = "vaultai:theme";
-const THEME_STORAGE_KEY_PREFIX = "vaultai:theme:";
 const THEME_BROADCAST_CHANNEL = "vaultai:theme-sync";
 const DEFAULT_THEME: ThemePreference = { mode: "system", themeName: "default" };
 
@@ -49,10 +46,6 @@ function normalizeThemeName(value: unknown): ThemeName {
         VALID_THEME_NAMES.has(value as ThemeName)
         ? (value as ThemeName)
         : "default";
-}
-
-function getVaultThemeKey(vaultPath: string) {
-    return `${THEME_STORAGE_KEY_PREFIX}${vaultPath}`;
 }
 
 function getIsDark(mode: ThemeMode): boolean {
@@ -101,47 +94,22 @@ function parseStoredTheme(raw: string | null): ThemePreference | null {
     }
 }
 
-function readGlobalTheme(): ThemePreference {
+function readStoredTheme(): ThemePreference {
     if (typeof window === "undefined") return DEFAULT_THEME;
-    return parseStoredTheme(window.localStorage.getItem(THEME_STORAGE_KEY)) ??
-        DEFAULT_THEME;
-}
-
-function readVaultTheme(vaultPath: string | null): ThemePreference | null {
-    if (typeof window === "undefined" || !vaultPath) return null;
-    return parseStoredTheme(
-        window.localStorage.getItem(getVaultThemeKey(vaultPath)),
+    return (
+        parseStoredTheme(window.localStorage.getItem(THEME_STORAGE_KEY)) ??
+        DEFAULT_THEME
     );
 }
 
-export function readPersistedTheme(vaultPath: string | null): ThemePreference {
-    return readVaultTheme(vaultPath) ?? readGlobalTheme();
-}
-
-function writeStoredTheme(
-    vaultPath: string | null,
-    preference: ThemePreference,
-) {
+function writeStoredTheme(preference: ThemePreference) {
     if (typeof window === "undefined") return;
-    const key = vaultPath ? getVaultThemeKey(vaultPath) : THEME_STORAGE_KEY;
-    window.localStorage.setItem(key, JSON.stringify(preference));
+    window.localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(preference));
 }
 
-function resolveStoreTheme(
-    vaultPath: string | null,
-    preference: ThemePreference,
-) {
-    return {
-        activeVaultPath: vaultPath,
-        ...resolveTheme(preference.mode, preference.themeName),
-    };
-}
-
-const initialVaultPath =
-    typeof window === "undefined" ? null : useVaultStore.getState().vaultPath;
-const initialTheme = resolveStoreTheme(
-    initialVaultPath,
-    readPersistedTheme(initialVaultPath),
+const initialTheme = resolveTheme(
+    readStoredTheme().mode,
+    readStoredTheme().themeName,
 );
 
 export const useThemeStore = create<ThemeStore>((set, get) => ({
@@ -151,7 +119,6 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
 }));
 
 let isApplyingRemoteTheme = false;
-let isLoadingStoredTheme = false;
 
 if (typeof window !== "undefined") {
     const syncId =
@@ -163,30 +130,6 @@ if (typeof window !== "undefined") {
         "BroadcastChannel" in window
             ? new BroadcastChannel(THEME_BROADCAST_CHANNEL)
             : null;
-
-    const applyStoredTheme = (vaultPath: string | null) => {
-        isLoadingStoredTheme = true;
-        useThemeStore.setState(
-            resolveStoreTheme(vaultPath, readPersistedTheme(vaultPath)),
-        );
-        isLoadingStoredTheme = false;
-    };
-
-    const applyRemote = (
-        vaultPath: string | null,
-        mode: ThemeMode | null,
-        themeName?: ThemeName,
-    ) => {
-        if (!mode) return;
-        isApplyingRemoteTheme = true;
-        useThemeStore.setState(
-            resolveStoreTheme(vaultPath, {
-                mode,
-                themeName: themeName ?? useThemeStore.getState().themeName,
-            }),
-        );
-        isApplyingRemoteTheme = false;
-    };
 
     const handleSystemThemeChange = () => {
         const s = useThemeStore.getState();
@@ -200,57 +143,38 @@ if (typeof window !== "undefined") {
         const payload = event.data as
             | {
                   source?: string;
-                  vaultPath?: string | null;
                   mode?: ThemeMode;
                   themeName?: ThemeName;
               }
             | undefined;
         if (!payload?.mode || payload.source === syncId) return;
 
-        const currentVaultPath = useThemeStore.getState().activeVaultPath;
-        if (payload.vaultPath === currentVaultPath) {
-            applyRemote(payload.vaultPath ?? null, payload.mode, payload.themeName);
-            return;
-        }
-
-        if (payload.vaultPath === null) {
-            applyStoredTheme(currentVaultPath);
-        }
+        isApplyingRemoteTheme = true;
+        useThemeStore.setState(
+            resolveTheme(
+                payload.mode,
+                payload.themeName ?? useThemeStore.getState().themeName,
+            ),
+        );
+        isApplyingRemoteTheme = false;
     });
 
     window.addEventListener("storage", (event) => {
-        const currentVaultPath = useThemeStore.getState().activeVaultPath;
-        if (event.key === THEME_STORAGE_KEY) {
-            applyStoredTheme(currentVaultPath);
-            return;
-        }
-
-        if (
-            currentVaultPath &&
-            event.key === getVaultThemeKey(currentVaultPath)
-        ) {
-            applyStoredTheme(currentVaultPath);
-        }
-    });
-
-    let lastVaultPath = useVaultStore.getState().vaultPath;
-    useVaultStore.subscribe((state) => {
-        if (state.vaultPath === lastVaultPath) return;
-        lastVaultPath = state.vaultPath;
-        applyStoredTheme(state.vaultPath);
+        if (event.key !== THEME_STORAGE_KEY) return;
+        const theme = parseStoredTheme(event.newValue);
+        if (!theme) return;
+        isApplyingRemoteTheme = true;
+        useThemeStore.setState(resolveTheme(theme.mode, theme.themeName));
+        isApplyingRemoteTheme = false;
     });
 
     useThemeStore.subscribe((state) => {
         applyDark(state.isDark);
         applyThemeColors(state.themeName, state.isDark);
-        if (isApplyingRemoteTheme || isLoadingStoredTheme) return;
-        writeStoredTheme(state.activeVaultPath, {
-            mode: state.mode,
-            themeName: state.themeName,
-        });
+        if (isApplyingRemoteTheme) return;
+        writeStoredTheme({ mode: state.mode, themeName: state.themeName });
         channel?.postMessage({
             source: syncId,
-            vaultPath: state.activeVaultPath,
             mode: state.mode,
             themeName: state.themeName,
         });

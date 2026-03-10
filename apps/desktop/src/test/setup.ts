@@ -4,6 +4,7 @@ import { afterEach, beforeEach, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
     invoke: vi.fn(),
+    convertFileSrc: vi.fn((path: string) => `asset://${path}`),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -152,6 +153,28 @@ Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
 });
 
+const emptyDomRect = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    width: 0,
+    height: 0,
+    toJSON: () => ({}),
+};
+
+Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    value: vi.fn(() => emptyDomRect),
+    configurable: true,
+});
+
+Object.defineProperty(Range.prototype, "getClientRects", {
+    value: vi.fn(() => []),
+    configurable: true,
+});
+
 let useEditorStore: typeof import("../app/store/editorStore").useEditorStore;
 let useThemeStore: typeof import("../app/store/themeStore").useThemeStore;
 let useVaultStore: typeof import("../app/store/vaultStore").useVaultStore;
@@ -201,15 +224,13 @@ beforeEach(async () => {
     ({ useEditorStore } = await import("../app/store/editorStore"));
     ({ useThemeStore } = await import("../app/store/themeStore"));
     ({ useVaultStore } = await import("../app/store/vaultStore"));
-    ({ useCommandStore } = await import(
-        "../features/command-palette/store/commandStore"
-    ));
+    ({ useCommandStore } =
+        await import("../features/command-palette/store/commandStore"));
 
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
         activationHistory: [],
-        editorMode: "preview",
         pendingReveal: null,
         pendingSelectionReveal: null,
     });
@@ -218,7 +239,6 @@ beforeEach(async () => {
         mode: "system",
         themeName: "default",
         isDark: false,
-        activeVaultPath: null,
     });
 
     useVaultStore.setState({

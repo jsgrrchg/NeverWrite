@@ -3,7 +3,8 @@ use std::{collections::HashMap, path::PathBuf};
 use serde::Deserialize;
 use tauri::AppHandle;
 use vault_ai_ai::{
-    AiRuntimeDescriptor, AiRuntimeSetupStatus, AiSession, AiSessionStatus, CODEX_RUNTIME_ID,
+    AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiRuntimeDescriptor,
+    AiRuntimeSetupStatus, AiSession, AiSessionStatus, CODEX_RUNTIME_ID,
 };
 
 use super::codex::{
@@ -15,6 +16,7 @@ use super::codex::{
 pub struct AiAttachmentInput {
     pub label: String,
     pub path: Option<String>,
+    pub content: Option<String>,
     #[serde(rename = "type")]
     pub attachment_type: Option<String>,
     /// For folder attachments: the relative folder path (e.g. "daily" or "projects/work")
@@ -29,6 +31,19 @@ fn build_prompt_with_attachments(
 ) -> String {
     let mut context_parts: Vec<String> = Vec::new();
     for attachment in attachments {
+        if let Some(content) = attachment.content.as_deref() {
+            let tag = if attachment.attachment_type.as_deref() == Some("selection") {
+                "attached_selection"
+            } else {
+                "attached_note"
+            };
+            context_parts.push(format!(
+                "<{tag} name=\"{}\">\n{}\n</{tag}>",
+                attachment.label, content
+            ));
+            continue;
+        }
+
         if attachment.attachment_type.as_deref() == Some("folder") {
             // Resolve folder: read all .md files in the folder
             if let (Some(folder_rel), Some(root)) = (&attachment.note_id, vault_root) {
@@ -68,12 +83,127 @@ fn build_prompt_with_attachments(
     format!("{}\n\n{}", context_parts.join("\n\n"), content)
 }
 
+/// Filter the reasoning_effort config option so it only shows the effort levels
+/// available for the given model. Adjusts the current value when needed.
+fn filter_effort_options(
+    mut options: Vec<AiConfigOption>,
+    model_id: &str,
+    efforts_by_model: &HashMap<String, Vec<String>>,
+) -> Vec<AiConfigOption> {
+    let Some(available) = efforts_by_model.get(model_id) else {
+        return options;
+    };
+
+    let existing_index = options
+        .iter()
+        .position(|option| option.id == "reasoning_effort");
+    let current_value = options
+        .iter()
+        .find(|option| option.id == "reasoning_effort")
+        .map(|option| option.value.clone())
+        .unwrap_or_default();
+    let runtime_id = options
+        .iter()
+        .find(|option| option.id == "reasoning_effort" || option.id == "model")
+        .map(|option| option.runtime_id.clone())
+        .unwrap_or_else(|| CODEX_RUNTIME_ID.to_string());
+
+    options.retain(|option| option.id != "reasoning_effort");
+
+    let Some(reasoning_option) =
+        build_reasoning_option(&runtime_id, available, current_value.as_str())
+    else {
+        return options;
+    };
+
+    let insert_at = existing_index
+        .or_else(|| {
+            options
+                .iter()
+                .position(|option| option.id == "model")
+                .map(|index| index + 1)
+        })
+        .unwrap_or(options.len())
+        .min(options.len());
+
+    options.insert(insert_at, reasoning_option);
+    options
+}
+
+fn build_reasoning_option(
+    runtime_id: &str,
+    available: &[String],
+    current_value: &str,
+) -> Option<AiConfigOption> {
+    if available.len() <= 1 {
+        return None;
+    }
+
+    let value = if available.iter().any(|effort| effort == current_value) {
+        current_value.to_string()
+    } else {
+        available.first()?.clone()
+    };
+
+    Some(AiConfigOption {
+        id: "reasoning_effort".to_string(),
+        runtime_id: runtime_id.to_string(),
+        category: AiConfigOptionCategory::Reasoning,
+        label: "Reasoning Effort".to_string(),
+        description: Some("Choose how much reasoning effort the model should use".to_string()),
+        kind: "select".to_string(),
+        value,
+        options: available
+            .iter()
+            .map(|effort| AiConfigSelectOption {
+                value: effort.clone(),
+                label: reasoning_effort_label(effort),
+                description: None,
+            })
+            .collect(),
+    })
+}
+
+fn reasoning_effort_label(effort: &str) -> String {
+    match effort {
+        "xhigh" => "Extra High".to_string(),
+        _ => {
+            let mut chars = effort.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+fn sync_model_selection(
+    session: &mut AiSession,
+    model_id: &str,
+    efforts_by_model: &HashMap<String, Vec<String>>,
+) {
+    session.model_id = model_id.to_string();
+
+    if let Some(option) = session
+        .config_options
+        .iter_mut()
+        .find(|option| option.id == "model")
+    {
+        option.value = model_id.to_string();
+    }
+
+    session.config_options =
+        filter_effort_options(session.config_options.clone(), model_id, efforts_by_model);
+}
+
 #[derive(Debug, Clone)]
 struct ManagedSession {
     session: AiSession,
-    /// The vault root that was active when this session was created.
-    /// Used to ensure AI operations target the correct vault.
     vault_root: Option<PathBuf>,
+    /// Maps display model id → available effort levels.
+    efforts_by_model: HashMap<String, Vec<String>>,
+    /// Maps display model id → canonical ACP base id (e.g. "gpt-5.1-codex" → "gpt-5.1-codex-max").
+    acp_model_ids: HashMap<String, String>,
 }
 
 #[derive(Debug, Default)]
@@ -157,15 +287,21 @@ impl AiManager {
                 return Err(error);
             }
         };
+        let config_options = filter_effort_options(
+            session_id.config_options,
+            &session_id.model_id,
+            &session_id.efforts_by_model,
+        );
         let session = AiSession {
             session_id: session_id.session_id.clone(),
             runtime_id: CODEX_RUNTIME_ID.to_string(),
             model_id: session_id.model_id,
             mode_id: session_id.mode_id,
             status: AiSessionStatus::Idle,
+            efforts_by_model: session_id.efforts_by_model.clone(),
             models: session_id.models,
             modes: session_id.modes,
-            config_options: session_id.config_options,
+            config_options,
         };
 
         self.sessions.insert(
@@ -173,6 +309,8 @@ impl AiManager {
             ManagedSession {
                 session: session.clone(),
                 vault_root,
+                efforts_by_model: session_id.efforts_by_model,
+                acp_model_ids: session_id.acp_model_ids,
             },
         );
         self.touch_session(&session.session_id);
@@ -181,26 +319,46 @@ impl AiManager {
     }
 
     pub fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<AiSession, String> {
-        let supports_model = self
+        let managed = self
             .sessions
             .get(session_id)
-            .map(|managed| {
-                managed
-                    .session
-                    .models
-                    .iter()
-                    .any(|model| model.id == model_id)
-            })
-            .unwrap_or(false);
-        if !supports_model {
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
+
+        if !managed.session.models.iter().any(|m| m.id == model_id) {
             return Err(format!("Modelo no soportado por Codex ACP: {model_id}"));
         }
 
+        // Pick the current reasoning effort, falling back to "medium".
+        let current_effort = managed
+            .session
+            .config_options
+            .iter()
+            .find(|o| o.id == "reasoning_effort")
+            .map(|o| o.value.clone())
+            .unwrap_or_else(|| "medium".to_string());
+
+        // If the new model doesn't support the current effort, pick the first available.
+        let available_efforts = managed.efforts_by_model.get(model_id);
+        let effort = match available_efforts {
+            Some(levels) if levels.contains(&current_effort) => current_effort,
+            Some(levels) => levels.first().cloned().unwrap_or(current_effort),
+            None => current_effort,
+        };
+
+        // Resolve display id → canonical ACP base id (e.g. "gpt-5.1-codex" → "gpt-5.1-codex-max").
+        let acp_base = managed
+            .acp_model_ids
+            .get(model_id)
+            .cloned()
+            .unwrap_or_else(|| model_id.to_string());
+        let acp_model_id = format!("{acp_base}/{effort}");
+
         self.codex_handle_from_session(session_id)?
-            .set_model(session_id, model_id)?;
+            .set_model(session_id, &acp_model_id)?;
+
         let session = {
             let managed = self.session_mut(session_id)?;
-            managed.session.model_id = model_id.to_string();
+            sync_model_selection(&mut managed.session, model_id, &managed.efforts_by_model);
             managed.session.clone()
         };
         self.touch_session(session_id);
@@ -234,7 +392,20 @@ impl AiManager {
         option_id: &str,
         value: &str,
     ) -> Result<AiSession, String> {
-        if !self.codex.supports_config_value(option_id, value) {
+        let supports_value = self
+            .sessions
+            .get(session_id)
+            .and_then(|managed| {
+                managed
+                    .session
+                    .config_options
+                    .iter()
+                    .find(|item| item.id == option_id)
+                    .map(|option| option.options.iter().any(|item| item.value == value))
+            })
+            .unwrap_or(false);
+
+        if !supports_value {
             return Err(format!(
                 "Opcion invalida para Codex ACP: {option_id}={value}"
             ));
@@ -242,16 +413,39 @@ impl AiManager {
 
         self.codex_handle_from_session(session_id)?
             .set_config_option(session_id, option_id, value)?;
+
+        // The ACP encodes effort in the model ID, so changing reasoning_effort
+        // also requires sending a set_model with the recalculated ACP model ID.
+        if option_id == "reasoning_effort" {
+            let managed = self
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
+            let model_id = &managed.session.model_id;
+            let acp_base = managed
+                .acp_model_ids
+                .get(model_id)
+                .cloned()
+                .unwrap_or_else(|| model_id.clone());
+            let acp_model_id = format!("{acp_base}/{value}");
+            self.codex_handle_from_session(session_id)?
+                .set_model(session_id, &acp_model_id)?;
+        }
+
         let session = {
             let managed = self.session_mut(session_id)?;
-            let option = managed
-                .session
-                .config_options
-                .iter_mut()
-                .find(|item| item.id == option_id)
-                .ok_or_else(|| format!("Opcion no encontrada: {option_id}"))?;
+            if option_id == "model" {
+                sync_model_selection(&mut managed.session, value, &managed.efforts_by_model);
+            } else {
+                let option = managed
+                    .session
+                    .config_options
+                    .iter_mut()
+                    .find(|item| item.id == option_id)
+                    .ok_or_else(|| format!("Opcion no encontrada: {option_id}"))?;
 
-            option.value = value.to_string();
+                option.value = value.to_string();
+            }
             managed.session.clone()
         };
         self.touch_session(session_id);
@@ -360,4 +554,107 @@ impl AiManager {
 fn is_authentication_error(message: &str) -> bool {
     let normalized = message.trim().to_lowercase();
     normalized.contains("auth_required") || normalized.contains("authentication required")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_option(id: &str, category: AiConfigOptionCategory) -> AiConfigOption {
+        AiConfigOption {
+            id: id.to_string(),
+            runtime_id: CODEX_RUNTIME_ID.to_string(),
+            category,
+            label: id.to_string(),
+            description: None,
+            kind: "select".to_string(),
+            value: String::new(),
+            options: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn filter_effort_options_can_expand_after_switching_models() {
+        let options = vec![
+            AiConfigOption {
+                value: "model-a".to_string(),
+                options: vec![
+                    AiConfigSelectOption {
+                        value: "model-a".to_string(),
+                        label: "Model A".to_string(),
+                        description: None,
+                    },
+                    AiConfigSelectOption {
+                        value: "model-b".to_string(),
+                        label: "Model B".to_string(),
+                        description: None,
+                    },
+                ],
+                ..config_option("model", AiConfigOptionCategory::Model)
+            },
+            AiConfigOption {
+                value: "medium".to_string(),
+                options: vec![
+                    AiConfigSelectOption {
+                        value: "medium".to_string(),
+                        label: "Medium".to_string(),
+                        description: None,
+                    },
+                    AiConfigSelectOption {
+                        value: "high".to_string(),
+                        label: "High".to_string(),
+                        description: None,
+                    },
+                ],
+                ..config_option("reasoning_effort", AiConfigOptionCategory::Reasoning)
+            },
+        ];
+
+        let efforts_by_model = HashMap::from([
+            (
+                "model-a".to_string(),
+                vec!["medium".to_string(), "high".to_string()],
+            ),
+            (
+                "model-b".to_string(),
+                vec![
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "high".to_string(),
+                    "xhigh".to_string(),
+                ],
+            ),
+        ]);
+
+        let filtered = filter_effort_options(options, "model-b", &efforts_by_model);
+        let reasoning = filtered
+            .iter()
+            .find(|option| option.id == "reasoning_effort")
+            .expect("missing reasoning option");
+
+        assert_eq!(
+            reasoning
+                .options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(reasoning.value, "medium");
+    }
+
+    #[test]
+    fn filter_effort_options_removes_selector_for_single_effort_models() {
+        let options = vec![
+            config_option("model", AiConfigOptionCategory::Model),
+            config_option("reasoning_effort", AiConfigOptionCategory::Reasoning),
+        ];
+        let efforts_by_model = HashMap::from([("model-a".to_string(), vec!["medium".to_string()])]);
+
+        let filtered = filter_effort_options(options, "model-a", &efforts_by_model);
+
+        assert!(filtered
+            .iter()
+            .all(|option| option.id != "reasoning_effort"));
+    }
 }

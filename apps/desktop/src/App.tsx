@@ -32,16 +32,15 @@ import {
     readPersistedSession,
     markSessionReady,
 } from "./app/store/editorStore";
-import {
-    useVaultStore,
-    type VaultNoteChange,
-} from "./app/store/vaultStore";
+import { useVaultStore, type VaultNoteChange } from "./app/store/vaultStore";
 import { useLayoutStore } from "./app/store/layoutStore";
+import { useSettingsStore } from "./app/store/settingsStore";
 import {
     getYouTubeEmbedUrl,
     OPEN_YOUTUBE_MODAL_EVENT,
     type OpenYouTubeModalPayload,
 } from "./features/editor/youtube";
+import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
 
 function SidebarPanel({ view }: { view: SidebarView }) {
     return (
@@ -97,7 +96,8 @@ function VaultOpeningOverlay() {
             <div
                 className="w-full max-w-md rounded-xl p-5"
                 style={{
-                    backgroundColor: "color-mix(in srgb, var(--bg-secondary) 92%, black)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--bg-secondary) 92%, black)",
                     border: "1px solid color-mix(in srgb, var(--border) 82%, white 6%)",
                     boxShadow: "0 24px 80px rgb(0 0 0 / 0.35)",
                 }}
@@ -132,7 +132,8 @@ function VaultOpeningOverlay() {
                                       100,
                                       Math.max(
                                           6,
-                                          (openState.processed / openState.total) *
+                                          (openState.processed /
+                                              openState.total) *
                                               100,
                                       ),
                                   )}%`
@@ -526,6 +527,15 @@ function useGlobalShortcuts(
                 useCommandStore.getState().execute("vault:new-note");
                 return;
             }
+
+            // Cmd+E: toggle live preview
+            if (mod && e.key === "e") {
+                e.preventDefault();
+                const { livePreviewEnabled, setSetting } =
+                    useSettingsStore.getState();
+                setSetting("livePreviewEnabled", !livePreviewEnabled);
+                return;
+            }
         };
 
         window.addEventListener("keydown", handler, true);
@@ -558,10 +568,7 @@ function canScrollElement(element: HTMLElement) {
 
 function resolveScrollbarActivationTarget(element: HTMLElement) {
     const editorShell = element.closest(".editor-shell");
-    if (
-        editorShell instanceof HTMLElement &&
-        element.closest(".cm-editor")
-    ) {
+    if (editorShell instanceof HTMLElement && element.closest(".cm-editor")) {
         return editorShell;
     }
 
@@ -626,10 +633,10 @@ function useDynamicScrollbars() {
             capture: true,
             passive: true,
         });
-            window.addEventListener("touchmove", handleTouchMove, {
-                capture: true,
-                passive: true,
-            });
+        window.addEventListener("touchmove", handleTouchMove, {
+            capture: true,
+            passive: true,
+        });
 
         return () => {
             window.removeEventListener("scroll", handleScroll, true);
@@ -745,19 +752,26 @@ export default function App() {
             // Reload editor content for open tabs when file changes externally
             const change = event.payload;
             if (change.kind === "upsert" && change.note) {
+                invalidateLivePreviewNoteCache(change.note.id);
                 const noteId = change.note.id;
                 const openTab = useEditorStore
                     .getState()
                     .tabs.find((t) => t.noteId === noteId);
                 if (openTab && !openTab.isDirty) {
-                    void invoke<{ content: string }>("read_note", { noteId }).then(
-                        (detail) => {
-                            useEditorStore
-                                .getState()
-                                .reloadNoteContent(noteId, detail.content);
+                    void invoke<{ title: string; content: string }>(
+                        "read_note",
+                        {
+                            noteId,
                         },
-                    );
+                    ).then((detail) => {
+                        useEditorStore.getState().reloadNoteContent(noteId, {
+                            title: detail.title,
+                            content: detail.content,
+                        });
+                    });
                 }
+            } else if (change.kind === "delete") {
+                invalidateLivePreviewNoteCache(change.note_id);
             }
         }).then((cleanup) => {
             unlisten = cleanup;

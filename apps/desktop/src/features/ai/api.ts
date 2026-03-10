@@ -54,10 +54,13 @@ export function normalizeBackendSession(
 ): AIChatSession {
     return {
         sessionId: session.session_id,
+        historySessionId: session.session_id,
         runtimeId: session.runtime_id,
         modelId: session.model_id,
         modeId: session.mode_id,
         status: session.status,
+        isResumingSession: false,
+        effortsByModel: session.efforts_by_model ?? {},
         models: session.models.map((model) => ({
             id: model.id,
             runtimeId: model.runtime_id,
@@ -74,6 +77,8 @@ export function normalizeBackendSession(
         configOptions: session.config_options.map(normalizeConfigOption),
         messages: [],
         attachments: [],
+        isPersistedSession: false,
+        resumeContextPending: false,
     };
 }
 
@@ -121,16 +126,18 @@ function normalizeRuntimeSetupStatus(
 }
 
 export async function aiListRuntimes() {
-    const descriptors = await invoke<AIBackendRuntimeDescriptorPayload[]>(
-        "ai_list_runtimes",
-    );
+    const descriptors =
+        await invoke<AIBackendRuntimeDescriptorPayload[]>("ai_list_runtimes");
     return descriptors.map(normalizeRuntimeDescriptor);
 }
 
 export async function aiListSessions(vaultPath: string | null) {
-    const sessions = await invoke<AIBackendSessionPayload[]>("ai_list_sessions", {
-        vaultPath: vaultPath ?? null,
-    });
+    const sessions = await invoke<AIBackendSessionPayload[]>(
+        "ai_list_sessions",
+        {
+            vaultPath: vaultPath ?? null,
+        },
+    );
     return sessions.map(normalizeBackendSession);
 }
 
@@ -146,23 +153,29 @@ export async function aiUpdateSetup(input: {
     codexApiKey?: string;
     openaiApiKey?: string;
 }) {
-    const status = await invoke<AIBackendRuntimeSetupStatusPayload>("ai_update_setup", {
-        input: {
-            custom_binary_path: input.customBinaryPath ?? null,
-            codex_api_key: input.codexApiKey ?? null,
-            openai_api_key: input.openaiApiKey ?? null,
+    const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
+        "ai_update_setup",
+        {
+            input: {
+                custom_binary_path: input.customBinaryPath ?? null,
+                codex_api_key: input.codexApiKey ?? null,
+                openai_api_key: input.openaiApiKey ?? null,
+            },
         },
-    });
+    );
     return normalizeRuntimeSetupStatus(status);
 }
 
 export async function aiStartAuth(methodId: string, vaultPath: string | null) {
-    const status = await invoke<AIBackendRuntimeSetupStatusPayload>("ai_start_auth", {
-        input: {
-            method_id: methodId,
+    const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
+        "ai_start_auth",
+        {
+            input: {
+                method_id: methodId,
+            },
+            vaultPath: vaultPath ?? null,
         },
-        vaultPath: vaultPath ?? null,
-    });
+    );
     return normalizeRuntimeSetupStatus(status);
 }
 
@@ -173,7 +186,10 @@ export async function aiLoadSession(sessionId: string) {
     return normalizeBackendSession(session);
 }
 
-export async function aiCreateSession(runtimeId: string, vaultPath: string | null) {
+export async function aiCreateSession(
+    runtimeId: string,
+    vaultPath: string | null,
+) {
     const session = await invoke<AIBackendSessionPayload>("ai_create_session", {
         runtimeId,
         vaultPath: vaultPath ?? null,
@@ -240,30 +256,39 @@ export async function aiRespondPermission(
     requestId: string,
     optionId?: string,
 ) {
-    const session = await invoke<AIBackendSessionPayload>("ai_respond_permission", {
-        input: {
-            session_id: sessionId,
-            request_id: requestId,
-            option_id: optionId ?? null,
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_respond_permission",
+        {
+            input: {
+                session_id: sessionId,
+                request_id: requestId,
+                option_id: optionId ?? null,
+            },
         },
-    });
+    );
     return normalizeBackendSession(session);
 }
 
 export async function listenToAiSessionCreated(
     callback: (session: AIChatSession) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIBackendSessionPayload>(AI_SESSION_CREATED_EVENT, (event) => {
-        callback(normalizeBackendSession(event.payload));
-    });
+    return listen<AIBackendSessionPayload>(
+        AI_SESSION_CREATED_EVENT,
+        (event) => {
+            callback(normalizeBackendSession(event.payload));
+        },
+    );
 }
 
 export async function listenToAiSessionUpdated(
     callback: (session: AIChatSession) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIBackendSessionPayload>(AI_SESSION_UPDATED_EVENT, (event) => {
-        callback(normalizeBackendSession(event.payload));
-    });
+    return listen<AIBackendSessionPayload>(
+        AI_SESSION_UPDATED_EVENT,
+        (event) => {
+            callback(normalizeBackendSession(event.payload));
+        },
+    );
 }
 
 export async function listenToAiSessionError(
@@ -277,9 +302,12 @@ export async function listenToAiSessionError(
 export async function listenToAiMessageStarted(
     callback: (payload: AIMessageStartedPayload) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIMessageStartedPayload>(AI_MESSAGE_STARTED_EVENT, (event) => {
-        callback(event.payload);
-    });
+    return listen<AIMessageStartedPayload>(
+        AI_MESSAGE_STARTED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }
 
 export async function listenToAiMessageDelta(
@@ -293,17 +321,23 @@ export async function listenToAiMessageDelta(
 export async function listenToAiMessageCompleted(
     callback: (payload: AIMessageCompletedPayload) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIMessageCompletedPayload>(AI_MESSAGE_COMPLETED_EVENT, (event) => {
-        callback(event.payload);
-    });
+    return listen<AIMessageCompletedPayload>(
+        AI_MESSAGE_COMPLETED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }
 
 export async function listenToAiThinkingStarted(
     callback: (payload: AIMessageStartedPayload) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIMessageStartedPayload>(AI_THINKING_STARTED_EVENT, (event) => {
-        callback(event.payload);
-    });
+    return listen<AIMessageStartedPayload>(
+        AI_THINKING_STARTED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }
 
 export async function listenToAiThinkingDelta(
@@ -317,9 +351,12 @@ export async function listenToAiThinkingDelta(
 export async function listenToAiThinkingCompleted(
     callback: (payload: AIMessageCompletedPayload) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIMessageCompletedPayload>(AI_THINKING_COMPLETED_EVENT, (event) => {
-        callback(event.payload);
-    });
+    return listen<AIMessageCompletedPayload>(
+        AI_THINKING_COMPLETED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }
 
 export async function listenToAiToolActivity(
@@ -345,10 +382,26 @@ export async function aiLoadSessionHistories(
     });
 }
 
+export async function aiDeleteSessionHistory(
+    vaultPath: string,
+    sessionId: string,
+): Promise<void> {
+    await invoke("ai_delete_session_history", { vaultPath, sessionId });
+}
+
+export async function aiDeleteAllSessionHistories(
+    vaultPath: string,
+): Promise<void> {
+    await invoke("ai_delete_all_session_histories", { vaultPath });
+}
+
 export async function listenToAiPermissionRequest(
     callback: (payload: AIPermissionRequestPayload) => void,
 ): Promise<UnlistenFn> {
-    return listen<AIPermissionRequestPayload>(AI_PERMISSION_REQUEST_EVENT, (event) => {
-        callback(event.payload);
-    });
+    return listen<AIPermissionRequestPayload>(
+        AI_PERMISSION_REQUEST_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }

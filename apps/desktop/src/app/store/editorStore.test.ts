@@ -70,17 +70,13 @@ describe("editorStore session persistence", () => {
             activeTabId: "tab-a",
         });
 
-        useEditorStore
-            .getState()
-            .openNote("notes/linked", "Linked", "linked", {
-                placement: "afterActive",
-            });
+        useEditorStore.getState().openNote("notes/linked", "Linked", "linked", {
+            placement: "afterActive",
+        });
 
-        expect(useEditorStore.getState().tabs.map((tab) => tab.noteId)).toEqual([
-            "notes/source",
-            "notes/linked",
-            "notes/other",
-        ]);
+        expect(useEditorStore.getState().tabs.map((tab) => tab.noteId)).toEqual(
+            ["notes/source", "notes/linked", "notes/other"],
+        );
     });
 
     it("keeps default openings appended at the end", () => {
@@ -108,11 +104,9 @@ describe("editorStore session persistence", () => {
             .getState()
             .openNote("notes/appended", "Appended", "appended");
 
-        expect(useEditorStore.getState().tabs.map((tab) => tab.noteId)).toEqual([
-            "notes/source",
-            "notes/other",
-            "notes/appended",
-        ]);
+        expect(useEditorStore.getState().tabs.map((tab) => tab.noteId)).toEqual(
+            ["notes/source", "notes/other", "notes/appended"],
+        );
     });
 
     it("returns to the most recently active tab when closing the current one", () => {
@@ -183,5 +177,30 @@ describe("editorStore session persistence", () => {
         useEditorStore.getState().closeTab("tab-b");
 
         expect(useEditorStore.getState().activeTabId).toBe("tab-c");
+    });
+
+    it("updates title and content when clean tabs reload from disk", () => {
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "Old title",
+                    content: "Old body",
+                    isDirty: false,
+                },
+            ],
+            activeTabId: "tab-a",
+        });
+
+        useEditorStore.getState().reloadNoteContent("notes/a", {
+            title: "New title",
+            content: "New body",
+        });
+
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            title: "New title",
+            content: "New body",
+        });
     });
 });

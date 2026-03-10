@@ -1,5 +1,5 @@
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,29 @@ pub fn save_session_history(
     write_json_atomic(&path, history)
 }
 
+pub fn delete_session_history(vault_root: &Path, session_id: &str) -> Result<(), String> {
+    let path = session_file(vault_root, session_id);
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn delete_all_session_histories(vault_root: &Path) -> Result<(), String> {
+    let dir = sessions_dir(vault_root);
+    if !dir.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            let _ = fs::remove_file(path);
+        }
+    }
+    Ok(())
+}
+
 pub fn load_all_session_histories(
     vault_root: &Path,
 ) -> Result<Vec<PersistedSessionHistory>, String> {
@@ -82,13 +105,4 @@ pub fn load_all_session_histories(
 
     histories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(histories)
-}
-
-pub fn delete_session_history(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let path = session_file(vault_root, session_id);
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
 }

@@ -1,10 +1,7 @@
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
-use vault_ai_ai::{
-    AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
-    AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, CODEX_RUNTIME_ID,
-};
+use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
 
 use super::setup::{load_setup_config, resolve_binary_path, setup_status};
 
@@ -34,78 +31,12 @@ impl CodexRuntime {
                     "reasoning".to_string(),
                 ],
             },
-            models: vec![
-                AiModelOption {
-                    id: "gpt-5-codex".to_string(),
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
-                    name: "GPT-5 Codex".to_string(),
-                    description: "General-purpose coding and editing model.".to_string(),
-                },
-                AiModelOption {
-                    id: "codex-mini".to_string(),
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
-                    name: "Codex Mini".to_string(),
-                    description: "Faster runtime for lightweight iterations.".to_string(),
-                },
-            ],
-            modes: vec![
-                AiModeOption {
-                    id: "default".to_string(),
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
-                    name: "Default".to_string(),
-                    description: "Prompt for actions that need explicit approval.".to_string(),
-                    disabled: false,
-                },
-                AiModeOption {
-                    id: "acceptEdits".to_string(),
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
-                    name: "Accept Edits".to_string(),
-                    description: "Approve edit operations automatically.".to_string(),
-                    disabled: false,
-                },
-                AiModeOption {
-                    id: "plan".to_string(),
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
-                    name: "Plan".to_string(),
-                    description: "Reason first without executing tools.".to_string(),
-                    disabled: false,
-                },
-                AiModeOption {
-                    id: "bypassPermissions".to_string(),
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
-                    name: "Bypass Permissions".to_string(),
-                    description: "Skip permission checks when supported.".to_string(),
-                    disabled: true,
-                },
-            ],
-            config_options: vec![AiConfigOption {
-                id: "reasoning_effort".to_string(),
-                runtime_id: CODEX_RUNTIME_ID.to_string(),
-                category: AiConfigOptionCategory::Reasoning,
-                label: "Reasoning Effort".to_string(),
-                description: Some(
-                    "Choose how much reasoning effort the runtime should use.".to_string(),
-                ),
-                kind: "select".to_string(),
-                value: "medium".to_string(),
-                options: vec![
-                    AiConfigSelectOption {
-                        value: "low".to_string(),
-                        label: "Low".to_string(),
-                        description: Some("Faster answers with lighter reasoning.".to_string()),
-                    },
-                    AiConfigSelectOption {
-                        value: "medium".to_string(),
-                        label: "Medium".to_string(),
-                        description: Some("Balanced default.".to_string()),
-                    },
-                    AiConfigSelectOption {
-                        value: "high".to_string(),
-                        label: "High".to_string(),
-                        description: Some("Deeper reasoning with higher latency.".to_string()),
-                    },
-                ],
-            }],
+            // Models, modes and config options are populated dynamically from the
+            // ACP session at creation time.  Keeping these empty avoids showing
+            // stale placeholder names in the UI before a session is established.
+            models: vec![],
+            modes: vec![],
+            config_options: vec![],
         }
     }
 
@@ -182,19 +113,5 @@ impl CodexRuntime {
             cwd,
             setup,
         })
-    }
-
-    pub fn supports_config_value(&self, option_id: &str, value: &str) -> bool {
-        self.descriptor()
-            .config_options
-            .iter()
-            .find(|option| option.id == option_id)
-            .map(|option| {
-                option
-                    .options
-                    .iter()
-                    .any(|candidate| candidate.value == value)
-            })
-            .unwrap_or(false)
     }
 }

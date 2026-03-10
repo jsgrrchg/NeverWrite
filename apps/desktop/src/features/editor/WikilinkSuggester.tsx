@@ -28,7 +28,10 @@ export function WikilinkSuggester({
 }) {
     const ref = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-    const [position, setPosition] = useState({ x: suggester.x, y: suggester.y });
+    const [position, setPosition] = useState({
+        x: suggester.x,
+        y: suggester.y,
+    });
     const availableAbove = Math.max(180, suggester.y - 18);
 
     useLayoutEffect(() => {
@@ -78,117 +81,84 @@ export function WikilinkSuggester({
                 top: position.y,
                 left: position.x,
                 zIndex: 10010,
-                width: 420,
-                maxWidth: "min(420px, calc(100vw - 24px))",
-                maxHeight: `${Math.min(availableAbove, 360)}px`,
+                width: 300,
+                maxWidth: "min(300px, calc(100vw - 24px))",
+                maxHeight: `${Math.min(availableAbove, 260)}px`,
                 overflow: "hidden",
-                borderRadius: 14,
+                borderRadius: 10,
                 border: "1px solid color-mix(in srgb, var(--border) 86%, transparent)",
                 background:
-                    "color-mix(in srgb, var(--bg-elevated) 96%, transparent)",
-                boxShadow: "0 14px 32px rgba(15, 23, 42, 0.14)",
+                    "color-mix(in srgb, var(--bg-elevated) 97%, transparent)",
+                boxShadow: "0 8px 24px rgba(15, 23, 42, 0.12)",
                 backdropFilter: "blur(10px)",
             }}
         >
             <div
                 style={{
+                    overflowY: "auto",
+                    padding: 4,
                     display: "flex",
                     flexDirection: "column",
-                    maxHeight: "inherit",
+                    gap: 1,
+                    maxHeight: `${Math.min(availableAbove, 260)}px`,
                 }}
             >
-                <div
-                    style={{
-                        padding: "10px 12px 8px",
-                        borderBottom:
-                            "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        letterSpacing: "0.04em",
-                        textTransform: "uppercase",
-                        color: "var(--text-secondary)",
-                    }}
-                >
-                    {suggester.query.trim()
-                        ? `Linking "${suggester.query.trim()}"`
-                        : "Link note"}
-                </div>
-                <div
-                    style={{
-                        overflowY: "auto",
-                        padding: 8,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 2,
-                    }}
-                >
-                    {suggester.items.length ? (
-                        suggester.items.map((item, index) => {
-                            const isActive = index === suggester.selectedIndex;
-                            return (
-                                <button
-                                    key={item.id}
-                                    ref={(element) => {
-                                        itemRefs.current[index] = element;
-                                    }}
-                                    type="button"
-                                    onMouseEnter={() => onHoverIndex(index)}
-                                    onMouseDown={(event) => {
-                                        event.preventDefault();
-                                        onSelect(item);
-                                    }}
+                {suggester.items.length ? (
+                    suggester.items.map((item, index) => {
+                        const isActive = index === suggester.selectedIndex;
+                        return (
+                            <button
+                                key={item.id}
+                                ref={(element) => {
+                                    itemRefs.current[index] = element;
+                                }}
+                                type="button"
+                                onMouseEnter={() => onHoverIndex(index)}
+                                onMouseDown={(event) => {
+                                    event.preventDefault();
+                                    onSelect(item);
+                                }}
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    border: "none",
+                                    borderRadius: 7,
+                                    background: isActive
+                                        ? "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
+                                        : "transparent",
+                                    padding: "6px 10px",
+                                    textAlign: "left",
+                                    cursor: "pointer",
+                                    minWidth: 0,
+                                }}
+                            >
+                                <span
                                     style={{
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        alignItems: "stretch",
-                                        border: "none",
-                                        borderRadius: 10,
-                                        background: isActive
-                                            ? "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
-                                            : "transparent",
-                                        padding: "10px 12px",
-                                        textAlign: "left",
-                                        cursor: "pointer",
+                                        color: "var(--text-primary)",
+                                        fontSize: 13,
+                                        fontWeight: 500,
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
                                     }}
-                                    >
-                                        <div
-                                            style={{
-                                                color: "var(--text-primary)",
-                                                fontSize: 15,
-                                                fontWeight: 600,
-                                                lineHeight: 1.3,
-                                            }}
-                                        >
-                                            {item.title}
-                                        </div>
-                                </button>
-                            );
-                        })
-                    ) : (
-                        <div
-                            style={{
-                                padding: "16px 12px",
-                                color: "var(--text-secondary)",
-                                fontSize: 13,
-                                textAlign: "center",
-                            }}
-                        >
-                            No notes found
-                        </div>
-                    )}
-                </div>
-                <div
-                    style={{
-                        padding: "8px 12px 10px",
-                        borderTop:
-                            "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                        color: "var(--text-secondary)",
-                        fontSize: 11,
-                        textAlign: "center",
-                    }}
-                >
-                    Use Arrow keys to navigate and Enter to confirm
-                </div>
+                                >
+                                    {item.title}
+                                </span>
+                            </button>
+                        );
+                    })
+                ) : (
+                    <div
+                        style={{
+                            padding: "12px 10px",
+                            color: "var(--text-secondary)",
+                            fontSize: 12,
+                            textAlign: "center",
+                        }}
+                    >
+                        No notes found
+                    </div>
+                )}
             </div>
         </div>,
         document.body,

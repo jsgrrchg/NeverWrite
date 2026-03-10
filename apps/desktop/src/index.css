@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "katex/dist/katex.min.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -12,12 +13,24 @@
     --border: #e5e5e5;
     --accent: #6366f1;
     --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
-    --highlight-bg: color-mix(in srgb, var(--accent) 20%, rgb(255 235 130 / 0.85));
+    --highlight-bg: color-mix(
+        in srgb,
+        var(--accent) 20%,
+        rgb(255 235 130 / 0.85)
+    );
     --highlight-text: #1c1c1c;
     --text-input-line-height: 1.5;
     --scrollbar-thumb-idle: transparent;
-    --scrollbar-thumb-active: color-mix(in srgb, var(--border) 76%, transparent);
-    --scrollbar-thumb-hover: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+    --scrollbar-thumb-active: color-mix(
+        in srgb,
+        var(--border) 76%,
+        transparent
+    );
+    --scrollbar-thumb-hover: color-mix(
+        in srgb,
+        var(--text-secondary) 38%,
+        transparent
+    );
 }
 
 .dark {
@@ -145,7 +158,9 @@ body.dragging-tab * {
     border: 2px solid transparent;
     border-radius: 999px;
     background-clip: padding-box;
-    transition: background-color 140ms ease, opacity 140ms ease;
+    transition:
+        background-color 140ms ease,
+        opacity 140ms ease;
 }
 
 [data-scrollbar-active="true"]::-webkit-scrollbar-thumb:hover {
@@ -162,7 +177,8 @@ body.dragging-tab * {
     scrollbar-color: var(--scrollbar-thumb-active) transparent;
 }
 
-.editor-shell[data-scrollbar-active="true"] .cm-scroller::-webkit-scrollbar-thumb {
+.editor-shell[data-scrollbar-active="true"]
+    .cm-scroller::-webkit-scrollbar-thumb {
     background: var(--scrollbar-thumb-active);
     border: 2px solid transparent;
     background-clip: padding-box;

@@ -119,6 +119,27 @@ export function getRecentVaults(): RecentVault[] {
     }
 }
 
+export async function removeVaultFromList(path: string) {
+    // Remove from recent vaults
+    const updated = getRecentVaults().filter((v) => v.path !== path);
+    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(updated));
+
+    // Clear last vault if it matches
+    if (localStorage.getItem(LAST_VAULT_KEY) === path) {
+        localStorage.removeItem(LAST_VAULT_KEY);
+    }
+
+    // Clear per-vault editor session
+    localStorage.removeItem(`vaultai.session.tabs:${path}`);
+
+    // Delete vault index snapshot from disk
+    try {
+        await invoke("delete_vault_snapshot", { vaultPath: path });
+    } catch {
+        // Snapshot may not exist — that's fine
+    }
+}
+
 function addToRecentVaults(path: string) {
     const name = path.split("/").pop() ?? path;
     const prev = getRecentVaults().filter((v) => v.path !== path);
@@ -135,7 +156,9 @@ function updateNotesWithChange(notes: NoteDto[], change: VaultNoteChange) {
 
     if (!change.note) return notes;
 
-    const existingIndex = notes.findIndex((note) => note.id === change.note!.id);
+    const existingIndex = notes.findIndex(
+        (note) => note.id === change.note!.id,
+    );
     if (existingIndex === -1) {
         return [...notes, change.note];
     }
@@ -162,7 +185,9 @@ interface VaultStore {
     touchVault: () => void;
     updateNoteMetadata: (
         noteId: string,
-        patch: Partial<Pick<NoteDto, "title" | "path" | "modified_at" | "created_at">>,
+        patch: Partial<
+            Pick<NoteDto, "title" | "path" | "modified_at" | "created_at">
+        >,
     ) => void;
 }
 

@@ -4,22 +4,17 @@ import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import type { AIMentionSuggestion } from "../types";
 
 function suggestionKey(item: AIMentionSuggestion) {
-    return item.kind === "note" ? `note:${item.note.id}` : `folder:${item.folderPath}`;
-}
-
-function suggestionTitle(item: AIMentionSuggestion) {
-    return item.kind === "note" ? item.note.title : item.name;
-}
-
-function suggestionSubtitle(item: AIMentionSuggestion) {
-    return item.kind === "note" ? item.note.path : item.folderPath;
+    if (item.kind === "fetch") return "fetch";
+    return item.kind === "note"
+        ? `note:${item.note.id}`
+        : `folder:${item.folderPath}`;
 }
 
 function FolderIcon() {
     return (
         <svg
-            width="14"
-            height="14"
+            width="13"
+            height="13"
             viewBox="0 0 14 14"
             fill="none"
             stroke="currentColor"
@@ -27,7 +22,7 @@ function FolderIcon() {
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
-            style={{ color: "var(--text-secondary)", opacity: 0.7 }}
+            style={{ color: "var(--text-secondary)", opacity: 0.6 }}
         >
             <path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.5 1.5h4.5a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z" />
         </svg>
@@ -37,8 +32,8 @@ function FolderIcon() {
 function NoteIcon() {
     return (
         <svg
-            width="14"
-            height="14"
+            width="13"
+            height="13"
             viewBox="0 0 14 14"
             fill="none"
             stroke="currentColor"
@@ -46,10 +41,30 @@ function NoteIcon() {
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
-            style={{ color: "var(--text-secondary)", opacity: 0.7 }}
+            style={{ color: "var(--text-secondary)", opacity: 0.6 }}
         >
             <path d="M8 1.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5L8 1.5z" />
             <path d="M8 1.5V5h3.5" />
+        </svg>
+    );
+}
+
+function FetchIcon() {
+    return (
+        <svg
+            width="13"
+            height="13"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="shrink-0"
+            style={{ color: "#10b981" }}
+        >
+            <circle cx="7" cy="7" r="5.5" />
+            <path d="M1.5 7h11M7 1.5a8.5 8.5 0 0 1 2 5.5 8.5 8.5 0 0 1-2 5.5M7 1.5a8.5 8.5 0 0 0-2 5.5 8.5 8.5 0 0 0 2 5.5" />
         </svg>
     );
 }
@@ -71,7 +86,6 @@ export function AIChatMentionPicker({
     open,
     x,
     y,
-    query,
     selectedIndex,
     items,
     anchorElement,
@@ -89,7 +103,14 @@ export function AIChatMentionPicker({
         if (!element) return;
 
         const rect = element.getBoundingClientRect();
-        setPosition(getViewportSafeMenuPosition(x, y - rect.height - 8, rect.width, rect.height));
+        setPosition(
+            getViewportSafeMenuPosition(
+                x,
+                y - rect.height - 8,
+                rect.width,
+                rect.height,
+            ),
+        );
     }, [open, x, y, items.length]);
 
     useEffect(() => {
@@ -122,45 +143,32 @@ export function AIChatMentionPicker({
                 top: position.y,
                 left: position.x,
                 zIndex: 10010,
-                width: 360,
-                maxWidth: "min(360px, calc(100vw - 24px))",
-                maxHeight: 320,
+                width: 340,
+                maxWidth: "min(340px, calc(100vw - 24px))",
+                maxHeight: 280,
                 overflow: "hidden",
-                borderRadius: 14,
+                borderRadius: 10,
                 border: "1px solid color-mix(in srgb, var(--border) 86%, transparent)",
                 background:
-                    "color-mix(in srgb, var(--bg-elevated) 96%, transparent)",
-                boxShadow: "0 14px 32px rgba(15, 23, 42, 0.14)",
+                    "color-mix(in srgb, var(--bg-elevated) 97%, transparent)",
+                boxShadow: "0 8px 24px rgba(15, 23, 42, 0.12)",
                 backdropFilter: "blur(10px)",
             }}
         >
             <div
                 style={{
-                    padding: "10px 12px 8px",
-                    borderBottom:
-                        "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: "0.04em",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                {query.trim() ? `Attach "${query.trim()}"` : "Attach note or folder"}
-            </div>
-            <div
-                style={{
                     overflowY: "auto",
-                    padding: 8,
+                    padding: 4,
                     display: "flex",
                     flexDirection: "column",
-                    gap: 2,
-                    maxHeight: 260,
+                    gap: 1,
+                    maxHeight: 280,
                 }}
             >
                 {items.length ? (
                     items.map((item, index) => {
                         const isActive = index === selectedIndex;
+                        const isFetch = item.kind === "fetch";
                         return (
                             <button
                                 key={suggestionKey(item)}
@@ -176,52 +184,68 @@ export function AIChatMentionPicker({
                                 style={{
                                     display: "flex",
                                     alignItems: "center",
-                                    gap: 10,
+                                    gap: 8,
                                     border: "none",
-                                    borderRadius: 10,
+                                    borderRadius: 7,
                                     background: isActive
-                                        ? "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
+                                        ? isFetch
+                                            ? "color-mix(in srgb, #10b981 10%, var(--bg-secondary))"
+                                            : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
                                         : "transparent",
-                                    padding: "10px 12px",
+                                    padding: "6px 10px",
                                     textAlign: "left",
                                     cursor: "pointer",
+                                    minWidth: 0,
                                 }}
                             >
-                                {item.kind === "folder" ? <FolderIcon /> : <NoteIcon />}
-                                <div style={{ minWidth: 0, flex: 1 }}>
-                                    <div
+                                {isFetch ? (
+                                    <FetchIcon />
+                                ) : item.kind === "folder" ? (
+                                    <FolderIcon />
+                                ) : (
+                                    <NoteIcon />
+                                )}
+                                <span
+                                    style={{
+                                        color: isFetch
+                                            ? "#10b981"
+                                            : "var(--text-primary)",
+                                        fontSize: 13,
+                                        fontWeight: isFetch ? 600 : 500,
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        flex: 1,
+                                        minWidth: 0,
+                                    }}
+                                >
+                                    {isFetch
+                                        ? "fetch"
+                                        : item.kind === "note"
+                                          ? item.note.title
+                                          : item.name}
+                                </span>
+                                {isFetch && (
+                                    <span
                                         style={{
-                                            color: "var(--text-primary)",
-                                            fontSize: 14,
-                                            fontWeight: 600,
-                                            lineHeight: 1.3,
-                                        }}
-                                    >
-                                        {suggestionTitle(item)}
-                                    </div>
-                                    <div
-                                        style={{
-                                            marginTop: 2,
+                                            fontSize: 11,
                                             color: "var(--text-secondary)",
-                                            fontSize: 12,
-                                            lineHeight: 1.35,
-                                            whiteSpace: "nowrap",
-                                            overflow: "hidden",
-                                            textOverflow: "ellipsis",
+                                            opacity: 0.6,
+                                            flexShrink: 0,
                                         }}
                                     >
-                                        {suggestionSubtitle(item)}
-                                    </div>
-                                </div>
+                                        web search
+                                    </span>
+                                )}
                             </button>
                         );
                     })
                 ) : (
                     <div
                         style={{
-                            padding: "16px 12px",
+                            padding: "12px 10px",
                             color: "var(--text-secondary)",
-                            fontSize: 13,
+                            fontSize: 12,
                             textAlign: "center",
                         }}
                     >

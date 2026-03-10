@@ -116,7 +116,9 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
                 const url = linkMatch[2];
                 const isVaultPath = url.startsWith("/") && url.endsWith(".md");
                 if (isVaultPath) {
-                    const fileName = url.split("/").pop()?.replace(/\.md$/, "") ?? linkMatch[1];
+                    const fileName =
+                        url.split("/").pop()?.replace(/\.md$/, "") ??
+                        linkMatch[1];
                     parts.push(
                         <button
                             key={key}
@@ -129,6 +131,10 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
                                 border: "none",
                                 padding: 0,
                                 font: "inherit",
+                                whiteSpace: "normal",
+                                overflowWrap: "anywhere",
+                                wordBreak: "break-word",
+                                textAlign: "left",
                             }}
                             title={url}
                         >
@@ -142,7 +148,12 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
                             href={url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            style={{ color: "var(--accent)" }}
+                            style={{
+                                color: "var(--accent)",
+                                whiteSpace: "normal",
+                                overflowWrap: "anywhere",
+                                wordBreak: "break-word",
+                            }}
                             className="underline"
                         >
                             {linkMatch[1]}
@@ -153,7 +164,8 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
         } else if (match[5]) {
             // absolute file path — clickable vault link
             const filePath = full;
-            const fileName = filePath.split("/").pop()?.replace(/\.md$/, "") ?? filePath;
+            const fileName =
+                filePath.split("/").pop()?.replace(/\.md$/, "") ?? filePath;
             parts.push(
                 <button
                     key={key}
@@ -166,6 +178,10 @@ function renderInlineMarkdown(text: string): Array<string | ReactElement> {
                         border: "none",
                         padding: 0,
                         font: "inherit",
+                        whiteSpace: "normal",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                        textAlign: "left",
                     }}
                     title={filePath}
                 >
@@ -197,9 +213,22 @@ function TextBlock({ content }: { content: string }) {
             <Tag
                 key={elements.length}
                 className={`my-1 space-y-0.5 pl-5 ${listOrdered ? "list-decimal" : "list-disc"}`}
+                style={{
+                    maxWidth: "100%",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
             >
                 {listItems.map((item, i) => (
-                    <li key={i}>{renderInlineMarkdown(item.text)}</li>
+                    <li
+                        key={i}
+                        style={{
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                        }}
+                    >
+                        {renderInlineMarkdown(item.text)}
+                    </li>
                 ))}
             </Tag>,
         );
@@ -224,7 +253,11 @@ function TextBlock({ content }: { content: string }) {
                 <div
                     key={elements.length}
                     className={`${sizes[level - 1]} mt-2 first:mt-0`}
-                    style={{ color: "var(--text-primary)" }}
+                    style={{
+                        color: "var(--text-primary)",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                    }}
                 >
                     {renderInlineMarkdown(headerMatch[2])}
                 </div>,
@@ -273,6 +306,8 @@ function TextBlock({ content }: { content: string }) {
                     style={{
                         borderColor: "var(--accent)",
                         color: "var(--text-secondary)",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
                     }}
                 >
                     {renderInlineMarkdown(line.slice(2))}
@@ -289,7 +324,14 @@ function TextBlock({ content }: { content: string }) {
 
         // Normal paragraph line
         elements.push(
-            <div key={elements.length}>
+            <div
+                key={elements.length}
+                style={{
+                    maxWidth: "100%",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
                 {renderInlineMarkdown(line)}
             </div>,
         );
@@ -307,10 +349,13 @@ function CodeBlock({
     language?: string;
 }) {
     return (
-        <div className="group relative my-2 overflow-hidden rounded-lg" style={{
-            backgroundColor: "var(--bg-tertiary)",
-            border: "1px solid var(--border)",
-        }}>
+        <div
+            className="group relative my-2 min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                backgroundColor: "var(--bg-tertiary)",
+                border: "1px solid var(--border)",
+            }}
+        >
             {language ? (
                 <div
                     className="px-3 py-1 text-[10px] uppercase tracking-wider"
@@ -322,7 +367,7 @@ function CodeBlock({
                     {language}
                 </div>
             ) : null}
-            <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
+            <pre className="max-w-full overflow-x-auto p-3 text-xs leading-relaxed">
                 <code style={{ color: "var(--text-primary)" }}>{content}</code>
             </pre>
         </div>
@@ -333,7 +378,15 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
     const blocks = parseBlocks(content);
 
     return (
-        <div className={className}>
+        <div
+            className={className}
+            style={{
+                minWidth: 0,
+                maxWidth: "100%",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+        >
             {blocks.map((block, i) =>
                 block.type === "code" ? (
                     <CodeBlock

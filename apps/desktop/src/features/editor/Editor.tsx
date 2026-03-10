@@ -3,23 +3,15 @@ import {
     useRef,
     useCallback,
     useState,
-    useLayoutEffect,
     type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
 import { EditorView, drawSelection, keymap } from "@codemirror/view";
-import {
-    ChangeSet,
-    EditorSelection,
-    EditorState,
-    Compartment,
-} from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import {
     history,
     defaultKeymap,
     historyKeymap,
-    indentMore,
-    indentLess,
     redo,
     undo,
 } from "@codemirror/commands";
@@ -31,38 +23,58 @@ import {
     searchPanelOpen,
 } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import {
-    indentUnit,
-    syntaxHighlighting,
-    defaultHighlightStyle,
-} from "@codemirror/language";
-import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
+import { indentUnit } from "@codemirror/language";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useShallow } from "zustand/react/shallow";
 import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { getWindowMode } from "../../app/detachedWindows";
-import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { findWikilinks } from "../../app/utils/wikilinks";
-import {
-    useEditorStore,
-    type Tab,
-    type EditorMode,
-} from "../../app/store/editorStore";
+import { useEditorStore, type Tab } from "../../app/store/editorStore";
 import { useThemeStore } from "../../app/store/themeStore";
-import {
-    useSettingsStore,
-    type EditorFontFamily,
-} from "../../app/store/settingsStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { searchTheme } from "./extensions/searchTheme";
-import { livePreviewExtension } from "./extensions/livePreview";
+import {
+    continueMarkdownListItem,
+    backspaceMarkdownListMarker,
+    insertConfiguredTab,
+    removeConfiguredTab,
+} from "./markdownLists";
+import {
+    FRONTMATTER_RE,
+    getNoteLocation,
+    deriveDisplayedTitle,
+    upsertFrontmatterTitle,
+    replaceOrInsertLeadingHeading,
+} from "./noteTitleHelpers";
+import {
+    clearEditorDomSelection,
+    syncSelectionLayerVisibility,
+    EDITOR_INTERACTIVE_PREVIEW_SELECTOR,
+} from "./editorSelectionHelpers";
+import { resolveWikilink, matchesRevealTarget } from "./wikilinkResolution";
+import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
+import { MetaBadge, EditableNoteTitle } from "./EditorHeader";
+import { LinkContextMenu } from "./LinkContextMenu";
+import {
+    type LinkContextMenuState,
+    baseTheme,
+    syntaxCompartment,
+    livePreviewCompartment,
+    alignmentCompartment,
+    tabSizeCompartment,
+    getSyntaxExtension,
+    getLivePreviewExtension,
+    getAlignmentExtension,
+    getEditorFontFamily,
+} from "./editorExtensions";
 import {
     activateWikilinkSuggesterAnnotation,
     markdownAutopairExtension,
@@ -76,12 +88,7 @@ import {
     FloatingSelectionToolbar,
     type FloatingSelectionToolbarState,
 } from "./FloatingSelectionToolbar";
-import {
-    FrontmatterPanel,
-    parseFrontmatterRaw,
-    serializeFrontmatterRaw,
-    type FrontmatterEntry,
-} from "./FrontmatterPanel";
+import { FrontmatterPanel } from "./FrontmatterPanel";
 import {
     getSelectionTransform,
     type SelectionToolbarAction,
@@ -91,10 +98,8 @@ import {
     type WikilinkSuggesterState,
 } from "./WikilinkSuggester";
 
-const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/;
 const appWindow = getCurrentWindow();
 
-type VaultNote = ReturnType<typeof useVaultStore.getState>["notes"][number];
 type SavedNoteDetail = {
     id: string;
     path: string;
@@ -105,1115 +110,9 @@ type TabScrollPosition = {
     top: number;
     left: number;
 };
-type LinkContextMenuState = {
-    x: number;
-    y: number;
-    href: string;
-    noteTarget: string | null;
-};
 type EditorContextMenuPayload = {
     hasSelection: boolean;
 };
-
-let cachedNotesRef: VaultNote[] | null = null;
-let cachedWikilinkIndex: Map<string, VaultNote> | null = null;
-let cachedWikilinkResolution: Map<string, VaultNote | null> | null = null;
-
-function normalizeWikilinkTarget(target: string): string {
-    const trimmed = target.trim();
-    const withoutSubpath = trimmed.split(/[#^]/, 1)[0]?.trim() ?? "";
-    return withoutSubpath
-        .replace(/\.md$/i, "")
-        .replace(/[’‘]/g, "'")
-        .replace(/[“”]/g, '"')
-        .replace(/…/g, "...")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, " ")
-        .toLowerCase();
-}
-
-function getWikilinkVariants(target: string): string[] {
-    const normalized = normalizeWikilinkTarget(target);
-    if (!normalized) return [];
-    const trimmed = normalized.replace(/[\s.,!?:;]+$/g, "");
-    return trimmed && trimmed !== normalized
-        ? [normalized, trimmed]
-        : [normalized];
-}
-
-function isStrongPrefixCandidate(target: string): boolean {
-    return target.length >= 24 && target.split(/\s+/).length >= 4;
-}
-
-function isPrefixExpansion(candidate: string, target: string): boolean {
-    if (candidate === target || !candidate.startsWith(target)) {
-        return false;
-    }
-
-    const next = candidate.charAt(target.length);
-    return next === " " || next === "-" || next === ":" || next === "(";
-}
-
-function findUniquePrefixNote(
-    target: string,
-    notes: VaultNote[],
-): VaultNote | null {
-    const variants = getWikilinkVariants(target).filter(
-        isStrongPrefixCandidate,
-    );
-    if (!variants.length) return null;
-
-    const matches: VaultNote[] = [];
-
-    for (const note of notes) {
-        const aliases = [
-            normalizeWikilinkTarget(note.title),
-            normalizeWikilinkTarget(note.id.split("/").pop() ?? ""),
-        ];
-
-        if (
-            !aliases.some((alias) =>
-                variants.some((variant) => isPrefixExpansion(alias, variant)),
-            )
-        ) {
-            continue;
-        }
-
-        matches.push(note);
-        if (matches.length > 1) return null;
-    }
-
-    return matches[0] ?? null;
-}
-
-function getWikilinkIndex(): Map<string, VaultNote> {
-    const notes = useVaultStore.getState().notes;
-    if (cachedNotesRef === notes && cachedWikilinkIndex) {
-        return cachedWikilinkIndex;
-    }
-
-    const index = new Map<string, VaultNote>();
-    for (const note of notes) {
-        const fullId = normalizeWikilinkTarget(note.id);
-        const title = normalizeWikilinkTarget(note.title);
-        const lastSegment = normalizeWikilinkTarget(
-            note.id.split("/").pop() ?? "",
-        );
-
-        for (const key of getWikilinkVariants(fullId)) {
-            if (!index.has(key)) index.set(key, note);
-        }
-        for (const key of getWikilinkVariants(title)) {
-            if (!index.has(key)) index.set(key, note);
-        }
-        for (const key of getWikilinkVariants(lastSegment)) {
-            if (!index.has(key)) index.set(key, note);
-        }
-    }
-
-    cachedNotesRef = notes;
-    cachedWikilinkIndex = index;
-    cachedWikilinkResolution = new Map();
-    return index;
-}
-
-function findNoteByWikilink(target: string) {
-    const notes = useVaultStore.getState().notes;
-    const index = getWikilinkIndex();
-    if (cachedNotesRef !== notes || !cachedWikilinkResolution) {
-        cachedNotesRef = notes;
-        cachedWikilinkResolution = new Map();
-    }
-    const variants = getWikilinkVariants(target);
-    const cacheKey = variants.join("\u0000");
-    const cachedMatch = cachedWikilinkResolution.get(cacheKey);
-    if (cachedMatch !== undefined) {
-        return cachedMatch;
-    }
-
-    let resolved: VaultNote | null = null;
-    for (const key of variants) {
-        const match = index.get(key);
-        if (match) {
-            resolved = match;
-            break;
-        }
-    }
-
-    if (!resolved) {
-        resolved = findUniquePrefixNote(target, notes);
-    }
-
-    cachedWikilinkResolution.set(cacheKey, resolved);
-    return resolved;
-}
-
-function resolveWikilink(target: string): boolean {
-    return findNoteByWikilink(target) !== null;
-}
-
-function clearEditorDomSelection(view: EditorView | null) {
-    if (!view) return;
-
-    const selection = view.dom.ownerDocument.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
-    if (selection.isCollapsed) return;
-
-    const anchorNode = selection.anchorNode;
-    const focusNode = selection.focusNode;
-    const touchesEditor =
-        (!!anchorNode && view.dom.contains(anchorNode)) ||
-        (!!focusNode && view.dom.contains(focusNode));
-
-    if (touchesEditor) {
-        selection.removeAllRanges();
-    }
-}
-
-function syncSelectionLayerVisibility(view: EditorView | null) {
-    if (!view) return;
-
-    const layer = view.dom.querySelector(".cm-selectionLayer");
-    if (!(layer instanceof HTMLElement)) return;
-
-    const hasSelection = view.hasFocus
-        ? view.state.selection.ranges.some((range) => !range.empty)
-        : false;
-
-    layer.style.opacity = hasSelection ? "1" : "0";
-}
-
-function matchesRevealTarget(target: string, revealTargets: string[]) {
-    const targetVariants = new Set(getWikilinkVariants(target));
-    return revealTargets.some((candidate) =>
-        getWikilinkVariants(candidate).some((variant) =>
-            targetVariants.has(variant),
-        ),
-    );
-}
-
-function navigateWikilink(target: string) {
-    const note = findNoteByWikilink(target);
-    if (note) {
-        const { tabs, openNote } = useEditorStore.getState();
-        const existing = tabs.find((t) => t.noteId === note.id);
-        if (existing) {
-            openNote(note.id, note.title, existing.content);
-            return;
-        }
-        void invoke<{ content: string }>("read_note", { noteId: note.id })
-            .then((detail) => {
-                useEditorStore
-                    .getState()
-                    .openNote(note.id, note.title, detail.content, {
-                        placement: "afterActive",
-                    });
-            })
-            .catch((e) => console.error("Error reading linked note:", e));
-    } else {
-        // Broken link: create the note
-        const { createNote } = useVaultStore.getState();
-        void createNote(target).then((created) => {
-            if (created) {
-                useEditorStore
-                    .getState()
-                    .openNote(created.id, created.title, "", {
-                        placement: "afterActive",
-                    });
-            }
-        });
-    }
-}
-
-function openWikilinkInNewTab(target: string) {
-    const note = findNoteByWikilink(target);
-    if (!note) return;
-
-    const { tabs, insertExternalTab } = useEditorStore.getState();
-    const existing = tabs.find((tab) => tab.noteId === note.id);
-
-    if (existing) {
-        insertExternalTab({
-            id: crypto.randomUUID(),
-            noteId: note.id,
-            title: note.title,
-            content: existing.content,
-            isDirty: false,
-        });
-        return;
-    }
-
-    void invoke<{ content: string }>("read_note", { noteId: note.id })
-        .then((detail) => {
-            useEditorStore.getState().insertExternalTab({
-                id: crypto.randomUUID(),
-                noteId: note.id,
-                title: note.title,
-                content: detail.content,
-                isDirty: false,
-            });
-        })
-        .catch((error) =>
-            console.error("Error opening linked note in new tab:", error),
-        );
-}
-
-function resolveRelativeNotePath(baseNoteId: string | null, href: string): string {
-    const cleanedHref = href.replace(/\\/g, "/");
-    const segments = cleanedHref.startsWith("/")
-        ? []
-        : (baseNoteId?.split("/").slice(0, -1) ?? []);
-
-    for (const segment of cleanedHref.split("/")) {
-        if (!segment || segment === ".") continue;
-        if (segment === "..") {
-            if (segments.length > 0) segments.pop();
-            continue;
-        }
-        segments.push(segment);
-    }
-
-    return segments.join("/");
-}
-
-function getNoteLinkTarget(href: string): string | null {
-    const trimmed = href.trim();
-    if (!trimmed || trimmed.startsWith("#")) return null;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return null;
-    if (trimmed.startsWith("//")) return null;
-
-    let decoded = trimmed;
-    try {
-        decoded = decodeURIComponent(trimmed);
-    } catch {
-        decoded = trimmed;
-    }
-
-    const normalizedTarget = decoded
-        .split(/[?#]/, 1)[0]
-        .trim();
-
-    if (!normalizedTarget) return null;
-
-    const activeTabId = useEditorStore.getState().activeTabId;
-    const activeNoteId =
-        useEditorStore
-            .getState()
-            .tabs.find((tab) => tab.id === activeTabId)?.noteId ?? null;
-
-    const resolvedPath = resolveRelativeNotePath(activeNoteId, normalizedTarget);
-    if (resolvedPath && findNoteByWikilink(resolvedPath)) {
-        return resolvedPath;
-    }
-
-    const directTarget = normalizedTarget.replace(/^\/+/, "");
-    if (directTarget && findNoteByWikilink(directTarget)) {
-        return directTarget;
-    }
-
-    return resolvedPath || directTarget || normalizedTarget;
-}
-
-function LinkContextMenu({
-    menu,
-    onClose,
-}: {
-    menu: LinkContextMenuState;
-    onClose: () => void;
-}) {
-    const ref = useRef<HTMLDivElement>(null);
-    const [position, setPosition] = useState({ x: menu.x, y: menu.y });
-
-    useLayoutEffect(() => {
-        const el = ref.current;
-        if (!el) return;
-        const rect = el.getBoundingClientRect();
-        setPosition(
-            getViewportSafeMenuPosition(menu.x, menu.y, rect.width, rect.height),
-        );
-    }, [menu.x, menu.y]);
-
-    useEffect(() => {
-        const handleDown = (event: MouseEvent) => {
-            if (ref.current && !ref.current.contains(event.target as Node)) {
-                onClose();
-            }
-        };
-        const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") onClose();
-        };
-        const handleScroll = () => onClose();
-
-        document.addEventListener("mousedown", handleDown);
-        document.addEventListener("keydown", handleKey);
-        window.addEventListener("scroll", handleScroll, true);
-
-        return () => {
-            document.removeEventListener("mousedown", handleDown);
-            document.removeEventListener("keydown", handleKey);
-            window.removeEventListener("scroll", handleScroll, true);
-        };
-    }, [onClose]);
-
-    const linkedNote = menu.noteTarget
-        ? findNoteByWikilink(menu.noteTarget)
-        : null;
-
-    const menuItem = (label: string, action: () => void) => (
-        <button
-            key={label}
-            type="button"
-            onClick={() => {
-                action();
-                onClose();
-            }}
-            className="w-full text-left px-3 py-1.5 text-xs rounded"
-            style={{
-                color: "var(--text-primary)",
-                background: "transparent",
-            }}
-            onMouseEnter={(event) => {
-                event.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
-            }}
-            onMouseLeave={(event) => {
-                event.currentTarget.style.backgroundColor = "transparent";
-            }}
-        >
-            {label}
-        </button>
-    );
-
-    return (
-        <div
-            ref={ref}
-            style={{
-                position: "fixed",
-                top: position.y,
-                left: position.x,
-                zIndex: 10000,
-                minWidth: 180,
-                padding: 4,
-                borderRadius: 8,
-                backgroundColor: "var(--bg-secondary)",
-                border: "1px solid var(--border)",
-                boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-            }}
-        >
-            {menu.noteTarget
-                ? menuItem("Open note", () => {
-                      navigateWikilink(menu.noteTarget ?? menu.href);
-                  })
-                : menuItem("Open link", () => {
-                      void openUrl(menu.href);
-                  })}
-            {linkedNote &&
-                menuItem("Open in new tab", () => {
-                    openWikilinkInNewTab(linkedNote.id);
-                })}
-            {menuItem("Copy link", () => {
-                void navigator.clipboard.writeText(menu.href);
-            })}
-        </div>
-    );
-}
-
-const EDITOR_INTERACTIVE_PREVIEW_SELECTOR = [
-    ".cm-lp-link",
-    ".cm-inline-image-link",
-    ".cm-youtube-link",
-    ".cm-note-embed",
-    ".cm-lp-footnote-ref",
-    ".cm-lp-table-link",
-    ".cm-lp-table-url",
-].join(", ");
-
-// Base theme using CSS variables — responds to dark/light via CSS class toggle
-const baseTheme = EditorView.theme({
-    "&": {
-        height: "100%",
-        backgroundColor: "transparent",
-        color: "var(--text-primary)",
-        fontSize: "var(--editor-font-size)",
-        fontFamily: "var(--editor-font-family)",
-    },
-    ".cm-scroller": {
-        overflow: "hidden auto",
-        fontFamily: "inherit",
-        flexWrap: "wrap",
-        paddingBottom: "72px",
-        scrollbarColor: "var(--app-scrollbar-thumb) transparent",
-        minWidth: 0,
-    },
-    ".cm-lp-scroll-header": {
-        flex: "0 0 100%",
-        boxSizing: "border-box",
-    },
-    ".cm-content": {
-        flex: "1 1 0%",
-        minWidth: 0,
-        boxSizing: "border-box",
-        padding:
-            "24px max(clamp(24px, 5vw, 56px), calc((100% - var(--editor-content-width)) / 2)) 120px",
-        caretColor: "var(--text-primary)",
-        lineHeight: "var(--text-input-line-height)",
-        minHeight: "calc(100vh - 220px)",
-    },
-    ".cm-line": {
-        padding: "0 2px",
-    },
-    ".cm-gutters": {
-        display: "none",
-    },
-    ".cm-cursor": {
-        borderLeftColor: "var(--text-primary)",
-        borderLeftWidth: "1.6px",
-        marginLeft: "-0.8px",
-    },
-    ".cm-selectionBackground": {
-        backgroundColor:
-            "color-mix(in srgb, var(--accent) 22%, transparent) !important",
-    },
-    ".cm-line::selection, .cm-line > span::selection, .cm-content ::selection":
-        {
-            backgroundColor: "transparent",
-        },
-    ".cm-line::-moz-selection, .cm-line > span::-moz-selection, .cm-content ::-moz-selection":
-        {
-            backgroundColor: "transparent",
-        },
-    ".cm-activeLine": {
-        backgroundColor: "color-mix(in srgb, var(--accent) 3.5%, transparent)",
-        borderRadius: "8px",
-    },
-    ".cm-activeLineGutter": {
-        backgroundColor: "transparent",
-    },
-    "&.cm-focused": {
-        outline: "none",
-    },
-});
-
-// Compartment for syntax highlighting (switches between dark/light)
-const syntaxCompartment = new Compartment();
-// Compartment for the editor rendering mode (fixed to live preview)
-const livePreviewCompartment = new Compartment();
-// Compartment for justified alignment
-const alignmentCompartment = new Compartment();
-// Compartment for tab size
-const tabSizeCompartment = new Compartment();
-
-const MARKDOWN_LIST_LINE_RE = /^(\s*)(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
-const MARKDOWN_LIST_ITEM_RE =
-    /^([ \t]*)(?:(\d+)([.)])|([-+*]))[ \t]+(?:\[( |x|X)\][ \t]+)?(.*)$/;
-
-type MarkdownListItem = {
-    indent: string;
-    marker: string;
-    orderedNumber: number | null;
-    orderedDelimiter: ")" | "." | null;
-    isTask: boolean;
-    content: string;
-    prefixLength: number;
-    isEmpty: boolean;
-};
-
-function parseMarkdownListItem(lineText: string): MarkdownListItem | null {
-    const match = lineText.match(MARKDOWN_LIST_ITEM_RE);
-    if (!match) return null;
-
-    const [
-        fullMatch,
-        indent,
-        orderedDigits,
-        orderedDelimiterRaw,
-        bulletMarker,
-        taskMarker,
-        content,
-    ] = match;
-    const orderedDelimiter =
-        orderedDelimiterRaw === "." || orderedDelimiterRaw === ")"
-            ? orderedDelimiterRaw
-            : null;
-    const orderedNumber = orderedDigits ? Number.parseInt(orderedDigits, 10) : null;
-    const marker = orderedDigits
-        ? `${orderedDigits}${orderedDelimiter ?? "."}`
-        : (bulletMarker ?? "-");
-
-    return {
-        indent,
-        marker,
-        orderedNumber,
-        orderedDelimiter,
-        isTask: taskMarker !== undefined,
-        content,
-        prefixLength: fullMatch.length - content.length,
-        isEmpty: content.trim().length === 0,
-    };
-}
-
-function buildContinuedListPrefix(item: MarkdownListItem): string {
-    const orderedMarker =
-        item.orderedNumber !== null
-            ? `${item.orderedNumber + 1}${item.orderedDelimiter ?? "."}`
-            : item.marker;
-    const taskSuffix = item.isTask ? "[ ] " : "";
-    return `${item.indent}${orderedMarker} ${taskSuffix}`;
-}
-
-function continueMarkdownListItem({
-    state,
-    dispatch,
-}: {
-    state: EditorState;
-    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
-}) {
-    if (state.readOnly) return false;
-    if (state.selection.ranges.length !== 1) return false;
-
-    const range = state.selection.main;
-    if (!range.empty) return false;
-
-    const line = state.doc.lineAt(range.from);
-    const item = parseMarkdownListItem(line.text);
-    if (!item) return false;
-
-    if (item.isEmpty) {
-        dispatch(
-            state.update({
-                changes: { from: line.from, to: line.to, insert: "" },
-                selection: EditorSelection.cursor(line.from),
-                scrollIntoView: true,
-                userEvent: "input",
-            }),
-        );
-        return true;
-    }
-
-    const insert = `\n${buildContinuedListPrefix(item)}`;
-    const anchor = range.from + insert.length;
-
-    dispatch(
-        state.update({
-            changes: { from: range.from, to: range.to, insert },
-            selection: EditorSelection.cursor(anchor),
-            scrollIntoView: true,
-            userEvent: "input",
-        }),
-    );
-
-    return true;
-}
-
-function backspaceMarkdownListMarker({
-    state,
-    dispatch,
-}: {
-    state: EditorState;
-    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
-}) {
-    if (state.readOnly) return false;
-    if (state.selection.ranges.length !== 1) return false;
-
-    const range = state.selection.main;
-    if (!range.empty) return false;
-
-    const line = state.doc.lineAt(range.from);
-    const item = parseMarkdownListItem(line.text);
-    if (!item?.isEmpty) return false;
-
-    const prefixEnd = line.from + item.prefixLength;
-    if (range.from < line.from || range.from > prefixEnd) return false;
-
-    const unit = state.facet(indentUnit);
-    const deleteIndentLength = getOutdentDeleteLength(item.indent, unit.length);
-
-    if (deleteIndentLength > 0) {
-        dispatch(
-            state.update({
-                changes: {
-                    from: line.from,
-                    to: line.from + deleteIndentLength,
-                },
-                selection: EditorSelection.cursor(
-                    Math.max(line.from, range.from - deleteIndentLength),
-                ),
-                scrollIntoView: true,
-                userEvent: "delete.backward",
-            }),
-        );
-        return true;
-    }
-
-    dispatch(
-        state.update({
-            changes: { from: line.from, to: line.to, insert: "" },
-            selection: EditorSelection.cursor(line.from),
-            scrollIntoView: true,
-            userEvent: "delete.backward",
-        }),
-    );
-
-    return true;
-}
-
-function getSelectedLines(state: EditorState) {
-    const seen = new Set<number>();
-    const lines: Array<ReturnType<EditorState["doc"]["line"]>> = [];
-
-    for (const range of state.selection.ranges) {
-        const startLine = state.doc.lineAt(range.from);
-        let endPos = range.to;
-
-        if (!range.empty) {
-            const rawEndLine = state.doc.lineAt(range.to);
-            if (range.to === rawEndLine.from && range.to > range.from) {
-                endPos = range.to - 1;
-            }
-        }
-
-        const endLine = state.doc.lineAt(endPos);
-        for (
-            let lineNumber = startLine.number;
-            lineNumber <= endLine.number;
-            lineNumber++
-        ) {
-            const line = state.doc.line(lineNumber);
-            if (seen.has(line.from)) continue;
-            seen.add(line.from);
-            lines.push(line);
-        }
-    }
-
-    return lines;
-}
-
-function getListLines(state: EditorState) {
-    const lines = getSelectedLines(state);
-    if (!lines.length) return null;
-    if (lines.some((line) => !MARKDOWN_LIST_LINE_RE.test(line.text))) {
-        return null;
-    }
-    return lines;
-}
-
-function mapSelectionThroughChanges(state: EditorState, changes: ChangeSet) {
-    return EditorSelection.create(
-        state.selection.ranges.map((range) =>
-            EditorSelection.range(
-                changes.mapPos(range.from, 1),
-                changes.mapPos(range.to, 1),
-            ),
-        ),
-        state.selection.mainIndex,
-    );
-}
-
-function indentMarkdownListItems({
-    state,
-    dispatch,
-}: {
-    state: EditorState;
-    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
-}) {
-    if (state.readOnly) return false;
-
-    const lines = getListLines(state);
-    if (!lines) return false;
-
-    const unit = state.facet(indentUnit);
-    const changes = ChangeSet.of(
-        lines.map((line) => ({ from: line.from, insert: unit })),
-        state.doc.length,
-    );
-
-    dispatch(
-        state.update({
-            changes,
-            selection: mapSelectionThroughChanges(state, changes),
-            scrollIntoView: true,
-            userEvent: "input.indent",
-        }),
-    );
-
-    return true;
-}
-
-function getOutdentDeleteLength(prefix: string, maxColumns: number) {
-    let consumed = 0;
-    let columns = 0;
-
-    while (consumed < prefix.length && columns < maxColumns) {
-        const char = prefix[consumed];
-        if (char === " ") {
-            consumed++;
-            columns++;
-            continue;
-        }
-        if (char === "\t") {
-            consumed++;
-            break;
-        }
-        break;
-    }
-
-    return consumed;
-}
-
-function outdentMarkdownListItems({
-    state,
-    dispatch,
-}: {
-    state: EditorState;
-    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
-}) {
-    if (state.readOnly) return false;
-
-    const lines = getListLines(state);
-    if (!lines) return false;
-
-    const unit = state.facet(indentUnit);
-    const specs = lines
-        .map((line) => {
-            const match = line.text.match(MARKDOWN_LIST_LINE_RE);
-            const prefix = match?.[1] ?? "";
-            const deleteLength = getOutdentDeleteLength(prefix, unit.length);
-            if (!deleteLength) return null;
-            return {
-                from: line.from,
-                to: line.from + deleteLength,
-            };
-        })
-        .filter((spec): spec is { from: number; to: number } => spec !== null);
-
-    if (!specs.length) return false;
-
-    const changes = ChangeSet.of(specs, state.doc.length);
-
-    dispatch(
-        state.update({
-            changes,
-            selection: mapSelectionThroughChanges(state, changes),
-            scrollIntoView: true,
-            userEvent: "input.indent",
-        }),
-    );
-
-    return true;
-}
-
-function insertConfiguredTab({
-    state,
-    dispatch,
-}: {
-    state: EditorState;
-    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
-}) {
-    if (state.readOnly) return false;
-    if (indentMarkdownListItems({ state, dispatch })) return true;
-    if (state.selection.ranges.some((range) => !range.empty)) {
-        return indentMore({ state, dispatch });
-    }
-
-    const unit = state.facet(indentUnit);
-    const changes = state.changeByRange((range) => ({
-        changes: { from: range.from, to: range.to, insert: unit },
-        range: EditorSelection.cursor(range.from + unit.length),
-    }));
-
-    dispatch(
-        state.update(changes, {
-            scrollIntoView: true,
-            userEvent: "input",
-        }),
-    );
-
-    return true;
-}
-
-function removeConfiguredTab({
-    state,
-    dispatch,
-}: {
-    state: EditorState;
-    dispatch: (transaction: ReturnType<EditorState["update"]>) => void;
-}) {
-    if (outdentMarkdownListItems({ state, dispatch })) return true;
-    return indentLess({ state, dispatch });
-}
-
-function getSyntaxExtension(isDark: boolean) {
-    // Only switch syntax highlighting colors, not the full editor theme
-    return isDark
-        ? syntaxHighlighting(oneDarkHighlightStyle)
-        : syntaxHighlighting(defaultHighlightStyle);
-}
-
-function getLivePreviewExtension(
-    mode: EditorMode,
-    openLinkContextMenu: (menu: LinkContextMenuState | null) => void,
-) {
-    const vaultPath = useVaultStore.getState().vaultPath;
-    return mode === "preview"
-        ? livePreviewExtension(vaultPath, {
-              resolveWikilink,
-              navigateWikilink,
-              getNoteLinkTarget,
-              openLinkContextMenu,
-          })
-        : [];
-}
-
-function getAlignmentExtension(enabled: boolean) {
-    return enabled
-        ? [
-              EditorView.contentAttributes.of({
-                  class: "cm-justify-text",
-              }),
-              EditorView.theme({
-                  ".cm-content.cm-justify-text .cm-line": {
-                      width: "100%",
-                      textAlign: "justify",
-                      textAlignLast: "left",
-                      whiteSpace: "pre-wrap",
-                      overflowWrap: "break-word",
-                      wordBreak: "normal",
-                      hyphens: "auto",
-                  },
-              }),
-          ]
-        : [];
-}
-
-function getEditorFontFamily(fontFamily: EditorFontFamily) {
-    switch (fontFamily) {
-        case "sans":
-            return '"Inter", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif';
-        case "serif":
-            return '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif';
-        case "mono":
-            return '"SFMono-Regular", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace';
-        case "courier":
-            return '"Courier New", Courier, "Nimbus Mono PS", monospace';
-        case "reading":
-            return '"Charter", "Baskerville", "Georgia", serif';
-        case "rounded":
-            return '"SF Pro Rounded", "Nunito", "Avenir Next Rounded", "Hiragino Maru Gothic ProN", sans-serif';
-        case "humanist":
-            return '"Optima", "Gill Sans", "Trebuchet MS", "Segoe UI", sans-serif';
-        case "slab":
-            return '"Rockwell", "Clarendon Text", "Roboto Slab", "Courier Prime", serif';
-        case "typewriter":
-            return '"American Typewriter", "Courier Prime", "Courier New", "Nimbus Mono PS", monospace';
-        case "newspaper":
-            return '"Times New Roman", "Georgia", "Source Serif 4", "Iowan Old Style", serif';
-        case "condensed":
-            return '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", "Helvetica Neue", sans-serif';
-        case "system":
-        default:
-            return 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    }
-}
-
-function getNoteLocation(noteId: string) {
-    const parts = noteId.split("/").filter(Boolean);
-    return {
-        parent: parts.slice(0, -1).join(" / "),
-    };
-}
-
-function extractFirstHeading(body: string): string | null {
-    for (const line of body.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith("# ")) {
-            return trimmed.slice(2).trim();
-        }
-        break;
-    }
-    return null;
-}
-
-function deriveDisplayedTitle(
-    frontmatterRaw: string | null,
-    body: string,
-    fallback: string,
-) {
-    const fmTitle = frontmatterRaw
-        ? parseFrontmatterRaw(frontmatterRaw).find(
-              (entry) => entry.key === "title",
-          )?.value
-        : null;
-    if (typeof fmTitle === "string" && fmTitle.trim()) {
-        return fmTitle.trim();
-    }
-    return extractFirstHeading(body) ?? fallback;
-}
-
-function upsertFrontmatterTitle(raw: string, title: string): string {
-    const entries = parseFrontmatterRaw(raw);
-    const nextEntries: FrontmatterEntry[] = [];
-    let found = false;
-
-    for (const entry of entries) {
-        if (entry.key === "title") {
-            nextEntries.push({ key: "title", value: title });
-            found = true;
-        } else {
-            nextEntries.push(entry);
-        }
-    }
-
-    if (!found) {
-        nextEntries.unshift({ key: "title", value: title });
-    }
-
-    return (
-        serializeFrontmatterRaw(nextEntries) ?? `---\ntitle: ${title}\n---\n`
-    );
-}
-
-function replaceOrInsertLeadingHeading(body: string, title: string): string {
-    const lines = body.split(/\r?\n/);
-    const lineBreak = body.includes("\r\n") ? "\r\n" : "\n";
-
-    for (let index = 0; index < lines.length; index++) {
-        const trimmed = lines[index].trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith("# ")) {
-            const indent = lines[index].match(/^\s*/)?.[0] ?? "";
-            lines[index] = `${indent}# ${title}`;
-            return lines.join(lineBreak);
-        }
-        break;
-    }
-
-    return `# ${title}${lineBreak}${lineBreak}${body}`.trimEnd();
-}
-
-function MetaBadge({
-    label,
-    tone = "muted",
-}: {
-    label: string;
-    tone?: "muted" | "accent" | "success";
-}) {
-    const palette =
-        tone === "accent"
-            ? {
-                  color: "var(--accent)",
-                  background:
-                      "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))",
-                  border: "color-mix(in srgb, var(--accent) 24%, var(--border))",
-              }
-            : tone === "success"
-              ? {
-                    color: "#15803d",
-                    background:
-                        "color-mix(in srgb, #22c55e 10%, var(--bg-primary))",
-                    border: "color-mix(in srgb, #22c55e 22%, var(--border))",
-                }
-              : {
-                    color: "var(--text-secondary)",
-                    background:
-                        "color-mix(in srgb, var(--bg-secondary) 82%, transparent)",
-                    border: "var(--border)",
-                };
-
-    return (
-        <span
-            style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                height: 28,
-                padding: "0 11px",
-                borderRadius: 999,
-                border: `1px solid ${palette.border}`,
-                background: palette.background,
-                color: palette.color,
-                fontSize: 12,
-                fontWeight: 600,
-                letterSpacing: "0.01em",
-            }}
-        >
-            {label}
-        </span>
-    );
-}
-
-function EditableNoteTitle({
-    value,
-    onChange,
-    textareaRef,
-    onContextMenu,
-}: {
-    value: string;
-    onChange: (nextValue: string) => void;
-    textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
-    onContextMenu?: (event: React.MouseEvent<HTMLTextAreaElement>) => void;
-}) {
-    const ref = useRef<HTMLTextAreaElement | null>(null);
-    const [draft, setDraft] = useState(value);
-
-    useEffect(() => {
-        if (textareaRef) {
-            textareaRef.current = ref.current;
-        }
-    }, [textareaRef]);
-
-    useEffect(() => {
-        setDraft(value);
-    }, [value]);
-
-    useLayoutEffect(() => {
-        const el = ref.current;
-        if (!el) return;
-        el.style.height = "0px";
-        el.style.height = `${el.scrollHeight}px`;
-    }, [draft]);
-
-    return (
-        <textarea
-            ref={ref}
-            value={draft}
-            rows={1}
-            spellCheck={false}
-            onChange={(e) => {
-                const nextValue = e.target.value.replace(/\r?\n+/g, " ");
-                setDraft(nextValue);
-                onChange(nextValue);
-            }}
-            onContextMenu={onContextMenu}
-            style={{
-                width: "100%",
-                resize: "none",
-                overflow: "hidden",
-                background: "transparent",
-                border: "1px solid transparent",
-                borderRadius: 16,
-                padding: "6px 8px",
-                margin: "-6px -8px 0",
-                fontSize: "2rem",
-                fontWeight: 750,
-                color: "var(--text-primary)",
-                lineHeight: 1.1,
-                letterSpacing: "-0.03em",
-                outline: "none",
-            }}
-            onFocus={(e) => {
-                e.currentTarget.style.borderColor =
-                    "color-mix(in srgb, var(--accent) 22%, transparent)";
-                e.currentTarget.style.background =
-                    "color-mix(in srgb, var(--bg-secondary) 78%, transparent)";
-            }}
-            onBlur={(e) => {
-                e.currentTarget.style.borderColor = "transparent";
-                e.currentTarget.style.background = "transparent";
-            }}
-        />
-    );
-}
 
 interface EditorProps {
     emptyStateMessage?: string;
@@ -1225,6 +124,9 @@ export function Editor({
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const scheduleSaveRef = useRef<(tabId: string, content: string) => void>(
+        () => {},
+    );
     const contentUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
         null,
     );
@@ -1257,6 +159,7 @@ export function Editor({
         useState<FloatingSelectionToolbarState | null>(null);
     const [wikilinkSuggester, setWikilinkSuggester] =
         useState<WikilinkSuggesterState | null>(null);
+    const [isDraggingVault, setIsDraggingVault] = useState(false);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -1279,7 +182,6 @@ export function Editor({
     );
 
     const activeTabId = useEditorStore((s) => s.activeTabId);
-    const editorMode = useEditorStore((s) => s.editorMode);
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const pendingSelectionReveal = useEditorStore(
@@ -1300,9 +202,13 @@ export function Editor({
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const justifyText = useSettingsStore((s) => s.justifyText);
+    const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const tabSize = useSettingsStore((s) => s.tabSize);
+    const vaultPath = useVaultStore((s) => s.vaultPath);
+    const vaultRevision = useVaultStore((s) => s.vaultRevision);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchVault = useVaultStore((s) => s.touchVault);
+    const openVault = useVaultStore((s) => s.openVault);
 
     // Only re-renders when the active tab identity changes, not on content/isDirty updates
     const activeTabInfo = useEditorStore(
@@ -1406,15 +312,21 @@ export function Editor({
     );
 
     const scheduleSave = useCallback(
-        (tab: Tab, content: string) => {
+        (tabId: string, content: string) => {
             if (!autoSave) return;
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             saveTimerRef.current = setTimeout(() => {
-                saveNow(tab, content);
+                const freshTab = useEditorStore
+                    .getState()
+                    .tabs.find((t) => t.id === tabId);
+                if (freshTab) saveNow(freshTab, content);
             }, autoSaveDelay);
         },
         [autoSave, autoSaveDelay, saveNow],
     );
+    useEffect(() => {
+        scheduleSaveRef.current = scheduleSave;
+    }, [scheduleSave]);
 
     const applyFrontmatterChange = useCallback(
         (nextFrontmatter: string | null) => {
@@ -1442,7 +354,7 @@ export function Editor({
                 modified_at: Math.floor(Date.now() / 1000),
             });
             updateTabContent(tab.id, body);
-            scheduleSave({ ...tab, title: nextTitle }, body);
+            scheduleSave(tab.id, body);
         },
         [
             getCurrentBody,
@@ -1492,7 +404,7 @@ export function Editor({
             }
 
             updateTabContent(tab.id, nextBody);
-            scheduleSave({ ...tab, title }, nextBody);
+            scheduleSave(tab.id, nextBody);
         },
         [
             activeFrontmatter,
@@ -1591,6 +503,7 @@ export function Editor({
 
     const updateSelectionToolbar = useCallback((view: EditorView | null) => {
         if (!view || !activeTabRef.current || !view.hasFocus) {
+            useEditorStore.getState().clearCurrentSelection();
             clearEditorDomSelection(view);
             syncSelectionLayerVisibility(view);
             setSelectionToolbar(null);
@@ -1598,6 +511,7 @@ export function Editor({
         }
 
         if (view.state.selection.ranges.length !== 1) {
+            useEditorStore.getState().clearCurrentSelection();
             clearEditorDomSelection(view);
             syncSelectionLayerVisibility(view);
             setSelectionToolbar(null);
@@ -1606,6 +520,7 @@ export function Editor({
 
         const selection = view.state.selection.main;
         if (selection.empty) {
+            useEditorStore.getState().clearCurrentSelection();
             clearEditorDomSelection(view);
             syncSelectionLayerVisibility(view);
             setSelectionToolbar(null);
@@ -1618,6 +533,7 @@ export function Editor({
             -1,
         );
         if (!selectionStart || !selectionEnd) {
+            useEditorStore.getState().clearCurrentSelection();
             clearEditorDomSelection(view);
             syncSelectionLayerVisibility(view);
             setSelectionToolbar(null);
@@ -1625,6 +541,12 @@ export function Editor({
         }
 
         syncSelectionLayerVisibility(view);
+        useEditorStore.getState().setCurrentSelection({
+            noteId: activeTabRef.current.noteId,
+            text: view.state.sliceDoc(selection.from, selection.to),
+            from: selection.from,
+            to: selection.to,
+        });
         const startLine = view.state.doc.lineAt(selection.from).number;
         const endLine = view.state.doc.lineAt(
             Math.max(selection.from, selection.to - 1),
@@ -1697,7 +619,10 @@ export function Editor({
             y: caret.top,
             query: context.query,
             selectedIndex: previous
-                ? Math.min(previous.selectedIndex, Math.max(items.length - 1, 0))
+                ? Math.min(
+                      previous.selectedIndex,
+                      Math.max(items.length - 1, 0),
+                  )
                 : 0,
             items,
             wholeFrom: context.wholeFrom,
@@ -1715,7 +640,8 @@ export function Editor({
             return {
                 ...previous,
                 selectedIndex:
-                    (previous.selectedIndex + direction + itemCount) % itemCount,
+                    (previous.selectedIndex + direction + itemCount) %
+                    itemCount,
             };
         });
         return true;
@@ -1759,7 +685,12 @@ export function Editor({
     }, []);
 
     const handleEditorContextMenu = useCallback(
-        (event: { clientX: number; clientY: number; target: EventTarget | null; preventDefault: () => void }) => {
+        (event: {
+            clientX: number;
+            clientY: number;
+            target: EventTarget | null;
+            preventDefault: () => void;
+        }) => {
             if (!activeTabRef.current) return false;
             const view = viewRef.current;
             if (!view) return false;
@@ -1772,7 +703,9 @@ export function Editor({
                       ? rawTarget.parentElement
                       : null;
 
-            const liveLink = target?.closest(".cm-lp-link") as HTMLElement | null;
+            const liveLink = target?.closest(
+                ".cm-lp-link",
+            ) as HTMLElement | null;
             if (liveLink?.dataset.href) {
                 event.preventDefault();
                 setEditorContextMenu(null);
@@ -1788,7 +721,9 @@ export function Editor({
                 return true;
             }
 
-            const wikilink = target?.closest(".cm-wikilink") as HTMLElement | null;
+            const wikilink = target?.closest(
+                ".cm-wikilink",
+            ) as HTMLElement | null;
             if (wikilink?.dataset.wikilinkTarget) {
                 event.preventDefault();
                 setEditorContextMenu(null);
@@ -1822,7 +757,9 @@ export function Editor({
                 return true;
             }
 
-            const tableUrl = target?.closest(".cm-lp-table-url") as HTMLElement | null;
+            const tableUrl = target?.closest(
+                ".cm-lp-table-url",
+            ) as HTMLElement | null;
             if (tableUrl?.dataset.url) {
                 event.preventDefault();
                 setEditorContextMenu(null);
@@ -1833,6 +770,60 @@ export function Editor({
                     x: event.clientX,
                     y: event.clientY,
                     href: tableUrl.dataset.url,
+                    noteTarget: null,
+                });
+                return true;
+            }
+
+            const tableWikilink = target?.closest(
+                ".cm-lp-table-wikilink",
+            ) as HTMLElement | null;
+            if (tableWikilink?.dataset.wikilinkTarget) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: tableWikilink.dataset.wikilinkTarget,
+                    noteTarget: tableWikilink.dataset.wikilinkTarget,
+                });
+                return true;
+            }
+
+            const noteEmbed = target?.closest(
+                ".cm-note-embed",
+            ) as HTMLElement | null;
+            if (noteEmbed?.dataset.wikilinkTarget) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: noteEmbed.dataset.wikilinkTarget,
+                    noteTarget: noteEmbed.dataset.wikilinkTarget,
+                });
+                return true;
+            }
+
+            const youtubeLink = target?.closest(
+                ".cm-youtube-link",
+            ) as HTMLElement | null;
+            if (youtubeLink?.dataset.href) {
+                event.preventDefault();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setLinkContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    href: youtubeLink.dataset.href,
                     noteTarget: null,
                 });
                 return true;
@@ -1866,10 +857,10 @@ export function Editor({
             setEditorContextMenu({
                 x: event.clientX,
                 y: event.clientY,
-                    payload: {
-                        hasSelection: !view.state.selection.main.empty,
-                    },
-                });
+                payload: {
+                    hasSelection: !view.state.selection.main.empty,
+                },
+            });
             return true;
         },
         [],
@@ -1904,8 +895,8 @@ export function Editor({
                     ]),
                     livePreviewCompartment.of(
                         getLivePreviewExtension(
-                            useEditorStore.getState().editorMode,
                             handleOpenLinkContextMenu,
+                            useSettingsStore.getState().livePreviewEnabled,
                         ),
                     ),
                     search({ top: true }),
@@ -1971,7 +962,7 @@ export function Editor({
                         contentUpdateTimerRef.current = setTimeout(() => {
                             updateTabContent(tab.id, content);
                         }, 300);
-                        scheduleSave(tab, content);
+                        scheduleSaveRef.current(tab.id, content);
                     }),
                     EditorView.updateListener.of((update) => {
                         if (
@@ -2004,86 +995,92 @@ export function Editor({
             updateSelectionToolbar,
             updateWikilinkSuggester,
             handleOpenLinkContextMenu,
-            scheduleSave,
             markTabDirty,
             updateTabContent,
         ],
     );
 
-    const replaceEditorView = useCallback((state: EditorState) => {
-        const parent = containerRef.current;
-        if (!parent) return null;
+    const replaceEditorView = useCallback(
+        (state: EditorState) => {
+            const parent = containerRef.current;
+            if (!parent) return null;
 
-        const previousView = viewRef.current;
-        const shouldRestoreFocus = previousView?.hasFocus ?? false;
+            const previousView = viewRef.current;
+            const shouldRestoreFocus = previousView?.hasFocus ?? false;
 
-        selectionToolbarCleanupRef.current?.();
-        selectionToolbarCleanupRef.current = null;
-        clearEditorDomSelection(previousView);
-        previousView?.destroy();
+            selectionToolbarCleanupRef.current?.();
+            selectionToolbarCleanupRef.current = null;
+            clearEditorDomSelection(previousView);
+            previousView?.destroy();
 
-        const nextView = new EditorView({
-            state,
-            parent,
-        });
-        viewRef.current = nextView;
+            const nextView = new EditorView({
+                state,
+                parent,
+            });
+            viewRef.current = nextView;
 
-        if (!scrollHeaderRef.current) {
-            const header = document.createElement("div");
-            header.className = "cm-lp-scroll-header";
-            nextView.scrollDOM.insertBefore(header, nextView.contentDOM);
-            scrollHeaderRef.current = header;
-        } else if (!nextView.scrollDOM.contains(scrollHeaderRef.current)) {
-            nextView.scrollDOM.insertBefore(
-                scrollHeaderRef.current,
-                nextView.contentDOM,
-            );
-        }
+            if (!scrollHeaderRef.current) {
+                const header = document.createElement("div");
+                header.className = "cm-lp-scroll-header";
+                nextView.scrollDOM.insertBefore(header, nextView.contentDOM);
+                scrollHeaderRef.current = header;
+            } else if (!nextView.scrollDOM.contains(scrollHeaderRef.current)) {
+                nextView.scrollDOM.insertBefore(
+                    scrollHeaderRef.current,
+                    nextView.contentDOM,
+                );
+            }
 
-        if (shouldRestoreFocus) {
-            nextView.focus();
-        }
+            if (shouldRestoreFocus) {
+                nextView.focus();
+            }
 
-        const handleScrollOrResize = () => {
-            updateSelectionToolbar(nextView);
-            updateWikilinkSuggester(nextView);
-        };
-        const handleNativeContextMenu = (event: MouseEvent) => {
-            const handled = handleEditorContextMenu(event);
-            if (!handled) return;
-            event.stopPropagation();
-        };
+            const handleScrollOrResize = () => {
+                updateSelectionToolbar(nextView);
+                updateWikilinkSuggester(nextView);
+            };
+            const handleNativeContextMenu = (event: MouseEvent) => {
+                const handled = handleEditorContextMenu(event);
+                if (!handled) return;
+                event.stopPropagation();
+            };
 
-        nextView.scrollDOM.addEventListener("scroll", handleScrollOrResize, {
-            passive: true,
-        });
-        window.addEventListener("resize", handleScrollOrResize);
-        nextView.dom.addEventListener(
-            "contextmenu",
-            handleNativeContextMenu,
-            true,
-        );
-        selectionToolbarCleanupRef.current = () => {
-            nextView.scrollDOM.removeEventListener(
+            nextView.scrollDOM.addEventListener(
                 "scroll",
                 handleScrollOrResize,
+                {
+                    passive: true,
+                },
             );
-            window.removeEventListener("resize", handleScrollOrResize);
-            nextView.dom.removeEventListener(
+            window.addEventListener("resize", handleScrollOrResize);
+            nextView.dom.addEventListener(
                 "contextmenu",
                 handleNativeContextMenu,
                 true,
             );
-        };
-        updateSelectionToolbar(nextView);
-        updateWikilinkSuggester(nextView);
+            selectionToolbarCleanupRef.current = () => {
+                nextView.scrollDOM.removeEventListener(
+                    "scroll",
+                    handleScrollOrResize,
+                );
+                window.removeEventListener("resize", handleScrollOrResize);
+                nextView.dom.removeEventListener(
+                    "contextmenu",
+                    handleNativeContextMenu,
+                    true,
+                );
+            };
+            updateSelectionToolbar(nextView);
+            updateWikilinkSuggester(nextView);
 
-        return nextView;
-    }, [
-        handleEditorContextMenu,
-        updateSelectionToolbar,
-        updateWikilinkSuggester,
-    ]);
+            return nextView;
+        },
+        [
+            handleEditorContextMenu,
+            updateSelectionToolbar,
+            updateWikilinkSuggester,
+        ],
+    );
 
     // Initialize CodeMirror once — container is always in the DOM
     useEffect(() => {
@@ -2143,6 +1140,11 @@ export function Editor({
         const prevId = prevTabIdRef.current;
         if (prevId === activeTabId) return;
         prevTabIdRef.current = activeTabId;
+        const previousContent = currentView.state.doc.toString();
+        const previousTab = prevId
+            ? (useEditorStore.getState().tabs.find((t) => t.id === prevId) ??
+              null)
+            : null;
 
         // Cancel any pending autosave (prevents saving to wrong tab)
         if (saveTimerRef.current) {
@@ -2153,12 +1155,30 @@ export function Editor({
         if (contentUpdateTimerRef.current) {
             clearTimeout(contentUpdateTimerRef.current);
             contentUpdateTimerRef.current = null;
+            // Actually flush the content to the store (the timer was debouncing this)
+            if (prevId) {
+                updateTabContent(prevId, previousContent);
+            }
         }
 
         // Save previous tab's EditorState and viewport position
         if (prevId && prevId !== activeTabId) {
             tabStatesRef.current.set(prevId, currentView.state);
             saveTabScrollPosition(prevId, currentView);
+        }
+        if (
+            prevId &&
+            prevId !== activeTabId &&
+            autoSave &&
+            previousTab?.isDirty
+        ) {
+            void saveNow(
+                {
+                    ...previousTab,
+                    content: previousContent,
+                },
+                previousContent,
+            );
         }
 
         if (!activeTabId || !activeTab) return;
@@ -2196,8 +1216,8 @@ export function Editor({
                 ),
                 livePreviewCompartment.reconfigure(
                     getLivePreviewExtension(
-                        useEditorStore.getState().editorMode,
                         handleOpenLinkContextMenu,
+                        useSettingsStore.getState().livePreviewEnabled,
                     ),
                 ),
             ],
@@ -2205,8 +1225,11 @@ export function Editor({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTabId,
+        autoSave,
         restoreTabScrollPosition,
+        saveNow,
         saveTabScrollPosition,
+        updateTabContent,
         updateSelectionToolbar,
         updateWikilinkSuggester,
     ]);
@@ -2218,6 +1241,33 @@ export function Editor({
         setWikilinkSuggester(null);
     }, [activeTabInfo]);
 
+    useEffect(() => {
+        if (activeTabInfo) return;
+        let mounted = true;
+        let unlisten: (() => void) | null = null;
+        void getCurrentWebview()
+            .onDragDropEvent((event) => {
+                const type = event.payload.type;
+                if (type === "enter" || type === "over") {
+                    setIsDraggingVault(true);
+                } else if (type === "drop") {
+                    setIsDraggingVault(false);
+                    const path = event.payload.paths[0];
+                    if (path) void openVault(path);
+                } else {
+                    setIsDraggingVault(false);
+                }
+            })
+            .then((fn) => {
+                if (mounted) unlisten = fn;
+                else fn();
+            });
+        return () => {
+            mounted = false;
+            unlisten?.();
+        };
+    }, [activeTabInfo, openVault]);
+
     // Reconfigure syntax theme when isDark changes
     useEffect(() => {
         viewRef.current?.dispatch({
@@ -2225,14 +1275,22 @@ export function Editor({
         });
     }, [isDark]);
 
-    // Reconfigure live preview when editorMode changes
+    // Reconfigure live preview when vault metadata or the setting changes
     useEffect(() => {
         viewRef.current?.dispatch({
             effects: livePreviewCompartment.reconfigure(
-                getLivePreviewExtension(editorMode, handleOpenLinkContextMenu),
+                getLivePreviewExtension(
+                    handleOpenLinkContextMenu,
+                    livePreviewEnabled,
+                ),
             ),
         });
-    }, [editorMode, handleOpenLinkContextMenu]);
+    }, [
+        handleOpenLinkContextMenu,
+        vaultPath,
+        vaultRevision,
+        livePreviewEnabled,
+    ]);
 
     // Reload editor content when an external process (e.g. AI agent) writes to the file
     useEffect(() => {
@@ -2246,12 +1304,29 @@ export function Editor({
             const prevTab = prev.tabs.find((t) => t.id === tabId);
             if (!tab || !prevTab) return;
 
-            // Only react when content changed externally (tab is NOT dirty)
+            // Only react when content/title changed externally (tab is NOT dirty)
             if (tab.isDirty) return;
-            if (tab.content === prevTab.content) return;
+            if (
+                tab.content === prevTab.content &&
+                tab.title === prevTab.title
+            ) {
+                return;
+            }
 
             const currentDoc = view.state.doc.toString();
             const incoming = stripFrontmatter(tabId, tab.content);
+            const nextFrontmatter =
+                frontmatterByTabId.current.get(tabId) ?? null;
+            const nextTitle = deriveDisplayedTitle(
+                nextFrontmatter,
+                incoming,
+                tab.title,
+            );
+
+            if (activeTabRef.current?.id === tabId) {
+                setActiveFrontmatter(nextFrontmatter);
+                setEditableTitle(nextTitle);
+            }
             if (incoming === currentDoc) return;
 
             isInternalRef.current = true;
@@ -2324,11 +1399,17 @@ export function Editor({
         if (!view || !activeTab || !pendingSelectionReveal) return;
         if (pendingSelectionReveal.noteId !== activeTab.noteId) return;
 
+        const docLen = view.state.doc.length;
+        const clampedAnchor = Math.max(
+            0,
+            Math.min(pendingSelectionReveal.anchor, docLen),
+        );
+        const clampedHead = Math.max(
+            0,
+            Math.min(pendingSelectionReveal.head, docLen),
+        );
         view.dispatch({
-            selection: {
-                anchor: pendingSelectionReveal.anchor,
-                head: pendingSelectionReveal.head,
-            },
+            selection: { anchor: clampedAnchor, head: clampedHead },
             scrollIntoView: true,
         });
         view.focus();
@@ -2436,81 +1517,27 @@ export function Editor({
             style={editorShellStyle}
         >
             <div className="min-h-0 flex-1 relative">
-                <div
-                    ref={containerRef}
-                    className="h-full relative z-1"
-                    onContextMenu={(event) => {
-                        void handleEditorContextMenu(event);
-                    }}
-                />
+                <div ref={containerRef} className="h-full relative z-1" />
                 {!activeTabInfo && (
                     <div
-                        className="absolute inset-0 z-2 flex items-center justify-center"
-                        style={{ background: "transparent" }}
+                        className="absolute inset-0 z-2 flex items-center justify-center select-none pointer-events-none"
+                        style={{
+                            background: isDraggingVault
+                                ? "color-mix(in srgb, var(--accent) 6%, var(--bg-primary))"
+                                : "var(--bg-primary)",
+                            transition: "background 0.15s ease",
+                        }}
                     >
-                        <div
+                        <p
                             style={{
-                                width: "min(480px, calc(100% - 48px))",
-                                padding: "28px 28px 24px",
-                                borderRadius: 20,
-                                border: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
-                                background:
-                                    "color-mix(in srgb, var(--bg-primary) 90%, transparent)",
-                                boxShadow: "var(--shadow-soft)",
-                                textAlign: "left",
+                                fontSize: 13,
+                                color: "var(--text-secondary)",
                             }}
                         >
-                            <div
-                                style={{
-                                    width: 44,
-                                    height: 44,
-                                    borderRadius: 14,
-                                    marginBottom: 18,
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    color: "var(--accent)",
-                                    background:
-                                        "color-mix(in srgb, var(--accent) 12%, var(--bg-secondary))",
-                                    border: "1px solid color-mix(in srgb, var(--accent) 20%, var(--border))",
-                                }}
-                            >
-                                <svg
-                                    width="20"
-                                    height="20"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.7"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <path d="M14 3H6a2 2 0 0 0-2 2v14l4-2 4 2 4-2 4 2V9z" />
-                                    <path d="M14 3v6h6" />
-                                </svg>
-                            </div>
-                            <div
-                                style={{
-                                    fontSize: 24,
-                                    fontWeight: 700,
-                                    color: "var(--text-primary)",
-                                    marginBottom: 8,
-                                    letterSpacing: "-0.02em",
-                                }}
-                            >
-                                Your writing space is ready
-                            </div>
-                            <div
-                                style={{
-                                    fontSize: 14,
-                                    lineHeight: 1.6,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                {emptyStateMessage}. Or create a new note from
-                                the top bar to get started.
-                            </div>
-                        </div>
+                            {isDraggingVault
+                                ? "Drop folder to open as vault"
+                                : emptyStateMessage}
+                        </p>
                     </div>
                 )}
                 {selectionToolbar && (
@@ -2659,7 +1686,9 @@ export function Editor({
                         {
                             label: "Copy Title",
                             action: () =>
-                                void navigator.clipboard.writeText(editableTitle),
+                                void navigator.clipboard.writeText(
+                                    editableTitle,
+                                ),
                         },
                     ]}
                 />

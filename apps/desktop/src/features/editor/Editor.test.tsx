@@ -1,8 +1,15 @@
 import { act, screen } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
+import { useEditorStore } from "../../app/store/editorStore";
 import { Editor } from "./Editor";
-import { renderComponent, setEditorTabs } from "../../test/test-utils";
+import {
+    flushPromises,
+    mockInvoke,
+    renderComponent,
+    setEditorTabs,
+    setVaultNotes,
+} from "../../test/test-utils";
 
 function getEditorView() {
     const editorElement = document.querySelector(".cm-editor");
@@ -26,7 +33,9 @@ describe("Editor", () => {
         ]);
 
         renderComponent(<Editor />);
-        expect(screen.queryByText("Open a note from the left panel")).not.toBeInTheDocument();
+        expect(
+            screen.queryByText("Open a note from the left panel"),
+        ).not.toBeInTheDocument();
 
         const view = getEditorView();
         const coordsSpy = vi
@@ -63,5 +72,113 @@ describe("Editor", () => {
 
         expect((selectionLayer as HTMLElement).style.opacity).toBe("0");
         coordsSpy.mockRestore();
+    });
+
+    it("saves the previous tab immediately when switching tabs with pending autosave", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "save_note") {
+                return {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    content: "Updated body",
+                };
+            }
+            return undefined;
+        });
+
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Original body",
+                    isDirty: false,
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                    isDirty: false,
+                },
+            ],
+            "tab-1",
+        );
+        setVaultNotes([
+            {
+                id: "notes/current",
+                title: "Current",
+                path: "/vault/notes/current.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+            {
+                id: "notes/other",
+                title: "Other",
+                path: "/vault/notes/other.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: "Updated body",
+                },
+            });
+        });
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+        });
+        await flushPromises();
+
+        expect(mockInvoke()).toHaveBeenCalledWith("save_note", {
+            noteId: "notes/current",
+            content: "Updated body",
+        });
+    });
+
+    it("updates the visible title when clean content reloads from disk", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "# Current\n\nBody",
+                isDirty: false,
+            },
+        ]);
+        setVaultNotes([
+            {
+                id: "notes/current",
+                title: "Current",
+                path: "/vault/notes/current.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        expect(screen.getByDisplayValue("Current")).toBeInTheDocument();
+
+        await act(async () => {
+            useEditorStore.getState().reloadNoteContent("notes/current", {
+                title: "Renamed externally",
+                content: "---\ntitle: Renamed externally\n---\nBody",
+            });
+        });
+
+        expect(screen.getAllByDisplayValue("Renamed externally")).toHaveLength(
+            2,
+        );
     });
 });

@@ -1,10 +1,4 @@
-import {
-    useState,
-    useRef,
-    useEffect,
-    useCallback,
-    useMemo,
-} from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -166,6 +160,52 @@ function flattenTreeRows(
     }
 
     return rows;
+}
+
+// --- Sticky tree sections ---
+
+interface TreeSection {
+    folder: FlatTreeRow & { kind: "folder" };
+    children: (FlatTreeRow | TreeSection)[];
+}
+
+function isTreeSection(item: FlatTreeRow | TreeSection): item is TreeSection {
+    return "folder" in item && "children" in item;
+}
+
+function buildTreeSections(
+    flatRows: FlatTreeRow[],
+): (FlatTreeRow | TreeSection)[] {
+    const result: (FlatTreeRow | TreeSection)[] = [];
+    const stack: TreeSection[] = [];
+
+    for (const row of flatRows) {
+        if (row.kind === "folder") {
+            while (
+                stack.length > 0 &&
+                stack[stack.length - 1].folder.depth >= row.depth
+            ) {
+                stack.pop();
+            }
+            const section: TreeSection = { folder: row, children: [] };
+            const parent = stack[stack.length - 1];
+            if (parent) {
+                parent.children.push(section);
+            } else {
+                result.push(section);
+            }
+            stack.push(section);
+        } else {
+            const parent = stack[stack.length - 1];
+            if (parent) {
+                parent.children.push(row);
+            } else {
+                result.push(row);
+            }
+        }
+    }
+
+    return result;
 }
 
 function sortedEntries(
@@ -445,6 +485,7 @@ interface FlatTreeRowViewProps {
     renamingNoteId: string | null;
     onRenameConfirm: (note: NoteDto, newName: string) => void;
     onRenameCancel: () => void;
+    stickyTop?: number;
 }
 
 function FlatTreeRowView({
@@ -465,6 +506,7 @@ function FlatTreeRowView({
     renamingNoteId,
     onRenameConfirm,
     onRenameCancel,
+    stickyTop,
 }: FlatTreeRowViewProps) {
     const renameInputRef = useRef<HTMLInputElement>(null);
     const paddingLeft = row.depth * metrics.indentStep + metrics.basePadding;
@@ -475,8 +517,7 @@ function FlatTreeRowView({
     const isDraggingFolder =
         row.kind === "folder" && draggingFolderPath === row.path;
     const isExpanded = row.kind === "folder" && expandedFolders.has(row.path);
-    const isRenaming =
-        row.kind === "note" && row.note.id === renamingNoteId;
+    const isRenaming = row.kind === "note" && row.note.id === renamingNoteId;
 
     useEffect(() => {
         if (isRenaming && renameInputRef.current) {
@@ -505,9 +546,17 @@ function FlatTreeRowView({
                     boxSizing: "border-box",
                     backgroundColor: isDragOver
                         ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
-                        : "transparent",
+                        : stickyTop != null
+                          ? "var(--bg-secondary)"
+                          : "transparent",
                     outline: isDragOver ? "1px solid var(--accent)" : "none",
                     opacity: isDraggingFolder ? 0.4 : 1,
+                    ...(stickyTop != null && {
+                        position: "sticky" as const,
+                        top: stickyTop,
+                        zIndex: 20 - row.depth,
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                    }),
                 }}
             >
                 <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
@@ -549,7 +598,8 @@ function FlatTreeRowView({
                         if (e.key === "Escape") onRenameCancel();
                     }}
                     onBlur={() => {
-                        const value = renameInputRef.current?.value.trim() ?? "";
+                        const value =
+                            renameInputRef.current?.value.trim() ?? "";
                         if (value) onRenameConfirm(note, value);
                         else onRenameCancel();
                     }}
@@ -609,6 +659,36 @@ function FlatTreeRowView({
             <span className="truncate">{note.title}</span>
         </div>
     );
+}
+
+// --- Sticky tree rendering ---
+
+type TreeRowSharedProps = Omit<FlatTreeRowViewProps, "row" | "stickyTop">;
+
+function renderTreeSections(
+    items: (FlatTreeRow | TreeSection)[],
+    props: TreeRowSharedProps,
+): React.ReactNode[] {
+    return items.map((item) => {
+        if (isTreeSection(item)) {
+            const stickyTop = item.folder.depth * props.metrics.rowHeight;
+            return (
+                <div key={`section:${item.folder.path}`}>
+                    <FlatTreeRowView
+                        row={item.folder}
+                        stickyTop={stickyTop}
+                        {...props}
+                    />
+                    {renderTreeSections(item.children, props)}
+                </div>
+            );
+        }
+        const key =
+            item.kind === "folder"
+                ? `folder:${item.path}`
+                : `note:${item.note.id}`;
+        return <FlatTreeRowView key={key} row={item} {...props} />;
+    });
 }
 
 // --- Open vault form ---
@@ -746,9 +826,8 @@ export function FileTree() {
     );
     const [newItemName, setNewItemName] = useState("");
     const [creatingParentPath, setCreatingParentPath] = useState("");
-    const [contextMenu, setContextMenu] = useState<
-        ContextMenuState<FileTreeContextPayload> | null
-    >(null);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<FileTreeContextPayload> | null>(null);
     const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
 
     const inputRef = useRef<HTMLInputElement>(null);
@@ -783,6 +862,7 @@ export function FileTree() {
         () => flattenTreeRows(tree, visibleExpandedFolders, sortMode),
         [sortMode, tree, visibleExpandedFolders],
     );
+    const treeSections = useMemo(() => buildTreeSections(flatRows), [flatRows]);
     const canCollapseAll = expandedFolders.size > 0;
     const treeScale = fileTreeScale / 100;
     const metrics: TreeMetrics = {
@@ -895,11 +975,16 @@ export function FileTree() {
     }, []);
 
     const applyMoveOperations = useCallback(
-        async (operations: { fromId: string; note: NoteDto; toPath: string }[]) => {
+        async (
+            operations: { fromId: string; note: NoteDto; toPath: string }[],
+        ) => {
             const movedIds = new Map<string, string>();
 
             for (const operation of operations) {
-                const updated = await renameNote(operation.fromId, operation.toPath);
+                const updated = await renameNote(
+                    operation.fromId,
+                    operation.toPath,
+                );
                 if (!updated) continue;
 
                 movedIds.set(operation.fromId, updated.id);
@@ -971,7 +1056,10 @@ export function FileTree() {
                         x: e.clientX,
                         y: e.clientY,
                         notes: [],
-                        folder: { path: s.item.path, name: getBaseName(s.item.path) },
+                        folder: {
+                            path: s.item.path,
+                            name: getBaseName(s.item.path),
+                        },
                     });
                 } else {
                     setDraggingNoteIds(
@@ -980,7 +1068,7 @@ export function FileTree() {
                     setDragLabel(
                         s.item.notes.length > 1
                             ? `${s.item.notes.length} notes`
-                            : s.item.notes[0]?.title ?? null,
+                            : (s.item.notes[0]?.title ?? null),
                     );
                     emitFileTreeNoteDrag({
                         phase: "start",
@@ -1014,7 +1102,10 @@ export function FileTree() {
                         x: e.clientX,
                         y: e.clientY,
                         notes: [],
-                        folder: { path: s.item.path, name: getBaseName(s.item.path) },
+                        folder: {
+                            path: s.item.path,
+                            name: getBaseName(s.item.path),
+                        },
                     });
                 }
             }
@@ -1054,7 +1145,10 @@ export function FileTree() {
                         x: dragPos.x,
                         y: dragPos.y,
                         notes: [],
-                        folder: { path: s.item.path, name: getBaseName(s.item.path) },
+                        folder: {
+                            path: s.item.path,
+                            name: getBaseName(s.item.path),
+                        },
                     });
                 }
             }
@@ -1128,13 +1222,10 @@ export function FileTree() {
         });
     };
 
-    const handleFolderClick = useCallback(
-        (path: string) => {
-            if (wasJustDraggingRef.current) return;
-            handleToggleFolder(path);
-        },
-        [],
-    );
+    const handleFolderClick = useCallback((path: string) => {
+        if (wasJustDraggingRef.current) return;
+        handleToggleFolder(path);
+    }, []);
 
     const handleSortSelect = (mode: SortMode) => {
         setSortMode(mode);
@@ -1189,7 +1280,8 @@ export function FileTree() {
     );
 
     const readNoteContent = useCallback(
-        (noteId: string) => invoke<{ content: string }>("read_note", { noteId }),
+        (noteId: string) =>
+            invoke<{ content: string }>("read_note", { noteId }),
         [],
     );
 
@@ -1215,7 +1307,8 @@ export function FileTree() {
             try {
                 const existing = tabs.find((tab) => tab.noteId === note.id);
                 const content =
-                    existing?.content ?? (await readNoteContent(note.id)).content;
+                    existing?.content ??
+                    (await readNoteContent(note.id)).content;
 
                 insertExternalTab({
                     id: crypto.randomUUID(),
@@ -1460,7 +1553,8 @@ export function FileTree() {
             try {
                 const existing = tabs.find((tab) => tab.noteId === note.id);
                 const content =
-                    existing?.content ?? (await readNoteContent(note.id)).content;
+                    existing?.content ??
+                    (await readNoteContent(note.id)).content;
                 const created = await createNote(copyPath);
                 if (!created) return;
 
@@ -1482,7 +1576,14 @@ export function FileTree() {
                 console.error("Error duplicating note:", error);
             }
         },
-        [createNote, notes, readNoteContent, tabs, touchVault, updateNoteMetadata],
+        [
+            createNote,
+            notes,
+            readNoteContent,
+            tabs,
+            touchVault,
+            updateNoteMetadata,
+        ],
     );
 
     const handleRevealNoteInFinder = useCallback((note: NoteDto) => {
@@ -1526,7 +1627,8 @@ export function FileTree() {
                     { type: "separator" },
                     {
                         label: "Expand All",
-                        action: () => setExpandedFolders(new Set(allFolderPaths)),
+                        action: () =>
+                            setExpandedFolders(new Set(allFolderPaths)),
                         disabled: allFolderPaths.length === 0,
                     },
                     {
@@ -1604,7 +1706,8 @@ export function FileTree() {
                     },
                     {
                         label: "Copy Note Path",
-                        action: () => void navigator.clipboard.writeText(note.id),
+                        action: () =>
+                            void navigator.clipboard.writeText(note.id),
                     },
                     { type: "separator" },
                     {
@@ -1650,7 +1753,8 @@ export function FileTree() {
                     {
                         label: "/ Root",
                         action: () => void applyMove(moveTargets, ""),
-                        disabled: currentParent !== null && currentParent === "",
+                        disabled:
+                            currentParent !== null && currentParent === "",
                     },
                     ...folderTargets.map((folder) => ({
                         label: folder,
@@ -1886,36 +1990,28 @@ export function FileTree() {
                             color: "var(--text-secondary)",
                             fontSize: metrics.fontSize,
                         }}
-                        >
-                            No notes
-                        </p>
+                    >
+                        No notes
+                    </p>
                 ) : (
-                    flatRows.map((row) => (
-                        <FlatTreeRowView
-                            key={
-                                row.kind === "folder"
-                                    ? `folder:${row.path}`
-                                    : `note:${row.note.id}`
-                            }
-                            row={row}
-                            metrics={metrics}
-                            activeNoteId={activeTab?.noteId ?? null}
-                            expandedFolders={visibleExpandedFolders}
-                            selectedNoteIds={visibleSelectedNoteIds}
-                            draggingNoteIds={draggingNoteIds}
-                            draggingFolderPath={draggingFolderPath}
-                            dragOverPath={dragOverPath}
-                            onFolderClick={handleFolderClick}
-                            onFolderMouseDown={handleFolderMouseDown}
-                            onFolderContextMenu={handleFolderContextMenu}
-                            onNoteClick={handleNoteClick}
-                            onNoteMouseDown={handleNoteMouseDown}
-                            onNoteContextMenu={handleNoteContextMenu}
-                            renamingNoteId={renamingNoteId}
-                            onRenameConfirm={handleRenameConfirm}
-                            onRenameCancel={() => setRenamingNoteId(null)}
-                        />
-                    ))
+                    renderTreeSections(treeSections, {
+                        metrics,
+                        activeNoteId: activeTab?.noteId ?? null,
+                        expandedFolders: visibleExpandedFolders,
+                        selectedNoteIds: visibleSelectedNoteIds,
+                        draggingNoteIds,
+                        draggingFolderPath,
+                        dragOverPath,
+                        onFolderClick: handleFolderClick,
+                        onFolderMouseDown: handleFolderMouseDown,
+                        onFolderContextMenu: handleFolderContextMenu,
+                        onNoteClick: handleNoteClick,
+                        onNoteMouseDown: handleNoteMouseDown,
+                        onNoteContextMenu: handleNoteContextMenu,
+                        renamingNoteId,
+                        onRenameConfirm: handleRenameConfirm,
+                        onRenameCancel: () => setRenamingNoteId(null),
+                    })
                 )}
             </div>
 
