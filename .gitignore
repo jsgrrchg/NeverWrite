@@ -4,3 +4,6 @@ target/
 AGENTS.md
 CLAUDE.md
 .cargo-home/
+.PERSONAL
+apps/desktop/src-tauri/binaries/codex-acp
+apps/desktop/src-tauri/binaries/codex-acp.exe
