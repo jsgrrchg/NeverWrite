@@ -14,6 +14,9 @@ import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { Editor } from "./features/editor/Editor";
+import { FileTabView } from "./features/editor/FileTabView";
+import { AIReviewView } from "./features/ai/components/AIReviewView";
+import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
 import { NewTabView } from "./features/editor/NewTabView";
 import { SearchView } from "./features/search/SearchView";
 import { PdfTabView } from "./features/pdf/PdfTabView";
@@ -41,7 +44,10 @@ import {
 import {
     useEditorStore,
     type TabInput,
+    isFileTab,
     isNoteTab,
+    isPdfTab,
+    isReviewTab,
     readPersistedSession,
     markSessionReady,
 } from "./app/store/editorStore";
@@ -208,12 +214,14 @@ function VaultOpeningOverlay() {
 }
 
 function OutlineRightPanel() {
-    const activeNoteId = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
-    );
-    const activeContent = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.content ?? null,
-    );
+    const activeNoteId = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return tab && isNoteTab(tab) ? tab.noteId : null;
+    });
+    const activeContent = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return tab && isNoteTab(tab) ? tab.content : null;
+    });
     const queueSelectionReveal = useEditorStore((s) => s.queueSelectionReveal);
 
     if (!activeNoteId) {
@@ -694,22 +702,39 @@ function useDynamicScrollbars() {
     }, []);
 }
 
-type EditorPanelView = "pdf" | "new" | "search" | "editor";
+type EditorPanelView =
+    | "pdf"
+    | "file"
+    | "new"
+    | "search"
+    | "ai-review"
+    | "editor";
 
 function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
     const view = useEditorStore((s): EditorPanelView => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
         if (!tab) return "editor";
-        if (tab.kind === "pdf") return "pdf";
+        if (isPdfTab(tab)) return "pdf";
+        if (isFileTab(tab)) return "file";
+        if (isReviewTab(tab)) return "ai-review";
+        if (!isNoteTab(tab)) return "editor";
         if (tab.noteId === "") return "new";
         if (tab.noteId === "__search__") return "search";
         return "editor";
     });
     switch (view) {
-        case "pdf": return <PdfTabView />;
-        case "new": return <NewTabView />;
-        case "search": return <SearchView />;
-        default: return <Editor emptyStateMessage={emptyStateMessage} />;
+        case "pdf":
+            return <PdfTabView />;
+        case "file":
+            return <FileTabView />;
+        case "ai-review":
+            return <AIReviewView />;
+        case "new":
+            return <NewTabView />;
+        case "search":
+            return <SearchView />;
+        default:
+            return <Editor emptyStateMessage={emptyStateMessage} />;
     }
 }
 
@@ -719,6 +744,7 @@ export default function App() {
     const restoreVault = useVaultStore((s) => s.restoreVault);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
+    const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const tabs = useEditorStore((s) => s.tabs);
@@ -751,11 +777,18 @@ export default function App() {
     useRegisterCommands(openSearchPanel);
     useGlobalShortcuts(openSearchPanel, openSettings);
     useDynamicScrollbars();
+    useAutoOpenReviewTab();
 
     const restoreSessionForCurrentVault = useCallback(async () => {
         const vaultPath = useVaultStore.getState().vaultPath;
         const session = readPersistedSession(vaultPath);
-        if (!session?.noteIds.length && !session?.pdfTabs?.length) return;
+        if (
+            !session?.noteIds.length &&
+            !session?.pdfTabs?.length &&
+            !session?.fileTabs?.length
+        ) {
+            return;
+        }
 
         const restoredTabs: TabInput[] = [];
         for (const entry of session?.noteIds ?? []) {
@@ -811,18 +844,78 @@ export default function App() {
             });
         }
 
+        for (const fileEntry of session?.fileTabs ?? []) {
+            const history = (
+                fileEntry.history ?? [
+                    {
+                        relativePath: fileEntry.relativePath,
+                        title: fileEntry.title,
+                        path: fileEntry.path,
+                        mimeType: fileEntry.mimeType ?? null,
+                        viewer:
+                            fileEntry.viewer ??
+                            (fileEntry.mimeType?.startsWith("image/")
+                                ? "image"
+                                : "text"),
+                    },
+                ]
+            ).map((h) => ({
+                relativePath: h.relativePath,
+                title: h.title,
+                path: h.path,
+                mimeType: h.mimeType ?? null,
+                viewer:
+                    h.viewer ??
+                    (h.mimeType?.startsWith("image/") ? "image" : "text"),
+                content: "",
+            }));
+            const historyIndex = Math.min(
+                fileEntry.historyIndex ?? history.length - 1,
+                history.length - 1,
+            );
+            if (history[historyIndex]) {
+                history[historyIndex].content = fileEntry.content;
+            }
+
+            restoredTabs.push({
+                id: crypto.randomUUID(),
+                kind: "file",
+                relativePath: fileEntry.relativePath,
+                title: fileEntry.title,
+                path: fileEntry.path,
+                mimeType: fileEntry.mimeType ?? null,
+                viewer:
+                    fileEntry.viewer ??
+                    (fileEntry.mimeType?.startsWith("image/")
+                        ? "image"
+                        : "text"),
+                content: fileEntry.content,
+                history,
+                historyIndex,
+            });
+        }
+
         if (!restoredTabs.length) return;
 
         // Find active tab: check PDF first, then note
         let activeTab: TabInput | undefined;
         if (session?.activePdfEntryId) {
             activeTab = restoredTabs.find(
-                (tab) => tab.kind === "pdf" && tab.entryId === session.activePdfEntryId,
+                (tab) =>
+                    tab.kind === "pdf" &&
+                    tab.entryId === session.activePdfEntryId,
             );
         }
         if (!activeTab && session?.activeNoteId) {
             activeTab = restoredTabs.find(
                 (tab) => isNoteTab(tab) && tab.noteId === session.activeNoteId,
+            );
+        }
+        if (!activeTab && session?.activeFilePath) {
+            activeTab = restoredTabs.find(
+                (tab) =>
+                    isFileTab(tab) &&
+                    tab.relativePath === session.activeFilePath,
             );
         }
         hydrateTabs(restoredTabs, activeTab?.id ?? null);
@@ -844,6 +937,7 @@ export default function App() {
 
     useEffect(() => {
         if (windowMode === "settings") return;
+        if (windowMode === "ghost") return;
         if (!windowSessionReady) return;
 
         const label = getCurrentWindowLabel();
@@ -920,7 +1014,13 @@ export default function App() {
             markSessionReady();
             setWindowSessionReady(true);
         })();
-    }, [hydrateTabs, restoreSessionForCurrentVault, restoreVault, vaultParam, windowMode]);
+    }, [
+        hydrateTabs,
+        restoreSessionForCurrentVault,
+        restoreVault,
+        vaultParam,
+        windowMode,
+    ]);
 
     useEffect(() => {
         if (windowMode !== "main") return;
@@ -985,6 +1085,7 @@ export default function App() {
                 return;
 
             applyVaultNoteChange(event.payload);
+            void refreshEntries();
 
             // Reload editor content for open tabs when file changes externally
             const change = event.payload;
@@ -993,7 +1094,7 @@ export default function App() {
                 const noteId = change.note.id;
                 const openTab = useEditorStore
                     .getState()
-                    .tabs.find((t) => t.noteId === noteId);
+                    .tabs.find((t) => isNoteTab(t) && t.noteId === noteId);
                 if (openTab) {
                     const previousTimer =
                         pendingNoteReloads.get(noteId) ?? null;
@@ -1047,7 +1148,7 @@ export default function App() {
                 void unlisten();
             }
         };
-    }, [applyVaultNoteChange, windowMode]);
+    }, [applyVaultNoteChange, refreshEntries, windowMode]);
 
     useEffect(() => {
         let unlisten: (() => void) | undefined;

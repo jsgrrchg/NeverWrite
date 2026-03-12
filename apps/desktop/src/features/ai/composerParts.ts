@@ -18,6 +18,7 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
             if (part.type === "plan_mention") return "/plan";
             if (part.type === "folder_mention") return `@${part.label}`;
             if (part.type === "mention") return `@${part.label}`;
+            if (part.type === "selection_mention") return `@${part.label}`;
             return "";
         })
         .join("");
@@ -31,6 +32,8 @@ export function serializeComposerPartsForAI(parts: AIComposerPart[]): string {
             if (part.type === "plan_mention") return "/plan";
             if (part.type === "folder_mention") return `@${part.folderPath}`;
             if (part.type === "mention") return `@${part.noteId}`;
+            if (part.type === "selection_mention")
+                return `@${part.noteId}:${part.startLine}-${part.endLine}`;
             return "";
         })
         .join("");
@@ -76,7 +79,12 @@ export function appendFolderMentionPart(
         currentLast.text += currentLast.text.endsWith(" ") ? "" : " ";
     }
 
-    next.push({ id: crypto.randomUUID(), type: "folder_mention", folderPath, label });
+    next.push({
+        id: crypto.randomUUID(),
+        type: "folder_mention",
+        folderPath,
+        label,
+    });
     next.push({ id: crypto.randomUUID(), type: "text", text: " " });
 
     return normalizeComposerParts(next);
@@ -116,6 +124,39 @@ export function appendMentionParts(
             text: index === mentions.length - 1 ? " " : " ",
         });
     });
+
+    return normalizeComposerParts(next);
+}
+
+export function appendSelectionMentionPart(
+    parts: AIComposerPart[],
+    selection: {
+        noteId: string;
+        label: string;
+        path: string;
+        selectedText: string;
+        startLine: number;
+        endLine: number;
+    },
+): AIComposerPart[] {
+    const next = [...parts];
+
+    const last = next.at(-1);
+    if (!last || last.type !== "text") {
+        next.push({ id: crypto.randomUUID(), type: "text", text: "" });
+    }
+
+    const currentLast = next.at(-1);
+    if (currentLast?.type === "text" && currentLast.text.length > 0) {
+        currentLast.text += currentLast.text.endsWith(" ") ? "" : " ";
+    }
+
+    next.push({
+        id: crypto.randomUUID(),
+        type: "selection_mention",
+        ...selection,
+    });
+    next.push({ id: crypto.randomUUID(), type: "text", text: " " });
 
     return normalizeComposerParts(next);
 }

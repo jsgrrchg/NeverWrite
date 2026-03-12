@@ -293,6 +293,30 @@ export async function aiRespondUserInput(
     return normalizeBackendSession(session);
 }
 
+export async function aiGetTextFileHash(
+    vaultPath: string,
+    path: string,
+): Promise<string | null> {
+    return invoke<string | null>("ai_get_text_file_hash", {
+        vaultPath,
+        path,
+    });
+}
+
+export async function aiRestoreTextFile(input: {
+    vaultPath: string;
+    path: string;
+    previousPath?: string | null;
+    content?: string | null;
+}) {
+    await invoke("ai_restore_text_file", {
+        vaultPath: input.vaultPath,
+        path: input.path,
+        previousPath: input.previousPath ?? null,
+        content: input.content ?? null,
+    });
+}
+
 export async function listenToAiSessionCreated(
     callback: (session: AIChatSession) => void,
 ): Promise<UnlistenFn> {

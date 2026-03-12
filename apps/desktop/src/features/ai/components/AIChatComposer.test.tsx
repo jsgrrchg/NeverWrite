@@ -1,17 +1,25 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { renderComponent } from "../../../test/test-utils";
+import type { EditorFontFamily } from "../../../app/store/settingsStore";
+import { useEditorStore } from "../../../app/store/editorStore";
+import {
+    renderComponent,
+    setEditorTabs,
+    setVaultNotes,
+} from "../../../test/test-utils";
 import type { AIComposerPart } from "../types";
 import { AIChatComposer } from "./AIChatComposer";
 
 function renderComposer({
     parts = [],
     status = "idle" as const,
+    composerFontFamily = "system",
     onSubmit = vi.fn(),
     onStop = vi.fn(),
 }: {
     parts?: AIComposerPart[];
     status?: "idle" | "streaming";
+    composerFontFamily?: EditorFontFamily;
     onSubmit?: ReturnType<typeof vi.fn>;
     onStop?: ReturnType<typeof vi.fn>;
 } = {}) {
@@ -29,6 +37,7 @@ function renderComposer({
             ]}
             status={status}
             runtimeName="Assistant"
+            composerFontFamily={composerFontFamily}
             onChange={onChange}
             onMentionAttach={vi.fn()}
             onFolderAttach={vi.fn()}
@@ -108,7 +117,9 @@ describe("AIChatComposer mention picker", () => {
 
         expect(onSubmit).toHaveBeenCalledTimes(1);
         expect(onStop).not.toHaveBeenCalled();
-        expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Stop" }),
+        ).toBeInTheDocument();
     });
 
     it("stops the run when streaming and there is no draft to queue", async () => {
@@ -125,5 +136,59 @@ describe("AIChatComposer mention picker", () => {
         expect(onStop).toHaveBeenCalledTimes(1);
         expect(onSubmit).not.toHaveBeenCalled();
         expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+    });
+
+    it("opens a mention pill in a new tab from the context menu", async () => {
+        setVaultNotes([
+            {
+                id: "notes/alpha.md",
+                title: "Alpha",
+                path: "/vault/notes/alpha.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "tab-existing",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "# Alpha",
+            },
+        ]);
+
+        renderComposer({
+            parts: [
+                {
+                    id: "mention-1",
+                    type: "mention",
+                    noteId: "notes/alpha.md",
+                    label: "Alpha",
+                    path: "/vault/notes/alpha.md",
+                },
+            ],
+        });
+
+        fireEvent.contextMenu(screen.getByText("Alpha"), {
+            clientX: 40,
+            clientY: 60,
+        });
+
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(2);
+        });
+    });
+
+    it("applies the selected composer font family to the textbox", () => {
+        const { composer } = renderComposer({
+            composerFontFamily: "serif",
+        });
+
+        expect(composer).toHaveStyle({
+            fontFamily:
+                '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif',
+        });
     });
 });

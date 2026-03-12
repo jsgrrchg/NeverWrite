@@ -99,6 +99,21 @@ export interface AIChatAttachment {
     transcription?: string;
     status?: AIAttachmentStatus;
     errorMessage?: string;
+    startLine?: number;
+    endLine?: number;
+}
+
+export function buildSelectionLabel(
+    selectedText: string,
+    startLine: number,
+    endLine: number,
+): string {
+    const preview = selectedText.replace(/\s+/g, " ").trim();
+    const truncated =
+        preview.length > 20 ? `${preview.slice(0, 20).trimEnd()}...` : preview;
+    const range =
+        startLine === endLine ? `(${startLine})` : `(${startLine}:${endLine})`;
+    return `${truncated}  ${range}`;
 }
 
 export type QueuedChatMessageStatus = "queued" | "sending" | "failed";
@@ -170,6 +185,7 @@ export interface AIChatMessage {
     kind: AIChatMessageKind;
     content: string;
     timestamp: number;
+    workCycleId?: string | null;
     title?: string;
     inProgress?: boolean;
     meta?: Record<string, string | number | boolean | null>;
@@ -186,6 +202,10 @@ export interface AIChatSession {
     sessionId: string;
     historySessionId: string;
     status: AIChatSessionStatus;
+    activeWorkCycleId?: string | null;
+    visibleWorkCycleId?: string | null;
+    editedFilesBuffer?: AIEditedFileBufferEntry[];
+    editedFilesBufferByWorkCycleId?: Record<string, AIEditedFileBufferEntry[]>;
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
     runtimeId: string;
@@ -315,11 +335,49 @@ export interface AIPermissionOption {
     kind: string;
 }
 
+export interface AIFileDiffHunkLine {
+    type: "context" | "add" | "remove";
+    text: string;
+}
+
+export interface AIFileDiffHunk {
+    old_start: number;
+    old_count: number;
+    new_start: number;
+    new_count: number;
+    lines: AIFileDiffHunkLine[];
+}
+
 export interface AIFileDiff {
     path: string;
-    kind: "add" | "delete" | "update";
+    kind: "add" | "delete" | "move" | "update";
+    previous_path?: string | null;
+    reversible?: boolean;
+    is_text?: boolean;
     old_text?: string | null;
     new_text?: string | null;
+    hunks?: AIFileDiffHunk[];
+}
+
+export interface AIEditedFileBufferEntry {
+    identityKey: string;
+    originPath: string;
+    path: string;
+    previousPath?: string | null;
+    operation: AIFileDiff["kind"];
+    baseText?: string | null;
+    appliedText?: string | null;
+    reversible: boolean;
+    isText: boolean;
+    hunks?: AIFileDiffHunk[];
+    supported: boolean;
+    status: "pending" | "conflict";
+    appliedHash: string | null;
+    currentHash?: string | null;
+    additions: number;
+    deletions: number;
+    approximate?: boolean;
+    updatedAt: number;
 }
 
 export interface AIPermissionRequestPayload {
@@ -364,6 +422,16 @@ export type AIComposerPart =
     | {
           id: string;
           type: "plan_mention";
+      }
+    | {
+          id: string;
+          type: "selection_mention";
+          noteId: string;
+          label: string;
+          path: string;
+          selectedText: string;
+          startLine: number;
+          endLine: number;
       };
 
 export type AIMentionSuggestion =

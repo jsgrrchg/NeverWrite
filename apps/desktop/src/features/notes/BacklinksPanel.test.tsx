@@ -8,24 +8,29 @@ import {
     renderComponent,
     setEditorTabs,
 } from "../../test/test-utils";
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 
 describe("BacklinksPanel", () => {
     it("loads and renders backlinks for the active tab", async () => {
         const invokeMock = mockInvoke();
 
-        setEditorTabs([
-            {
-                id: "tab-active",
-                noteId: "notes/current",
-                title: "Current",
-                content: "body",
-            },
-        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-active",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "body",
+                },
+            ],
+            "tab-active",
+        );
 
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "get_backlinks") {
-                expect(args).toEqual({ noteId: "notes/current" });
+                expect(args).toEqual(
+                    expect.objectContaining({ noteId: "notes/current" }),
+                );
                 return [{ id: "notes/source", title: "Source note" }];
             }
 
@@ -77,7 +82,9 @@ describe("BacklinksPanel", () => {
         const activeTab = useEditorStore.getState().tabs.find(
             (t) => t.id === useEditorStore.getState().activeTabId,
         );
-        expect(activeTab?.noteId).toBe("notes/source");
+        expect(activeTab && isNoteTab(activeTab) ? activeTab.noteId : null).toBe(
+            "notes/source",
+        );
     });
 
     it("queues a mention reveal from the backlink context menu", async () => {
@@ -131,7 +138,9 @@ describe("BacklinksPanel", () => {
         const activeTab = useEditorStore.getState().tabs.find(
             (t) => t.id === useEditorStore.getState().activeTabId,
         );
-        expect(activeTab?.noteId).toBe("notes/source");
+        expect(activeTab && isNoteTab(activeTab) ? activeTab.noteId : null).toBe(
+            "notes/source",
+        );
     });
 
     it.todo(

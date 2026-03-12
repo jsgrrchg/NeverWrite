@@ -33,9 +33,10 @@ use crate::ai::emit::{
     emit_message_completed, emit_message_delta, emit_message_started, emit_permission_request,
     emit_plan_update, emit_session_error, emit_status_event, emit_thinking_completed,
     emit_thinking_delta, emit_thinking_started, emit_tool_activity, emit_user_input_request,
-    AiFileDiffPayload, AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload,
-    AiPlanUpdatePayload, AiStatusEventPayload, AiToolActivityPayload,
-    AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
+    AiFileDiffHunkPayload, AiFileDiffPayload, AiPermissionOptionPayload,
+    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiStatusEventPayload,
+    AiToolActivityPayload, AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload,
+    AiUserInputRequestPayload,
 };
 
 use super::{process::CodexProcessSpec, setup::apply_auth_env};
@@ -47,6 +48,9 @@ const VAULTAI_USER_INPUT_EVENT_TYPE: &str = "user_input_request";
 const VAULTAI_USER_INPUT_RESPONSE_PREFIX: &str = "__vaultai_user_input_response__:";
 const VAULTAI_PLAN_TITLE_KEY: &str = "vaultaiPlanTitle";
 const VAULTAI_PLAN_DETAIL_KEY: &str = "vaultaiPlanDetail";
+const VAULTAI_DIFF_PREVIOUS_PATH_KEY: &str = "vaultaiPreviousPath";
+const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
+const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 
 enum RuntimeCommand {
     CreateSession {
@@ -1426,24 +1430,62 @@ fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
     })
 }
 
-fn map_diff_payload(path: &std::path::Path, old_text: Option<&String>, new_text: &str) -> AiFileDiffPayload {
-    let kind = if old_text.is_none() {
+fn diff_previous_path(diff: &agent_client_protocol::Diff) -> Option<String> {
+    diff.meta
+        .as_ref()
+        .and_then(|meta| meta.get(VAULTAI_DIFF_PREVIOUS_PATH_KEY))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn diff_hunks(diff: &agent_client_protocol::Diff) -> Option<Vec<AiFileDiffHunkPayload>> {
+    diff.meta
+        .as_ref()
+        .and_then(|meta| meta.get(VAULTAI_DIFF_HUNKS_KEY))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .filter(|hunks: &Vec<AiFileDiffHunkPayload>| !hunks.is_empty())
+}
+
+fn has_reliable_old_text(old_text: Option<&str>) -> bool {
+    matches!(old_text, Some(text) if text != FILE_DELETED_PLACEHOLDER)
+}
+
+fn map_diff_payload(diff: &agent_client_protocol::Diff) -> AiFileDiffPayload {
+    let previous_path = diff_previous_path(diff);
+    let old_text = diff.old_text.as_deref();
+    let kind = if previous_path.is_some() {
+        "move"
+    } else if old_text.is_none() {
         "add"
-    } else if new_text.is_empty() {
+    } else if diff.new_text.is_empty() {
         "delete"
     } else {
         "update"
     };
+    let text_changed = old_text
+        .map(|text| text != diff.new_text)
+        .unwrap_or(!diff.new_text.is_empty());
+    let reversible = match kind {
+        "add" => true,
+        "delete" | "update" => has_reliable_old_text(old_text),
+        "move" => previous_path.is_some() && (!text_changed || has_reliable_old_text(old_text)),
+        _ => false,
+    };
 
     AiFileDiffPayload {
-        path: path.display().to_string(),
+        path: diff.path.display().to_string(),
         kind: kind.to_string(),
-        old_text: old_text.cloned(),
-        new_text: if new_text.is_empty() {
+        previous_path,
+        reversible,
+        is_text: true,
+        old_text: diff.old_text.clone(),
+        new_text: if diff.new_text.is_empty() {
             None
         } else {
-            Some(new_text.to_string())
+            Some(diff.new_text.clone())
         },
+        hunks: diff_hunks(diff),
     }
 }
 
@@ -1452,9 +1494,7 @@ fn collect_tool_call_diffs(tool_call: &ToolCall) -> Vec<AiFileDiffPayload> {
         .content
         .iter()
         .filter_map(|item| match item {
-            ToolCallContent::Diff(diff) => {
-                Some(map_diff_payload(&diff.path, diff.old_text.as_ref(), &diff.new_text))
-            }
+            ToolCallContent::Diff(diff) => Some(map_diff_payload(diff)),
             _ => None,
         })
         .collect()
@@ -1471,11 +1511,7 @@ fn collect_tool_call_update_diffs(
             items
                 .iter()
                 .filter_map(|item| match item {
-                    ToolCallContent::Diff(diff) => Some(map_diff_payload(
-                        &diff.path,
-                        diff.old_text.as_ref(),
-                        &diff.new_text,
-                    )),
+                    ToolCallContent::Diff(diff) => Some(map_diff_payload(diff)),
                     _ => None,
                 })
                 .collect()
@@ -1485,7 +1521,7 @@ fn collect_tool_call_update_diffs(
 
 #[cfg(test)]
 mod tests {
-    use agent_client_protocol::{Diff, ToolCallId, ToolKind};
+    use agent_client_protocol::{Diff, Meta, ToolCallId, ToolKind};
 
     use super::*;
 
@@ -1495,9 +1531,7 @@ mod tests {
             .kind(ToolKind::Edit)
             .status(ToolCallStatus::Completed)
             .content(vec![
-                ToolCallContent::Diff(
-                    Diff::new("/tmp/new.rs", "new line").old_text("old line"),
-                ),
+                ToolCallContent::Diff(Diff::new("/tmp/new.rs", "new line").old_text("old line")),
                 ToolCallContent::Diff(Diff::new("/tmp/added.rs", "added line")),
                 ToolCallContent::Diff(Diff::new("/tmp/deleted.rs", "").old_text("gone")),
             ]);
@@ -1507,16 +1541,36 @@ mod tests {
         assert_eq!(payload.kind, "edit");
         assert_eq!(payload.diffs.as_ref().map(Vec::len), Some(3));
         assert_eq!(
-            payload.diffs.as_ref().and_then(|diffs| diffs.first()).map(|diff| diff.kind.as_str()),
+            payload
+                .diffs
+                .as_ref()
+                .and_then(|diffs| diffs.first())
+                .map(|diff| diff.kind.as_str()),
             Some("update")
         );
         assert_eq!(
-            payload.diffs.as_ref().and_then(|diffs| diffs.get(1)).map(|diff| diff.kind.as_str()),
+            payload
+                .diffs
+                .as_ref()
+                .and_then(|diffs| diffs.get(1))
+                .map(|diff| diff.kind.as_str()),
             Some("add")
         );
         assert_eq!(
-            payload.diffs.as_ref().and_then(|diffs| diffs.get(2)).map(|diff| diff.kind.as_str()),
+            payload
+                .diffs
+                .as_ref()
+                .and_then(|diffs| diffs.get(2))
+                .map(|diff| diff.kind.as_str()),
             Some("delete")
+        );
+        assert_eq!(
+            payload
+                .diffs
+                .as_ref()
+                .and_then(|diffs| diffs.first())
+                .map(|diff| diff.reversible),
+            Some(true)
         );
     }
 
@@ -1525,13 +1579,127 @@ mod tests {
         let tool_call = ToolCall::new(ToolCallId::from("tool-2"), "Read file")
             .kind(ToolKind::Read)
             .status(ToolCallStatus::Completed)
-            .content(vec![ToolCallContent::Content(agent_client_protocol::Content::new(
-                "README.md",
-            ))]);
+            .content(vec![ToolCallContent::Content(
+                agent_client_protocol::Content::new("README.md"),
+            )]);
 
         let payload = map_tool_call("session-1", &tool_call);
 
         assert_eq!(payload.summary.as_deref(), Some("README.md"));
         assert!(payload.diffs.is_none());
+    }
+
+    #[test]
+    fn map_tool_call_marks_placeholder_delete_as_non_reversible() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-3"), "Delete file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("/tmp/deleted.rs", "").old_text(FILE_DELETED_PLACEHOLDER),
+            )]);
+
+        let payload = map_tool_call("session-1", &tool_call);
+        let diff = payload
+            .diffs
+            .as_ref()
+            .and_then(|diffs| diffs.first())
+            .unwrap();
+
+        assert_eq!(diff.kind, "delete");
+        assert!(!diff.reversible);
+        assert!(diff.is_text);
+    }
+
+    #[test]
+    fn map_tool_call_preserves_move_source_path() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-4"), "Move file")
+            .kind(ToolKind::Move)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("/tmp/new.rs", "updated")
+                    .old_text("original")
+                    .meta(Meta::from_iter([(
+                        VAULTAI_DIFF_PREVIOUS_PATH_KEY.to_string(),
+                        serde_json::json!("/tmp/old.rs"),
+                    )])),
+            )]);
+
+        let payload = map_tool_call("session-1", &tool_call);
+        let diff = payload
+            .diffs
+            .as_ref()
+            .and_then(|diffs| diffs.first())
+            .unwrap();
+
+        assert_eq!(diff.kind, "move");
+        assert_eq!(diff.previous_path.as_deref(), Some("/tmp/old.rs"));
+        assert!(diff.reversible);
+    }
+
+    #[test]
+    fn map_tool_call_extracts_exact_hunks_from_meta() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-6"), "Edit watcher")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("/tmp/watcher.rs", "new line")
+                    .old_text("old line")
+                    .meta(Meta::from_iter([(
+                        VAULTAI_DIFF_HUNKS_KEY.to_string(),
+                        serde_json::json!([
+                            {
+                                "old_start": 12,
+                                "old_count": 1,
+                                "new_start": 12,
+                                "new_count": 1,
+                                "lines": [
+                                    { "type": "remove", "text": "old line" },
+                                    { "type": "add", "text": "new line" }
+                                ]
+                            }
+                        ]),
+                    )])),
+            )]);
+
+        let payload = map_tool_call("session-1", &tool_call);
+        let diff = payload
+            .diffs
+            .as_ref()
+            .and_then(|diffs| diffs.first())
+            .unwrap();
+
+        assert_eq!(diff.hunks.as_ref().map(Vec::len), Some(1));
+        let hunk = diff.hunks.as_ref().and_then(|hunks| hunks.first()).unwrap();
+        assert_eq!(hunk.old_start, 12);
+        assert_eq!(hunk.new_start, 12);
+        assert_eq!(
+            hunk.lines
+                .iter()
+                .map(|line| line.r#type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["remove", "add"]
+        );
+    }
+
+    #[test]
+    fn map_tool_call_keeps_real_delete_snapshot_when_available() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-5"), "Delete file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("/tmp/deleted.rs", "").old_text("real previous content"),
+            )]);
+
+        let payload = map_tool_call("session-1", &tool_call);
+        let diff = payload
+            .diffs
+            .as_ref()
+            .and_then(|diffs| diffs.first())
+            .unwrap();
+
+        assert_eq!(diff.kind, "delete");
+        assert!(diff.reversible);
+        assert_eq!(diff.old_text.as_deref(), Some("real previous content"));
+        assert_eq!(diff.new_text, None);
     }
 }

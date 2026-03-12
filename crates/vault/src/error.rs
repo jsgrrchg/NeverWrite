@@ -12,6 +12,12 @@ pub enum VaultError {
     #[error("La nota ya existe: {0}")]
     NoteAlreadyExists(PathBuf),
 
+    #[error("La entrada ya existe: {0}")]
+    EntryAlreadyExists(PathBuf),
+
+    #[error("Path inválido dentro del vault: {0}")]
+    InvalidVaultPath(String),
+
     #[error("Error de IO: {0}")]
     Io(#[from] std::io::Error),
 

@@ -13,8 +13,11 @@ export interface NoteDto {
 export interface VaultEntryDto {
     id: string;
     path: string;
+    relative_path: string;
     title: string;
-    kind: "note" | "pdf";
+    file_name: string;
+    extension: string;
+    kind: "note" | "pdf" | "file" | "folder";
     modified_at: number;
     created_at: number;
     size: number;
@@ -246,8 +249,12 @@ interface VaultStore {
     openVault: (path: string) => Promise<void>;
     restoreVault: () => Promise<void>;
     cancelOpenVault: () => Promise<void>;
+    refreshEntries: () => Promise<void>;
+    refreshStructure: () => Promise<void>;
     applyVaultNoteChange: (change: VaultNoteChange) => void;
     createNote: (name: string) => Promise<NoteDto | null>;
+    createFolder: (path: string) => Promise<VaultEntryDto | null>;
+    deleteFolder: (relativePath: string) => Promise<void>;
     deleteNote: (noteId: string) => Promise<void>;
     renameNote: (noteId: string, newName: string) => Promise<NoteDto | null>;
     touchContent: () => void;
@@ -308,7 +315,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 if (openState.stage === "ready") {
                     const [notes, entries] = await Promise.all([
                         invoke<NoteDto[]>("list_notes", { vaultPath: path }),
-                        invoke<VaultEntryDto[]>("list_vault_entries", { vaultPath: path }),
+                        invoke<VaultEntryDto[]>("list_vault_entries", {
+                            vaultPath: path,
+                        }),
                     ]);
                     if (sequence !== openVaultSequence) return;
 
@@ -391,6 +400,54 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         }
     },
 
+    refreshEntries: async () => {
+        const vaultPath = get().vaultPath;
+        if (!vaultPath) return;
+
+        try {
+            const nextEntries = await invoke<VaultEntryDto[]>(
+                "list_vault_entries",
+                {
+                    vaultPath,
+                },
+            );
+            set((state) => ({
+                entries: Array.isArray(nextEntries)
+                    ? nextEntries
+                    : state.entries,
+                vaultRevision: state.vaultRevision + 1,
+                structureRevision: state.structureRevision + 1,
+            }));
+        } catch (error) {
+            console.error("Error refreshing vault entries:", error);
+        }
+    },
+
+    refreshStructure: async () => {
+        const vaultPath = get().vaultPath;
+        if (!vaultPath) return;
+
+        try {
+            const [nextNotes, nextEntries] = await Promise.all([
+                invoke<NoteDto[]>("list_notes", { vaultPath }),
+                invoke<VaultEntryDto[]>("list_vault_entries", { vaultPath }),
+            ]);
+            set((state) => ({
+                notes: Array.isArray(nextNotes) ? nextNotes : state.notes,
+                entries: Array.isArray(nextEntries)
+                    ? nextEntries
+                    : state.entries,
+                vaultRevision: state.vaultRevision + 1,
+                contentRevision: state.contentRevision + 1,
+                structureRevision: state.structureRevision + 1,
+                resolverRevision: state.resolverRevision + 1,
+                tagsRevision: state.tagsRevision + 1,
+            }));
+        } catch (error) {
+            console.error("Error refreshing vault structure:", error);
+        }
+    },
+
     applyVaultNoteChange: (change) => {
         set((state) => {
             const startMs = perfNow();
@@ -460,6 +517,54 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         } catch (e) {
             console.error("Error al crear nota:", e);
             return null;
+        }
+    },
+
+    createFolder: async (path) => {
+        try {
+            const vaultPath = get().vaultPath ?? "";
+            const entry = await invoke<VaultEntryDto>("create_folder", {
+                vaultPath,
+                path,
+            });
+            set((state) => ({
+                entries: [...state.entries, entry],
+                vaultRevision: state.vaultRevision + 1,
+                structureRevision: state.structureRevision + 1,
+            }));
+            return entry;
+        } catch (e) {
+            console.error("Error al crear carpeta:", e);
+            return null;
+        }
+    },
+
+    deleteFolder: async (relativePath) => {
+        try {
+            const vaultPath = get().vaultPath ?? "";
+            await invoke("delete_folder", { vaultPath, relativePath });
+            set((s) => {
+                const folderPrefix = relativePath + "/";
+                return {
+                    notes: s.notes.filter(
+                        (n) =>
+                            n.id !== relativePath &&
+                            !n.id.startsWith(folderPrefix),
+                    ),
+                    entries: s.entries.filter(
+                        (e) =>
+                            e.relative_path !== relativePath &&
+                            !e.relative_path.startsWith(folderPrefix),
+                    ),
+                    vaultRevision: s.vaultRevision + 1,
+                    structureRevision: s.structureRevision + 1,
+                    resolverRevision: s.resolverRevision + 1,
+                    tagsRevision: s.tagsRevision + 1,
+                };
+            });
+        } catch (e) {
+            console.error("Error al eliminar carpeta:", e);
+            throw e;
         }
     },
 

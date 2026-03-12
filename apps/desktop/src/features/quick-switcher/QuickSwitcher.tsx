@@ -7,10 +7,25 @@ import {
     useDeferredValue,
 } from "react";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
-import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    useVaultStore,
+    type NoteDto,
+    type VaultEntryDto,
+} from "../../app/store/vaultStore";
+import {
+    useEditorStore,
+    isFileTab,
+    isPdfTab,
+    isNoteTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
 import { useVirtualList } from "../../app/hooks/useVirtualList";
+import {
+    getVaultEntryDisplayName,
+    openVaultFileEntry,
+} from "../../app/utils/vaultEntries";
+import { useSettingsStore } from "../../app/store/settingsStore";
 
 const QUICK_SWITCHER_ROW_HEIGHT = 48;
 
@@ -44,6 +59,22 @@ export function QuickSwitcher() {
     return <QuickSwitcherDialog />;
 }
 
+type QuickSwitcherItem =
+    | {
+          key: string;
+          kind: "note";
+          title: string;
+          subtitle: string;
+          note: NoteDto;
+      }
+    | {
+          key: string;
+          kind: "pdf" | "file";
+          title: string;
+          subtitle: string;
+          entry: VaultEntryDto;
+      };
+
 function QuickSwitcherDialog() {
     const [query, setQuery] = useState("");
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -51,38 +82,133 @@ function QuickSwitcherDialog() {
     const listRef = useRef<HTMLDivElement>(null);
     const closeModal = useCommandStore((s) => s.closeModal);
     const notes = useVaultStore((s) => s.notes);
+    const entries = useVaultStore((s) => s.entries);
     const tabs = useEditorStore((s) => s.tabs);
     const openNote = useEditorStore((s) => s.openNote);
+    const openPdf = useEditorStore((s) => s.openPdf);
+    const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
     const deferredQuery = useDeferredValue(query);
     const noteMap = useMemo(
         () => new Map(notes.map((note) => [note.id, note])),
         [notes],
     );
+    const entryMap = useMemo(
+        () => new Map(entries.map((entry) => [entry.path, entry])),
+        [entries],
+    );
+
+    const buildNoteItem = useCallback(
+        (note: NoteDto): QuickSwitcherItem => ({
+            key: `note:${note.id}`,
+            kind: "note",
+            title: note.title,
+            subtitle: note.id,
+            note,
+        }),
+        [],
+    );
+
+    const buildEntryItem = useCallback(
+        (entry: VaultEntryDto): QuickSwitcherItem => ({
+            key: `${entry.kind}:${entry.relative_path}`,
+            kind: entry.kind === "pdf" ? "pdf" : "file",
+            title: getVaultEntryDisplayName(entry, showExtensions),
+            subtitle: entry.relative_path,
+            entry,
+        }),
+        [showExtensions],
+    );
 
     const results = useMemo(() => {
+        const searchableEntries = entries.filter(
+            (entry) => entry.kind !== "note" && entry.kind !== "folder",
+        );
+
         if (!deferredQuery.trim()) {
-            return [
-                ...tabs
-                    .map((tab) => noteMap.get(tab.noteId))
-                    .filter((note): note is NoteDto => !!note),
-                ...notes.filter(
-                    (note) => !tabs.some((tab) => tab.noteId === note.id),
-                ),
-            ];
+            const ordered = tabs
+                .map((tab) => {
+                    if (isPdfTab(tab)) {
+                        const entry = entryMap.get(tab.path);
+                        return entry ? buildEntryItem(entry) : null;
+                    }
+                    if (isFileTab(tab)) {
+                        const entry = entryMap.get(tab.path);
+                        return entry
+                            ? buildEntryItem(entry)
+                            : {
+                                  key: `file:${tab.relativePath}`,
+                                  kind: "file" as const,
+                                  title: tab.title,
+                                  subtitle: tab.relativePath,
+                                  entry: {
+                                      id: tab.relativePath,
+                                      path: tab.path,
+                                      relative_path: tab.relativePath,
+                                      title: tab.title.replace(/\.[^/.]+$/, ""),
+                                      file_name: tab.title,
+                                      extension:
+                                          tab.relativePath.split(".").pop() ?? "",
+                                      kind: "file",
+                                      modified_at: 0,
+                                      created_at: 0,
+                                      size: 0,
+                                      mime_type: tab.mimeType,
+                                  },
+                              };
+                    }
+                    if (!isNoteTab(tab)) return null;
+                    const note = noteMap.get(tab.noteId);
+                    return note ? buildNoteItem(note) : null;
+                })
+                .filter((item): item is QuickSwitcherItem => item !== null);
+
+            const remainingNotes = notes
+                .filter((note) => !ordered.some((item) => item.key === `note:${note.id}`))
+                .map(buildNoteItem);
+            const remainingEntries = searchableEntries
+                .filter(
+                    (entry) =>
+                        !ordered.some(
+                            (item) => item.key === `${entry.kind}:${entry.relative_path}`,
+                        ),
+                )
+                .map(buildEntryItem);
+
+            return [...ordered, ...remainingNotes, ...remainingEntries];
         }
 
-        return notes
-            .map((note) => ({
-                note,
+        return [
+            ...notes.map((note) => ({
+                item: buildNoteItem(note),
                 score: Math.max(
                     fuzzyScore(deferredQuery, note.title),
                     fuzzyScore(deferredQuery, note.id),
                 ),
-            }))
+            })),
+            ...searchableEntries.map((entry) => ({
+                item: buildEntryItem(entry),
+                score: Math.max(
+                    fuzzyScore(
+                        deferredQuery,
+                        getVaultEntryDisplayName(entry, true),
+                    ),
+                    fuzzyScore(deferredQuery, entry.relative_path),
+                ),
+            })),
+        ]
             .filter(({ score }) => score > 0)
             .sort((a, b) => b.score - a.score)
-            .map(({ note }) => note);
-    }, [deferredQuery, noteMap, notes, tabs]);
+            .map(({ item }) => item);
+    }, [
+        buildEntryItem,
+        buildNoteItem,
+        deferredQuery,
+        entries,
+        entryMap,
+        noteMap,
+        notes,
+        tabs,
+    ]);
     const virtual = useVirtualList(
         listRef,
         Math.min(results.length, 200),
@@ -111,12 +237,27 @@ function QuickSwitcherDialog() {
         item?.scrollIntoView({ block: "nearest" });
     }, [selectedIndex]);
 
-    const openNoteAndClose = useCallback(
-        async (note: NoteDto) => {
+    const openItemAndClose = useCallback(
+        async (item: QuickSwitcherItem) => {
             closeModal();
+            if (item.kind === "pdf") {
+                openPdf(item.entry.id, item.entry.title, item.entry.path);
+                return;
+            }
+            if (item.kind === "file") {
+                try {
+                    await openVaultFileEntry(item.entry);
+                } catch (error) {
+                    console.error("Error opening file:", error);
+                }
+                return;
+            }
+
+            if (item.kind !== "note") return;
+            const note = item.note;
             const existing = useEditorStore
                 .getState()
-                .tabs.find((t) => t.noteId === note.id);
+                .tabs.find((t): t is NoteTab => isNoteTab(t) && t.noteId === note.id);
             if (existing) {
                 openNote(note.id, note.title, existing.content);
                 return;
@@ -130,7 +271,7 @@ function QuickSwitcherDialog() {
                 console.error("Error reading note:", e);
             }
         },
-        [closeModal, openNote],
+        [closeModal, openNote, openPdf],
     );
 
     const handleKeyDown = useCallback(
@@ -144,14 +285,14 @@ function QuickSwitcherDialog() {
                 setSelectedIndex((i) => Math.max(i - 1, 0));
             } else if (e.key === "Enter") {
                 e.preventDefault();
-                const note = results[selectedIndex];
-                if (note) void openNoteAndClose(note);
+                const item = results[selectedIndex];
+                if (item) void openItemAndClose(item);
             } else if (e.key === "Escape") {
                 e.preventDefault();
                 closeModal();
             }
         },
-        [results, selectedIndex, openNoteAndClose, closeModal],
+        [results, selectedIndex, openItemAndClose, closeModal],
     );
 
     return (
@@ -176,7 +317,7 @@ function QuickSwitcherDialog() {
                         setSelectedIndex(0);
                     }}
                     onKeyDown={handleKeyDown}
-                    placeholder="Search notes..."
+                    placeholder="Search files and notes..."
                     className="w-full px-4 py-3 text-sm outline-none"
                     style={{
                         backgroundColor: "transparent",
@@ -190,7 +331,7 @@ function QuickSwitcherDialog() {
                             className="px-4 py-3 text-sm"
                             style={{ color: "var(--text-secondary)" }}
                         >
-                            No notes found
+                            No files or notes found
                         </div>
                     ) : (
                         <div
@@ -207,12 +348,12 @@ function QuickSwitcherDialog() {
                                     top: virtual.offsetTop,
                                 }}
                             >
-                                {visibleResults.map((note, localIndex) => {
+                                {visibleResults.map((item, localIndex) => {
                                     const i = virtual.startIndex + localIndex;
                                     return (
                                         <button
-                                            key={note.id}
-                                            onClick={() => void openNoteAndClose(note)}
+                                            key={item.key}
+                                            onClick={() => void openItemAndClose(item)}
                                             className="w-full text-left px-4 py-2 text-sm"
                                             style={{
                                                 backgroundColor:
@@ -227,17 +368,17 @@ function QuickSwitcherDialog() {
                                                     QUICK_SWITCHER_ROW_HEIGHT,
                                             }}
                                         >
-                                            <div className="truncate">{note.title}</div>
+                                            <div className="truncate">{item.title}</div>
                                             <div
                                                 className="text-xs truncate"
                                                 style={{
                                                     opacity:
                                                         i === selectedIndex
-                                                            ? 0.7
-                                                            : 0.5,
+                                                        ? 0.7
+                                                        : 0.5,
                                                 }}
                                             >
-                                                {note.id}
+                                                {item.subtitle}
                                             </div>
                                         </button>
                                     );

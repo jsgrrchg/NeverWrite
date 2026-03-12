@@ -4,13 +4,17 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
+import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import type { AIChatMessage, AIChatSessionStatus } from "../types";
 import { getChatPillMetrics } from "./chatPillMetrics";
+import { getEditorFontFamily } from "../../editor/editorExtensions";
 
 interface AIChatMessageListProps {
     messages: AIChatMessage[];
     status: AIChatSessionStatus;
+    visibleWorkCycleId?: string | null;
     chatFontSize?: number;
+    chatFontFamily?: EditorFontFamily;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
     onUserInputResponse?: (
         requestId: string,
@@ -26,10 +30,138 @@ function isNearBottom(el: HTMLElement) {
     );
 }
 
+function formatElapsedRunTime(durationMs: number) {
+    const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+    }
+
+    if (minutes > 0) {
+        return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+    }
+
+    return `${seconds}s`;
+}
+
+function StreamingRunIndicator({
+    timestamp,
+    active,
+}: {
+    timestamp: number;
+    active: boolean;
+}) {
+    const [now, setNow] = useState(() => Date.now());
+    const [frozenNow, setFrozenNow] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (active) {
+            const syncId = window.setTimeout(() => {
+                setFrozenNow(null);
+                setNow(Date.now());
+            }, 0);
+            const intervalId = window.setInterval(() => {
+                setNow(Date.now());
+            }, 1000);
+
+            return () => {
+                window.clearTimeout(syncId);
+                window.clearInterval(intervalId);
+            };
+        }
+
+        const syncId = window.setTimeout(() => {
+            const stoppedAt = Date.now();
+            setNow(stoppedAt);
+            setFrozenNow(stoppedAt);
+        }, 0);
+
+        return () => {
+            window.clearTimeout(syncId);
+        };
+    }, [active]);
+
+    const endTime = active ? now : (frozenNow ?? now);
+
+    return (
+        <div
+            className="inline-flex items-center gap-2 py-1"
+            style={{
+                color: "var(--text-secondary)",
+                fontSize: "0.74em",
+                lineHeight: 1.2,
+                opacity: 0.78,
+            }}
+            data-testid="streaming-run-indicator"
+        >
+            {active ? (
+                <span className="inline-flex items-baseline gap-[3px]">
+                    {[0, 1, 2].map((i) => (
+                        <span
+                            key={i}
+                            className="inline-block h-[5px] w-[5px] rounded-full"
+                            style={{
+                                backgroundColor: "var(--accent)",
+                                opacity: 0.6,
+                                animation: `ai-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
+                            }}
+                        />
+                    ))}
+                </span>
+            ) : null}
+            <span>{formatElapsedRunTime(endTime - timestamp)}</span>
+        </div>
+    );
+}
+
+function findLatestRunIndicatorAnchor(
+    messages: AIChatMessage[],
+    active: boolean,
+) {
+    // Only show the live indicator while actively streaming.
+    // Elapsed time is stamped on the turn_started message when the turn ends.
+    if (!active) {
+        return null;
+    }
+
+    const latestTurnStarted = [...messages]
+        .reverse()
+        .find(
+            (message) =>
+                message.kind === "status" &&
+                message.meta?.status_event === "turn_started",
+        );
+
+    if (latestTurnStarted) {
+        return {
+            id: latestTurnStarted.id,
+            timestamp: latestTurnStarted.timestamp,
+        };
+    }
+
+    const latestUserMessage = [...messages]
+        .reverse()
+        .find((message) => message.kind === "text" && message.role === "user");
+
+    if (latestUserMessage) {
+        return {
+            id: latestUserMessage.id,
+            timestamp: latestUserMessage.timestamp,
+        };
+    }
+
+    return null;
+}
+
 export const AIChatMessageList = memo(function AIChatMessageList({
     messages,
     status,
+    visibleWorkCycleId = null,
     chatFontSize = 20,
+    chatFontFamily = "system",
     onPermissionResponse,
     onUserInputResponse,
 }: AIChatMessageListProps) {
@@ -53,9 +185,16 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         if (wasNearBottomRef.current) {
             container.scrollTop = container.scrollHeight;
-        } else {
-            setShowScrollButton(true);
+            return;
         }
+
+        const frameId = window.requestAnimationFrame(() => {
+            setShowScrollButton(true);
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
     }, [messages, status]);
 
     const handleScroll = useCallback(() => {
@@ -81,6 +220,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         () => getChatPillMetrics(chatFontSize),
         [chatFontSize],
     );
+    const runIndicatorAnchor = useMemo(
+        () => findLatestRunIndicatorAnchor(messages, status === "streaming"),
+        [messages, status],
+    );
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1">
@@ -94,32 +237,28 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 <div
                     className="flex min-w-0 flex-col gap-2"
                     data-selectable="true"
-                    style={{ fontSize: chatFontSize }}
+                    style={{
+                        fontSize: chatFontSize,
+                        fontFamily: getEditorFontFamily(chatFontFamily),
+                    }}
                 >
                     {messages.map((message) => (
                         <AIChatMessageItem
                             key={message.id}
                             message={message}
                             pillMetrics={pillMetrics}
+                            visibleWorkCycleId={visibleWorkCycleId}
                             onPermissionResponse={onPermissionResponse}
                             onUserInputResponse={onUserInputResponse}
                         />
                     ))}
-                    {status === "streaming" && (
-                        <span className="inline-flex items-baseline gap-[3px] py-1">
-                            {[0, 1, 2].map((i) => (
-                                <span
-                                    key={i}
-                                    className="inline-block h-[5px] w-[5px] rounded-full"
-                                    style={{
-                                        backgroundColor: "var(--accent)",
-                                        opacity: 0.6,
-                                        animation: `ai-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
-                                    }}
-                                />
-                            ))}
-                        </span>
-                    )}
+                    {runIndicatorAnchor ? (
+                        <StreamingRunIndicator
+                            key={runIndicatorAnchor.id}
+                            timestamp={runIndicatorAnchor.timestamp}
+                            active={status === "streaming"}
+                        />
+                    ) : null}
                 </div>
             </div>
             {showScrollButton && (

@@ -154,6 +154,15 @@ fn create_note_in_subdirectory() {
 }
 
 #[test]
+fn create_folder_works() {
+    let (_dir, vault) = setup_vault();
+    let folder = vault.create_folder("projects/2026").unwrap();
+
+    assert_eq!(folder.kind, "folder");
+    assert_eq!(folder.relative_path, "projects/2026");
+}
+
+#[test]
 fn create_note_duplicate_fails() {
     let (_dir, vault) = setup_vault();
     assert!(vault.create_note("nota1.md", "contenido").is_err());
@@ -188,6 +197,66 @@ fn rename_note_works() {
 fn rename_to_existing_fails() {
     let (_dir, vault) = setup_vault();
     assert!(vault.rename_note("nota1", "nota2.md").is_err());
+}
+
+#[test]
+fn move_vault_entry_works_for_pdf_and_generic_files() {
+    let (_dir, vault) = setup_vault_with_pdfs();
+
+    let moved_pdf = vault
+        .move_vault_entry("document.pdf", "archive/document.pdf")
+        .unwrap();
+    assert_eq!(moved_pdf.kind, "pdf");
+    assert_eq!(moved_pdf.relative_path, "archive/document.pdf");
+    assert_eq!(moved_pdf.id, "archive/document");
+
+    let moved_file = vault
+        .move_vault_entry("image.png", "assets/image.png")
+        .unwrap();
+    assert_eq!(moved_file.kind, "file");
+    assert_eq!(moved_file.relative_path, "assets/image.png");
+    assert_eq!(moved_file.id, "assets/image.png");
+
+    let entries = vault.discover_vault_entries().unwrap();
+    assert!(entries
+        .iter()
+        .any(|entry| entry.relative_path == "archive/document.pdf"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.relative_path == "assets/image.png"));
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.relative_path == "document.pdf"));
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.relative_path == "image.png"));
+}
+
+#[test]
+fn move_folder_keeps_empty_directories_visible() {
+    let (dir, vault) = setup_vault();
+    fs::create_dir_all(dir.path().join("empty")).unwrap();
+
+    vault.move_folder("empty", "archive/empty").unwrap();
+
+    let entries = vault.discover_vault_entries().unwrap();
+    assert!(entries
+        .iter()
+        .any(|entry| entry.kind == "folder" && entry.relative_path == "archive/empty"));
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.kind == "folder" && entry.relative_path == "empty"));
+}
+
+#[test]
+fn copy_folder_copies_empty_subdirectories() {
+    let (dir, vault) = setup_vault();
+    fs::create_dir_all(dir.path().join("assets/empty/nested")).unwrap();
+
+    let copied = vault.copy_folder("assets", "assets copy").unwrap();
+
+    assert_eq!(copied.kind, "folder");
+    assert!(dir.path().join("assets copy/empty/nested").is_dir());
 }
 
 #[test]
@@ -252,13 +321,119 @@ fn discover_vault_entries_includes_both_md_and_pdf() {
 
     let notes: Vec<_> = entries.iter().filter(|e| e.kind == "note").collect();
     let pdfs: Vec<_> = entries.iter().filter(|e| e.kind == "pdf").collect();
+    let files: Vec<_> = entries.iter().filter(|e| e.kind == "file").collect();
+    let folders: Vec<_> = entries.iter().filter(|e| e.kind == "folder").collect();
 
     assert_eq!(notes.len(), 1);
     assert_eq!(pdfs.len(), 2);
+    assert_eq!(files.len(), 1);
+    assert_eq!(folders.len(), 1);
     assert!(pdfs.iter().any(|e| e.id == "document"));
     assert!(pdfs
         .iter()
         .all(|e| e.mime_type == Some("application/pdf".to_string())));
+    assert_eq!(folders[0].relative_path, "papers");
+    assert_eq!(files[0].relative_path, "image.png");
+    assert_eq!(files[0].file_name, "image.png");
+    assert_eq!(files[0].extension, "png");
+}
+
+#[test]
+fn discover_vault_entries_includes_empty_folders() {
+    let (dir, vault) = setup_vault();
+    fs::create_dir_all(dir.path().join("empty/deeper")).unwrap();
+
+    let entries = vault.discover_vault_entries().unwrap();
+
+    assert!(entries
+        .iter()
+        .any(|entry| entry.kind == "folder" && entry.relative_path == "empty"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.kind == "folder" && entry.relative_path == "empty/deeper"));
+}
+
+#[test]
+fn discover_vault_entries_keeps_extensions_for_generic_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("foo.ts"), "console.log('foo');").unwrap();
+    fs::write(dir.path().join("foo.js"), "console.log('bar');").unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let entries = vault.discover_vault_entries().unwrap();
+    let ids: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.kind == "file")
+        .map(|entry| entry.id.as_str())
+        .collect();
+
+    assert!(ids.contains(&"foo.ts"));
+    assert!(ids.contains(&"foo.js"));
+}
+
+#[test]
+fn discover_vault_entries_guesses_supported_image_mime_types() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("cover.avif"), b"avif").unwrap();
+    fs::write(dir.path().join("icon.ico"), b"ico").unwrap();
+    fs::write(dir.path().join("scan.bmp"), b"bmp").unwrap();
+    fs::write(dir.path().join("photo.jfif"), b"jfif").unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let entries = vault.discover_vault_entries().unwrap();
+
+    let mimes: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.kind == "file")
+        .map(|entry| (entry.file_name.as_str(), entry.mime_type.as_deref()))
+        .collect();
+
+    assert!(mimes.contains(&("cover.avif", Some("image/avif"))));
+    assert!(mimes.contains(&("icon.ico", Some("image/x-icon"))));
+    assert!(mimes.contains(&("scan.bmp", Some("image/bmp"))));
+    assert!(mimes.contains(&("photo.jfif", Some("image/jpeg"))));
+}
+
+#[test]
+fn discover_vault_entries_guesses_text_mime_types_for_common_config_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Dockerfile"), "FROM rust:latest\n").unwrap();
+    fs::write(dir.path().join(".env.local"), "APP_ENV=local\n").unwrap();
+    fs::write(dir.path().join("Makefile"), "build:\n\tcargo build\n").unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let entries = vault.discover_vault_entries().unwrap();
+
+    let mimes: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.kind == "file")
+        .map(|entry| (entry.file_name.as_str(), entry.mime_type.as_deref()))
+        .collect();
+
+    assert!(mimes.contains(&("Dockerfile", Some("text/plain"))));
+    assert!(mimes.contains(&(".env.local", Some("text/plain"))));
+    assert!(mimes.contains(&("Makefile", Some("text/plain"))));
+}
+
+#[test]
+fn read_text_file_reads_relative_path_inside_vault() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn main() {}\n").unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let content = vault.read_text_file("src/lib.rs").unwrap();
+
+    assert_eq!(content, "fn main() {}\n");
+}
+
+#[test]
+fn read_text_file_rejects_parent_traversal() {
+    let dir = TempDir::new().unwrap();
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+
+    let result = vault.read_text_file("../secret.txt");
+    assert!(result.is_err());
 }
 
 #[test]

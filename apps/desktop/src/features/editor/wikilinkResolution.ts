@@ -1,4 +1,4 @@
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     perfCount,
@@ -33,10 +33,10 @@ let cachedResolverRevision: number | null = null;
 
 function getActiveNoteId() {
     const activeTabId = useEditorStore.getState().activeTabId;
-    return (
-        useEditorStore.getState().tabs.find((tab) => tab.id === activeTabId)
-            ?.noteId ?? null
-    );
+    const activeTab = useEditorStore
+        .getState()
+        .tabs.find((tab) => tab.id === activeTabId);
+    return activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
 }
 
 function ensureFreshResolverCache() {

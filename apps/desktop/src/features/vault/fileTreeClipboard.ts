@@ -22,11 +22,11 @@ function joinPath(parentPath: string, name: string) {
     return parentPath ? `${parentPath}/${name}` : name;
 }
 
-function folderPathExists(folderPath: string, takenNoteIds: Set<string>) {
+function folderPathExists(folderPath: string, takenPaths: Set<string>) {
     if (!folderPath) return false;
-    if (takenNoteIds.has(folderPath)) return true;
-    for (const noteId of takenNoteIds) {
-        if (noteId.startsWith(`${folderPath}/`)) {
+    if (takenPaths.has(folderPath)) return true;
+    for (const path of takenPaths) {
+        if (path.startsWith(`${folderPath}/`)) {
             return true;
         }
     }
@@ -116,18 +116,18 @@ export function buildCopiedNotePath(
 export function buildCopiedFolderPath(
     sourceFolderPath: string,
     targetFolder: string,
-    takenNoteIds: Set<string>,
+    takenPaths: Set<string>,
 ) {
     const baseName = getBaseName(sourceFolderPath);
     const directPath = joinPath(targetFolder, baseName);
-    if (!folderPathExists(directPath, takenNoteIds)) return directPath;
+    if (!folderPathExists(directPath, takenPaths)) return directPath;
 
     for (let attempt = 1; ; attempt += 1) {
         const candidate = joinPath(
             targetFolder,
             makeCopyName(baseName, attempt),
         );
-        if (!folderPathExists(candidate, takenNoteIds)) {
+        if (!folderPathExists(candidate, takenPaths)) {
             return candidate;
         }
     }

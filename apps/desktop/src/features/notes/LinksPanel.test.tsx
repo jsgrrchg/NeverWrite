@@ -9,7 +9,7 @@ import {
     setEditorTabs,
     setVaultNotes,
 } from "../../test/test-utils";
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 
 describe("LinksPanel", () => {
@@ -32,18 +32,35 @@ describe("LinksPanel", () => {
                 created_at: 1,
             },
         ]);
-        setEditorTabs([
-            {
-                id: "tab-current",
-                noteId: "notes/current",
-                title: "Current",
-                content: "[[Reference]] and [[Missing note]]",
-            },
-        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-current",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "[[Reference]] and [[Missing note]]",
+                },
+            ],
+            "tab-current",
+        );
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "get_backlinks") {
                 return [{ id: "notes/source", title: "Source note" }];
+            }
+            if (command === "resolve_wikilinks_batch") {
+                return [
+                    {
+                        target: "Reference",
+                        resolved_note_id: "notes/reference",
+                        resolved_title: "Reference",
+                    },
+                    {
+                        target: "Missing note",
+                        resolved_note_id: null,
+                        resolved_title: null,
+                    },
+                ];
             }
 
             throw new Error(`Unexpected command: ${command}`);
@@ -79,18 +96,30 @@ describe("LinksPanel", () => {
             },
         ]);
         useVaultStore.setState({ createNote });
-        setEditorTabs([
-            {
-                id: "tab-current",
-                noteId: "notes/current",
-                title: "Current",
-                content: "[[Missing note]]",
-            },
-        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-current",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "[[Missing note]]",
+                },
+            ],
+            "tab-current",
+        );
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "get_backlinks") {
                 return [];
+            }
+            if (command === "resolve_wikilinks_batch") {
+                return [
+                    {
+                        target: "Missing note",
+                        resolved_note_id: null,
+                        resolved_title: null,
+                    },
+                ];
             }
 
             throw new Error(`Unexpected command: ${command}`);
@@ -106,7 +135,7 @@ describe("LinksPanel", () => {
         });
         expect(
             useEditorStore.getState().tabs.some(
-                (tab) => tab.noteId === "notes/missing-note",
+                (tab) => isNoteTab(tab) && tab.noteId === "notes/missing-note",
             ),
         ).toBe(true);
     });
@@ -131,18 +160,30 @@ describe("LinksPanel", () => {
                 created_at: 1,
             },
         ]);
-        setEditorTabs([
-            {
-                id: "tab-current",
-                noteId: "notes/current",
-                title: "Current",
-                content: "[[Reference]]",
-            },
-        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-current",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "[[Reference]]",
+                },
+            ],
+            "tab-current",
+        );
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "get_backlinks") {
                 return [];
+            }
+            if (command === "resolve_wikilinks_batch") {
+                return [
+                    {
+                        target: "Reference",
+                        resolved_note_id: "notes/reference",
+                        resolved_title: "Reference",
+                    },
+                ];
             }
 
             throw new Error(`Unexpected command: ${command}`);

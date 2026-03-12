@@ -319,6 +319,66 @@ impl VaultIndex {
             }
         }
 
+        // Phase 2c: generic file search
+        if params.tag_filters.is_empty()
+            && params.property_filters.is_empty()
+            && params.content_searches.is_empty()
+        {
+            let generic_entries = vault.discover_vault_entries().unwrap_or_default();
+
+            for entry in generic_entries.iter().filter(|entry| entry.kind == "file") {
+                let title_lower = entry.title.to_lowercase();
+                let path_lower = entry.relative_path.to_lowercase();
+
+                let file_filter_match = params.file_filters.iter().all(|filter| {
+                    let matcher = build_matcher(&filter.value, filter.is_regex);
+                    matcher.matches(&entry.file_name.to_lowercase()) != filter.negated
+                });
+                if !file_filter_match {
+                    continue;
+                }
+
+                let path_filter_match = params.path_filters.iter().all(|filter| {
+                    let matcher = build_matcher(&filter.value, filter.is_regex);
+                    matcher.matches(&path_lower) != filter.negated
+                });
+                if !path_filter_match {
+                    continue;
+                }
+
+                let term_match = params.terms.iter().all(|term| {
+                    let matcher = build_matcher(&term.value, term.is_regex);
+                    let found = matcher.matches(&title_lower) || matcher.matches(&path_lower);
+                    found != term.negated
+                });
+                if !term_match {
+                    continue;
+                }
+
+                let mut best = 0.0f64;
+                for term in &params.terms {
+                    if term.negated {
+                        continue;
+                    }
+                    let title_score = compute_score_match(&term.value, &title_lower, term.is_regex);
+                    let path_score =
+                        compute_score_match(&term.value, &path_lower, term.is_regex) * 0.8;
+                    best = best.max(title_score.max(path_score));
+                }
+
+                results.push(AdvancedSearchResultDto {
+                    id: entry.id.clone(),
+                    path: entry.path.clone(),
+                    title: entry.title.clone(),
+                    kind: "file".to_string(),
+                    score: if best > 0.0 { best } else { 0.5 },
+                    tags: vec![],
+                    modified_at: entry.modified_at,
+                    matches: vec![],
+                });
+            }
+        }
+
         // Phase 3: Sort
         match params.sort_by.as_str() {
             "title" => {

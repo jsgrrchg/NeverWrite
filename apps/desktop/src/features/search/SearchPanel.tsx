@@ -6,18 +6,26 @@ import {
     useDeferredValue,
 } from "react";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { revealNoteInTree } from "../../app/utils/navigation";
 import { useVirtualList } from "../../app/hooks/useVirtualList";
+import { openVaultFileEntry } from "../../app/utils/vaultEntries";
 
 interface SearchResultDto {
     id: string;
     path: string;
     title: string;
+    kind?: string;
     score: number;
 }
 
@@ -36,7 +44,10 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
     const resultsRef = useRef<HTMLDivElement>(null);
     const deferredQuery = useDeferredValue(query);
 
+    const entries = useVaultStore((s) => s.entries);
+    const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
     const openNote = useEditorStore((s) => s.openNote);
+    const openPdf = useEditorStore((s) => s.openPdf);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
     const doSearch = useCallback(async (q: string) => {
@@ -85,9 +96,23 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
         setQuery(nextQuery);
     };
 
-    const handleOpen = async (id: string, title: string) => {
+    const handleOpen = async (result: SearchResultDto) => {
+        if (result.kind === "pdf") {
+            openPdf(result.id, result.title, result.path);
+            return;
+        }
+        if (result.kind === "file") {
+            const entry = entries.find((item) => item.path === result.path);
+            if (!entry) return;
+            await openVaultFileEntry(entry);
+            return;
+        }
+
+        const { id, title } = result;
         const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find((t) => t.noteId === id);
+        const existing = tabs.find(
+            (t): t is NoteTab => isNoteTab(t) && t.noteId === id,
+        );
         if (existing) {
             openNote(id, title, existing.content);
             return;
@@ -103,9 +128,23 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
     };
 
     const handleOpenInNewTab = async (result: SearchResultDto) => {
+        if (result.kind === "pdf") {
+            openPdf(result.id, result.title, result.path);
+            return;
+        }
+        if (result.kind === "file") {
+            const entry = entries.find((item) => item.path === result.path);
+            if (!entry) return;
+            await openVaultFileEntry(entry, { newTab: true });
+            return;
+        }
+
         try {
             const tabs = useEditorStore.getState().tabs;
-            const existing = tabs.find((tab) => tab.noteId === result.id);
+            const existing = tabs.find(
+                (tab): tab is NoteTab =>
+                    isNoteTab(tab) && tab.noteId === result.id,
+            );
             const content =
                 existing?.content ??
                 (
@@ -162,7 +201,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                     <input
                         ref={inputRef}
                         type="text"
-                        placeholder="Search notes..."
+                        placeholder="Search files and notes..."
                         value={query}
                         onChange={(e) => handleQueryChange(e.target.value)}
                         className="flex-1 bg-transparent text-xs outline-none"
@@ -190,7 +229,10 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                 <button
                     onClick={() => {
                         const { tabs, insertExternalTab, openNote } = useEditorStore.getState();
-                        const existing = tabs.find((t) => t.noteId === "__search__");
+                        const existing = tabs.find(
+                            (t): t is NoteTab =>
+                                isNoteTab(t) && t.noteId === "__search__",
+                        );
                         if (existing) {
                             openNote("__search__", "Search", "");
                         } else {
@@ -267,7 +309,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                             {visibleResults.map((r) => (
                                 <button
                                     key={r.id}
-                                    onClick={() => void handleOpen(r.id, r.title)}
+                                    onClick={() => void handleOpen(r)}
                                     onContextMenu={(event) => {
                                         event.preventDefault();
                                         setContextMenu({
@@ -290,7 +332,12 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                                             "transparent")
                                     }
                                 >
-                                    <span className="text-xs truncate">{r.title}</span>
+                                    <span className="text-xs truncate">
+                                        {showExtensions &&
+                                        (r.kind === "pdf" || r.kind === "file")
+                                            ? (r.path.split("/").pop() ?? r.title)
+                                            : r.title}
+                                    </span>
                                     <span
                                         className="text-xs truncate"
                                         style={{
@@ -298,7 +345,10 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                                             fontSize: 10,
                                         }}
                                     >
-                                        {r.id}
+                                        {r.kind === "pdf" || r.kind === "file"
+                                            ? (r.path.split("/vault/").pop() ??
+                                                r.path)
+                                            : r.id}
                                     </span>
                                 </button>
                             ))}
@@ -313,11 +363,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                     entries={[
                         {
                             label: "Open",
-                            action: () =>
-                                void handleOpen(
-                                    contextMenu.payload.id,
-                                    contextMenu.payload.title,
-                                ),
+                            action: () => void handleOpen(contextMenu.payload),
                         },
                         {
                             label: "Open in New Tab",
@@ -325,16 +371,30 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                                 void handleOpenInNewTab(contextMenu.payload),
                         },
                         { type: "separator" },
+                        ...(contextMenu.payload.kind === "note" ||
+                        contextMenu.payload.kind === undefined
+                            ? [
+                                  {
+                                      label: "Reveal in File Tree",
+                                      action: () =>
+                                          revealNoteInTree(
+                                              contextMenu.payload.id,
+                                          ),
+                                  },
+                              ]
+                            : []),
                         {
-                            label: "Reveal in File Tree",
-                            action: () =>
-                                revealNoteInTree(contextMenu.payload.id),
-                        },
-                        {
-                            label: "Copy Note Path",
+                            label:
+                                contextMenu.payload.kind === "pdf" ||
+                                contextMenu.payload.kind === "file"
+                                    ? "Copy File Path"
+                                    : "Copy Note Path",
                             action: () =>
                                 void navigator.clipboard.writeText(
-                                    contextMenu.payload.id,
+                                    contextMenu.payload.kind === "pdf" ||
+                                        contextMenu.payload.kind === "file"
+                                        ? contextMenu.payload.path
+                                        : contextMenu.payload.id,
                                 ),
                         },
                     ]}

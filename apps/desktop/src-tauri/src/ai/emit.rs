@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use vault_ai_ai::AiSession;
 
@@ -116,10 +116,30 @@ pub struct AiPermissionOptionPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AiFileDiffPayload {
     pub path: String,
-    /// "add" | "delete" | "update"
+    /// "add" | "delete" | "move" | "update"
     pub kind: String,
+    pub previous_path: Option<String>,
+    pub reversible: bool,
+    pub is_text: bool,
     pub old_text: Option<String>,
     pub new_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hunks: Option<Vec<AiFileDiffHunkPayload>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiFileDiffHunkPayload {
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
+    pub lines: Vec<AiFileDiffHunkLinePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiFileDiffHunkLinePayload {
+    pub r#type: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

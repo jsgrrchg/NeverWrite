@@ -1,7 +1,15 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import {
+    canOpenVaultFileEntryInApp,
+    closeOpenTabsForVaultPath,
+    getVaultEntryDisplayName,
+    isImageLikeVaultEntry,
+    moveVaultEntryToTrash,
+    openVaultFileEntry,
+} from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
 import {
@@ -9,9 +17,15 @@ import {
     type NoteDto,
     type VaultEntryDto,
 } from "../../app/store/vaultStore";
-import { useEditorStore } from "../../app/store/editorStore";
 import {
-    buildFolderMoveOperations,
+    useEditorStore,
+    isFileTab,
+    isNoteTab,
+    isPdfTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
+import {
+    buildEntryMovePath,
     buildNoteMoveOperations,
     canMoveFolderToTarget,
     getBaseName,
@@ -23,7 +37,6 @@ import {
     canPasteFolderClipboard,
     readFileTreeClipboard,
     writeFileTreeClipboard,
-    type FileTreeClipboardPayload,
 } from "./fileTreeClipboard";
 import {
     ContextMenu,
@@ -69,19 +82,34 @@ interface TreeMetrics {
     inputFontSize: number;
 }
 
+const TREE_VIEWPORT_SIDE_PADDING_PX = 4;
+const TREE_LAYER_BOX_STYLE = {
+    width: "100%",
+    minWidth: "100%",
+    boxSizing: "border-box" as const,
+};
+const TREE_ROW_BOX_STYLE = {
+    width: "100%",
+    minWidth: 0,
+    boxSizing: "border-box" as const,
+};
+const TREE_LABEL_CLASSNAME =
+    "min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap";
+
 // --- Tree building ---
 
 interface TreeNode {
     name: string;
     children?: Record<string, TreeNode>;
     note?: NoteDto;
-    pdfEntry?: VaultEntryDto;
+    entry?: VaultEntryDto;
 }
 
 type FlatTreeRow =
     | { kind: "folder"; name: string; path: string; depth: number }
     | { kind: "note"; note: NoteDto; path: string; depth: number }
     | { kind: "pdf"; entry: VaultEntryDto; path: string; depth: number }
+    | { kind: "file"; entry: VaultEntryDto; path: string; depth: number }
     | {
           kind: "create";
           mode: "note" | "folder";
@@ -92,7 +120,7 @@ type FlatTreeRow =
 
 function buildTree(
     notes: NoteDto[],
-    pdfEntries: VaultEntryDto[],
+    fileEntries: VaultEntryDto[],
 ): Record<string, TreeNode> {
     const startMs = perfNow();
     const root: Record<string, TreeNode> = {};
@@ -112,14 +140,18 @@ function buildTree(
         }
     }
 
-    for (const entry of pdfEntries) {
-        const parts = entry.id.split("/");
+    for (const entry of fileEntries) {
+        const parts = entry.relative_path.split("/");
         let current = root;
         for (let i = 0; i < parts.length; i++) {
             const part = parts[i];
             if (!current[part]) current[part] = { name: part };
             if (i === parts.length - 1) {
-                current[part].pdfEntry = entry;
+                if (entry.kind === "folder") {
+                    if (!current[part].children) current[part].children = {};
+                } else {
+                    current[part].entry = entry;
+                }
             } else {
                 if (!current[part].children) current[part].children = {};
                 current = current[part].children!;
@@ -129,7 +161,7 @@ function buildTree(
 
     perfMeasure("vault.fileTree.buildTree", startMs, {
         noteCount: notes.length,
-        pdfCount: pdfEntries.length,
+        entryCount: fileEntries.length,
         rootNodeCount: Object.keys(root).length,
     });
     return root;
@@ -207,8 +239,13 @@ function flattenTreeRows(
 
         if (node.note) {
             rows.push({ kind: "note", note: node.note, path, depth });
-        } else if (node.pdfEntry) {
-            rows.push({ kind: "pdf", entry: node.pdfEntry, path, depth });
+        } else if (node.entry) {
+            rows.push({
+                kind: node.entry.kind === "pdf" ? "pdf" : "file",
+                entry: node.entry,
+                path,
+                depth,
+            });
         }
     }
 
@@ -239,26 +276,41 @@ function sortedEntries(
                 return b.name.localeCompare(a.name);
             case "modified_desc":
                 return (
-                    (b.note?.modified_at ?? b.pdfEntry?.modified_at ?? 0) -
-                    (a.note?.modified_at ?? a.pdfEntry?.modified_at ?? 0)
+                    (b.note?.modified_at ?? b.entry?.modified_at ?? 0) -
+                    (a.note?.modified_at ?? a.entry?.modified_at ?? 0)
                 );
             case "modified_asc":
                 return (
-                    (a.note?.modified_at ?? a.pdfEntry?.modified_at ?? 0) -
-                    (b.note?.modified_at ?? b.pdfEntry?.modified_at ?? 0)
+                    (a.note?.modified_at ?? a.entry?.modified_at ?? 0) -
+                    (b.note?.modified_at ?? b.entry?.modified_at ?? 0)
                 );
             case "created_desc":
                 return (
-                    (b.note?.created_at ?? b.pdfEntry?.created_at ?? 0) -
-                    (a.note?.created_at ?? a.pdfEntry?.created_at ?? 0)
+                    (b.note?.created_at ?? b.entry?.created_at ?? 0) -
+                    (a.note?.created_at ?? a.entry?.created_at ?? 0)
                 );
             case "created_asc":
                 return (
-                    (a.note?.created_at ?? a.pdfEntry?.created_at ?? 0) -
-                    (b.note?.created_at ?? b.pdfEntry?.created_at ?? 0)
+                    (a.note?.created_at ?? a.entry?.created_at ?? 0) -
+                    (b.note?.created_at ?? b.entry?.created_at ?? 0)
                 );
         }
     });
+}
+
+function movePathPrefix(
+    path: string,
+    sourcePrefix: string,
+    targetPrefix: string,
+) {
+    if (path === sourcePrefix) return targetPrefix;
+    if (!path.startsWith(`${sourcePrefix}/`)) return path;
+    return `${targetPrefix}/${path.slice(sourcePrefix.length + 1)}`;
+}
+
+function getNoteDisplayName(note: NoteDto, showExtensions: boolean) {
+    if (!showExtensions) return note.title;
+    return note.path.split("/").pop() ?? `${note.title}.md`;
 }
 
 // --- Icons ---
@@ -384,6 +436,67 @@ function PdfIcon({ size = 13 }: { size?: number }) {
             >
                 PDF
             </text>
+        </svg>
+    );
+}
+
+function GenericFileIcon({ size = 13 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            style={{ flexShrink: 0, opacity: 0.58 }}
+        >
+            <path
+                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
+                stroke="currentColor"
+                strokeWidth="1"
+            />
+            <path
+                d="M9.5 1.5V5H13"
+                stroke="currentColor"
+                strokeWidth="0.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+        </svg>
+    );
+}
+
+function ImageFileIcon({ size = 13 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            style={{ flexShrink: 0, opacity: 0.58 }}
+        >
+            <rect
+                x="2"
+                y="2.5"
+                width="12"
+                height="11"
+                rx="1.5"
+                stroke="currentColor"
+                strokeWidth="1"
+            />
+            <circle
+                cx="5.5"
+                cy="5.8"
+                r="1.2"
+                stroke="currentColor"
+                strokeWidth="0.8"
+            />
+            <path
+                d="M2.5 11l3-3.5 2.5 2.5 1.5-1.5 4 3.5"
+                stroke="currentColor"
+                strokeWidth="0.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
         </svg>
     );
 }
@@ -523,7 +636,8 @@ type FileTreeContextPayload =
     | { kind: "folder"; path: string; expanded: boolean }
     | { kind: "note"; note: NoteDto }
     | { kind: "move-note"; note: NoteDto }
-    | { kind: "pdf"; entry: VaultEntryDto };
+    | { kind: "pdf"; entry: VaultEntryDto }
+    | { kind: "file"; entry: VaultEntryDto };
 
 // --- Tree node ---
 
@@ -531,8 +645,10 @@ interface FlatTreeRowViewProps {
     row: FlatTreeRow;
     metrics: TreeMetrics;
     activeNoteId: string | null;
+    activeEntryPath: string | null;
     expandedFolders: Set<string>;
     selectedNoteIds: Set<string>;
+    selectedEntryPaths: Set<string>;
     draggingNoteIds: Set<string>;
     draggingFolderPath: string | null;
     dragOverPath: string | null;
@@ -546,9 +662,18 @@ interface FlatTreeRowViewProps {
     onNoteAuxClick: (note: NoteDto, e: React.MouseEvent) => void;
     onNoteMouseDown: (note: NoteDto, e: React.MouseEvent) => void;
     onNoteContextMenu: (e: React.MouseEvent, note: NoteDto) => void;
-    onPdfClick: (entry: VaultEntryDto) => void;
+    onPdfClick: (
+        entry: VaultEntryDto,
+        modifiers: { cmd: boolean; shift: boolean },
+    ) => void;
     onPdfMouseDown: (entry: VaultEntryDto, e: React.MouseEvent) => void;
     onPdfContextMenu: (e: React.MouseEvent, entry: VaultEntryDto) => void;
+    onFileClick: (
+        entry: VaultEntryDto,
+        modifiers: { cmd: boolean; shift: boolean },
+    ) => void;
+    onFileMouseDown: (entry: VaultEntryDto, e: React.MouseEvent) => void;
+    onFileContextMenu: (e: React.MouseEvent, entry: VaultEntryDto) => void;
     renamingNoteId: string | null;
     creatingMode: "note" | "folder" | null;
     newItemName: string;
@@ -557,6 +682,7 @@ interface FlatTreeRowViewProps {
     onCreateCancel: () => void;
     onRenameConfirm: (note: NoteDto, newName: string) => void;
     onRenameCancel: () => void;
+    showExtensions: boolean;
     stickyTop?: number;
 }
 
@@ -565,8 +691,10 @@ const FlatTreeRowView = memo(
         row,
         metrics,
         activeNoteId,
+        activeEntryPath,
         expandedFolders,
         selectedNoteIds,
+        selectedEntryPaths,
         draggingNoteIds,
         draggingFolderPath,
         dragOverPath,
@@ -580,6 +708,9 @@ const FlatTreeRowView = memo(
         onPdfClick,
         onPdfMouseDown,
         onPdfContextMenu,
+        onFileClick,
+        onFileMouseDown,
+        onFileContextMenu,
         renamingNoteId,
         creatingMode,
         newItemName,
@@ -588,6 +719,7 @@ const FlatTreeRowView = memo(
         onCreateCancel,
         onRenameConfirm,
         onRenameCancel,
+        showExtensions,
         stickyTop,
     }: FlatTreeRowViewProps) {
         const renameInputRef = useRef<HTMLInputElement>(null);
@@ -635,13 +767,13 @@ const FlatTreeRowView = memo(
                     }}
                     data-folder-path={row.path}
                     data-drag-over={isDragOver ? "true" : "false"}
-                    className="file-tree-row flex items-center gap-1.5 min-w-full text-left text-xs rounded whitespace-nowrap"
+                    className="file-tree-row flex items-center gap-1.5 text-left text-xs rounded"
                     style={{
                         paddingLeft,
                         color: "var(--text-secondary)",
                         height: metrics.rowHeight,
                         fontSize: metrics.fontSize,
-                        boxSizing: "border-box",
+                        ...TREE_ROW_BOX_STYLE,
                         backgroundColor: isDragOver
                             ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
                             : stickyTop != null
@@ -661,7 +793,7 @@ const FlatTreeRowView = memo(
                         open={!!isExpanded || isDragOver}
                         size={metrics.mediumIcon}
                     />
-                    <span className="whitespace-nowrap">{row.name}</span>
+                    <span className={TREE_LABEL_CLASSNAME}>{row.name}</span>
                 </button>
             );
         }
@@ -670,13 +802,12 @@ const FlatTreeRowView = memo(
             const createOffset = Math.round(14 * metrics.scale);
             return (
                 <div
-                    className="flex items-center gap-1.5 mx-1 py-0.5"
+                    className="flex items-center gap-1.5 py-0.5"
                     style={{
                         paddingLeft: paddingLeft + createOffset,
-                        width: "calc(100% - 8px)",
                         fontSize: metrics.fontSize,
                         minHeight: metrics.rowHeight,
-                        boxSizing: "border-box",
+                        ...TREE_ROW_BOX_STYLE,
                     }}
                 >
                     {row.mode === "folder" ? (
@@ -712,17 +843,26 @@ const FlatTreeRowView = memo(
 
         if (row.kind === "pdf") {
             const entry = row.entry;
+            const isActive = activeEntryPath === entry.path;
+            const isSelected = selectedEntryPaths.has(entry.path);
             return (
                 <div
                     role="button"
                     tabIndex={0}
                     data-note-id={entry.id}
+                    data-selected={isSelected ? "true" : "false"}
+                    data-active={isActive ? "true" : "false"}
                     onMouseDown={(e) => onPdfMouseDown(entry, e)}
-                    onClick={() => onPdfClick(entry)}
+                    onClick={(e) =>
+                        onPdfClick(entry, {
+                            cmd: e.metaKey || e.ctrlKey,
+                            shift: e.shiftKey,
+                        })
+                    }
                     onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
-                            onPdfClick(entry);
+                            onPdfClick(entry, { cmd: false, shift: false });
                         }
                     }}
                     onContextMenu={(event) => {
@@ -730,18 +870,81 @@ const FlatTreeRowView = memo(
                         event.stopPropagation();
                         onPdfContextMenu(event, entry);
                     }}
-                    className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded mx-1 cursor-pointer whitespace-nowrap"
+                    className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                     style={{
                         paddingLeft: paddingLeft + noteOffset,
-                        minWidth: "calc(100% - 8px)",
+                        backgroundColor: isSelected
+                            ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                            : "transparent",
                         color: "var(--text-primary)",
+                        boxShadow: isActive
+                            ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
+                            : "none",
                         minHeight: metrics.rowHeight,
                         fontSize: metrics.fontSize,
-                        boxSizing: "border-box",
+                        ...TREE_ROW_BOX_STYLE,
                     }}
                 >
                     <PdfIcon size={metrics.smallIcon} />
-                    <span className="whitespace-nowrap">{entry.title}</span>
+                    <span className={TREE_LABEL_CLASSNAME}>
+                        {getVaultEntryDisplayName(entry, showExtensions)}
+                    </span>
+                </div>
+            );
+        }
+
+        if (row.kind === "file") {
+            const entry = row.entry;
+            const isActive = activeEntryPath === entry.path;
+            const isSelected = selectedEntryPaths.has(entry.path);
+            return (
+                <div
+                    role="button"
+                    tabIndex={0}
+                    data-file-path={entry.relative_path}
+                    data-selected={isSelected ? "true" : "false"}
+                    data-active={isActive ? "true" : "false"}
+                    onMouseDown={(e) => onFileMouseDown(entry, e)}
+                    onClick={(e) =>
+                        onFileClick(entry, {
+                            cmd: e.metaKey || e.ctrlKey,
+                            shift: e.shiftKey,
+                        })
+                    }
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onFileClick(entry, { cmd: false, shift: false });
+                        }
+                    }}
+                    onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onFileContextMenu(event, entry);
+                    }}
+                    className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
+                    style={{
+                        paddingLeft: paddingLeft + noteOffset,
+                        backgroundColor: isSelected
+                            ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                            : "transparent",
+                        color: "var(--text-primary)",
+                        boxShadow: isActive
+                            ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
+                            : "none",
+                        minHeight: metrics.rowHeight,
+                        fontSize: metrics.fontSize,
+                        ...TREE_ROW_BOX_STYLE,
+                    }}
+                >
+                    {isImageLikeVaultEntry(entry) ? (
+                        <ImageFileIcon size={metrics.smallIcon} />
+                    ) : (
+                        <GenericFileIcon size={metrics.smallIcon} />
+                    )}
+                    <span className={TREE_LABEL_CLASSNAME}>
+                        {getVaultEntryDisplayName(entry, showExtensions)}
+                    </span>
                 </div>
             );
         }
@@ -754,12 +957,12 @@ const FlatTreeRowView = memo(
         if (isRenaming) {
             return (
                 <div
-                    className="flex items-center gap-1.5 mx-1 py-0.5"
+                    className="flex items-center gap-1.5 py-0.5"
                     style={{
                         paddingLeft: paddingLeft + noteOffset,
-                        width: "calc(100% - 8px)",
                         fontSize: metrics.fontSize,
                         minHeight: metrics.rowHeight,
+                        ...TREE_ROW_BOX_STYLE,
                     }}
                 >
                     <NoteIcon size={metrics.smallIcon} />
@@ -819,10 +1022,9 @@ const FlatTreeRowView = memo(
                     event.stopPropagation();
                     onNoteContextMenu(event, note);
                 }}
-                className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded mx-1 cursor-pointer whitespace-nowrap"
+                className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                 style={{
                     paddingLeft: paddingLeft + noteOffset,
-                    minWidth: "calc(100% - 8px)",
                     backgroundColor: isSelected
                         ? "color-mix(in srgb, var(--accent) 22%, transparent)"
                         : "transparent",
@@ -833,11 +1035,13 @@ const FlatTreeRowView = memo(
                     opacity: isDraggingThis ? 0.4 : 1,
                     minHeight: metrics.rowHeight,
                     fontSize: metrics.fontSize,
-                    boxSizing: "border-box",
+                    ...TREE_ROW_BOX_STYLE,
                 }}
             >
                 <NoteIcon size={metrics.smallIcon} />
-                <span className="whitespace-nowrap">{note.title}</span>
+                <span className={TREE_LABEL_CLASSNAME}>
+                    {getNoteDisplayName(note, showExtensions)}
+                </span>
             </div>
         );
     },
@@ -850,6 +1054,7 @@ const FlatTreeRowView = memo(
         if (prev.renamingNoteId !== next.renamingNoteId) return false;
         if (prev.creatingMode !== next.creatingMode) return false;
         if (prev.newItemName !== next.newItemName) return false;
+        if (prev.showExtensions !== next.showExtensions) return false;
 
         const path = prev.row.path;
 
@@ -873,7 +1078,20 @@ const FlatTreeRowView = memo(
             return true;
         }
 
-        if (prev.row.kind === "pdf") {
+        if (prev.row.kind === "pdf" || prev.row.kind === "file") {
+            const entryPath = prev.row.entry.path;
+            if (
+                (prev.activeEntryPath === entryPath) !==
+                (next.activeEntryPath === entryPath)
+            ) {
+                return false;
+            }
+            if (
+                prev.selectedEntryPaths.has(entryPath) !==
+                next.selectedEntryPaths.has(entryPath)
+            ) {
+                return false;
+            }
             return true;
         }
 
@@ -978,7 +1196,8 @@ interface DragState {
     item:
         | { kind: "notes"; notes: NoteDto[] }
         | { kind: "folder"; path: string }
-        | { kind: "pdf"; entry: VaultEntryDto };
+        | { kind: "pdf"; entry: VaultEntryDto }
+        | { kind: "file"; entry: VaultEntryDto };
     startX: number;
     startY: number;
     active: boolean;
@@ -989,21 +1208,36 @@ interface DragState {
 export function FileTree() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const notes = useVaultStore((s) => s.notes);
-    const entries = useVaultStore((s) => s.entries);
+    const entries = useVaultStore((s) => s.entries ?? []);
     const structureRevision = useVaultStore((s) => s.structureRevision);
     const contentRevision = useVaultStore((s) => s.contentRevision);
     const createNote = useVaultStore((s) => s.createNote);
+    const createFolder = useVaultStore((s) => s.createFolder);
     const deleteNote = useVaultStore((s) => s.deleteNote);
+    const deleteFolder = useVaultStore((s) => s.deleteFolder);
     const renameNote = useVaultStore((s) => s.renameNote);
+    const refreshStructure = useVaultStore((s) => s.refreshStructure);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
-    const activeNoteId = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
-    );
+    const activeNoteId = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return tab && isNoteTab(tab) ? tab.noteId : null;
+    });
+    const activeEntryPath = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        if (tab && (isPdfTab(tab) || isFileTab(tab))) {
+            return tab.path;
+        }
+        return null;
+    });
     const openNote = useEditorStore((s) => s.openNote);
     const closeTab = useEditorStore((s) => s.closeTab);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
+    const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
+    const fileTreeShowExtensions = useSettingsStore(
+        (s) => s.fileTreeShowExtensions,
+    );
 
     const [sortMode, setSortMode] = useState<SortMode>(
         () => (localStorage.getItem(SORT_KEY) as SortMode | null) ?? "name_asc",
@@ -1015,6 +1249,9 @@ export function FileTree() {
         new Set(),
     );
     const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(
+        new Set(),
+    );
+    const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(
         new Set(),
     );
     const [lastClickedNoteId, setLastClickedNoteId] = useState<string | null>(
@@ -1040,7 +1277,7 @@ export function FileTree() {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<FileTreeContextPayload> | null>(null);
     const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
-    const [clipboardVersion, setClipboardVersion] = useState(0);
+    const [, setClipboardVersion] = useState(0);
     const [focusedFolderPath, setFocusedFolderPath] = useState("");
 
     const treeScrollRef = useRef<HTMLDivElement>(null);
@@ -1054,37 +1291,55 @@ export function FileTree() {
     const [viewportHeight, setViewportHeight] = useState(600);
     const [scrollTop, setScrollTop] = useState(0);
 
-    // activeNoteId comes from the targeted store selector above
+    const activeTreePath = useMemo(() => {
+        if (activeNoteId) return activeNoteId;
+        if (!activeEntryPath) return null;
+        return (
+            entries.find((entry) => entry.path === activeEntryPath)
+                ?.relative_path ?? null
+        );
+    }, [activeEntryPath, activeNoteId, entries]);
+
     const visibleSelectedNoteIds = useMemo(() => {
         if (!activeNoteId) return new Set<string>();
         if (selectedNoteIds.size <= 1) return new Set([activeNoteId]);
         return selectedNoteIds;
     }, [activeNoteId, selectedNoteIds]);
+    const visibleSelectedEntryPaths = useMemo(() => {
+        if (!activeEntryPath) return selectedEntryPaths;
+        if (selectedEntryPaths.size <= 1) return new Set([activeEntryPath]);
+        return selectedEntryPaths;
+    }, [activeEntryPath, selectedEntryPaths]);
     const treeRevision =
         sortMode === "modified_desc" || sortMode === "modified_asc"
             ? `${structureRevision}:${contentRevision}`
             : structureRevision;
-    const pdfEntries = useMemo(
-        () => entries.filter((e) => e.kind === "pdf"),
-        [entries],
+    const visibleEntries = useMemo(
+        () =>
+            entries.filter((entry) => {
+                if (entry.kind === "note") return false;
+                if (entry.kind === "folder") return true;
+                if (fileTreeContentMode === "all_files") return true;
+                return entry.kind === "pdf";
+            }),
+        [entries, fileTreeContentMode],
     );
     // Intentionally keyed by revisions instead of the full notes array to avoid
     // rebuilding the folder tree for content-only updates.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     const tree = useMemo(
-        () => buildTree(notes, pdfEntries),
-        // pdfEntries changes only when entries change (infrequent)
+        () => buildTree(notes, visibleEntries),
+        // visibleEntries changes only when entries/settings change
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [treeRevision, pdfEntries],
+        [treeRevision, visibleEntries],
     );
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {
-        if (!revealActive || !activeNoteId) return [];
-        const parts = activeNoteId.split("/");
+        if (!revealActive || !activeTreePath) return [];
+        const parts = activeTreePath.split("/");
         return parts
             .slice(0, -1)
             .map((_, i) => parts.slice(0, i + 1).join("/"));
-    }, [activeNoteId, revealActive]);
+    }, [activeTreePath, revealActive]);
     const visibleExpandedFolders = useMemo(() => {
         if (revealedFolders.length === 0) return expandedFolders;
         // If all revealed folders are already expanded, keep same reference
@@ -1131,10 +1386,7 @@ export function FileTree() {
         ];
     }, [creatingMode, creatingParentPath, flatRows]);
     const canCollapseAll = expandedFolders.size > 0;
-    const treeClipboard = useMemo(
-        () => readFileTreeClipboard(vaultPath),
-        [clipboardVersion, vaultPath],
-    );
+    const treeClipboard = readFileTreeClipboard(vaultPath);
     const treeScale = fileTreeScale / 100;
     const metrics: TreeMetrics = useMemo(
         () => ({
@@ -1328,26 +1580,31 @@ export function FileTree() {
             const container = treeScrollRef.current;
             if (!container) return;
             const rowTop = rowIdx * metrics.rowHeight;
-            const targetScrollTop =
+            const nextScrollTop =
                 rowTop - container.clientHeight / 2 + metrics.rowHeight / 2;
             const maxScrollTop = Math.max(
                 0,
                 totalHeight - container.clientHeight,
             );
-            container.scrollTo({
-                top: Math.min(maxScrollTop, Math.max(0, targetScrollTop)),
-                behavior,
-            });
+            const top = Math.min(maxScrollTop, Math.max(0, nextScrollTop));
+            if (typeof container.scrollTo === "function") {
+                container.scrollTo({ top, behavior });
+                return;
+            }
+            container.scrollTop = top;
         },
         [metrics.rowHeight, totalHeight],
     );
 
-    // Reveal active: scroll to active note using index-based calculation
+    // Reveal active: scroll to the active tree row using index-based calculation
     useEffect(() => {
-        if (!revealActive || !activeNoteId) return;
+        if (!revealActive || !activeTreePath) return;
 
         const rowIdx = displayRows.findIndex(
-            (r) => r.kind === "note" && r.note.id === activeNoteId,
+            (row) =>
+                row.kind !== "folder" &&
+                row.kind !== "create" &&
+                row.path === activeTreePath,
         );
         if (rowIdx === -1) return;
 
@@ -1365,7 +1622,7 @@ export function FileTree() {
         const raf = requestAnimationFrame(() => scrollToRow(rowIdx, "instant"));
         return () => cancelAnimationFrame(raf);
     }, [
-        activeNoteId,
+        activeTreePath,
         revealActive,
         displayRows,
         scrollToRow,
@@ -1441,7 +1698,7 @@ export function FileTree() {
                 movedIds.set(operation.fromId, updated.id);
                 useEditorStore.setState((s) => ({
                     tabs: s.tabs.map((tab) =>
-                        tab.noteId === operation.fromId
+                        isNoteTab(tab) && tab.noteId === operation.fromId
                             ? {
                                   ...tab,
                                   noteId: updated.id,
@@ -1458,6 +1715,195 @@ export function FileTree() {
         [applyMovedIds, renameNote],
     );
 
+    const moveFolder = useCallback(
+        async (folderPath: string, targetFolder: string) => {
+            const folderName = getBaseName(folderPath);
+            const nextFolderPath = targetFolder
+                ? `${targetFolder}/${folderName}`
+                : folderName;
+            const sourceAbsolutePath = vaultPath
+                ? `${vaultPath}/${folderPath}`
+                : folderPath;
+            const nextAbsolutePath = vaultPath
+                ? `${vaultPath}/${nextFolderPath}`
+                : nextFolderPath;
+
+            try {
+                await vaultInvoke("move_folder", {
+                    relativePath: folderPath,
+                    newRelativePath: nextFolderPath,
+                });
+
+                useEditorStore.setState((state) => ({
+                    tabs: state.tabs.map((tab) => {
+                        if (
+                            isNoteTab(tab) &&
+                            (tab.noteId === folderPath ||
+                                tab.noteId.startsWith(`${folderPath}/`))
+                        ) {
+                            return {
+                                ...tab,
+                                noteId: movePathPrefix(
+                                    tab.noteId,
+                                    folderPath,
+                                    nextFolderPath,
+                                ),
+                            };
+                        }
+
+                        if (
+                            isPdfTab(tab) &&
+                            (tab.path === sourceAbsolutePath ||
+                                tab.path.startsWith(`${sourceAbsolutePath}/`))
+                        ) {
+                            return {
+                                ...tab,
+                                entryId: movePathPrefix(
+                                    tab.entryId,
+                                    folderPath,
+                                    nextFolderPath,
+                                ),
+                                path: movePathPrefix(
+                                    tab.path,
+                                    sourceAbsolutePath,
+                                    nextAbsolutePath,
+                                ),
+                            };
+                        }
+
+                        if (
+                            isFileTab(tab) &&
+                            (tab.relativePath === folderPath ||
+                                tab.relativePath.startsWith(`${folderPath}/`))
+                        ) {
+                            const nextRelativePath = movePathPrefix(
+                                tab.relativePath,
+                                folderPath,
+                                nextFolderPath,
+                            );
+                            return {
+                                ...tab,
+                                relativePath: nextRelativePath,
+                                path: movePathPrefix(
+                                    tab.path,
+                                    sourceAbsolutePath,
+                                    nextAbsolutePath,
+                                ),
+                                title:
+                                    nextRelativePath.split("/").pop() ??
+                                    tab.title,
+                            };
+                        }
+
+                        return tab;
+                    }),
+                }));
+
+                setSelectedNoteIds((prev) => {
+                    const next = new Set<string>();
+                    for (const noteId of prev) {
+                        next.add(
+                            movePathPrefix(noteId, folderPath, nextFolderPath),
+                        );
+                    }
+                    return next;
+                });
+                setSelectedEntryPaths((prev) => {
+                    const next = new Set<string>();
+                    for (const entryPath of prev) {
+                        next.add(
+                            movePathPrefix(
+                                entryPath,
+                                sourceAbsolutePath,
+                                nextAbsolutePath,
+                            ),
+                        );
+                    }
+                    return next;
+                });
+                setFocusedFolderPath(nextFolderPath);
+
+                setExpandedFolders((prev) => {
+                    const next = new Set(prev);
+                    for (const path of prev) {
+                        if (
+                            path === folderPath ||
+                            path.startsWith(`${folderPath}/`)
+                        ) {
+                            next.delete(path);
+                            next.add(
+                                movePathPrefix(
+                                    path,
+                                    folderPath,
+                                    nextFolderPath,
+                                ),
+                            );
+                        }
+                    }
+                    return next;
+                });
+
+                await refreshStructure();
+                return nextFolderPath;
+            } catch (error) {
+                console.error("Error moving folder:", error);
+                return null;
+            }
+        },
+        [refreshStructure, vaultPath],
+    );
+
+    const moveVaultEntry = useCallback(
+        async (entry: VaultEntryDto, targetFolder: string) => {
+            const nextRelativePath = buildEntryMovePath(entry, targetFolder);
+            if (!nextRelativePath) return null;
+
+            try {
+                const updated = await vaultInvoke<VaultEntryDto>(
+                    "move_vault_entry",
+                    {
+                        relativePath: entry.relative_path,
+                        newRelativePath: nextRelativePath,
+                    },
+                );
+
+                useEditorStore.setState((state) => ({
+                    tabs: state.tabs.map((tab) => {
+                        if (isPdfTab(tab) && tab.path === entry.path) {
+                            return {
+                                ...tab,
+                                entryId: updated.id,
+                                title: updated.title,
+                                path: updated.path,
+                            };
+                        }
+
+                        if (isFileTab(tab) && tab.path === entry.path) {
+                            return {
+                                ...tab,
+                                relativePath: updated.relative_path,
+                                title: updated.file_name,
+                                path: updated.path,
+                                mimeType: updated.mime_type,
+                            };
+                        }
+
+                        return tab;
+                    }),
+                }));
+
+                setSelectedEntryPaths(new Set([updated.path]));
+                setFocusedFolderPath(getParentPath(updated.relative_path));
+                await useVaultStore.getState().refreshEntries();
+                return updated;
+            } catch (error) {
+                console.error("Error moving vault entry:", error);
+                return null;
+            }
+        },
+        [],
+    );
+
     const getDragTargetFolder = useCallback(
         (item: DragState["item"], hoveredFolder: string | null) => {
             if (hoveredFolder === null) return null;
@@ -1468,7 +1914,11 @@ export function FileTree() {
                     : null;
             }
 
-            if (item.kind === "pdf") return null;
+            if (item.kind === "pdf" || item.kind === "file") {
+                return buildEntryMovePath(item.entry, hoveredFolder) !== null
+                    ? hoveredFolder
+                    : null;
+            }
 
             return buildNoteMoveOperations(item.notes, hoveredFolder).length > 0
                 ? hoveredFolder
@@ -1515,17 +1965,36 @@ export function FileTree() {
                         },
                     });
                 } else if (s.item.kind === "pdf") {
-                    setDragLabel(s.item.entry.title);
+                    setDragLabel(s.item.entry.file_name);
                     emitFileTreeNoteDrag({
                         phase: "start",
                         x: e.clientX,
                         y: e.clientY,
                         notes: [],
-                        files: [{
-                            filePath: s.item.entry.path,
-                            fileName: s.item.entry.title,
-                            mimeType: "application/pdf",
-                        }],
+                        files: [
+                            {
+                                filePath: s.item.entry.path,
+                                fileName: s.item.entry.file_name,
+                                mimeType: "application/pdf",
+                            },
+                        ],
+                    });
+                } else if (s.item.kind === "file") {
+                    setDragLabel(s.item.entry.file_name);
+                    emitFileTreeNoteDrag({
+                        phase: "start",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: s.item.entry.path,
+                                fileName: s.item.entry.file_name,
+                                mimeType:
+                                    s.item.entry.mime_type ??
+                                    "application/octet-stream",
+                            },
+                        ],
                     });
                 } else {
                     setDraggingNoteIds(
@@ -1579,11 +2048,29 @@ export function FileTree() {
                         x: e.clientX,
                         y: e.clientY,
                         notes: [],
-                        files: [{
-                            filePath: s.item.entry.path,
-                            fileName: s.item.entry.title,
-                            mimeType: "application/pdf",
-                        }],
+                        files: [
+                            {
+                                filePath: s.item.entry.path,
+                                fileName: s.item.entry.file_name,
+                                mimeType: "application/pdf",
+                            },
+                        ],
+                    });
+                } else if (s.item.kind === "file") {
+                    emitFileTreeNoteDrag({
+                        phase: "move",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: s.item.entry.path,
+                                fileName: s.item.entry.file_name,
+                                mimeType:
+                                    s.item.entry.mime_type ??
+                                    "application/octet-stream",
+                            },
+                        ],
                     });
                 }
             }
@@ -1634,11 +2121,29 @@ export function FileTree() {
                         x: dragPos.x,
                         y: dragPos.y,
                         notes: [],
-                        files: [{
-                            filePath: s.item.entry.path,
-                            fileName: s.item.entry.title,
-                            mimeType: "application/pdf",
-                        }],
+                        files: [
+                            {
+                                filePath: s.item.entry.path,
+                                fileName: s.item.entry.file_name,
+                                mimeType: "application/pdf",
+                            },
+                        ],
+                    });
+                } else if (s.item.kind === "file") {
+                    emitFileTreeNoteDrag({
+                        phase: "end",
+                        x: dragPos.x,
+                        y: dragPos.y,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: s.item.entry.path,
+                                fileName: s.item.entry.file_name,
+                                mimeType:
+                                    s.item.entry.mime_type ??
+                                    "application/octet-stream",
+                            },
+                        ],
                     });
                 }
             }
@@ -1657,36 +2162,7 @@ export function FileTree() {
             if (folder === null) return;
 
             if (s.item.kind === "folder") {
-                const folderPath = s.item.path;
-                const operations = buildFolderMoveOperations(
-                    useVaultStore.getState().notes,
-                    folderPath,
-                    folder,
-                );
-                const movedIds = await applyMoveOperations(operations);
-                if (movedIds.size === 0) return;
-
-                const folderName = getBaseName(folderPath);
-                const nextFolderPath = folder
-                    ? `${folder}/${folderName}`
-                    : folderName;
-                setExpandedFolders((prev) => {
-                    const next = new Set(prev);
-                    for (const path of prev) {
-                        if (
-                            path === folderPath ||
-                            path.startsWith(`${folderPath}/`)
-                        ) {
-                            next.delete(path);
-                            next.add(
-                                path === folderPath
-                                    ? nextFolderPath
-                                    : `${nextFolderPath}/${path.slice(folderPath.length + 1)}`,
-                            );
-                        }
-                    }
-                    return next;
-                });
+                await moveFolder(s.item.path, folder);
                 return;
             }
 
@@ -1694,8 +2170,12 @@ export function FileTree() {
                 await applyMoveOperations(
                     buildNoteMoveOperations(s.item.notes, folder),
                 );
+                return;
             }
-            // pdf: no folder move in Phase 2
+
+            if (s.item.kind === "pdf" || s.item.kind === "file") {
+                await moveVaultEntry(s.item.entry, folder);
+            }
         };
 
         window.addEventListener("mousemove", onMove);
@@ -1704,7 +2184,14 @@ export function FileTree() {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
         };
-    }, [applyMoveOperations, dragPos, getDragTargetFolder, resetDragState]);
+    }, [
+        applyMoveOperations,
+        dragPos,
+        getDragTargetFolder,
+        moveFolder,
+        moveVaultEntry,
+        resetDragState,
+    ]);
 
     const handleToggleFolder = (path: string) => {
         setExpandedFolders((prev) => {
@@ -1718,6 +2205,8 @@ export function FileTree() {
     const handleFolderClick = useCallback((path: string) => {
         if (wasJustDraggingRef.current) return;
         setFocusedFolderPath(path);
+        setSelectedEntryPaths(new Set());
+        setSelectedNoteIds(new Set());
         handleToggleFolder(path);
     }, []);
 
@@ -1779,10 +2268,25 @@ export function FileTree() {
 
     const openPdf = useEditorStore((s) => s.openPdf);
 
-    const handlePdfClick = useCallback((entry: VaultEntryDto) => {
-        if (wasJustDraggingRef.current) return;
-        openPdf(entry.id, entry.title, entry.path);
-    }, [openPdf]);
+    const handlePdfClick = useCallback(
+        (entry: VaultEntryDto, modifiers: { cmd: boolean; shift: boolean }) => {
+            if (wasJustDraggingRef.current) return;
+            setFocusedFolderPath(getParentPath(entry.relative_path));
+            setSelectedNoteIds(new Set());
+            if (modifiers.cmd) {
+                setSelectedEntryPaths((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(entry.path)) next.delete(entry.path);
+                    else next.add(entry.path);
+                    return next;
+                });
+                return;
+            }
+            setSelectedEntryPaths(new Set([entry.path]));
+            openPdf(entry.id, entry.title, entry.path);
+        },
+        [openPdf],
+    );
 
     const handlePdfMouseDown = useCallback(
         (entry: VaultEntryDto, e: React.MouseEvent) => {
@@ -1801,14 +2305,112 @@ export function FileTree() {
     const handlePdfContextMenu = useCallback(
         (e: React.MouseEvent, entry: VaultEntryDto) => {
             e.preventDefault();
+            setFocusedFolderPath(getParentPath(entry.relative_path));
+            setSelectedNoteIds(new Set());
+            const preserveSelection =
+                selectedEntryPaths.size > 1 &&
+                selectedEntryPaths.has(entry.path);
+            if (!preserveSelection) {
+                setSelectedEntryPaths(new Set([entry.path]));
+            }
             setContextMenu({
                 x: e.clientX,
                 y: e.clientY,
                 payload: { kind: "pdf", entry },
             });
         },
+        [selectedEntryPaths],
+    );
+
+    const handleOpenPdfInNewTab = useCallback(
+        (entry: VaultEntryDto) => {
+            insertExternalTab({
+                id: crypto.randomUUID(),
+                kind: "pdf",
+                entryId: entry.id,
+                title: entry.title,
+                path: entry.path,
+                page: 1,
+                zoom: 1,
+                viewMode: "continuous",
+            });
+        },
+        [insertExternalTab],
+    );
+
+    const handleFileClick = useCallback(
+        (entry: VaultEntryDto, modifiers: { cmd: boolean; shift: boolean }) => {
+            if (wasJustDraggingRef.current) return;
+            setFocusedFolderPath(getParentPath(entry.relative_path));
+            setSelectedNoteIds(new Set());
+            if (modifiers.cmd) {
+                setSelectedEntryPaths((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(entry.path)) next.delete(entry.path);
+                    else next.add(entry.path);
+                    return next;
+                });
+                return;
+            }
+            setSelectedEntryPaths(new Set([entry.path]));
+            void openVaultFileEntry(entry);
+        },
         [],
     );
+
+    const handleFileMouseDown = useCallback(
+        (entry: VaultEntryDto, e: React.MouseEvent) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            dragStateRef.current = {
+                item: { kind: "file", entry },
+                startX: e.clientX,
+                startY: e.clientY,
+                active: false,
+            };
+        },
+        [],
+    );
+
+    const handleFileContextMenu = useCallback(
+        (e: React.MouseEvent, entry: VaultEntryDto) => {
+            e.preventDefault();
+            setFocusedFolderPath(getParentPath(entry.relative_path));
+            setSelectedNoteIds(new Set());
+            const preserveSelection =
+                selectedEntryPaths.size > 1 &&
+                selectedEntryPaths.has(entry.path);
+            if (!preserveSelection) {
+                setSelectedEntryPaths(new Set([entry.path]));
+            }
+            setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                payload: { kind: "file", entry },
+            });
+        },
+        [selectedEntryPaths],
+    );
+
+    const handleMoveEntryToTrash = useCallback(async (entry: VaultEntryDto) => {
+        const approved = await confirm(`Move "${entry.file_name}" to Trash?`, {
+            title: "Move File to Trash",
+            kind: "warning",
+        });
+        if (!approved) return;
+
+        try {
+            await moveVaultEntryToTrash(entry.relative_path);
+            closeOpenTabsForVaultPath(entry.path);
+            await useVaultStore.getState().refreshEntries();
+        } catch (error) {
+            console.error("Error moving vault entry to trash:", error);
+        }
+    }, []);
+
+    const clearEntrySelection = useCallback(() => {
+        setSelectedEntryPaths(new Set());
+    }, []);
 
     const handleAddPdfToChat = useCallback((entry: VaultEntryDto) => {
         emitFileTreeNoteDrag({
@@ -1816,11 +2418,29 @@ export function FileTree() {
             x: 0,
             y: 0,
             notes: [],
-            files: [{
-                filePath: entry.path,
-                fileName: entry.title,
-                mimeType: "application/pdf",
-            }],
+            files: [
+                {
+                    filePath: entry.path,
+                    fileName: entry.file_name,
+                    mimeType: "application/pdf",
+                },
+            ],
+        });
+    }, []);
+
+    const handleAddFileToChat = useCallback((entry: VaultEntryDto) => {
+        emitFileTreeNoteDrag({
+            phase: "attach",
+            x: 0,
+            y: 0,
+            notes: [],
+            files: [
+                {
+                    filePath: entry.path,
+                    fileName: entry.file_name,
+                    mimeType: entry.mime_type ?? "application/octet-stream",
+                },
+            ],
         });
     }, []);
 
@@ -1833,7 +2453,10 @@ export function FileTree() {
     const openTreeNote = useCallback(
         async (note: NoteDto) => {
             const { tabs: currentTabs } = useEditorStore.getState();
-            const existing = currentTabs.find((tab) => tab.noteId === note.id);
+            const existing = currentTabs.find(
+                (tab): tab is NoteTab =>
+                    isNoteTab(tab) && tab.noteId === note.id,
+            );
             if (existing) {
                 openNote(note.id, note.title, existing.content);
                 return;
@@ -1853,7 +2476,8 @@ export function FileTree() {
             try {
                 const { tabs: currentTabs } = useEditorStore.getState();
                 const existing = currentTabs.find(
-                    (tab) => tab.noteId === note.id,
+                    (tab): tab is NoteTab =>
+                        isNoteTab(tab) && tab.noteId === note.id,
                 );
                 const content =
                     existing?.content ??
@@ -1878,6 +2502,7 @@ export function FileTree() {
     ) => {
         if (wasJustDraggingRef.current) return;
         setFocusedFolderPath(getParentPath(note.id));
+        clearEntrySelection();
 
         if (modifiers.cmd) {
             setSelectedNoteIds((prev) => {
@@ -1935,6 +2560,7 @@ export function FileTree() {
     const handleNoteContextMenu = (e: React.MouseEvent, note: NoteDto) => {
         e.preventDefault();
         setFocusedFolderPath(getParentPath(note.id));
+        clearEntrySelection();
 
         const preserveSelection =
             selectedNoteIds.size > 1 && selectedNoteIds.has(note.id);
@@ -1954,6 +2580,8 @@ export function FileTree() {
     const handleFolderContextMenu = (e: React.MouseEvent, path: string) => {
         e.preventDefault();
         setFocusedFolderPath(path);
+        clearEntrySelection();
+        setSelectedNoteIds(new Set());
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -1968,6 +2596,8 @@ export function FileTree() {
     const handleBlankContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         setFocusedFolderPath("");
+        clearEntrySelection();
+        setSelectedNoteIds(new Set());
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -2024,7 +2654,10 @@ export function FileTree() {
     const persistCopiedNote = useCallback(
         async (note: NoteDto, targetPath: string) => {
             const { tabs: currentTabs } = useEditorStore.getState();
-            const existing = currentTabs.find((tab) => tab.noteId === note.id);
+            const existing = currentTabs.find(
+                (tab): tab is NoteTab =>
+                    isNoteTab(tab) && tab.noteId === note.id,
+            );
             const content =
                 existing?.content ?? (await readNoteContent(note.id)).content;
             const created = await createNote(targetPath);
@@ -2082,34 +2715,34 @@ export function FileTree() {
             if (!canPasteFolderClipboard(clipboard, targetFolder)) {
                 return;
             }
-
-            const sourcePrefix = `${clipboard.folderPath}/`;
-            const notesToCopy = currentNotes
-                .filter((note) => note.id.startsWith(sourcePrefix))
-                .sort((left, right) => left.id.localeCompare(right.id));
-            if (notesToCopy.length === 0) return;
-
+            const reservedFolderPaths = new Set([
+                ...allFolderPaths,
+                ...currentNotes.map((note) => note.id),
+            ]);
             const rootFolderPath = buildCopiedFolderPath(
                 clipboard.folderPath,
                 targetFolder,
-                reservedNoteIds,
+                reservedFolderPaths,
             );
-            setExpandedFolders((prev) => {
-                const next = new Set(prev);
-                if (targetFolder) next.add(targetFolder);
-                next.add(rootFolderPath);
-                return next;
-            });
 
-            for (const note of notesToCopy) {
-                const suffix = note.id.slice(sourcePrefix.length);
-                const nextPath = `${rootFolderPath}/${suffix}`;
-                const created = await persistCopiedNote(note, nextPath);
-                if (!created) continue;
-                reservedNoteIds.add(created.id);
+            try {
+                await vaultInvoke("copy_folder", {
+                    relativePath: clipboard.folderPath,
+                    newRelativePath: rootFolderPath,
+                });
+                setExpandedFolders((prev) => {
+                    const next = new Set(prev);
+                    if (targetFolder) next.add(targetFolder);
+                    next.add(rootFolderPath);
+                    return next;
+                });
+                setFocusedFolderPath(rootFolderPath);
+                await refreshStructure();
+            } catch (error) {
+                console.error("Error copying folder:", error);
             }
         },
-        [persistCopiedNote, vaultPath],
+        [allFolderPaths, refreshStructure, persistCopiedNote, vaultPath],
     );
 
     const startCreating = useCallback(
@@ -2141,25 +2774,15 @@ export function FileTree() {
 
         if (mode === "folder") {
             const folderPath = parentPath ? `${parentPath}/${name}` : name;
-            const { notes: currentNotes } = useVaultStore.getState();
-            let noteName = "Untitled";
-            let i = 1;
-            while (
-                currentNotes.some(
-                    (note) => note.id === `${folderPath}/${noteName}.md`,
-                )
-            ) {
-                noteName = `Untitled ${i++}`;
-            }
-            const note = await createNote(`${folderPath}/${noteName}`);
-            if (note) {
-                openNote(note.id, note.title, "");
+            const folder = await createFolder(folderPath);
+            if (folder) {
                 setExpandedFolders((prev) => {
                     const next = new Set(prev);
                     if (parentPath) next.add(parentPath);
                     next.add(folderPath);
                     return next;
                 });
+                setFocusedFolderPath(folder.relative_path);
             }
             return;
         }
@@ -2185,7 +2808,7 @@ export function FileTree() {
         if (updated) {
             useEditorStore.setState((s) => ({
                 tabs: s.tabs.map((t) =>
-                    t.noteId === note.id
+                    isNoteTab(t) && t.noteId === note.id
                         ? { ...t, noteId: updated.id, title: updated.title }
                         : t,
                 ),
@@ -2199,7 +2822,7 @@ export function FileTree() {
 
             const { tabs: currentTabs } = useEditorStore.getState();
             currentTabs.forEach((tab) => {
-                if (noteIds.has(tab.noteId)) {
+                if (isNoteTab(tab) && noteIds.has(tab.noteId)) {
                     closeTab(tab.id);
                 }
             });
@@ -2218,6 +2841,89 @@ export function FileTree() {
             );
         },
         [closeTab, deleteNote],
+    );
+
+    const handleDeleteFolder = useCallback(
+        async (relativePath: string, folderName: string) => {
+            const approved = await confirm(
+                `Delete folder "${folderName}" and all its contents?`,
+                { title: "Delete Folder", kind: "warning" },
+            );
+            if (!approved) return;
+
+            const { tabs: currentTabs } = useEditorStore.getState();
+            const prefix = relativePath + "/";
+            const sourceAbsolutePath = vaultPath
+                ? `${vaultPath}/${relativePath}`
+                : relativePath;
+            currentTabs.forEach((tab) => {
+                if (
+                    isNoteTab(tab) &&
+                    (tab.noteId === relativePath ||
+                        tab.noteId.startsWith(prefix))
+                ) {
+                    closeTab(tab.id);
+                    return;
+                }
+
+                if (
+                    isPdfTab(tab) &&
+                    (tab.entryId === relativePath ||
+                        tab.entryId.startsWith(prefix) ||
+                        tab.path === sourceAbsolutePath ||
+                        tab.path.startsWith(`${sourceAbsolutePath}/`))
+                ) {
+                    closeTab(tab.id);
+                    return;
+                }
+
+                if (
+                    isFileTab(tab) &&
+                    (tab.relativePath === relativePath ||
+                        tab.relativePath.startsWith(prefix) ||
+                        tab.path === sourceAbsolutePath ||
+                        tab.path.startsWith(`${sourceAbsolutePath}/`))
+                ) {
+                    closeTab(tab.id);
+                }
+            });
+
+            try {
+                await deleteFolder(relativePath);
+                setSelectedEntryPaths((prev) => {
+                    const next = new Set(prev);
+                    next.forEach((entryPath) => {
+                        if (
+                            entryPath === sourceAbsolutePath ||
+                            entryPath.startsWith(`${sourceAbsolutePath}/`)
+                        ) {
+                            next.delete(entryPath);
+                        }
+                    });
+                    return next;
+                });
+                setFocusedFolderPath((prev) =>
+                    prev === relativePath || prev.startsWith(`${relativePath}/`)
+                        ? getParentPath(relativePath)
+                        : prev,
+                );
+                setExpandedFolders((prev) => {
+                    const next = new Set(prev);
+                    next.forEach((path) => {
+                        if (
+                            path === relativePath ||
+                            path.startsWith(`${relativePath}/`)
+                        ) {
+                            next.delete(path);
+                        }
+                    });
+                    return next;
+                });
+            } catch (error) {
+                console.error("Error deleting folder:", error);
+            }
+        },
+        [closeTab, deleteFolder, vaultPath],
     );
 
     const handleDuplicateNote = useCallback(
@@ -2245,7 +2951,8 @@ export function FileTree() {
             try {
                 const { tabs: currentTabs } = useEditorStore.getState();
                 const existing = currentTabs.find(
-                    (tab) => tab.noteId === note.id,
+                    (tab): tab is NoteTab =>
+                        isNoteTab(tab) && tab.noteId === note.id,
                 );
                 const content =
                     existing?.content ??
@@ -2386,6 +3093,7 @@ export function FileTree() {
                 ];
             case "folder": {
                 const { path, expanded } = contextMenu.payload;
+                const folderName = path.split("/").pop() ?? path;
                 return [
                     {
                         label: "New Note Here",
@@ -2420,6 +3128,12 @@ export function FileTree() {
                     {
                         label: "Copy Folder Path",
                         action: () => void navigator.clipboard.writeText(path),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Delete Folder",
+                        action: () => void handleDeleteFolder(path, folderName),
+                        danger: true,
                     },
                 ];
             }
@@ -2501,6 +3215,19 @@ export function FileTree() {
                 const { entry } = contextMenu.payload;
                 return [
                     {
+                        label: "Open",
+                        action: () =>
+                            handlePdfClick(entry, {
+                                cmd: false,
+                                shift: false,
+                            }),
+                    },
+                    {
+                        label: "Open in New Tab",
+                        action: () => handleOpenPdfInNewTab(entry),
+                    },
+                    { type: "separator" },
+                    {
                         label: "Open Externally",
                         action: () => void openPath(entry.path),
                     },
@@ -2515,8 +3242,57 @@ export function FileTree() {
                     },
                     { type: "separator" },
                     {
+                        label: "Move File to Trash",
+                        action: () => void handleMoveEntryToTrash(entry),
+                        danger: true,
+                    },
+                    { type: "separator" },
+                    {
                         label: "Add to Chat",
                         action: () => handleAddPdfToChat(entry),
+                    },
+                ];
+            }
+            case "file": {
+                const { entry } = contextMenu.payload;
+                const canOpenInApp = canOpenVaultFileEntryInApp(entry);
+                return [
+                    {
+                        label: "Open",
+                        action: () => void openVaultFileEntry(entry),
+                    },
+                    {
+                        label: "Open in New Tab",
+                        action: () =>
+                            void openVaultFileEntry(entry, { newTab: true }),
+                        disabled: !canOpenInApp,
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Open Externally",
+                        action: () => void openPath(entry.path),
+                    },
+                    {
+                        label: "Reveal in Finder",
+                        action: () => void revealItemInDir(entry.path),
+                    },
+                    {
+                        label: "Copy Path",
+                        action: () =>
+                            void navigator.clipboard.writeText(
+                                entry.relative_path,
+                            ),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Move File to Trash",
+                        action: () => void handleMoveEntryToTrash(entry),
+                        danger: true,
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Add to Chat",
+                        action: () => handleAddFileToChat(entry),
                     },
                 ];
             }
@@ -2575,8 +3351,13 @@ export function FileTree() {
         handleCopyFolder,
         handleCopyNotes,
         handleDelete,
+        handleDeleteFolder,
         handleDuplicateNote,
+        handleAddFileToChat,
         handleAddPdfToChat,
+        handleMoveEntryToTrash,
+        handlePdfClick,
+        handleOpenPdfInNewTab,
         handleOpenNoteInNewTab,
         handlePasteIntoFolder,
         handleRevealFolderInFinder,
@@ -2631,7 +3412,8 @@ export function FileTree() {
     const pdfClickRef = useRef(handlePdfClick);
     pdfClickRef.current = handlePdfClick;
     const stablePdfClick = useCallback(
-        (entry: VaultEntryDto) => pdfClickRef.current(entry),
+        (entry: VaultEntryDto, modifiers: { cmd: boolean; shift: boolean }) =>
+            pdfClickRef.current(entry, modifiers),
         [],
     );
 
@@ -2648,6 +3430,30 @@ export function FileTree() {
     const stablePdfContextMenu = useCallback(
         (e: React.MouseEvent, entry: VaultEntryDto) =>
             pdfContextMenuRef.current(e, entry),
+        [],
+    );
+
+    const fileClickRef = useRef(handleFileClick);
+    fileClickRef.current = handleFileClick;
+    const stableFileClick = useCallback(
+        (entry: VaultEntryDto, modifiers: { cmd: boolean; shift: boolean }) =>
+            fileClickRef.current(entry, modifiers),
+        [],
+    );
+
+    const fileMouseDownRef = useRef(handleFileMouseDown);
+    fileMouseDownRef.current = handleFileMouseDown;
+    const stableFileMouseDown = useCallback(
+        (entry: VaultEntryDto, e: React.MouseEvent) =>
+            fileMouseDownRef.current(entry, e),
+        [],
+    );
+
+    const fileContextMenuRef = useRef(handleFileContextMenu);
+    fileContextMenuRef.current = handleFileContextMenu;
+    const stableFileContextMenu = useCallback(
+        (e: React.MouseEvent, entry: VaultEntryDto) =>
+            fileContextMenuRef.current(e, entry),
         [],
     );
 
@@ -2806,8 +3612,9 @@ export function FileTree() {
             {/* Tree (virtualized) */}
             <div
                 ref={treeScrollRef}
+                data-testid="file-tree-viewport"
                 data-folder-path=""
-                className="flex-1 overflow-auto px-1"
+                className="flex-1 overflow-auto"
                 tabIndex={0}
                 onScroll={handleTreeScroll}
                 onKeyDown={handleTreeKeyDown}
@@ -2826,6 +3633,8 @@ export function FileTree() {
                             ? "1px solid color-mix(in srgb, var(--accent) 50%, transparent)"
                             : "none",
                     outlineOffset: dragOverPath === "" ? -1 : 0,
+                    paddingInline: TREE_VIEWPORT_SIDE_PADDING_PX,
+                    boxSizing: "border-box",
                 }}
             >
                 {displayRows.length === 0 ? (
@@ -2843,12 +3652,14 @@ export function FileTree() {
                         {/* Sticky folder overlay */}
                         {stickyFolders.length > 0 && (
                             <div
+                                data-testid="file-tree-sticky-layer"
                                 style={{
                                     position: "sticky",
                                     top: 0,
                                     height: 0,
                                     zIndex: 10,
                                     overflow: "visible",
+                                    ...TREE_LAYER_BOX_STYLE,
                                 }}
                             >
                                 {stickyFolders.map(({ row, top }) => (
@@ -2858,7 +3669,7 @@ export function FileTree() {
                                             position: "absolute",
                                             top,
                                             left: 0,
-                                            minWidth: "100%",
+                                            ...TREE_LAYER_BOX_STYLE,
                                             zIndex: 20 - row.depth,
                                         }}
                                     >
@@ -2867,11 +3678,15 @@ export function FileTree() {
                                             stickyTop={0}
                                             metrics={metrics}
                                             activeNoteId={activeNoteId}
+                                            activeEntryPath={activeEntryPath}
                                             expandedFolders={
                                                 visibleExpandedFolders
                                             }
                                             selectedNoteIds={
                                                 visibleSelectedNoteIds
+                                            }
+                                            selectedEntryPaths={
+                                                visibleSelectedEntryPaths
                                             }
                                             draggingNoteIds={draggingNoteIds}
                                             draggingFolderPath={
@@ -2898,6 +3713,13 @@ export function FileTree() {
                                             onPdfContextMenu={
                                                 stablePdfContextMenu
                                             }
+                                            onFileClick={stableFileClick}
+                                            onFileMouseDown={
+                                                stableFileMouseDown
+                                            }
+                                            onFileContextMenu={
+                                                stableFileContextMenu
+                                            }
                                             renamingNoteId={renamingNoteId}
                                             creatingMode={creatingMode}
                                             newItemName={newItemName}
@@ -2910,6 +3732,9 @@ export function FileTree() {
                                                 stableRenameConfirm
                                             }
                                             onRenameCancel={handleRenameCancel}
+                                            showExtensions={
+                                                fileTreeShowExtensions
+                                            }
                                         />
                                     </div>
                                 ))}
@@ -2917,18 +3742,20 @@ export function FileTree() {
                         )}
                         {/* Virtualized rows */}
                         <div
+                            data-testid="file-tree-virtual-canvas"
                             style={{
                                 height: totalHeight,
                                 position: "relative",
-                                minWidth: "fit-content",
+                                ...TREE_LAYER_BOX_STYLE,
                             }}
                         >
                             <div
+                                data-testid="file-tree-rows-layer"
                                 style={{
                                     position: "absolute",
                                     top: offsetY,
                                     left: 0,
-                                    minWidth: "100%",
+                                    ...TREE_LAYER_BOX_STYLE,
                                 }}
                             >
                                 {visibleRows.map((row) => {
@@ -2937,7 +3764,10 @@ export function FileTree() {
                                             ? `folder:${row.path}`
                                             : row.kind === "note"
                                               ? `note:${row.note.id}`
-                                              : `create:${row.path}`;
+                                              : row.kind === "pdf" ||
+                                                  row.kind === "file"
+                                                ? `${row.kind}:${row.entry.relative_path}`
+                                                : `create:${row.path}`;
                                     if (
                                         row.kind === "folder" &&
                                         stickyFolderPaths.has(row.path)
@@ -2958,11 +3788,15 @@ export function FileTree() {
                                             row={row}
                                             metrics={metrics}
                                             activeNoteId={activeNoteId}
+                                            activeEntryPath={activeEntryPath}
                                             expandedFolders={
                                                 visibleExpandedFolders
                                             }
                                             selectedNoteIds={
                                                 visibleSelectedNoteIds
+                                            }
+                                            selectedEntryPaths={
+                                                visibleSelectedEntryPaths
                                             }
                                             draggingNoteIds={draggingNoteIds}
                                             draggingFolderPath={
@@ -2989,6 +3823,13 @@ export function FileTree() {
                                             onPdfContextMenu={
                                                 stablePdfContextMenu
                                             }
+                                            onFileClick={stableFileClick}
+                                            onFileMouseDown={
+                                                stableFileMouseDown
+                                            }
+                                            onFileContextMenu={
+                                                stableFileContextMenu
+                                            }
                                             renamingNoteId={renamingNoteId}
                                             creatingMode={creatingMode}
                                             newItemName={newItemName}
@@ -3001,6 +3842,9 @@ export function FileTree() {
                                                 stableRenameConfirm
                                             }
                                             onRenameCancel={handleRenameCancel}
+                                            showExtensions={
+                                                fileTreeShowExtensions
+                                            }
                                         />
                                     );
                                 })}

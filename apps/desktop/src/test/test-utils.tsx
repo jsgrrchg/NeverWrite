@@ -7,7 +7,11 @@ import {
     type Command,
 } from "../features/command-palette/store/commandStore";
 import { useEditorStore, type TabInput } from "../app/store/editorStore";
-import { useVaultStore, type NoteDto } from "../app/store/vaultStore";
+import {
+    useVaultStore,
+    type NoteDto,
+    type VaultEntryDto,
+} from "../app/store/vaultStore";
 
 export function renderComponent(ui: ReactElement) {
     return render(ui);
@@ -22,7 +26,7 @@ export function setEditorTabs(
     activeTabId: string | null = tabs[0]?.id ?? null,
 ) {
     const fullTabs = tabs.map((t) =>
-        t.kind === "pdf"
+        t.kind === "pdf" || t.kind === "file" || !("noteId" in t)
             ? t
             : { ...t, history: t.history ?? [], historyIndex: t.historyIndex ?? 0 },
     );
@@ -30,7 +34,24 @@ export function setEditorTabs(
 }
 
 export function setVaultNotes(notes: NoteDto[], vaultPath = "/vault") {
-    useVaultStore.setState({ notes, vaultPath });
+    useVaultStore.setState((state) => ({
+        notes,
+        vaultPath,
+        vaultRevision: state.vaultRevision + 1,
+        structureRevision: state.structureRevision + 1,
+    }));
+}
+
+export function setVaultEntries(
+    entries: VaultEntryDto[],
+    vaultPath = "/vault",
+) {
+    useVaultStore.setState((state) => ({
+        entries,
+        vaultPath,
+        vaultRevision: state.vaultRevision + 1,
+        structureRevision: state.structureRevision + 1,
+    }));
 }
 
 export function setCommands(

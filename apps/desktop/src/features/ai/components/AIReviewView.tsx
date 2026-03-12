@@ -1,0 +1,308 @@
+import { useMemo } from "react";
+import {
+    useEditorStore,
+    isReviewTab,
+    type ReviewTab,
+} from "../../../app/store/editorStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
+import { EditedFilesReviewList } from "./EditedFilesReviewList";
+import {
+    getAccentButtonStyle,
+    getDangerButtonStyle,
+    getNeutralButtonStyle,
+    getStatChipStyle,
+} from "./editedFilesReviewStyles";
+import {
+    deriveReviewItems,
+    deriveReviewSummary,
+} from "./editedFilesPresentationModel";
+import { useEditedFilesReviewExpansion } from "./useEditedFilesReviewExpansion";
+import { formatDiffStat } from "../diff/reviewDiff";
+import { useChatStore } from "../store/chatStore";
+import { selectVisibleEditedFilesBuffer } from "../store/editedFilesBufferModel";
+import { canOpenAiEditedFileEntry } from "./chatFileNavigation";
+
+/* ------------------------------------------------------------------ */
+/*  Empty state                                                        */
+/* ------------------------------------------------------------------ */
+
+function ReviewEmptyState() {
+    return (
+        <div
+            className="flex h-full flex-col items-center justify-center"
+            style={{ backgroundColor: "var(--bg-primary)" }}
+        >
+            <div
+                className="flex flex-col items-center gap-4 rounded-2xl px-10 py-12"
+                style={{
+                    backgroundColor: "var(--bg-secondary)",
+                    border: "1px solid var(--border)",
+                    boxShadow: "var(--shadow-soft)",
+                    maxWidth: 380,
+                }}
+            >
+                <div
+                    className="flex items-center justify-center rounded-xl"
+                    style={{
+                        width: 48,
+                        height: 48,
+                        backgroundColor:
+                            "color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary))",
+                    }}
+                >
+                    <svg
+                        width="24"
+                        height="24"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="var(--accent)"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <path d="M9 12l2 2 4-4" />
+                        <circle cx="12" cy="12" r="10" />
+                    </svg>
+                </div>
+                <div className="flex flex-col items-center gap-1 text-center">
+                    <div
+                        style={{
+                            fontSize: "0.92em",
+                            fontWeight: 600,
+                            color: "var(--text-primary)",
+                        }}
+                    >
+                        No pending AI edits
+                    </div>
+                    <div
+                        style={{
+                            fontSize: "0.8em",
+                            color: "var(--text-secondary)",
+                            lineHeight: 1.5,
+                        }}
+                    >
+                        All changes have been resolved.
+                        <br />
+                        New edits will appear here automatically.
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Stat chips row                                                     */
+/* ------------------------------------------------------------------ */
+
+function StatChips({
+    summary,
+}: {
+    summary: {
+        fileCount: number;
+        additions: number;
+        deletions: number;
+        approximate: boolean;
+        conflictCount: number;
+    };
+}) {
+    return (
+        <div className="flex flex-wrap items-center gap-1.5">
+            <span style={getStatChipStyle()}>
+                {summary.fileCount} {summary.fileCount === 1 ? "file" : "files"}
+            </span>
+            {summary.additions > 0 && (
+                <span style={getStatChipStyle("var(--diff-add)")}>
+                    +{formatDiffStat(summary.additions, summary.approximate)}
+                </span>
+            )}
+            {summary.deletions > 0 && (
+                <span style={getStatChipStyle("var(--diff-remove)")}>
+                    -{formatDiffStat(summary.deletions, summary.approximate)}
+                </span>
+            )}
+            {summary.conflictCount > 0 && (
+                <span style={getStatChipStyle("var(--diff-warn)")}>
+                    {summary.conflictCount}{" "}
+                    {summary.conflictCount === 1 ? "conflict" : "conflicts"}
+                </span>
+            )}
+        </div>
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Root                                                               */
+/* ------------------------------------------------------------------ */
+
+export function AIReviewView() {
+    const tab = useEditorStore((state) => {
+        const current = state.tabs.find(
+            (candidate) => candidate.id === state.activeTabId,
+        );
+        return current && isReviewTab(current) ? current : null;
+    });
+
+    if (!tab) {
+        return (
+            <div
+                className="flex h-full items-center justify-center"
+                style={{ color: "var(--text-secondary)" }}
+            >
+                No review tab active
+            </div>
+        );
+    }
+
+    return <ReviewContent tab={tab} />;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main content                                                       */
+/* ------------------------------------------------------------------ */
+
+function ReviewContent({ tab }: { tab: ReviewTab }) {
+    const visibleEntries = useChatStore((state) =>
+        selectVisibleEditedFilesBuffer(state, tab.sessionId),
+    );
+    const rejectEditedFile = useChatStore((state) => state.rejectEditedFile);
+    const keepEditedFile = useChatStore((state) => state.keepEditedFile);
+    const resolveEditedFileWithMergedText = useChatStore(
+        (state) => state.resolveEditedFileWithMergedText,
+    );
+    const rejectAllEditedFiles = useChatStore(
+        (state) => state.rejectAllEditedFiles,
+    );
+    const keepAllEditedFiles = useChatStore(
+        (state) => state.keepAllEditedFiles,
+    );
+    const editDiffZoom = useChatStore((state) => state.editDiffZoom);
+    const entries = useVaultStore((state) => state.entries);
+
+    const openablePathSet = useMemo(
+        () =>
+            new Set(
+                entries
+                    .filter((entry) => canOpenAiEditedFileEntry(entry))
+                    .map((entry) => entry.path),
+            ),
+        [entries],
+    );
+
+    const items = useMemo(
+        () => deriveReviewItems(visibleEntries, openablePathSet),
+        [visibleEntries, openablePathSet],
+    );
+    const summary = useMemo(() => deriveReviewSummary(items), [items]);
+    const rejectableCount = items.filter((item) => item.canReject).length;
+    const expansion = useEditedFilesReviewExpansion(items);
+
+    if (items.length === 0) {
+        return <ReviewEmptyState />;
+    }
+
+    return (
+        <div
+            className="flex h-full flex-col overflow-hidden"
+            style={{ backgroundColor: "var(--bg-primary)" }}
+        >
+            {/* ---- Header ---- */}
+            <div
+                className="shrink-0 px-6 py-3"
+                style={{
+                    backgroundColor: "var(--bg-secondary)",
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
+                }}
+            >
+                <div className="mx-auto w-full max-w-3xl">
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <h1
+                                className="text-sm font-semibold"
+                                style={{ color: "var(--text-primary)" }}
+                            >
+                                Pending Changes
+                            </h1>
+                            <StatChips summary={summary} />
+                        </div>
+
+                        {/* Global actions */}
+                        <div className="flex shrink-0 items-center gap-1.5">
+                            <button
+                                type="button"
+                                onClick={
+                                    expansion.allExpanded
+                                        ? expansion.collapseAll
+                                        : expansion.expandAll
+                                }
+                                className="rounded-md px-2 py-1 text-xs"
+                                style={{
+                                    fontWeight: 500,
+                                    ...getNeutralButtonStyle(),
+                                }}
+                            >
+                                {expansion.allExpanded ? "Collapse" : "Expand"}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    void rejectAllEditedFiles(tab.sessionId)
+                                }
+                                disabled={rejectableCount === 0}
+                                className="rounded-md px-2 py-1 text-xs"
+                                style={{
+                                    fontWeight: 600,
+                                    ...getDangerButtonStyle(
+                                        rejectableCount === 0,
+                                    ),
+                                }}
+                            >
+                                Reject All
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    keepAllEditedFiles(tab.sessionId)
+                                }
+                                className="rounded-md px-2.5 py-1 text-xs"
+                                style={{
+                                    fontWeight: 600,
+                                    ...getAccentButtonStyle(),
+                                }}
+                            >
+                                Keep All
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* ---- Scrollable file list ---- */}
+            <div className="flex-1 overflow-auto px-6 py-4">
+                <div className="mx-auto flex w-full max-w-3xl flex-col gap-2.5">
+                    <EditedFilesReviewList
+                        items={items}
+                        variant="full"
+                        diffZoom={editDiffZoom}
+                        expandedKeys={expansion.expandedKeys}
+                        onToggleItem={expansion.toggleFile}
+                        onKeepItem={(identityKey) =>
+                            keepEditedFile(tab.sessionId, identityKey)
+                        }
+                        onRejectItem={(identityKey) =>
+                            void rejectEditedFile(tab.sessionId, identityKey)
+                        }
+                        onResolveHunks={(identityKey, mergedText) =>
+                            void resolveEditedFileWithMergedText(
+                                tab.sessionId,
+                                identityKey,
+                                mergedText,
+                            )
+                        }
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}

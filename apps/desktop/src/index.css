@@ -31,6 +31,13 @@
         var(--text-secondary) 38%,
         transparent
     );
+
+    /* Diff semantic colors — muted for light backgrounds */
+    --diff-add: #15803d;
+    --diff-remove: #b91c1c;
+    --diff-update: #1d4ed8;
+    --diff-warn: #92400e;
+    --diff-move: #a16207;
 }
 
 .dark {
@@ -45,6 +52,13 @@
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
     --highlight-bg: rgba(202, 162, 0, 0.35);
     --highlight-text: #f5e082;
+
+    /* Diff semantic colors — softer for dark backgrounds */
+    --diff-add: #4ade80;
+    --diff-remove: #f87171;
+    --diff-update: #60a5fa;
+    --diff-warn: #fbbf24;
+    --diff-move: #fcd34d;
 }
 
 * {
@@ -60,7 +74,8 @@ body {
 .cm-editor .cm-content,
 input,
 textarea,
-[data-selectable="true"] {
+[data-selectable="true"],
+[data-selectable="true"] * {
     user-select: text;
     -webkit-user-select: text;
 }
@@ -139,6 +154,89 @@ body.resizing-composer * {
 body.dragging-tab,
 body.dragging-tab * {
     user-select: none !important;
+}
+
+.pdf-page-shell {
+    position: relative;
+    display: inline-block;
+    line-height: 0;
+}
+
+.pdf-page-shell canvas {
+    display: block;
+}
+
+.pdf-page-shell .textLayer {
+    color-scheme: only light;
+    position: absolute;
+    inset: 0;
+    overflow: clip;
+    opacity: 1;
+    line-height: 1;
+    -webkit-text-size-adjust: none;
+    -moz-text-size-adjust: none;
+    text-size-adjust: none;
+    forced-color-adjust: none;
+    transform-origin: 0 0;
+    caret-color: CanvasText;
+    z-index: 1;
+    --min-font-size: 1;
+    --text-scale-factor: calc(
+        var(--scale-factor, 1) * var(--user-unit, 1) * var(--min-font-size)
+    );
+    --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.pdf-page-shell .textLayer :is(span, br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0 0;
+}
+
+.pdf-page-shell .textLayer > :not(.markedContent),
+.pdf-page-shell .textLayer .markedContent span:not(.markedContent) {
+    z-index: 1;
+    --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1;
+    --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x))
+        scale(var(--min-font-size-inv));
+}
+
+.pdf-page-shell .textLayer .markedContent {
+    display: contents;
+}
+
+.pdf-page-shell .textLayer span[role="img"] {
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+}
+
+.pdf-page-shell .textLayer ::selection {
+    background: color-mix(in srgb, AccentColor, transparent 75%);
+}
+
+.pdf-page-shell .textLayer ::-moz-selection {
+    background: color-mix(in srgb, AccentColor, transparent 75%);
+}
+
+.pdf-page-shell .textLayer br::selection,
+.pdf-page-shell .textLayer br::-moz-selection {
+    background: transparent;
+}
+
+.pdf-page-shell .textLayer .endOfContent {
+    display: block;
+    position: absolute;
+    inset: 100% 0 0;
+    z-index: 0;
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 [data-scrollbar-active="true"] {

@@ -51,8 +51,11 @@ pub struct ProposedNewNoteDto {
 pub struct VaultEntryDto {
     pub id: String,
     pub path: String,
+    pub relative_path: String,
     pub title: String,
-    pub kind: String, // "note" | "pdf"
+    pub file_name: String,
+    pub extension: String,
+    pub kind: String, // "note" | "pdf" | "file" | "folder"
     pub modified_at: u64,
     pub created_at: u64,
     pub size: u64,
@@ -84,6 +87,8 @@ pub struct SearchResultDto {
     pub id: String,
     pub path: String,
     pub title: String,
+    #[serde(default = "default_note_kind")]
+    pub kind: String,
     pub score: f64,
 }
 

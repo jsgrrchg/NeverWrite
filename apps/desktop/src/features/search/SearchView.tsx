@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { parseQuery } from "./queryParser";
 import { toAdvancedSearchParams } from "./queryToParams";
 import { QueryBuilder, Dropdown, type DropdownOption } from "./QueryBuilder";
@@ -10,6 +16,7 @@ import {
     removeFromSearchHistory,
     clearSearchHistory,
 } from "./searchHistory";
+import { openVaultFileEntry } from "../../app/utils/vaultEntries";
 
 interface ContentMatchDto {
     line_number: number;
@@ -70,6 +77,8 @@ export function SearchView() {
     const openNote = useEditorStore((s) => s.openNote);
     const openPdf = useEditorStore((s) => s.openPdf);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
+    const entries = useVaultStore((s) => s.entries);
+    const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
 
     const parsed = useMemo(() => parseQuery(query), [query]);
 
@@ -139,8 +148,16 @@ export function SearchView() {
             openPdf(result.id, result.title, result.path);
             return;
         }
+        if (result.kind === "file") {
+            const entry = entries.find((item) => item.path === result.path);
+            if (!entry) return;
+            await openVaultFileEntry(entry);
+            return;
+        }
         const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find((t) => t.noteId === result.id);
+        const existing = tabs.find(
+            (t): t is NoteTab => isNoteTab(t) && t.noteId === result.id,
+        );
         if (existing) {
             openNote(result.id, result.title, existing.content);
             return;
@@ -160,9 +177,17 @@ export function SearchView() {
             openPdf(result.id, result.title, result.path);
             return;
         }
+        if (result.kind === "file") {
+            const entry = entries.find((item) => item.path === result.path);
+            if (!entry) return;
+            await openVaultFileEntry(entry, { newTab: true });
+            return;
+        }
         try {
             const tabs = useEditorStore.getState().tabs;
-            const existing = tabs.find((t) => t.noteId === result.id);
+            const existing = tabs.find(
+                (t): t is NoteTab => isNoteTab(t) && t.noteId === result.id,
+            );
             const content =
                 existing?.content ??
                 (
@@ -199,7 +224,11 @@ export function SearchView() {
 
     const handleCopyResults = () => {
         const text = results
-            .map((r) => `- [[${r.title}]] — ${r.id}`)
+            .map((r) =>
+                r.kind === "file" || r.kind === "pdf"
+                    ? `- ${r.path}`
+                    : `- [[${r.title}]] — ${r.id}`,
+            )
             .join("\n");
         void navigator.clipboard.writeText(text);
     };
@@ -256,7 +285,7 @@ export function SearchView() {
                     <input
                         ref={inputRef}
                         type="text"
-                        placeholder="Search notes... (e.g. tag:project content:react)"
+                        placeholder="Search files and notes... (e.g. tag:project content:react)"
                         value={query}
                         onChange={(e) => handleQueryChange(e.target.value)}
                         className="flex-1 bg-transparent text-[13px] outline-none"
@@ -579,13 +608,34 @@ export function SearchView() {
                                                     <text x="4.5" y="12.5" fontSize="5" fill="var(--accent)" stroke="none" fontWeight="bold">PDF</text>
                                                 </svg>
                                             )}
+                                            {r.kind === "file" && (
+                                                <svg
+                                                    width="14"
+                                                    height="14"
+                                                    viewBox="0 0 16 16"
+                                                    fill="none"
+                                                    stroke="var(--text-secondary)"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    className="shrink-0"
+                                                >
+                                                    <path d="M4 1h6l4 4v9a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1z" />
+                                                    <path d="M10 1v4h4" />
+                                                </svg>
+                                            )}
                                             <span
                                                 className="text-[13px] font-medium truncate"
                                                 style={{
                                                     color: "var(--text-primary)",
                                                 }}
                                             >
-                                                {r.title}
+                                                {showExtensions &&
+                                                (r.kind === "pdf" ||
+                                                    r.kind === "file")
+                                                    ? (r.path.split("/").pop() ??
+                                                        r.title)
+                                                    : r.title}
                                             </span>
                                             {r.modified_at > 0 && (
                                                 <span
@@ -606,7 +656,11 @@ export function SearchView() {
                                                     color: "var(--text-secondary)",
                                                 }}
                                             >
-                                                {r.id}
+                                                {r.kind === "pdf" ||
+                                                r.kind === "file"
+                                                    ? (r.path.split("/vault/").pop() ??
+                                                        r.path)
+                                                    : r.id}
                                             </span>
                                             {r.tags.length > 0 && (
                                                 <span className="flex gap-1 shrink-0">

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+    EDITOR_FONT_FAMILY_OPTIONS,
     useSettingsStore,
     type EditorFontFamily,
 } from "../../app/store/settingsStore";
@@ -737,20 +738,7 @@ function EditorSettings() {
                 control={
                     <SelectField
                         value={editorFontFamily}
-                        options={[
-                            { value: "system", label: "System" },
-                            { value: "sans", label: "Sans" },
-                            { value: "serif", label: "Serif" },
-                            { value: "reading", label: "Reading" },
-                            { value: "rounded", label: "Rounded" },
-                            { value: "humanist", label: "Humanist" },
-                            { value: "newspaper", label: "Newspaper" },
-                            { value: "slab", label: "Slab" },
-                            { value: "typewriter", label: "Typewriter" },
-                            { value: "courier", label: "Courier New" },
-                            { value: "condensed", label: "Condensed" },
-                            { value: "mono", label: "Monospace" },
-                        ]}
+                        options={EDITOR_FONT_FAMILY_OPTIONS}
                         onChange={(v) =>
                             setSetting(
                                 "editorFontFamily",
@@ -1031,6 +1019,47 @@ function VaultSettings() {
     );
 }
 
+function DevelopersSettings() {
+    const {
+        fileTreeContentMode,
+        fileTreeShowExtensions,
+        setSetting,
+    } = useSettingsStore();
+
+    return (
+        <div>
+            <SectionLabel>File Tree</SectionLabel>
+            <Row
+                label="Show all vault files"
+                description="Display every file in the vault tree, not only Markdown notes and PDFs."
+                control={
+                    <Toggle
+                        value={fileTreeContentMode === "all_files"}
+                        onChange={(value) =>
+                            setSetting(
+                                "fileTreeContentMode",
+                                value ? "all_files" : "notes_only",
+                            )
+                        }
+                    />
+                }
+            />
+            <Row
+                label="Show file extensions"
+                description="Display full file names with their extensions in the vault tree."
+                control={
+                    <Toggle
+                        value={fileTreeShowExtensions}
+                        onChange={(value) =>
+                            setSetting("fileTreeShowExtensions", value)
+                        }
+                    />
+                }
+            />
+        </div>
+    );
+}
+
 const SHORTCUTS: { label: string; shortcut: string; category: string }[] = [
     { category: "Navigation", label: "Command Palette", shortcut: "⌘K" },
     { category: "Navigation", label: "Quick Switcher", shortcut: "⌘O" },
@@ -1107,9 +1136,13 @@ function AISettings() {
         (s) => s.toggleRequireCmdEnterToSend,
     );
     const composerFontSize = useChatStore((s) => s.composerFontSize);
+    const composerFontFamily = useChatStore((s) => s.composerFontFamily);
     const setComposerFontSize = useChatStore((s) => s.setComposerFontSize);
+    const setComposerFontFamily = useChatStore((s) => s.setComposerFontFamily);
     const chatFontSize = useChatStore((s) => s.chatFontSize);
+    const chatFontFamily = useChatStore((s) => s.chatFontFamily);
     const setChatFontSize = useChatStore((s) => s.setChatFontSize);
+    const setChatFontFamily = useChatStore((s) => s.setChatFontFamily);
     const historyRetentionDays = useChatStore((s) => s.historyRetentionDays);
     const setHistoryRetentionDays = useChatStore(
         (s) => s.setHistoryRetentionDays,
@@ -1129,6 +1162,19 @@ function AISettings() {
                 }
             />
             <SectionLabel>Chat</SectionLabel>
+            <Row
+                label="Chat font family"
+                description="Font used for messages in the chat."
+                control={
+                    <SelectField
+                        value={chatFontFamily}
+                        options={EDITOR_FONT_FAMILY_OPTIONS}
+                        onChange={(value) =>
+                            setChatFontFamily(value as EditorFontFamily)
+                        }
+                    />
+                }
+            />
             <Row
                 label="Chat font size"
                 description="Font size of messages in the chat, in pixels."
@@ -1169,6 +1215,19 @@ function AISettings() {
                     <Toggle
                         value={requireCmdEnterToSend}
                         onChange={() => toggleRequireCmdEnterToSend()}
+                    />
+                }
+            />
+            <Row
+                label="Composer font family"
+                description="Font used in the message input box."
+                control={
+                    <SelectField
+                        value={composerFontFamily}
+                        options={EDITOR_FONT_FAMILY_OPTIONS}
+                        onChange={(value) =>
+                            setComposerFontFamily(value as EditorFontFamily)
+                        }
                     />
                 }
             />
@@ -1451,6 +1510,7 @@ type Category =
     | "general"
     | "appearance"
     | "editor"
+    | "developers"
     | "vault"
     | "shortcuts"
     | "ai";
@@ -1507,6 +1567,21 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
                     stroke="currentColor"
                     strokeWidth="1.2"
                     strokeLinecap="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "developers",
+        label: "Developers",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M6 4 2.5 8 6 12M10 4l3.5 4-3.5 4M9 2.5 7 13.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                 />
             </svg>
         ),
@@ -1585,6 +1660,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     general: "Saving, startup, and general behavior",
     appearance: "Themes and visual preferences",
     editor: "Typography and text editing behavior",
+    developers: "Advanced developer-facing file tree options",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
     ai: "AI assistant preferences",
@@ -1868,6 +1944,7 @@ export function SettingsPanel({
                         {active === "general" && <GeneralSettings />}
                         {active === "appearance" && <AppearanceSettings />}
                         {active === "editor" && <EditorSettings />}
+                        {active === "developers" && <DevelopersSettings />}
                         {active === "vault" && <VaultSettings />}
                         {active === "shortcuts" && <ShortcutsSettings />}
                         {active === "ai" && <AISettings />}

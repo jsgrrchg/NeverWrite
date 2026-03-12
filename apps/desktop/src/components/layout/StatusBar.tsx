@@ -1,6 +1,6 @@
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useThemeStore } from "../../app/store/themeStore";
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 import { useShallow } from "zustand/react/shallow";
 
 export function StatusBar() {
@@ -13,7 +13,14 @@ export function StatusBar() {
             const tab = s.tabs.find((t) => t.id === s.activeTabId);
             return {
                 activeTabTitle: tab?.title ?? null,
-                activeTabNoteId: tab?.noteId ?? null,
+                activeTabNoteId:
+                    tab?.kind === "file"
+                        ? tab.relativePath
+                        : tab?.kind === "pdf"
+                          ? tab.path
+                          : tab && isNoteTab(tab)
+                            ? tab.noteId
+                            : null,
             };
         }),
     );

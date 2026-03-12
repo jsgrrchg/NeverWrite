@@ -1,36 +1,49 @@
-import { vaultInvoke } from "../../../app/utils/vaultInvoke";
-import { memo, useState, type ReactElement } from "react";
+import {
+    memo,
+    useMemo,
+    useState,
+    type MouseEvent,
+    type ReactElement,
+} from "react";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../../components/context-menu/ContextMenu";
 import type { AIChatMessage, AIFileDiff } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
-import { useEditorStore } from "../../../app/store/editorStore";
+import { useChatStore } from "../store/chatStore";
+import {
+    DIFF_ZOOM_MAX,
+    DIFF_ZOOM_MIN,
+    DIFF_ZOOM_STEP,
+    computeDiffStats,
+    computeFileDiffStats,
+    formatDiffStat,
+    getFileNameFromPath,
+    stepDiffZoom,
+} from "../diff/reviewDiff";
+import { EditedFileDiffPreview } from "./editedFilesPresentation";
+import {
+    openChatNoteByAbsolutePath,
+    openChatNoteByReference,
+} from "./chatNoteNavigation";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
-function openNoteByAbsolutePath(absPath: string) {
-    const notes = useVaultStore.getState().notes;
-    const note = notes.find((n) => n.path === absPath);
-    if (!note) return;
+interface UserMentionContextMenuPayload {
+    label: string;
+}
 
-    const { tabs, openNote } = useEditorStore.getState();
-    const existing = tabs.find((t) => t.noteId === note.id);
-    if (existing) {
-        openNote(note.id, note.title, existing.content);
-        return;
-    }
-    void vaultInvoke<{ content: string }>("read_note", { noteId: note.id })
-        .then((detail) => {
-            useEditorStore
-                .getState()
-                .openNote(note.id, note.title, detail.content);
-        })
-        .catch((e) => console.error("Error opening note:", e));
+interface ToolTargetContextMenuPayload {
+    target: string;
 }
 
 /** Parse @mentions and @fetch in serialized user messages into styled pills. */
 function renderUserContent(
     text: string,
     pillMetrics: ChatPillMetrics,
+    onNoteContextMenu: (event: MouseEvent<HTMLElement>, label: string) => void,
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
     // Match @fetch, @📁FolderName, @NoteName, or /plan
@@ -62,13 +75,27 @@ function renderUserContent(
         const isFetch = label === "fetch";
         const isFolder = label.startsWith("📁");
         const displayLabel = isFolder ? label.replace(/^📁\s*/u, "") : label;
+        const isNoteMention = !isFetch && !isFolder;
 
         parts.push(
             <ChatInlinePill
                 key={key++}
                 label={isFetch ? "@fetch" : displayLabel}
                 metrics={pillMetrics}
+                interactive={isNoteMention}
                 variant={isFetch ? "success" : isFolder ? "folder" : "accent"}
+                onClick={
+                    isNoteMention
+                        ? () => {
+                              void openChatNoteByReference(displayLabel);
+                          }
+                        : undefined
+                }
+                onContextMenu={
+                    isNoteMention
+                        ? (event) => onNoteContextMenu(event, displayLabel)
+                        : undefined
+                }
             />,
         );
 
@@ -82,9 +109,61 @@ function renderUserContent(
     return parts;
 }
 
+function UserTextMessage({
+    message,
+    pillMetrics,
+}: {
+    message: AIChatMessage;
+    pillMetrics: ChatPillMetrics;
+}) {
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<UserMentionContextMenuPayload> | null>(null);
+
+    return (
+        <div
+            className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
+            style={{
+                color: "var(--text-primary)",
+                backgroundColor: "var(--bg-tertiary)",
+                border: "1px solid var(--border)",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+        >
+            {renderUserContent(message.content, pillMetrics, (event, label) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    payload: { label },
+                });
+            })}
+            {contextMenu ? (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open in New Tab",
+                            action: () => {
+                                void openChatNoteByReference(
+                                    contextMenu.payload.label,
+                                    { newTab: true },
+                                );
+                            },
+                        },
+                    ]}
+                />
+            ) : null}
+        </div>
+    );
+}
+
 interface AIChatMessageItemProps {
     message: AIChatMessage;
     pillMetrics: ChatPillMetrics;
+    visibleWorkCycleId?: string | null;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
     onUserInputResponse?: (
         requestId: string,
@@ -94,6 +173,21 @@ interface AIChatMessageItemProps {
 
 function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
+}
+
+function shouldShowDiffReview(
+    message: AIChatMessage,
+    visibleWorkCycleId?: string | null,
+) {
+    if (!message.diffs?.length) {
+        return false;
+    }
+
+    if (!visibleWorkCycleId || !message.workCycleId) {
+        return true;
+    }
+
+    return message.workCycleId === visibleWorkCycleId;
 }
 
 function ThinkingMessage({ message }: { message: AIChatMessage }) {
@@ -226,8 +320,14 @@ function ToolIcon({ kind }: { kind?: string }) {
 /** Compact card for file-mutating tools (edit, delete, move). */
 function FileToolMessage({ message }: { message: AIChatMessage }) {
     const [expanded, setExpanded] = useState(false);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
+    const notes = useVaultStore((state) => state.notes);
     const toolKind = String(message.meta?.tool ?? "edit");
     const target = message.meta?.target ? String(message.meta.target) : null;
+    const canOpenTarget = target
+        ? notes.some((note) => note.path === target)
+        : false;
     const shortTarget = target?.split("/").pop() ?? null;
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
@@ -320,19 +420,32 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                         color: target ? "var(--accent)" : "var(--text-primary)",
                         fontSize: "0.83em",
                         fontWeight: 500,
-                        cursor: target ? "pointer" : "default",
+                        cursor: canOpenTarget ? "pointer" : "default",
                         textDecoration: "none",
                     }}
                     onClick={
-                        target
+                        canOpenTarget && target
                             ? (e) => {
                                   e.stopPropagation();
-                                  openNoteByAbsolutePath(target);
+                                  void openChatNoteByAbsolutePath(target);
+                              }
+                            : undefined
+                    }
+                    onContextMenu={
+                        canOpenTarget && target
+                            ? (event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  setContextMenu({
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                      payload: { target },
+                                  });
                               }
                             : undefined
                     }
                     onMouseEnter={
-                        target
+                        canOpenTarget
                             ? (e) => {
                                   (
                                       e.currentTarget as HTMLElement
@@ -341,7 +454,7 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                             : undefined
                     }
                     onMouseLeave={
-                        target
+                        canOpenTarget
                             ? (e) => {
                                   (
                                       e.currentTarget as HTMLElement
@@ -417,11 +530,34 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                     </pre>
                 </div>
             )}
+            {contextMenu ? (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open in New Tab",
+                            action: () => {
+                                void openChatNoteByReference(
+                                    contextMenu.payload.target,
+                                    { newTab: true },
+                                );
+                            },
+                        },
+                    ]}
+                />
+            ) : null}
         </div>
     );
 }
 
-function ToolMessage({ message }: { message: AIChatMessage }) {
+function ToolMessage({
+    message,
+    showDiffReview = true,
+}: {
+    message: AIChatMessage;
+    showDiffReview?: boolean;
+}) {
     const [expanded, setExpanded] = useState(false);
     const toolKind = String(message.meta?.tool ?? "");
     const target = message.meta?.target ? String(message.meta.target) : null;
@@ -431,7 +567,7 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
 
-    if (message.diffs && message.diffs.length > 0) {
+    if (showDiffReview && message.diffs && message.diffs.length > 0) {
         return <ChangeReviewPanel message={message} />;
     }
 
@@ -544,11 +680,11 @@ function PlanMessage({
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            className="min-w-0 max-w-full overflow-hidden rounded-xl"
             style={{
-                border: "1px solid var(--border)",
+                border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
                 backgroundColor:
-                    "color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-tertiary))",
+                    "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
             }}
         >
             <button
@@ -556,7 +692,7 @@ function PlanMessage({
                 onClick={() => {
                     if (canExpand) setExpanded((value) => !value);
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left"
+                className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left"
                 aria-expanded={expanded}
                 style={{
                     backgroundColor: "transparent",
@@ -564,31 +700,23 @@ function PlanMessage({
                     cursor: canExpand ? "pointer" : "default",
                 }}
             >
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                <span
+                    className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
                     style={{
                         color: "var(--text-secondary)",
-                        flexShrink: 0,
-                        opacity: 0.78,
-                        transform:
-                            canExpand && expanded ? "rotate(90deg)" : "none",
-                        transition: "transform 0.14s ease",
+                        backgroundColor:
+                            "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                        fontWeight: 500,
                     }}
                 >
-                    <path d="M4 2.5L7.5 6L4 9.5" />
-                </svg>
+                    {canExpand ? (expanded ? "▾" : "▸") : "•"}
+                </span>
                 <span
                     className="min-w-0 flex-1 font-medium"
                     style={{
-                        color: "var(--text-primary)",
-                        fontSize: "0.84em",
+                        color: "var(--text-secondary)",
+                        fontSize: "0.875rem",
                     }}
                 >
                     {message.title ?? "Plan"}
@@ -597,7 +725,6 @@ function PlanMessage({
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: "0.76em",
-                        opacity: 0.78,
                     }}
                 >
                     {statusLabel}
@@ -606,10 +733,11 @@ function PlanMessage({
 
             {expanded && detail ? (
                 <div
-                    className="mx-3 mb-2 rounded-md px-2.5 py-2"
+                    className="mx-2.5 mb-1.5 rounded-md px-2 py-1.5"
                     style={{
-                        backgroundColor: "var(--bg-primary)",
-                        border: "1px solid var(--border)",
+                        backgroundColor:
+                            "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
                     }}
                 >
                     <div
@@ -631,7 +759,8 @@ function PlanMessage({
                 <div
                     className="flex flex-col"
                     style={{
-                        borderTop: "1px solid var(--border)",
+                        borderTop:
+                            "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
                     }}
                 >
                     {entries.map((entry, index) => {
@@ -640,10 +769,12 @@ function PlanMessage({
                         return (
                             <div
                                 key={`${entry.content}:${index}`}
-                                className="flex min-w-0 items-start gap-2 px-3 py-2"
+                                className="flex min-w-0 items-start gap-2.5 px-2.5 py-1.5"
                                 style={{
                                     borderTop:
-                                        index === 0 ? "none" : "1px solid var(--border)",
+                                        index === 0
+                                            ? "none"
+                                            : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
                                     color: isCompleted
                                         ? "var(--text-secondary)"
                                         : "var(--text-primary)",
@@ -651,27 +782,16 @@ function PlanMessage({
                                 }}
                             >
                                 <span
-                                    className="mt-[2px] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
+                                    className="mt-[3px] inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
                                     style={{
                                         backgroundColor: isCompleted
-                                            ? "color-mix(in srgb, #84cc16 18%, transparent)"
-                                            : isActive
-                                              ? "color-mix(in srgb, var(--accent) 18%, transparent)"
-                                              : "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
-                                        color: isCompleted
                                             ? "#84cc16"
                                             : isActive
                                               ? "var(--accent)"
                                               : "var(--text-secondary)",
-                                        fontSize: "0.7em",
+                                        opacity: isCompleted ? 0.9 : 0.8,
                                     }}
-                                >
-                                    {isCompleted
-                                        ? "✓"
-                                        : isActive
-                                          ? "•"
-                                          : ""}
-                                </span>
+                                />
                                 <div className="min-w-0 flex-1">
                                     <div
                                         style={{
@@ -692,7 +812,7 @@ function PlanMessage({
                 </div>
             ) : expanded && !detail ? (
                 <div
-                    className="px-3 pb-2"
+                    className="px-2.5 pb-1.5"
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: "0.8em",
@@ -704,7 +824,7 @@ function PlanMessage({
 
             {expanded && entries.length > 0 ? (
                 <div
-                    className="px-3 pb-2 pt-1"
+                    className="px-2.5 pb-1.5 pt-0.5"
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: "0.74em",
@@ -718,6 +838,16 @@ function PlanMessage({
     );
 }
 
+function formatElapsedMs(ms: number) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+    if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+    return `${seconds}s`;
+}
+
 function StatusMessage({ message }: { message: AIChatMessage }) {
     const statusKind = String(message.meta?.status_event ?? "status");
     const status = String(message.meta?.status ?? "");
@@ -727,26 +857,49 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
         message.content && message.content !== title ? message.content : null;
 
     if (statusKind === "turn_started") {
+        const elapsedMs =
+            typeof message.meta?.elapsed_ms === "number"
+                ? message.meta.elapsed_ms
+                : null;
         return (
-            <div className="flex min-w-0 max-w-full items-center gap-3 py-2">
-                <div
-                    className="h-px flex-1"
-                    style={{ backgroundColor: "var(--border)", opacity: 0.5 }}
-                />
-                <span
-                    className="shrink-0 uppercase tracking-[0.14em]"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: "0.68em",
-                        opacity: 0.7,
-                    }}
-                >
-                    {title}
-                </span>
-                <div
-                    className="h-px flex-1"
-                    style={{ backgroundColor: "var(--border)", opacity: 0.5 }}
-                />
+            <div className="min-w-0 max-w-full py-2">
+                <div className="flex min-w-0 max-w-full items-center gap-3">
+                    <div
+                        className="h-px flex-1"
+                        style={{
+                            backgroundColor: "var(--border)",
+                            opacity: 0.5,
+                        }}
+                    />
+                    <span
+                        className="shrink-0 uppercase tracking-[0.14em]"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.68em",
+                            opacity: 0.7,
+                        }}
+                    >
+                        {title}
+                    </span>
+                    {elapsedMs != null ? (
+                        <span
+                            style={{
+                                color: "var(--text-secondary)",
+                                fontSize: "0.66em",
+                                opacity: 0.55,
+                            }}
+                        >
+                            {formatElapsedMs(elapsedMs)}
+                        </span>
+                    ) : null}
+                    <div
+                        className="h-px flex-1"
+                        style={{
+                            backgroundColor: "var(--border)",
+                            opacity: 0.5,
+                        }}
+                    />
+                </div>
             </div>
         );
     }
@@ -891,177 +1044,146 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Diff Preview (for permission cards with file changes)
-// ---------------------------------------------------------------------------
+function ChangeReviewFileRow({
+    diff,
+    accent,
+    expanded,
+    onToggle,
+    diffZoom,
+}: {
+    diff: AIFileDiff;
+    accent: string;
+    expanded: boolean;
+    onToggle: () => void;
+    diffZoom: number;
+}) {
+    const filename = getFileNameFromPath(diff.path);
+    const previousFilename = diff.previous_path
+        ? getFileNameFromPath(diff.previous_path)
+        : diff.previous_path;
+    const stats = useMemo(() => computeFileDiffStats(diff), [diff]);
 
-interface DiffLine {
-    type: "add" | "remove" | "context" | "separator";
-    prefix: string;
-    text: string;
-}
-
-function simpleDiff(oldLines: string[], newLines: string[]): DiffLine[] {
-    const MAX = 500;
-    const a = oldLines.slice(0, MAX);
-    const b = newLines.slice(0, MAX);
-    const m = a.length;
-    const n = b.length;
-
-    // LCS table
-    const dp: number[][] = Array.from({ length: m + 1 }, () =>
-        new Array<number>(n + 1).fill(0),
-    );
-    for (let i = 1; i <= m; i++) {
-        for (let j = 1; j <= n; j++) {
-            dp[i][j] =
-                a[i - 1] === b[j - 1]
-                    ? dp[i - 1][j - 1] + 1
-                    : Math.max(dp[i - 1][j], dp[i][j - 1]);
-        }
-    }
-
-    // Backtrack
-    const stack: DiffLine[] = [];
-    let i = m;
-    let j = n;
-    while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-            stack.push({ type: "context", prefix: "  ", text: a[i - 1] });
-            i--;
-            j--;
-        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-            stack.push({ type: "add", prefix: "+ ", text: b[j - 1] });
-            j--;
-        } else {
-            stack.push({ type: "remove", prefix: "- ", text: a[i - 1] });
-            i--;
-        }
-    }
-    stack.reverse();
-
-    // Only show lines near changes (3 lines of context)
-    const CTX = 3;
-    const near = new Set<number>();
-    for (let idx = 0; idx < stack.length; idx++) {
-        if (stack[idx].type !== "context") {
-            for (
-                let k = Math.max(0, idx - CTX);
-                k <= Math.min(stack.length - 1, idx + CTX);
-                k++
-            ) {
-                near.add(k);
-            }
-        }
-    }
-
-    const result: DiffLine[] = [];
-    let last = -1;
-    for (let idx = 0; idx < stack.length; idx++) {
-        if (near.has(idx)) {
-            if (last >= 0 && idx - last > 1) {
-                result.push({
-                    type: "separator",
-                    prefix: "",
-                    text: "···",
-                });
-            }
-            result.push(stack[idx]);
-            last = idx;
-        }
-    }
-
-    if (oldLines.length > MAX || newLines.length > MAX) {
-        result.push({
-            type: "separator",
-            prefix: "",
-            text: `(truncated — file has ${Math.max(oldLines.length, newLines.length)} lines)`,
-        });
-    }
-
-    return result;
-}
-
-function computeDiffLines(diff: AIFileDiff): DiffLine[] {
-    if (diff.kind === "add") {
-        return (diff.new_text ?? "").split("\n").map((line) => ({
-            type: "add" as const,
-            prefix: "+ ",
-            text: line,
-        }));
-    }
-    if (diff.kind === "delete") {
-        return (diff.old_text ?? "").split("\n").map((line) => ({
-            type: "remove" as const,
-            prefix: "- ",
-            text: line,
-        }));
-    }
-    return simpleDiff(
-        (diff.old_text ?? "").split("\n"),
-        (diff.new_text ?? "").split("\n"),
-    );
-}
-
-function computeFileDiffStats(diff: AIFileDiff): {
-    additions: number;
-    deletions: number;
-} {
-    const lines = computeDiffLines(diff);
-    let additions = 0;
-    let deletions = 0;
-    for (const line of lines) {
-        if (line.type === "add") additions++;
-        else if (line.type === "remove") deletions++;
-    }
-    return { additions, deletions };
-}
-
-function computeDiffStats(diffs: AIFileDiff[]): {
-    additions: number;
-    deletions: number;
-} {
-    let additions = 0;
-    let deletions = 0;
-    for (const diff of diffs) {
-        const s = computeFileDiffStats(diff);
-        additions += s.additions;
-        deletions += s.deletions;
-    }
-    return { additions, deletions };
-}
-
-function DiffLineView({ line }: { line: DiffLine }) {
     return (
-        <div
-            style={{
-                padding: "0 8px",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-                backgroundColor:
-                    line.type === "add"
-                        ? "color-mix(in srgb, #16a34a 8%, transparent)"
-                        : line.type === "remove"
-                          ? "color-mix(in srgb, #dc2626 8%, transparent)"
-                          : "transparent",
-                color:
-                    line.type === "add"
-                        ? "#16a34a"
-                        : line.type === "remove"
-                          ? "#dc2626"
-                          : "var(--text-secondary)",
-                borderLeft:
-                    line.type === "add"
-                        ? "2px solid #16a34a"
-                        : line.type === "remove"
-                          ? "2px solid #dc2626"
-                          : "2px solid transparent",
-                opacity: line.type === "separator" ? 0.5 : 1,
-                textAlign: line.type === "separator" ? "center" : "left",
-            }}
-        >
-            {line.prefix}
-            {line.text}
+        <div key={diff.path} className="min-w-0">
+            <button
+                type="button"
+                onClick={onToggle}
+                className="flex w-full items-center gap-1.5 px-3 py-1"
+                style={{
+                    background: "transparent",
+                    border: "none",
+                    borderBottom: `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
+                    cursor: "pointer",
+                    fontSize: "0.78em",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <svg
+                    width="8"
+                    height="8"
+                    viewBox="0 0 8 8"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    style={{
+                        transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+                        transition: "transform 0.15s ease",
+                        flexShrink: 0,
+                    }}
+                >
+                    <path d="M2 1.5L5.5 4L2 6.5" />
+                </svg>
+                <span
+                    style={{
+                        color:
+                            diff.kind === "add"
+                                ? "#16a34a"
+                                : diff.kind === "delete"
+                                  ? "#dc2626"
+                                  : diff.kind === "move"
+                                    ? "#c0841a"
+                                    : "var(--text-primary)",
+                        fontWeight: 500,
+                    }}
+                >
+                    {filename}
+                </span>
+                <span
+                    style={{
+                        opacity: 0.5,
+                        fontSize: "0.9em",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                    }}
+                >
+                    <span>
+                        {diff.kind === "add"
+                            ? "new file"
+                            : diff.kind === "delete"
+                              ? "deleted"
+                              : diff.kind === "move"
+                                ? previousFilename
+                                    ? `moved from ${previousFilename}`
+                                    : "moved"
+                                : "modified"}
+                    </span>
+                    {diff.reversible === false ? (
+                        <span
+                            className="rounded-full px-1.5 py-0.5"
+                            style={{
+                                fontSize: "0.82em",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.04em",
+                                color: "#b45309",
+                                backgroundColor:
+                                    "color-mix(in srgb, #f59e0b 14%, transparent)",
+                            }}
+                        >
+                            partial
+                        </span>
+                    ) : null}
+                </span>
+                <span
+                    style={{
+                        marginLeft: "auto",
+                        display: "flex",
+                        gap: 6,
+                        fontSize: "0.9em",
+                    }}
+                >
+                    {stats.additions > 0 && (
+                        <span style={{ color: "#16a34a" }}>
+                            +
+                            {formatDiffStat(stats.additions, stats.approximate)}
+                        </span>
+                    )}
+                    {stats.deletions > 0 && (
+                        <span style={{ color: "#dc2626" }}>
+                            -
+                            {formatDiffStat(stats.deletions, stats.approximate)}
+                        </span>
+                    )}
+                </span>
+            </button>
+
+            <div
+                style={{
+                    borderBottom: expanded
+                        ? `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`
+                        : "none",
+                }}
+            >
+                <EditedFileDiffPreview
+                    diff={diff}
+                    expanded={expanded}
+                    diffZoom={diffZoom}
+                    accent={accent}
+                    testId={`diff-content:${diff.path}`}
+                    showWhenEmpty={false}
+                />
+            </div>
         </div>
     );
 }
@@ -1069,123 +1191,31 @@ function DiffLineView({ line }: { line: DiffLine }) {
 function ChangeReviewFileList({
     diffs,
     accent,
+    diffZoom,
 }: {
     diffs: AIFileDiff[];
     accent: string;
+    diffZoom: number;
 }) {
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
     return (
         <div className="flex flex-col">
             {diffs.map((diff) => {
-                const filename = diff.path.split("/").pop() ?? diff.path;
-                const isOpen = expanded[diff.path] ?? false;
-                const lines = isOpen ? computeDiffLines(diff) : [];
-                const stats = computeFileDiffStats(diff);
-
                 return (
-                    <div key={diff.path} className="min-w-0">
-                        <button
-                            type="button"
-                            onClick={() =>
-                                setExpanded((prev) => ({
-                                    ...prev,
-                                    [diff.path]: !prev[diff.path],
-                                }))
-                            }
-                            className="flex w-full items-center gap-1.5 px-3 py-1"
-                            style={{
-                                background: "transparent",
-                                border: "none",
-                                borderBottom:
-                                    `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
-                                cursor: "pointer",
-                                fontSize: "0.78em",
-                                color: "var(--text-secondary)",
-                            }}
-                        >
-                            <svg
-                                width="8"
-                                height="8"
-                                viewBox="0 0 8 8"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                style={{
-                                    transform: isOpen
-                                        ? "rotate(90deg)"
-                                        : "rotate(0deg)",
-                                    transition: "transform 0.15s ease",
-                                    flexShrink: 0,
-                                }}
-                            >
-                                <path d="M2 1.5L5.5 4L2 6.5" />
-                            </svg>
-                            <span
-                                style={{
-                                    color:
-                                        diff.kind === "add"
-                                            ? "#16a34a"
-                                            : diff.kind === "delete"
-                                              ? "#dc2626"
-                                              : "var(--text-primary)",
-                                    fontWeight: 500,
-                                }}
-                            >
-                                {filename}
-                            </span>
-                            <span
-                                style={{
-                                    opacity: 0.5,
-                                    fontSize: "0.9em",
-                                }}
-                            >
-                                {diff.kind === "add"
-                                    ? "new file"
-                                    : diff.kind === "delete"
-                                      ? "deleted"
-                                      : "modified"}
-                            </span>
-                            <span
-                                style={{
-                                    marginLeft: "auto",
-                                    display: "flex",
-                                    gap: 6,
-                                    fontSize: "0.9em",
-                                }}
-                            >
-                                {stats.additions > 0 && (
-                                    <span style={{ color: "#16a34a" }}>
-                                        +{stats.additions}
-                                    </span>
-                                )}
-                                {stats.deletions > 0 && (
-                                    <span style={{ color: "#dc2626" }}>
-                                        -{stats.deletions}
-                                    </span>
-                                )}
-                            </span>
-                        </button>
-
-                        {isOpen && lines.length > 0 && (
-                            <div
-                                style={{
-                                    maxHeight: 300,
-                                    overflow: "auto",
-                                    fontSize: "0.72em",
-                                    fontFamily: "var(--font-mono, monospace)",
-                                    lineHeight: 1.5,
-                                    borderBottom:
-                                        `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
-                                }}
-                            >
-                                {lines.map((line, idx) => (
-                                    <DiffLineView key={idx} line={line} />
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                    <ChangeReviewFileRow
+                        key={diff.path}
+                        diff={diff}
+                        accent={accent}
+                        diffZoom={diffZoom}
+                        expanded={expanded[diff.path] ?? false}
+                        onToggle={() =>
+                            setExpanded((prev) => ({
+                                ...prev,
+                                [diff.path]: !prev[diff.path],
+                            }))
+                        }
+                    />
                 );
             })}
         </div>
@@ -1213,6 +1243,9 @@ function ChangeReviewPanel({
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
     const diffs = message.diffs ?? [];
+    const editDiffZoom = useChatStore((state) => state.editDiffZoom);
+    const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
+    const notes = useVaultStore((state) => state.notes);
     const toolKind = String(message.meta?.tool ?? "");
     const isToolMessage = message.kind === "tool";
     const accent = isToolMessage
@@ -1241,25 +1274,27 @@ function ChangeReviewPanel({
         isToolMessage && toolKind !== "delete"
             ? (target ?? (diffs.length === 1 ? diffs[0]?.path : null))
             : null;
+    const canOpenFile = openFilePath
+        ? notes.some((note) => note.path === openFilePath)
+        : false;
     const actionLabel = isToolMessage
         ? getDiffPanelToolLabel(toolKind)
         : "Edit";
-
+    const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
+    const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
     return (
         <div
             className="min-w-0 max-w-full overflow-hidden rounded-lg"
             style={{
                 border: `1px solid color-mix(in srgb, ${accent} 25%, var(--border))`,
-                backgroundColor:
-                    `color-mix(in srgb, ${accent} 4%, var(--bg-secondary))`,
+                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-secondary))`,
             }}
         >
             {/* Summary bar */}
             <div
                 className="flex items-center gap-2 px-3 py-2"
                 style={{
-                    borderBottom:
-                        `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
+                    borderBottom: `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
                 }}
             >
                 {isToolMessage ? (
@@ -1304,36 +1339,105 @@ function ChangeReviewPanel({
                 <span style={{ display: "flex", gap: 6, fontSize: "0.78em" }}>
                     {stats.additions > 0 && (
                         <span style={{ color: "#16a34a", fontWeight: 500 }}>
-                            +{stats.additions}
+                            +
+                            {formatDiffStat(stats.additions, stats.approximate)}
                         </span>
                     )}
                     {stats.deletions > 0 && (
                         <span style={{ color: "#dc2626", fontWeight: 500 }}>
-                            -{stats.deletions}
+                            -
+                            {formatDiffStat(stats.deletions, stats.approximate)}
                         </span>
                     )}
                 </span>
-                {openFilePath ? (
-                    <button
-                        type="button"
-                        onClick={() => openNoteByAbsolutePath(openFilePath)}
-                        className="ml-auto rounded-md px-2 py-1"
+                <div className="ml-auto flex items-center gap-1.5">
+                    <div
+                        className="flex items-center rounded-md"
                         style={{
-                            fontSize: "0.76em",
-                            color: accent,
+                            border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border))`,
                             backgroundColor:
-                                "color-mix(in srgb, var(--bg-primary) 55%, transparent)",
-                            border: `1px solid color-mix(in srgb, ${accent} 22%, var(--border))`,
-                            cursor: "pointer",
+                                "color-mix(in srgb, var(--bg-primary) 48%, transparent)",
                         }}
                     >
-                        Open File
-                    </button>
-                ) : null}
+                        <button
+                            type="button"
+                            aria-label="Decrease diff zoom"
+                            disabled={!canDecreaseZoom}
+                            onClick={() =>
+                                setEditDiffZoom(
+                                    stepDiffZoom(editDiffZoom, -DIFF_ZOOM_STEP),
+                                )
+                            }
+                            className="rounded-l-md px-2 py-1"
+                            style={{
+                                fontSize: "0.76em",
+                                color: canDecreaseZoom
+                                    ? accent
+                                    : "var(--text-secondary)",
+                                opacity: canDecreaseZoom ? 1 : 0.45,
+                                backgroundColor: "transparent",
+                                border: "none",
+                                cursor: canDecreaseZoom
+                                    ? "pointer"
+                                    : "not-allowed",
+                            }}
+                        >
+                            -
+                        </button>
+                        <button
+                            type="button"
+                            aria-label="Increase diff zoom"
+                            disabled={!canIncreaseZoom}
+                            onClick={() =>
+                                setEditDiffZoom(
+                                    stepDiffZoom(editDiffZoom, DIFF_ZOOM_STEP),
+                                )
+                            }
+                            className="rounded-r-md px-2 py-1"
+                            style={{
+                                fontSize: "0.76em",
+                                color: canIncreaseZoom
+                                    ? accent
+                                    : "var(--text-secondary)",
+                                opacity: canIncreaseZoom ? 1 : 0.45,
+                                backgroundColor: "transparent",
+                                border: "none",
+                                cursor: canIncreaseZoom
+                                    ? "pointer"
+                                    : "not-allowed",
+                            }}
+                        >
+                            +
+                        </button>
+                    </div>
+                    {canOpenFile && openFilePath ? (
+                        <button
+                            type="button"
+                            onClick={() =>
+                                void openChatNoteByAbsolutePath(openFilePath)
+                            }
+                            className="rounded-md px-2 py-1"
+                            style={{
+                                fontSize: "0.76em",
+                                color: accent,
+                                backgroundColor:
+                                    "color-mix(in srgb, var(--bg-primary) 55%, transparent)",
+                                border: `1px solid color-mix(in srgb, ${accent} 22%, var(--border))`,
+                                cursor: "pointer",
+                            }}
+                        >
+                            Open File
+                        </button>
+                    ) : null}
+                </div>
             </div>
 
             {/* File list with expandable diffs */}
-            <ChangeReviewFileList diffs={diffs} accent={accent} />
+            <ChangeReviewFileList
+                diffs={diffs}
+                accent={accent}
+                diffZoom={editDiffZoom}
+            />
 
             {/* Actions */}
             {message.permissionRequestId &&
@@ -1341,8 +1445,7 @@ function ChangeReviewPanel({
                 <div
                     className="flex items-center gap-2 px-3 py-2"
                     style={{
-                        borderTop:
-                            `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
+                        borderTop: `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
                     }}
                 >
                     {message.permissionOptions.map((option) => {
@@ -1390,8 +1493,7 @@ function ChangeReviewPanel({
                     className="px-3 py-1.5"
                     style={{
                         color: "var(--text-secondary)",
-                        borderTop:
-                            `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
+                        borderTop: `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
                         opacity: 0.7,
                         fontSize: "0.79em",
                     }}
@@ -1446,14 +1548,27 @@ function ErrorMessage({ message }: { message: AIChatMessage }) {
 function PermissionMessage({
     message,
     pillMetrics,
+    showDiffReview = true,
     onPermissionResponse,
 }: {
     message: AIChatMessage;
     pillMetrics: ChatPillMetrics;
+    showDiffReview?: boolean;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
+    // Extract first line as title, rest as details
+    const lines = message.content.split("\n");
+    const title = lines[0];
+    const details = lines.slice(1).join("\n").trim();
+    const MAX_PREVIEW = 120;
+    const MAX_HEADER_PREVIEW = 72;
+    const isLong = details.length > MAX_PREVIEW;
+    const hasLongTitle = title.length > MAX_HEADER_PREVIEW;
+    const canExpand = hasLongTitle || isLong;
+    const [expanded, setExpanded] = useState(() => !canExpand);
+
     // Delegate to Change Review Panel when diffs are present
-    if (message.diffs && message.diffs.length > 0) {
+    if (showDiffReview && message.diffs && message.diffs.length > 0) {
         return (
             <ChangeReviewPanel
                 message={message}
@@ -1477,17 +1592,6 @@ function PermissionMessage({
     const isPending = status === "pending";
     const isResponding = status === "responding";
     const isResolved = status === "resolved";
-
-    // Extract first line as title, rest as details
-    const lines = message.content.split("\n");
-    const title = lines[0];
-    const details = lines.slice(1).join("\n").trim();
-    const MAX_PREVIEW = 120;
-    const MAX_HEADER_PREVIEW = 72;
-    const isLong = details.length > MAX_PREVIEW;
-    const hasLongTitle = title.length > MAX_HEADER_PREVIEW;
-    const canExpand = hasLongTitle || isLong;
-    const [expanded, setExpanded] = useState(() => !canExpand);
     const preview = isLong ? `${details.slice(0, MAX_PREVIEW)}...` : details;
 
     return (
@@ -2000,25 +2104,15 @@ function UserInputRequestMessage({
 export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
     pillMetrics,
+    visibleWorkCycleId = null,
     onPermissionResponse,
     onUserInputResponse,
 }: AIChatMessageItemProps) {
+    const showDiffReview = shouldShowDiffReview(message, visibleWorkCycleId);
+
     // User text — full width, subtle box (Zed style)
     if (message.kind === "text" && message.role === "user") {
-        return (
-            <div
-                className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
-                style={{
-                    color: "var(--text-primary)",
-                    backgroundColor: "var(--bg-tertiary)",
-                    border: "1px solid var(--border)",
-                    overflowWrap: "anywhere",
-                    wordBreak: "break-word",
-                }}
-            >
-                {renderUserContent(message.content, pillMetrics)}
-            </div>
-        );
+        return <UserTextMessage message={message} pillMetrics={pillMetrics} />;
     }
 
     // Thinking — collapsible single line
@@ -2028,7 +2122,9 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     // Tool activity — subtle one-liner
     if (message.kind === "tool") {
-        return <ToolMessage message={message} />;
+        return (
+            <ToolMessage message={message} showDiffReview={showDiffReview} />
+        );
     }
 
     if (message.kind === "plan") {
@@ -2050,6 +2146,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
             <PermissionMessage
                 message={message}
                 pillMetrics={pillMetrics}
+                showDiffReview={showDiffReview}
                 onPermissionResponse={onPermissionResponse}
             />
         );

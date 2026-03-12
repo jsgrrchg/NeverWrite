@@ -9,6 +9,8 @@ import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useEditorStore,
     type PendingReveal,
+    isNoteTab,
+    type NoteTab,
 } from "../../app/store/editorStore";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { revealNoteInTree } from "../../app/utils/navigation";
@@ -133,7 +135,7 @@ export function BacklinksPanel() {
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const queueReveal = useEditorStore((s) => s.queueReveal);
     const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-    const activeNoteId = activeTab?.noteId ?? null;
+    const activeNoteId = activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
     const activeTitle = activeTab?.title ?? null;
     const [backlinks, setBacklinks] = useState<BacklinkDto[]>([]);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
@@ -176,7 +178,9 @@ export function BacklinksPanel() {
         });
 
     const openSourceNote = async (bl: BacklinkDto) => {
-        const existing = tabs.find((t) => t.noteId === bl.id);
+        const existing = tabs.find(
+            (t): t is NoteTab => isNoteTab(t) && t.noteId === bl.id,
+        );
         if (existing) {
             openNote(bl.id, bl.title, existing.content);
             return;
@@ -191,7 +195,9 @@ export function BacklinksPanel() {
 
     const openSourceInNewTab = async (bl: BacklinkDto) => {
         try {
-            const existing = tabs.find((t) => t.noteId === bl.id);
+            const existing = tabs.find(
+                (t): t is NoteTab => isNoteTab(t) && t.noteId === bl.id,
+            );
             const content =
                 existing?.content ?? (await readBacklink(bl)).content;
 

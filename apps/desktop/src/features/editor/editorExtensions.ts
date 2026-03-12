@@ -1,4 +1,4 @@
-import { EditorView } from "@codemirror/view";
+import { EditorView, lineNumbers } from "@codemirror/view";
 import { Compartment } from "@codemirror/state";
 import {
     syntaxHighlighting,
@@ -17,6 +17,10 @@ export type LinkContextMenuState = {
     href: string;
     noteTarget: string | null;
 };
+
+const editorHorizontalInset =
+    "max(clamp(24px, 5vw, 56px), calc((100% - var(--editor-content-width)) / 2))";
+const editorLineNumberGutterWidth = "44px";
 
 export const baseTheme = EditorView.theme({
     "&": {
@@ -42,8 +46,7 @@ export const baseTheme = EditorView.theme({
         flex: "1 1 0%",
         minWidth: 0,
         boxSizing: "border-box",
-        padding:
-            "24px max(clamp(24px, 5vw, 56px), calc((100% - var(--editor-content-width)) / 2)) 120px",
+        padding: `24px ${editorHorizontalInset} 120px`,
         caretColor: "var(--text-primary)",
         lineHeight: "var(--text-input-line-height)",
         minHeight: "calc(100vh - 220px)",
@@ -53,6 +56,33 @@ export const baseTheme = EditorView.theme({
     },
     ".cm-gutters": {
         display: "none",
+        backgroundColor: "transparent",
+        border: "none",
+        color: "var(--text-secondary)",
+        boxSizing: "border-box",
+        flexShrink: 0,
+    },
+    '&[data-live-preview="false"] .cm-gutters': {
+        display: "flex",
+        width: editorLineNumberGutterWidth,
+        minWidth: editorLineNumberGutterWidth,
+        marginLeft: `max(0px, calc(${editorHorizontalInset} - ${editorLineNumberGutterWidth}))`,
+        padding: "24px 0 120px",
+        pointerEvents: "none",
+    },
+    '&[data-live-preview="false"] .cm-content': {
+        paddingLeft: "0",
+    },
+    '&[data-live-preview="false"] .cm-lineNumbers': {
+        minWidth: editorLineNumberGutterWidth,
+    },
+    '&[data-live-preview="false"] .cm-lineNumbers .cm-gutterElement': {
+        display: "flex",
+        alignItems: "center",
+        minWidth: "3ch",
+        padding: "0 14px 0 0",
+        transform: "translateY(1.5px)",
+        justifyContent: "flex-end",
     },
     ".cm-cursor": {
         borderLeftColor: "var(--text-primary)",
@@ -104,14 +134,26 @@ export function getLivePreviewExtension(
     openLinkContextMenu: (menu: LinkContextMenuState | null) => void,
     enabled = true,
 ) {
-    if (!enabled) return [];
+    if (!enabled) {
+        return [
+            EditorView.editorAttributes.of({
+                "data-live-preview": "false",
+            }),
+            lineNumbers(),
+        ];
+    }
     const vaultPath = useVaultStore.getState().vaultPath;
-    return livePreviewExtension(vaultPath, {
-        resolveWikilink,
-        navigateWikilink,
-        getNoteLinkTarget,
-        openLinkContextMenu,
-    });
+    return [
+        EditorView.editorAttributes.of({
+            "data-live-preview": "true",
+        }),
+        livePreviewExtension(vaultPath, {
+            resolveWikilink,
+            navigateWikilink,
+            getNoteLinkTarget,
+            openLinkContextMenu,
+        }),
+    ];
 }
 
 export function getAlignmentExtension(enabled: boolean) {

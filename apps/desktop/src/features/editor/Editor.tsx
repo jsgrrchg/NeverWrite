@@ -32,7 +32,11 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { findWikilinks } from "../../app/utils/wikilinks";
-import { useEditorStore, type NoteTab, type Tab } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -98,6 +102,7 @@ import {
     WikilinkSuggester,
     type WikilinkSuggesterState,
 } from "./WikilinkSuggester";
+import { useChatStore } from "../ai/store/chatStore";
 
 type SavedNoteDetail = {
     id: string;
@@ -212,7 +217,7 @@ export function Editor({
     const activeTabInfo = useEditorStore(
         useShallow((s) => {
             const tab = s.tabs.find((t) => t.id === s.activeTabId) ?? null;
-            if (!tab || tab.kind === "pdf") return null;
+            if (!tab || !isNoteTab(tab)) return null;
             return {
                 id: tab.id,
                 title: tab.title,
@@ -222,8 +227,10 @@ export function Editor({
     );
     const activeTab = ((): NoteTab | null => {
         if (activeTabId === null) return null;
-        const t = useEditorStore.getState().tabs.find((t) => t.id === activeTabId);
-        return t && t.kind !== "pdf" ? t : null;
+        const t = useEditorStore
+            .getState()
+            .tabs.find((t) => t.id === activeTabId);
+        return t && isNoteTab(t) ? t : null;
     })();
     activeTabRef.current = activeTab;
 
@@ -348,7 +355,7 @@ export function Editor({
                 const freshTab = useEditorStore
                     .getState()
                     .tabs.find((t) => t.id === tabId);
-                if (freshTab)
+                if (freshTab && isNoteTab(freshTab))
                     saveNow(
                         freshTab,
                         typeof doc === "string" ? doc : doc.toString(),
@@ -570,16 +577,18 @@ export function Editor({
         }
 
         syncSelectionLayerVisibility(view);
+        const startLine = view.state.doc.lineAt(selection.from).number;
+        const endLine = view.state.doc.lineAt(
+            Math.max(selection.from, selection.to - 1),
+        ).number;
         useEditorStore.getState().setCurrentSelection({
             noteId: activeTabRef.current!.noteId,
             text: view.state.sliceDoc(selection.from, selection.to),
             from: selection.from,
             to: selection.to,
+            startLine,
+            endLine,
         });
-        const startLine = view.state.doc.lineAt(selection.from).number;
-        const endLine = view.state.doc.lineAt(
-            Math.max(selection.from, selection.to - 1),
-        ).number;
         const sameLine = startLine === endLine;
 
         setSelectionToolbar({
@@ -612,6 +621,11 @@ export function Editor({
         },
         [updateSelectionToolbar],
     );
+
+    const handleAddSelectionToChat = useCallback(() => {
+        useChatStore.getState().attachSelectionFromEditor();
+        setSelectionToolbar(null);
+    }, []);
 
     const updateWikilinkSuggester = useCallback((view: EditorView | null) => {
         if (!view || !activeTabRef.current || !view.hasFocus) {
@@ -995,6 +1009,18 @@ export function Editor({
                             key: "Tab",
                             run: insertConfiguredTab,
                             shift: removeConfiguredTab,
+                        },
+                        {
+                            key: "Mod-l",
+                            run: (view) => {
+                                if (view.state.selection.main.empty)
+                                    return false;
+                                useChatStore
+                                    .getState()
+                                    .attachSelectionFromEditor();
+                                setSelectionToolbar(null);
+                                return true;
+                            },
                         },
                         ...defaultKeymap,
                         ...historyKeymap,
@@ -1404,7 +1430,7 @@ export function Editor({
             const tab = state.tabs.find((t) => t.id === tabId);
             const prevTab = prev.tabs.find((t) => t.id === tabId);
             if (!tab || !prevTab) return;
-            if (tab.kind === "pdf" || prevTab.kind === "pdf") return;
+            if (!isNoteTab(tab) || !isNoteTab(prevTab)) return;
 
             // Skip when noteId changed — the tab-switch useEffect handles navigation
             if (tab.noteId !== prevTab.noteId) return;
@@ -1552,7 +1578,7 @@ export function Editor({
                 e.preventDefault();
                 if (activeTabId) {
                     const tab = tabs.find((t) => t.id === activeTabId);
-                    if (tab && tab.kind !== "pdf") {
+                    if (tab && isNoteTab(tab)) {
                         const content =
                             viewRef.current?.state.doc.toString() ??
                             tab.content;
@@ -1570,7 +1596,7 @@ export function Editor({
             // Cmd+Shift+S / Ctrl+Shift+S: save active tab immediately
             if ((e.metaKey || e.ctrlKey) && e.key === "s" && e.shiftKey) {
                 const tab = tabs.find((item) => item.id === activeTabId);
-                if (!tab || tab.kind === "pdf") return;
+                if (!tab || !isNoteTab(tab)) return;
                 e.preventDefault();
                 const content =
                     viewRef.current?.state.doc.toString() ?? tab.content;
@@ -1676,6 +1702,7 @@ export function Editor({
                         toolbar={selectionToolbar}
                         editorElement={viewRef.current?.dom ?? null}
                         onAction={handleSelectionToolbarAction}
+                        onAddToChat={handleAddSelectionToChat}
                         onClose={() => setSelectionToolbar(null)}
                     />
                 )}

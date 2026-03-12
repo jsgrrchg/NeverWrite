@@ -31,7 +31,7 @@ describe("SearchPanel", () => {
 
         renderComponent(<SearchPanel />);
 
-        const input = screen.getByPlaceholderText("Search notes...");
+        const input = screen.getByPlaceholderText("Search files and notes...");
         fireEvent.change(input, { target: { value: "road" } });
 
         expect(invokeMock).not.toHaveBeenCalled();
@@ -41,9 +41,12 @@ describe("SearchPanel", () => {
         });
         await flushPromises();
 
-        expect(invokeMock).toHaveBeenCalledWith("search_notes", {
-            query: "road",
-        });
+        expect(invokeMock).toHaveBeenCalledWith(
+            "search_notes",
+            expect.objectContaining({
+                query: "road",
+            }),
+        );
         expect(screen.getByText("Roadmap")).toBeInTheDocument();
         expect(screen.getByText("notes/roadmap")).toBeInTheDocument();
     });
@@ -69,7 +72,7 @@ describe("SearchPanel", () => {
 
         renderComponent(<SearchPanel />);
 
-        const input = screen.getByPlaceholderText("Search notes...");
+        const input = screen.getByPlaceholderText("Search files and notes...");
         fireEvent.change(input, { target: { value: "today" } });
         await act(async () => {
             await vi.advanceTimersByTimeAsync(300);
@@ -109,7 +112,7 @@ describe("SearchPanel", () => {
 
         renderComponent(<SearchPanel />);
 
-        const input = screen.getByPlaceholderText("Search notes...");
+        const input = screen.getByPlaceholderText("Search files and notes...");
         fireEvent.change(input, { target: { value: "road" } });
         await act(async () => {
             await vi.advanceTimersByTimeAsync(300);
@@ -162,7 +165,7 @@ describe("SearchPanel", () => {
 
         renderComponent(<SearchPanel />);
 
-        fireEvent.change(screen.getByPlaceholderText("Search notes..."), {
+        fireEvent.change(screen.getByPlaceholderText("Search files and notes..."), {
             target: { value: "road" },
         });
         await act(async () => {
