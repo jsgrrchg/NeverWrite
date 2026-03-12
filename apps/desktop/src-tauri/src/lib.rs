@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use vault_ai_index::{IndexBuildPhase, VaultIndex};
 use vault_ai_types::{
-    BacklinkDto, NoteDetailDto, NoteDocument, NoteDto, NoteId, NoteMetadata, SearchResultDto,
-    VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto,
+    AdvancedSearchParams, AdvancedSearchResultDto, BacklinkDto, NoteDetailDto, NoteDocument,
+    NoteDto, NoteId, NoteMetadata, OutlineHeadingDto, ResolvedLinkDto, ResolvedWikilinkDto,
+    SearchResultDto, VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto,
+    WikilinkSuggestionDto,
 };
 use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
 
@@ -24,14 +26,43 @@ const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 const OPEN_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-struct AppState {
+// --- Debug timing ---
+static DEBUG_TIMING: AtomicBool = AtomicBool::new(false);
+
+macro_rules! dbg_log {
+    ($($arg:tt)*) => {
+        if DEBUG_TIMING.load(Ordering::Relaxed) {
+            eprintln!("[perf] {}", format!($($arg)*));
+        }
+    };
+}
+
+struct VaultInstance {
     vault: Option<Vault>,
     index: Option<VaultIndex>,
     watcher: Option<RecommendedWatcher>,
-    write_tracker: WriteTracker,
     open_job_id: u64,
     open_cancel: Option<Arc<AtomicBool>>,
     open_state: VaultOpenState,
+}
+
+impl VaultInstance {
+    fn new() -> Self {
+        Self {
+            vault: None,
+            index: None,
+            watcher: None,
+            open_job_id: 0,
+            open_cancel: None,
+            open_state: VaultOpenState::idle(),
+        }
+    }
+}
+
+struct AppState {
+    vaults: HashMap<String, VaultInstance>,
+    write_tracker: WriteTracker,
+    next_job_id: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -279,31 +310,28 @@ fn note_to_detail(note: &NoteDocument) -> NoteDetailDto {
     }
 }
 
-fn with_app_state<T>(
-    app: &AppHandle,
-    f: impl FnOnce(&mut AppState) -> Result<T, String>,
-) -> Result<T, String> {
-    let state = app.state::<Mutex<AppState>>();
-    let mut guard = lock!(state)?;
-    f(&mut guard)
-}
+// --- Helpers for vault instance access ---
 
 fn update_open_state_for_job(
     app: &AppHandle,
+    vault_path: &str,
     job_id: u64,
     f: impl FnOnce(&mut VaultOpenState),
 ) -> Result<bool, String> {
-    with_app_state(app, |state| {
-        if state.open_job_id != job_id {
-            return Ok(false);
-        }
-        f(&mut state.open_state);
-        Ok(true)
-    })
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = lock!(state)?;
+    let Some(instance) = guard.vaults.get_mut(vault_path) else {
+        return Ok(false);
+    };
+    if instance.open_job_id != job_id {
+        return Ok(false);
+    }
+    f(&mut instance.open_state);
+    Ok(true)
 }
 
-fn finish_cancelled_for_job(app: &AppHandle, job_id: u64) -> Result<(), String> {
-    let _ = update_open_state_for_job(app, job_id, |open_state| {
+fn finish_cancelled_for_job(app: &AppHandle, vault_path: &str, job_id: u64) -> Result<(), String> {
+    let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
         open_state.finish_cancelled();
     })?;
     Ok(())
@@ -312,14 +340,17 @@ fn finish_cancelled_for_job(app: &AppHandle, job_id: u64) -> Result<(), String> 
 fn ensure_not_cancelled(
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
+    vault_path: &str,
     job_id: u64,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
-        finish_cancelled_for_job(app, job_id)?;
+        finish_cancelled_for_job(app, vault_path, job_id)?;
         return Err("cancelled".to_string());
     }
     Ok(())
 }
+
+// --- Snapshot helpers ---
 
 fn snapshot_directory(app: &AppHandle, vault_root: &Path) -> Result<PathBuf, String> {
     let base = app
@@ -394,27 +425,64 @@ fn save_snapshot(
     Ok(())
 }
 
+// --- File watcher ---
+
 fn start_index_watcher(
     app: AppHandle,
+    vault_path: String,
     root: PathBuf,
     write_tracker: WriteTracker,
 ) -> Result<RecommendedWatcher, String> {
     start_watcher(root, write_tracker, move |event| {
-        handle_external_vault_event(&app, event);
+        handle_external_vault_event(&app, &vault_path, event);
     })
     .map_err(|error| error.to_string())
 }
 
-fn handle_external_vault_event(app: &AppHandle, event: VaultEvent) {
-    let change = with_app_state(app, |state| {
-        let Some(vault) = state.vault.as_ref() else {
-            return Ok(None);
-        };
-        let Some(index) = state.index.as_mut() else {
-            return Ok(None);
-        };
+fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEvent) {
+    let event_label = match &event {
+        VaultEvent::FileCreated(p) | VaultEvent::FileModified(p) => {
+            format!(
+                "watcher.upsert({})",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )
+        }
+        VaultEvent::FileDeleted(p) => {
+            format!(
+                "watcher.delete({})",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )
+        }
+        VaultEvent::FileRenamed { from, to } => {
+            format!(
+                "watcher.rename({} → {})",
+                from.file_name().unwrap_or_default().to_string_lossy(),
+                to.file_name().unwrap_or_default().to_string_lossy()
+            )
+        }
+    };
 
-        let change = match event {
+    let watcher_start = Instant::now();
+    let change = {
+        let state = app.state::<Mutex<AppState>>();
+        let lock_start = Instant::now();
+        let mut guard = match lock!(state) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let lock_wait = lock_start.elapsed();
+        let Some(instance) = guard.vaults.get_mut(vault_path) else {
+            return;
+        };
+        let Some(vault) = instance.vault.as_ref() else {
+            return;
+        };
+        let Some(index) = instance.index.as_mut() else {
+            return;
+        };
+        dbg_log!("{event_label} mutex wait: {lock_wait:.2?}");
+
+        match event {
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
                 match vault.read_note_from_path(&path) {
                     Ok(note) => {
@@ -422,17 +490,17 @@ fn handle_external_vault_event(app: &AppHandle, event: VaultEvent) {
                         let note_id = note.id.0.clone();
                         index.reindex_note(note);
                         Some(VaultNoteChangeDto {
+                            vault_path: vault_path.to_string(),
                             kind: "upsert".to_string(),
                             note: Some(dto),
                             note_id: Some(note_id),
                         })
                     }
                     Err(_) => {
-                        // File can't be read — likely moved/renamed away.
-                        // Treat as delete so stale entries are removed.
                         let note_id = vault.path_to_id(&path);
                         index.remove_note(&NoteId(note_id.clone()));
                         Some(VaultNoteChangeDto {
+                            vault_path: vault_path.to_string(),
                             kind: "delete".to_string(),
                             note: None,
                             note_id: Some(note_id),
@@ -444,6 +512,7 @@ fn handle_external_vault_event(app: &AppHandle, event: VaultEvent) {
                 let note_id = vault.path_to_id(&path);
                 index.remove_note(&NoteId(note_id.clone()));
                 Some(VaultNoteChangeDto {
+                    vault_path: vault_path.to_string(),
                     kind: "delete".to_string(),
                     note: None,
                     note_id: Some(note_id),
@@ -458,27 +527,31 @@ fn handle_external_vault_event(app: &AppHandle, event: VaultEvent) {
                         let note_id = note.id.0.clone();
                         index.reindex_note(note);
                         Some(VaultNoteChangeDto {
+                            vault_path: vault_path.to_string(),
                             kind: "upsert".to_string(),
                             note: Some(dto),
                             note_id: Some(note_id),
                         })
                     }
                     Err(_) => Some(VaultNoteChangeDto {
+                        vault_path: vault_path.to_string(),
                         kind: "delete".to_string(),
                         note: None,
                         note_id: Some(old_id),
                     }),
                 }
             }
-        };
+        }
+    };
 
-        Ok(change)
-    });
+    dbg_log!("{event_label} total: {:.2?}", watcher_start.elapsed());
 
-    if let Ok(Some(change)) = change {
+    if let Some(change) = change {
         let _ = app.emit(VAULT_NOTE_CHANGED_EVENT, change);
     }
 }
+
+// --- Open vault job ---
 
 fn run_open_vault_job(
     app: &AppHandle,
@@ -486,6 +559,7 @@ fn run_open_vault_job(
     path: String,
     cancel: Arc<AtomicBool>,
 ) -> Result<OpenVaultResult, String> {
+    let vault_path = path.as_str();
     let vault = Vault::open(PathBuf::from(&path)).map_err(|error| error.to_string())?;
     let mut metrics = VaultOpenMetrics::default();
 
@@ -494,24 +568,24 @@ fn run_open_vault_job(
         .discover_markdown_files()
         .map_err(|error| error.to_string())?;
     metrics.scan_ms = scan_started.elapsed().as_millis() as u64;
-    update_open_state_for_job(app, job_id, |open_state| {
+    update_open_state_for_job(app, vault_path, job_id, |open_state| {
         open_state.metrics.scan_ms = metrics.scan_ms;
         open_state.update_stage("scanning", "Scanning files...", files.len(), files.len());
     })?;
 
-    ensure_not_cancelled(&cancel, app, job_id)?;
+    ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
 
     let fingerprint = VaultFingerprint::from_files(&files);
 
     let snapshot_load_started = Instant::now();
     let snapshot = load_snapshot(app, &vault.root);
     metrics.snapshot_load_ms = snapshot_load_started.elapsed().as_millis() as u64;
-    update_open_state_for_job(app, job_id, |open_state| {
+    update_open_state_for_job(app, vault_path, job_id, |open_state| {
         open_state.metrics.snapshot_load_ms = metrics.snapshot_load_ms;
         open_state.update_stage("indexing", "Loading snapshot...", 0, files.len());
     })?;
 
-    ensure_not_cancelled(&cancel, app, job_id)?;
+    ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
 
     let root_path = vault.root.to_string_lossy().to_string();
 
@@ -558,7 +632,7 @@ fn run_open_vault_job(
                 .cloned()
                 .collect();
 
-            update_open_state_for_job(app, job_id, |open_state| {
+            update_open_state_for_job(app, vault_path, job_id, |open_state| {
                 open_state.update_stage(
                     "parsing",
                     "Parsing changed notes...",
@@ -570,7 +644,7 @@ fn run_open_vault_job(
             let parse_started = Instant::now();
             let changed_notes = vault
                 .parse_discovered_files(&changed_files, |processed| {
-                    let _ = update_open_state_for_job(app, job_id, |open_state| {
+                    let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
                         open_state.update_stage(
                             "parsing",
                             "Parsing changed notes...",
@@ -582,9 +656,9 @@ fn run_open_vault_job(
                 .map_err(|error| error.to_string())?;
             metrics.parse_ms = parse_started.elapsed().as_millis() as u64;
 
-            ensure_not_cancelled(&cancel, app, job_id)?;
+            ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
 
-            update_open_state_for_job(app, job_id, |open_state| {
+            update_open_state_for_job(app, vault_path, job_id, |open_state| {
                 open_state.metrics.parse_ms = metrics.parse_ms;
                 open_state.update_stage(
                     "indexing",
@@ -603,7 +677,7 @@ fn run_open_vault_job(
             for note_id in deleted_ids {
                 next_index.remove_note(&NoteId(note_id));
                 processed += 1;
-                let _ = update_open_state_for_job(app, job_id, |open_state| {
+                let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
                     open_state.update_stage(
                         "indexing",
                         "Refreshing index...",
@@ -614,10 +688,10 @@ fn run_open_vault_job(
             }
 
             for note in changed_notes {
-                ensure_not_cancelled(&cancel, app, job_id)?;
+                ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
                 next_index.reindex_note(note);
                 processed += 1;
-                let _ = update_open_state_for_job(app, job_id, |open_state| {
+                let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
                     open_state.update_stage(
                         "indexing",
                         "Refreshing index...",
@@ -631,14 +705,14 @@ fn run_open_vault_job(
             (next_index, true)
         }
         _ => {
-            update_open_state_for_job(app, job_id, |open_state| {
+            update_open_state_for_job(app, vault_path, job_id, |open_state| {
                 open_state.update_stage("parsing", "Parsing notes...", 0, files.len());
             })?;
 
             let parse_started = Instant::now();
             let notes = vault
                 .parse_discovered_files(&files, |processed| {
-                    let _ = update_open_state_for_job(app, job_id, |open_state| {
+                    let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
                         open_state.update_stage(
                             "parsing",
                             "Parsing notes...",
@@ -650,7 +724,7 @@ fn run_open_vault_job(
                 .map_err(|error| error.to_string())?;
             metrics.parse_ms = parse_started.elapsed().as_millis() as u64;
 
-            ensure_not_cancelled(&cancel, app, job_id)?;
+            ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
 
             let index_started = Instant::now();
             let index = VaultIndex::build_with_progress(notes, |progress| {
@@ -659,7 +733,7 @@ fn run_open_vault_job(
                     IndexBuildPhase::ResolvingLinks => "Resolving links...",
                 };
 
-                let _ = update_open_state_for_job(app, job_id, |open_state| {
+                let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
                     open_state.metrics.parse_ms = metrics.parse_ms;
                     open_state.update_stage("indexing", message, progress.current, progress.total);
                 });
@@ -669,7 +743,7 @@ fn run_open_vault_job(
         }
     };
 
-    update_open_state_for_job(app, job_id, |open_state| {
+    update_open_state_for_job(app, vault_path, job_id, |open_state| {
         open_state.metrics.index_ms = metrics.index_ms;
         open_state.update_stage(
             "saving_snapshot",
@@ -697,71 +771,84 @@ fn start_open_vault_inner(
     state: &tauri::State<'_, Mutex<AppState>>,
 ) -> Result<u64, String> {
     let cancel = Arc::new(AtomicBool::new(false));
-    let write_tracker = {
+    let (write_tracker, job_id) = {
         let mut state = lock!(state)?;
 
-        if let Some(previous_cancel) = state.open_cancel.take() {
+        state.next_job_id = state.next_job_id.wrapping_add(1);
+        let job_id = state.next_job_id;
+        let write_tracker = state.write_tracker.clone();
+
+        let instance = state
+            .vaults
+            .entry(path.clone())
+            .or_insert_with(VaultInstance::new);
+
+        // Cancel any previous open for THIS vault only
+        if let Some(previous_cancel) = instance.open_cancel.take() {
             previous_cancel.store(true, Ordering::Relaxed);
         }
 
-        state.open_job_id = state.open_job_id.wrapping_add(1);
-        state.open_cancel = Some(cancel.clone());
-        state.open_state = VaultOpenState::starting(path.clone());
-        state.vault = None;
-        state.index = None;
-        state.watcher = None;
+        instance.open_job_id = job_id;
+        instance.open_cancel = Some(cancel.clone());
+        instance.open_state = VaultOpenState::starting(path.clone());
+        instance.vault = None;
+        instance.index = None;
+        instance.watcher = None;
 
-        state.write_tracker.clone()
+        (write_tracker, job_id)
     };
 
-    let job_id = {
-        let state = lock!(state)?;
-        state.open_job_id
-    };
-
+    let vault_path = path.clone();
     std::thread::spawn(
         move || match run_open_vault_job(&app, job_id, path, cancel.clone()) {
             Ok(result) => {
                 if cancel.load(Ordering::Relaxed) {
-                    let _ = finish_cancelled_for_job(&app, job_id);
+                    let _ = finish_cancelled_for_job(&app, &vault_path, job_id);
                     return;
                 }
 
                 let watcher = match start_index_watcher(
                     app.clone(),
+                    vault_path.clone(),
                     result.vault.root.clone(),
                     write_tracker,
                 ) {
                     Ok(watcher) => watcher,
                     Err(error) => {
-                        let _ = update_open_state_for_job(&app, job_id, |open_state| {
-                            open_state.finish_error(error.clone(), result.metrics.clone());
-                        });
+                        let _ =
+                            update_open_state_for_job(&app, &vault_path, job_id, |open_state| {
+                                open_state.finish_error(error.clone(), result.metrics.clone());
+                            });
                         return;
                     }
                 };
 
-                let _ = with_app_state(&app, |state| {
-                    if state.open_job_id != job_id {
-                        return Ok(());
+                let state = app.state::<Mutex<AppState>>();
+                let _ = lock!(state).map(|mut guard| {
+                    let Some(instance) = guard.vaults.get_mut(&vault_path) else {
+                        return;
+                    };
+                    if instance.open_job_id != job_id {
+                        return;
                     }
 
                     let note_count = result.index.metadata.len();
-                    state.vault = Some(result.vault);
-                    state.index = Some(result.index);
-                    state.watcher = Some(watcher);
-                    state.open_cancel = None;
-                    state
-                        .open_state
-                        .finish_ready(note_count, result.snapshot_used, result.metrics);
-                    Ok(())
+                    instance.vault = Some(result.vault);
+                    instance.index = Some(result.index);
+                    instance.watcher = Some(watcher);
+                    instance.open_cancel = None;
+                    instance.open_state.finish_ready(
+                        note_count,
+                        result.snapshot_used,
+                        result.metrics,
+                    );
                 });
             }
             Err(error) if error == "cancelled" => {
-                let _ = finish_cancelled_for_job(&app, job_id);
+                let _ = finish_cancelled_for_job(&app, &vault_path, job_id);
             }
             Err(error) => {
-                let _ = update_open_state_for_job(&app, job_id, |open_state| {
+                let _ = update_open_state_for_job(&app, &vault_path, job_id, |open_state| {
                     let metrics = open_state.metrics.clone();
                     open_state.finish_error(error.clone(), metrics);
                 });
@@ -772,19 +859,23 @@ fn start_open_vault_inner(
     Ok(job_id)
 }
 
-fn wait_for_job_completion(app: &AppHandle, job_id: u64) -> Result<(), String> {
+fn wait_for_job_completion(app: &AppHandle, vault_path: &str, job_id: u64) -> Result<(), String> {
     loop {
         let state = app.state::<Mutex<AppState>>();
         let current = lock!(state)?;
 
-        if current.open_job_id != job_id {
+        let Some(instance) = current.vaults.get(vault_path) else {
+            return Err("Vault instance not found".to_string());
+        };
+
+        if instance.open_job_id != job_id {
             return Err("Open vault job was replaced".to_string());
         }
 
-        match current.open_state.stage.as_str() {
+        match instance.open_state.stage.as_str() {
             "ready" => return Ok(()),
             "error" => {
-                return Err(current
+                return Err(instance
                     .open_state
                     .error
                     .clone()
@@ -799,15 +890,17 @@ fn wait_for_job_completion(app: &AppHandle, job_id: u64) -> Result<(), String> {
     }
 }
 
+// --- Tauri commands ---
+
 #[tauri::command]
 fn open_vault(
     path: String,
     app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<NoteDto>, String> {
-    let job_id = start_open_vault_inner(path, app.clone(), &state)?;
-    wait_for_job_completion(&app, job_id)?;
-    list_notes(state)
+    let job_id = start_open_vault_inner(path.clone(), app.clone(), &state)?;
+    wait_for_job_completion(&app, &path, job_id)?;
+    list_notes(path, state)
 }
 
 #[tauri::command]
@@ -821,25 +914,42 @@ fn start_open_vault(
 }
 
 #[tauri::command]
-fn get_vault_open_state(state: tauri::State<Mutex<AppState>>) -> Result<VaultOpenStateDto, String> {
+fn get_vault_open_state(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultOpenStateDto, String> {
     let state = lock!(state)?;
-    Ok(state.open_state.to_dto())
+    let instance = state.vaults.get(&vault_path).ok_or("Vault not found")?;
+    Ok(instance.open_state.to_dto())
 }
 
 #[tauri::command]
-fn cancel_open_vault(state: tauri::State<Mutex<AppState>>) -> Result<(), String> {
+fn cancel_open_vault(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
     let mut state = lock!(state)?;
-    if let Some(cancel) = state.open_cancel.as_ref() {
+    let Some(instance) = state.vaults.get_mut(&vault_path) else {
+        return Ok(());
+    };
+    if let Some(cancel) = instance.open_cancel.as_ref() {
         cancel.store(true, Ordering::Relaxed);
-        state.open_state.finish_cancelled();
+        instance.open_state.finish_cancelled();
     }
     Ok(())
 }
 
 #[tauri::command]
-fn list_notes(state: tauri::State<Mutex<AppState>>) -> Result<Vec<NoteDto>, String> {
+fn list_notes(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<NoteDto>, String> {
     let state = lock!(state)?;
-    let index = state.index.as_ref().ok_or("No hay vault abierto")?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
 
     let mut notes: Vec<NoteDto> = index.metadata.values().map(note_to_dto).collect();
     notes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -848,27 +958,46 @@ fn list_notes(state: tauri::State<Mutex<AppState>>) -> Result<Vec<NoteDto>, Stri
 
 #[tauri::command]
 fn read_note(
+    vault_path: String,
     note_id: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
+    let cmd_start = Instant::now();
+    let lock_start = Instant::now();
     let state = lock!(state)?;
-    let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
+    let lock_wait = lock_start.elapsed();
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
     let note = vault.read_note(&note_id).map_err(|e| e.to_string())?;
 
+    dbg_log!(
+        "read_note({note_id}) mutex wait: {lock_wait:.2?}, total: {:.2?}",
+        cmd_start.elapsed()
+    );
     Ok(note_to_detail(&note))
 }
 
 #[tauri::command]
 fn save_note(
+    vault_path: String,
     note_id: String,
     content: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
-    let mut state = lock!(state)?;
-    let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
+    let cmd_start = Instant::now();
+    let lock_start = Instant::now();
+    let state = lock!(state)?;
+    let lock_wait = lock_start.elapsed();
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let path = vault.id_to_path(&note_id);
-    state.write_tracker.track(path.clone());
 
     vault
         .save_note(&note_id, &content)
@@ -877,24 +1006,33 @@ fn save_note(
     // Build NoteDocument from content we already have — skip re-reading from disk
     let note = vault_ai_vault::parser::parse_note(&note_id, &path, &content);
     let dto = note_to_detail(&note);
-    if let Some(index) = state.index.as_mut() {
-        index.reindex_note(note);
-    }
+    // Reindex deferred to the file watcher's background thread to avoid
+    // holding the Mutex during the expensive O(n) index update.
 
+    dbg_log!(
+        "save_note({note_id}) mutex wait: {lock_wait:.2?}, total: {:.2?}",
+        cmd_start.elapsed()
+    );
     Ok(dto)
 }
 
 #[tauri::command]
 fn create_note(
+    vault_path: String,
     path: String,
     content: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
     let mut state = lock!(state)?;
-    let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let abs_path = vault.root.join(&path);
-    state.write_tracker.track(abs_path);
+    write_tracker.track_content(abs_path, &content);
 
     let note = vault
         .create_note(&path, &content)
@@ -902,7 +1040,7 @@ fn create_note(
 
     let dto = note_to_detail(&note);
 
-    if let Some(index) = state.index.as_mut() {
+    if let Some(index) = instance.index.as_mut() {
         index.reindex_note(note);
     }
 
@@ -910,16 +1048,25 @@ fn create_note(
 }
 
 #[tauri::command]
-fn delete_note(note_id: String, state: tauri::State<Mutex<AppState>>) -> Result<(), String> {
+fn delete_note(
+    vault_path: String,
+    note_id: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
     let mut state = lock!(state)?;
-    let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let path = vault.id_to_path(&note_id);
-    state.write_tracker.track(path);
+    write_tracker.track_any(path);
 
     vault.delete_note(&note_id).map_err(|e| e.to_string())?;
 
-    if let Some(index) = state.index.as_mut() {
+    if let Some(index) = instance.index.as_mut() {
         index.remove_note(&NoteId(note_id));
     }
 
@@ -928,17 +1075,23 @@ fn delete_note(note_id: String, state: tauri::State<Mutex<AppState>>) -> Result<
 
 #[tauri::command]
 fn rename_note(
+    vault_path: String,
     note_id: String,
     new_path: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
     let mut state = lock!(state)?;
-    let vault = state.vault.as_ref().ok_or("No hay vault abierto")?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let old_path = vault.id_to_path(&note_id);
     let new_abs_path = vault.root.join(&new_path);
-    state.write_tracker.track(old_path);
-    state.write_tracker.track(new_abs_path);
+    write_tracker.track_any(old_path);
+    write_tracker.track_any(new_abs_path);
 
     let note = vault
         .rename_note(&note_id, &new_path)
@@ -946,7 +1099,7 @@ fn rename_note(
 
     let dto = note_to_detail(&note);
 
-    if let Some(index) = state.index.as_mut() {
+    if let Some(index) = instance.index.as_mut() {
         index.remove_note(&NoteId(note_id));
         index.reindex_note(note);
     }
@@ -956,11 +1109,16 @@ fn rename_note(
 
 #[tauri::command]
 fn search_notes(
+    vault_path: String,
     query: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<SearchResultDto>, String> {
     let state = lock!(state)?;
-    let index = state.index.as_ref().ok_or("No hay vault abierto")?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
 
     Ok(index
         .search(&query)
@@ -975,6 +1133,23 @@ fn search_notes(
         .collect())
 }
 
+#[tauri::command]
+fn advanced_search(
+    vault_path: String,
+    params: AdvancedSearchParams,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<AdvancedSearchResultDto>, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    Ok(index.advanced_search(&params, vault))
+}
+
 #[derive(serde::Serialize)]
 struct TagDto {
     tag: String,
@@ -982,9 +1157,16 @@ struct TagDto {
 }
 
 #[tauri::command]
-fn get_tags(state: tauri::State<Mutex<AppState>>) -> Result<Vec<TagDto>, String> {
+fn get_tags(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<TagDto>, String> {
     let state = lock!(state)?;
-    let index = state.index.as_ref().ok_or("No hay vault abierto")?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
 
     let mut tags: Vec<TagDto> = index
         .tags
@@ -1001,14 +1183,22 @@ fn get_tags(state: tauri::State<Mutex<AppState>>) -> Result<Vec<TagDto>, String>
 
 #[tauri::command]
 fn get_backlinks(
+    vault_path: String,
     note_id: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<BacklinkDto>, String> {
+    let cmd_start = Instant::now();
+    let lock_start = Instant::now();
     let state = lock!(state)?;
-    let index = state.index.as_ref().ok_or("No hay vault abierto")?;
+    let lock_wait = lock_start.elapsed();
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
 
-    let id = NoteId(note_id);
-    Ok(index
+    let id = NoteId(note_id.clone());
+    let result: Vec<BacklinkDto> = index
         .get_backlinks(&id)
         .into_iter()
         .filter_map(|bl_id| {
@@ -1018,7 +1208,173 @@ fn get_backlinks(
                 title: note.title.clone(),
             })
         })
+        .collect();
+    dbg_log!(
+        "get_backlinks({note_id}) → {} results, mutex wait: {lock_wait:.2?}, total: {:.2?}",
+        result.len(),
+        cmd_start.elapsed()
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+fn resolve_outgoing_links(
+    vault_path: String,
+    note_id: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<ResolvedLinkDto>, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+
+    let note = vault.read_note(&note_id).map_err(|e| e.to_string())?;
+    let from_note = NoteId(note_id);
+
+    let mut seen = std::collections::HashSet::new();
+    let links: Vec<ResolvedLinkDto> = note
+        .links
+        .iter()
+        .filter(|link| seen.insert(link.target.clone()))
+        .map(|link| {
+            let resolved = index.resolve_wikilink(&link.target, &from_note);
+            let (resolved_id, resolved_title) = match resolved {
+                Some(ref id) => (
+                    Some(id.0.clone()),
+                    index.metadata.get(id).map(|m| m.title.clone()),
+                ),
+                None => (None, None),
+            };
+            ResolvedLinkDto {
+                target: link.target.clone(),
+                note_id: resolved_id,
+                title: resolved_title,
+            }
+        })
+        .collect();
+
+    Ok(links)
+}
+
+#[tauri::command]
+fn resolve_wikilinks_batch(
+    vault_path: String,
+    note_id: String,
+    targets: Vec<String>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<ResolvedWikilinkDto>, String> {
+    let cmd_start = Instant::now();
+    let target_count = targets.len();
+    let lock_start = Instant::now();
+    let state = lock!(state)?;
+    let lock_wait = lock_start.elapsed();
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+    let from_note = NoteId(note_id.clone());
+
+    let mut seen = std::collections::HashSet::new();
+    let links: Vec<ResolvedWikilinkDto> = targets
+        .into_iter()
+        .filter(|target| seen.insert(target.clone()))
+        .map(|target| {
+            let resolved = index.resolve_wikilink(&target, &from_note);
+            let (resolved_note_id, resolved_title) = match resolved {
+                Some(ref id) => (
+                    Some(id.0.clone()),
+                    index.metadata.get(id).map(|m| m.title.clone()),
+                ),
+                None => (None, None),
+            };
+
+            ResolvedWikilinkDto {
+                target,
+                resolved_note_id,
+                resolved_title,
+            }
+        })
+        .collect();
+
+    let resolved_count = links
+        .iter()
+        .filter(|l| l.resolved_note_id.is_some())
+        .count();
+    dbg_log!(
+        "resolve_wikilinks_batch({note_id}, {target_count} targets) → {resolved_count} resolved, mutex wait: {lock_wait:.2?}, total: {:.2?}",
+        cmd_start.elapsed()
+    );
+    Ok(links)
+}
+
+#[tauri::command]
+fn suggest_wikilinks(
+    vault_path: String,
+    note_id: String,
+    query: String,
+    limit: usize,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<WikilinkSuggestionDto>, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+
+    Ok(index
+        .suggest_wikilinks(&query, &NoteId(note_id), limit.max(1))
+        .into_iter()
+        .filter_map(|note_id| {
+            let metadata = index.metadata.get(&note_id)?;
+            let insert_text = if metadata.title.trim().is_empty() {
+                metadata
+                    .id
+                    .0
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(&metadata.id.0)
+                    .trim_end_matches(".md")
+                    .to_string()
+            } else {
+                metadata.title.trim().to_string()
+            };
+
+            Some(WikilinkSuggestionDto {
+                id: metadata.id.0.clone(),
+                title: insert_text.clone(),
+                subtitle: metadata.id.0.clone(),
+                insert_text,
+            })
+        })
         .collect())
+}
+
+#[tauri::command]
+fn get_note_outline(content: String) -> Result<Vec<OutlineHeadingDto>, String> {
+    let headings = vault_ai_vault::parser::headings::extract_headings(&content);
+    Ok(headings
+        .into_iter()
+        .map(|h| OutlineHeadingDto {
+            id: h.id,
+            title: h.title,
+            level: h.level,
+            anchor: h.anchor,
+            head: h.head,
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn debug_set_timing(enabled: bool) -> String {
+    DEBUG_TIMING.store(enabled, Ordering::Relaxed);
+    let status = if enabled { "ON" } else { "OFF" };
+    eprintln!("[perf] Debug timing {status}");
+    format!("Debug timing {status}")
 }
 
 #[tauri::command]
@@ -1036,15 +1392,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(AppState {
-            vault: None,
-            index: None,
-            watcher: None,
+            vaults: HashMap::new(),
             write_tracker: WriteTracker::new(),
-            open_job_id: 0,
-            open_cancel: None,
-            open_state: VaultOpenState::idle(),
+            next_job_id: 0,
         }))
         .manage(Mutex::new(ai::AiManager::new()))
+        .manage(ai::whisper::WhisperDownloadCancel::new())
         .invoke_handler(tauri::generate_handler![
             open_vault,
             start_open_vault,
@@ -1057,8 +1410,14 @@ pub fn run() {
             delete_note,
             rename_note,
             search_notes,
+            advanced_search,
             get_backlinks,
             get_tags,
+            resolve_outgoing_links,
+            resolve_wikilinks_batch,
+            suggest_wikilinks,
+            get_note_outline,
+            debug_set_timing,
             ai::commands::ai_list_runtimes,
             ai::commands::ai_get_setup_status,
             ai::commands::ai_update_setup,
@@ -1072,11 +1431,21 @@ pub fn run() {
             ai::commands::ai_cancel_turn,
             ai::commands::ai_send_message,
             ai::commands::ai_respond_permission,
+            ai::commands::ai_respond_user_input,
             ai::commands::ai_save_session_history,
             ai::commands::ai_load_session_histories,
             ai::commands::ai_delete_session_history,
             ai::commands::ai_delete_all_session_histories,
             ai::commands::ai_prune_session_histories,
+            ai::whisper::whisper_list_models,
+            ai::whisper::whisper_get_status,
+            ai::whisper::whisper_download_model,
+            ai::whisper::whisper_delete_model,
+            ai::whisper::whisper_set_selected_model,
+            ai::whisper::whisper_set_enabled,
+            ai::whisper::whisper_check_audio_file,
+            ai::whisper::whisper_transcribe,
+            ai::whisper::whisper_cancel_download,
             delete_vault_snapshot,
         ])
         .run(tauri::generate_context!())

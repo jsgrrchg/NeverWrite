@@ -8,6 +8,7 @@ use std::thread;
 use vault_ai_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata};
 
 const PROGRESS_REPORT_EVERY: usize = 256;
+const MAX_SUGGESTION_PREFIX_CHARS: usize = 64;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchEntry {
@@ -35,6 +36,8 @@ pub struct VaultIndex {
     pub exact_filenames: HashMap<String, UniqueNoteMatch>,
     pub parent_dirs: HashMap<NoteId, String>,
     pub search_index: HashMap<NoteId, SearchEntry>,
+    pub suggestion_prefixes: HashMap<String, Vec<NoteId>>,
+    pub suggestion_order: Vec<NoteId>,
 }
 
 impl VaultIndex {
@@ -48,20 +51,23 @@ impl VaultIndex {
     ) -> Self {
         let prepared_notes: Vec<PreparedNote> =
             notes.into_iter().map(PreparedNote::from_note).collect();
+        let note_count = prepared_notes.len();
 
         let mut index = VaultIndex {
-            metadata: HashMap::new(),
-            notes: HashMap::new(),
-            backlinks: HashMap::new(),
-            forward_links: HashMap::new(),
+            metadata: HashMap::with_capacity(note_count),
+            notes: HashMap::with_capacity(note_count),
+            backlinks: HashMap::with_capacity(note_count),
+            forward_links: HashMap::with_capacity(note_count),
             tags: HashMap::new(),
             names: HashMap::new(),
             path_suffixes: HashMap::new(),
-            exact_ids: HashMap::new(),
-            exact_titles: HashMap::new(),
-            exact_filenames: HashMap::new(),
-            parent_dirs: HashMap::new(),
-            search_index: HashMap::new(),
+            exact_ids: HashMap::with_capacity(note_count),
+            exact_titles: HashMap::with_capacity(note_count),
+            exact_filenames: HashMap::with_capacity(note_count),
+            parent_dirs: HashMap::with_capacity(note_count),
+            search_index: HashMap::with_capacity(note_count),
+            suggestion_prefixes: HashMap::new(),
+            suggestion_order: Vec::with_capacity(note_count),
         };
 
         let total_notes = prepared_notes.len();
@@ -73,6 +79,8 @@ impl VaultIndex {
                 total: total_notes.max(1),
             });
         }
+
+        index.finalize_suggestion_order();
 
         let total_links = prepared_notes
             .iter()
@@ -113,10 +121,12 @@ impl VaultIndex {
             self.unregister_note_names(note_metadata, note_id);
             self.unregister_path_suffixes(note_metadata, note_id);
             self.unregister_exact_matches(note_metadata, note_id);
+            self.unregister_suggestion_prefixes(note_metadata, note_id);
         }
 
         self.parent_dirs.remove(note_id);
         self.search_index.remove(note_id);
+        self.suggestion_order.retain(|id| id != note_id);
         self.metadata.remove(note_id);
         self.notes.remove(note_id);
     }
@@ -139,6 +149,7 @@ impl VaultIndex {
         let note_id = prepared.id.clone();
 
         self.register_note(&prepared);
+        self.insert_suggestion_sorted(&note_id);
 
         let mut resolved_targets = Vec::new();
         for link in &prepared.prepared_links {
@@ -160,6 +171,8 @@ impl VaultIndex {
         self.register_path_suffixes(note);
         self.register_exact_matches(note);
         self.register_metadata(note);
+        self.register_suggestion_prefixes(note);
+        self.register_suggestion_order(&note.id);
 
         for tag in &note.tags {
             self.tags
@@ -287,18 +300,15 @@ impl VaultIndex {
     }
 
     fn register_note_names(&mut self, note: &PreparedNote) {
-        let aliases = [
-            Some(note.filename.clone()),
-            Some(note.title.clone()),
-            Some(note.id.0.clone()),
-            note.id.0.split('/').next_back().map(str::to_string),
-        ];
+        let mut seen_aliases = HashSet::new();
 
-        for alias in aliases.into_iter().flatten() {
+        for alias in note_alias_values(&note.title, &note.id.0, &note.filename) {
             for normalized in normalize_note_alias_variants(&alias) {
-                let entry = self.names.entry(normalized).or_default();
-                if !entry.contains(&note.id) {
-                    entry.push(note.id.clone());
+                if seen_aliases.insert(normalized.clone()) {
+                    self.names
+                        .entry(normalized)
+                        .or_default()
+                        .push(note.id.clone());
                 }
             }
         }
@@ -308,10 +318,10 @@ impl VaultIndex {
         let parts: Vec<&str> = note.normalized_id.split('/').collect();
         for start in 0..parts.len() {
             let suffix = parts[start..].join("/");
-            let entry = self.path_suffixes.entry(suffix).or_default();
-            if !entry.contains(&note.id) {
-                entry.push(note.id.clone());
-            }
+            self.path_suffixes
+                .entry(suffix)
+                .or_default()
+                .push(note.id.clone());
         }
     }
 
@@ -355,6 +365,73 @@ impl VaultIndex {
         );
     }
 
+    fn register_suggestion_prefixes(&mut self, note: &PreparedNote) {
+        let mut seen_prefixes = HashSet::new();
+
+        for alias in note_alias_values(&note.title, &note.id.0, &note.filename) {
+            for normalized in normalize_note_alias_variants(&alias) {
+                for prefix in suggestion_prefix_keys(&normalized) {
+                    if !seen_prefixes.insert(prefix.clone()) {
+                        continue;
+                    }
+                    self.suggestion_prefixes
+                        .entry(prefix)
+                        .or_default()
+                        .push(note.id.clone());
+                }
+            }
+        }
+    }
+
+    fn register_suggestion_order(&mut self, note_id: &NoteId) {
+        if !self.suggestion_order.contains(note_id) {
+            self.suggestion_order.push(note_id.clone());
+        }
+    }
+
+    fn insert_suggestion_sorted(&mut self, note_id: &NoteId) {
+        let sort_key = self
+            .metadata
+            .get(note_id)
+            .map(suggestion_sort_key)
+            .unwrap_or_default();
+
+        let pos = self
+            .suggestion_order
+            .binary_search_by(|existing| {
+                self.metadata
+                    .get(existing)
+                    .map(suggestion_sort_key)
+                    .unwrap_or_default()
+                    .cmp(&sort_key)
+            })
+            .unwrap_or_else(|pos| pos);
+
+        // register_suggestion_order already pushed it; remove the tail entry
+        // and insert at the sorted position instead.
+        if let Some(tail_pos) = self.suggestion_order.iter().rposition(|id| id == note_id) {
+            self.suggestion_order.remove(tail_pos);
+        }
+        self.suggestion_order
+            .insert(pos.min(self.suggestion_order.len()), note_id.clone());
+    }
+
+    fn finalize_suggestion_order(&mut self) {
+        self.suggestion_order.sort_by(|left, right| {
+            let left_key = self
+                .metadata
+                .get(left)
+                .map(suggestion_sort_key)
+                .unwrap_or_default();
+            let right_key = self
+                .metadata
+                .get(right)
+                .map(suggestion_sort_key)
+                .unwrap_or_default();
+            left_key.cmp(&right_key)
+        });
+    }
+
     fn unregister_note_names(&mut self, note: &NoteMetadata, note_id: &NoteId) {
         for alias in note_alias_keys(note) {
             remove_note_id_from_map_list(&mut self.names, &alias, note_id);
@@ -371,6 +448,105 @@ impl VaultIndex {
         self.exact_ids.remove(&normalize_alias(&note.id.0));
         self.recompute_unique_title_match(&normalize_alias(&note.title), note_id);
         self.recompute_unique_filename_match(&normalized_filename(note), note_id);
+    }
+
+    fn unregister_suggestion_prefixes(&mut self, note: &NoteMetadata, note_id: &NoteId) {
+        let mut seen_prefixes = HashSet::new();
+        for alias in note_alias_keys(note) {
+            for prefix in suggestion_prefix_keys(&alias) {
+                if !seen_prefixes.insert(prefix.clone()) {
+                    continue;
+                }
+                remove_note_id_from_map_list(&mut self.suggestion_prefixes, &prefix, note_id);
+            }
+        }
+    }
+
+    pub fn suggest_wikilinks(&self, query: &str, from_note: &NoteId, limit: usize) -> Vec<NoteId> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let normalized_query = normalize_link_target(query);
+        let from_parent_dir = self
+            .parent_dirs
+            .get(from_note)
+            .map(String::as_str)
+            .unwrap_or_default();
+
+        let candidates: Vec<NoteId> = if normalized_query.is_empty() {
+            self.suggestion_order
+                .iter()
+                .take(limit.saturating_mul(4))
+                .cloned()
+                .collect()
+        } else {
+            self.suggestion_prefixes
+                .get(suggestion_lookup_key(&normalized_query))
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        let mut ranked: Vec<(u8, usize, String, NoteId)> = candidates
+            .into_iter()
+            .filter_map(|note_id| {
+                let metadata = self.metadata.get(&note_id)?;
+                let insert_text = suggestion_insert_text(metadata);
+                let normalized_title = normalize_alias(&insert_text);
+                let normalized_basename = metadata
+                    .id
+                    .0
+                    .split('/')
+                    .next_back()
+                    .map(normalize_alias)
+                    .unwrap_or_default();
+                let normalized_id = normalize_alias(&metadata.id.0);
+                let rank = if normalized_query.is_empty() {
+                    100
+                } else if normalized_title.starts_with(&normalized_query) {
+                    0
+                } else if normalized_basename.starts_with(&normalized_query) {
+                    1
+                } else if normalized_id.starts_with(&normalized_query) {
+                    2
+                } else if normalized_title.contains(&normalized_query) {
+                    3
+                } else if normalized_basename.contains(&normalized_query) {
+                    4
+                } else if normalized_id.contains(&normalized_query) {
+                    5
+                } else {
+                    return None;
+                };
+
+                let target_parent_dir = self
+                    .parent_dirs
+                    .get(&note_id)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+
+                Some((
+                    rank,
+                    path_distance(from_parent_dir, target_parent_dir),
+                    suggestion_sort_key(metadata),
+                    note_id,
+                ))
+            })
+            .collect();
+
+        ranked.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.cmp(&right.2))
+        });
+        ranked.dedup_by(|left, right| left.3 == right.3);
+
+        ranked
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, _, note_id)| note_id)
+            .collect()
     }
 
     fn recompute_unique_title_match(&mut self, normalized_title: &str, removed_note_id: &NoteId) {
@@ -870,23 +1046,28 @@ fn note_alias_keys(note: &NoteMetadata) -> Vec<String> {
         .0
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let basename = note
-        .id
-        .0
-        .split('/')
-        .next_back()
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
 
-    for alias in [filename, note.title.clone(), note.id.0.clone(), basename] {
+    for alias in note_alias_values(&note.title, &note.id.0, filename) {
         for normalized in normalize_note_alias_variants(&alias) {
             aliases.insert(normalized);
         }
     }
 
     aliases.into_iter().collect()
+}
+
+fn note_alias_values(title: &str, note_id: &str, filename: &str) -> Vec<String> {
+    vec![
+        filename.to_string(),
+        title.to_string(),
+        note_id.to_string(),
+        note_id
+            .split('/')
+            .next_back()
+            .unwrap_or_default()
+            .to_string(),
+    ]
 }
 
 fn note_path_suffix_keys(note: &NoteMetadata) -> Vec<String> {
@@ -904,6 +1085,58 @@ fn normalized_filename(note: &NoteMetadata) -> String {
         .and_then(|stem| stem.to_str())
         .map(normalize_alias)
         .unwrap_or_default()
+}
+
+fn suggestion_prefix_keys(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        return Vec::new();
+    }
+
+    let mut prefixes = Vec::new();
+    let mut char_count = 0;
+    for (index, _) in value.char_indices().skip(1) {
+        char_count += 1;
+        if char_count > MAX_SUGGESTION_PREFIX_CHARS {
+            break;
+        }
+        prefixes.push(value[..index].to_string());
+    }
+
+    if prefixes.last().map(String::as_str) != Some(value) {
+        prefixes.push(value.to_string());
+    }
+
+    prefixes
+}
+
+fn suggestion_lookup_key(value: &str) -> &str {
+    let mut count = 0;
+    for (index, _) in value.char_indices() {
+        if count == MAX_SUGGESTION_PREFIX_CHARS {
+            return &value[..index];
+        }
+        count += 1;
+    }
+    value
+}
+
+fn suggestion_insert_text(note: &NoteMetadata) -> String {
+    let title = note.title.trim();
+    if !title.is_empty() {
+        return title.to_string();
+    }
+
+    note.id
+        .0
+        .split('/')
+        .next_back()
+        .unwrap_or(&note.id.0)
+        .trim_end_matches(".md")
+        .to_string()
+}
+
+fn suggestion_sort_key(note: &NoteMetadata) -> String {
+    normalize_alias(&suggestion_insert_text(note))
 }
 
 fn compute_unique_match_entry(
