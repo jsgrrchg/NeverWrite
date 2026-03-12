@@ -25,9 +25,18 @@ import {
     type AttachExternalTabPayload,
     getCurrentWindowLabel,
     getWindowMode,
+    openDetachedNoteWindow,
     openSettingsWindow,
+    openVaultWindow,
     readDetachedWindowPayload,
 } from "./app/detachedWindows";
+import { bootstrapDetachedWindow } from "./app/detachedWindowBootstrap";
+import {
+    buildWindowSessionEntry,
+    refreshWindowSessionSnapshot,
+    restoreWindowSession,
+    writeWindowSessionEntry,
+} from "./app/windowSession";
 import {
     useEditorStore,
     type Tab,
@@ -538,6 +547,15 @@ function useGlobalShortcuts(
                 return;
             }
 
+            // Cmd+W: close the active editor tab, never the window
+            if (mod && e.key === "w" && !e.shiftKey) {
+                const { activeTabId, closeTab } = useEditorStore.getState();
+                if (!activeTabId) return;
+                e.preventDefault();
+                closeTab(activeTabId);
+                return;
+            }
+
             // Cmd+T: new tab
             if (mod && e.key === "t") {
                 e.preventDefault();
@@ -674,13 +692,13 @@ function useDynamicScrollbars() {
     }, []);
 }
 
-function EditorPanel() {
+function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
     const activeNoteId = useEditorStore(
         (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
     );
     if (activeNoteId === "") return <NewTabView />;
     if (activeNoteId === "__search__") return <SearchView />;
-    return <Editor />;
+    return <Editor emptyStateMessage={emptyStateMessage} />;
 }
 
 export default function App() {
@@ -691,8 +709,18 @@ export default function App() {
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
+    const tabs = useEditorStore((s) => s.tabs);
+    const activeTabId = useEditorStore((s) => s.activeTabId);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const windowMode = getWindowMode();
+    const vaultParam = new URLSearchParams(window.location.search).get("vault");
+    const [windowSessionReady, setWindowSessionReady] = useState(
+        !(
+            windowMode === "main" &&
+            getCurrentWindowLabel() === "main" &&
+            vaultParam === null
+        ),
+    );
     const pendingNoteReloadsRef = useRef<
         Map<string, ReturnType<typeof setTimeout>>
     >(new Map());
@@ -781,28 +809,81 @@ export default function App() {
 
     useEffect(() => {
         if (windowMode === "settings") return;
+        if (!windowSessionReady) return;
+
+        const label = getCurrentWindowLabel();
+        const entry = buildWindowSessionEntry({
+            label,
+            windowMode,
+            vaultPath,
+            tabs,
+            activeTabId,
+        });
+
+        writeWindowSessionEntry(label, entry);
+
+        const refresh = () => {
+            void refreshWindowSessionSnapshot();
+        };
+
+        refresh();
+        window.addEventListener("focus", refresh);
+        const interval = window.setInterval(refresh, 2000);
+
+        return () => {
+            window.removeEventListener("focus", refresh);
+            window.clearInterval(interval);
+        };
+    }, [activeTabId, tabs, vaultPath, windowMode, windowSessionReady]);
+
+    useEffect(() => {
+        if (windowMode === "settings") return;
         if (windowMode !== "main") {
             const payload = readDetachedWindowPayload(getCurrentWindowLabel());
-            if (payload) hydrateTabs(payload.tabs, payload.activeTabId);
-            return;
+            let cancelled = false;
+
+            void bootstrapDetachedWindow(payload, {
+                openVault: async (path) => {
+                    if (cancelled) return;
+                    await useVaultStore.getState().openVault(path);
+                },
+                hydrateTabs: (tabs, activeTabId) => {
+                    if (cancelled) return;
+                    hydrateTabs(tabs, activeTabId);
+                },
+            });
+
+            return () => {
+                cancelled = true;
+            };
         }
 
         void (async () => {
-            const vaultParam = new URLSearchParams(window.location.search).get(
-                "vault",
-            );
-
             if (vaultParam) {
                 await useVaultStore
                     .getState()
                     .openVault(decodeURIComponent(vaultParam));
                 await restoreSessionForCurrentVault();
+            } else if (getCurrentWindowLabel() === "main") {
+                const restored = await restoreWindowSession({
+                    openPrimaryVault: async (path) => {
+                        await useVaultStore.getState().openVault(path);
+                    },
+                    restorePrimaryVaultSession: restoreSessionForCurrentVault,
+                    openVaultWindow,
+                    openDetachedNoteWindow,
+                });
+                if (restored) {
+                    markSessionReady();
+                    return;
+                }
             } else {
                 await restoreVault();
                 await restoreSessionForCurrentVault();
             }
 
             markSessionReady();
+            setWindowSessionReady(true);
         })();
     }, [hydrateTabs, restoreSessionForCurrentVault, restoreVault, windowMode]);
 
@@ -954,6 +1035,33 @@ export default function App() {
         };
     }, [insertExternalTab]);
 
+    if (windowMode === "ghost") {
+        const title =
+            new URLSearchParams(window.location.search).get("title") ?? "Tab";
+        return (
+            <div
+                style={{
+                    width: "100%",
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    padding: "0 12px",
+                    background: "var(--bg-secondary)",
+                    color: "var(--text-primary)",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    userSelect: "none",
+                    pointerEvents: "none",
+                }}
+            >
+                {title}
+            </div>
+        );
+    }
+
     if (windowMode === "settings") {
         return <SettingsPanel standalone onClose={() => {}} />;
     }
@@ -963,7 +1071,7 @@ export default function App() {
             <div className="h-full flex flex-col overflow-hidden">
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 overflow-hidden">
-                    <Editor emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
+                    <EditorPanel emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
                 </div>
                 <YouTubeModalHost />
                 <CommandPalette />

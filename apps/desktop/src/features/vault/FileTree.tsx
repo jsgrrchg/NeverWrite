@@ -11,7 +11,16 @@ import {
     buildNoteMoveOperations,
     canMoveFolderToTarget,
     getBaseName,
+    getParentPath,
 } from "./fileTreeMoves";
+import {
+    buildCopiedFolderPath,
+    buildCopiedNotePath,
+    canPasteFolderClipboard,
+    readFileTreeClipboard,
+    writeFileTreeClipboard,
+    type FileTreeClipboardPayload,
+} from "./fileTreeClipboard";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -66,7 +75,14 @@ interface TreeNode {
 
 type FlatTreeRow =
     | { kind: "folder"; name: string; path: string; depth: number }
-    | { kind: "note"; note: NoteDto; path: string; depth: number };
+    | { kind: "note"; note: NoteDto; path: string; depth: number }
+    | {
+          kind: "create";
+          mode: "note" | "folder";
+          parentPath: string;
+          path: string;
+          depth: number;
+      };
 
 function buildTree(notes: NoteDto[]): Record<string, TreeNode> {
     const startMs = perfNow();
@@ -450,9 +466,15 @@ interface FlatTreeRowViewProps {
         note: NoteDto,
         modifiers: { cmd: boolean; shift: boolean },
     ) => void;
+    onNoteAuxClick: (note: NoteDto, e: React.MouseEvent) => void;
     onNoteMouseDown: (note: NoteDto, e: React.MouseEvent) => void;
     onNoteContextMenu: (e: React.MouseEvent, note: NoteDto) => void;
     renamingNoteId: string | null;
+    creatingMode: "note" | "folder" | null;
+    newItemName: string;
+    onNewItemNameChange: (value: string) => void;
+    onCreateConfirm: () => void;
+    onCreateCancel: () => void;
     onRenameConfirm: (note: NoteDto, newName: string) => void;
     onRenameCancel: () => void;
     stickyTop?: number;
@@ -472,14 +494,21 @@ const FlatTreeRowView = memo(
         onFolderMouseDown,
         onFolderContextMenu,
         onNoteClick,
+        onNoteAuxClick,
         onNoteMouseDown,
         onNoteContextMenu,
         renamingNoteId,
+        creatingMode,
+        newItemName,
+        onNewItemNameChange,
+        onCreateConfirm,
+        onCreateCancel,
         onRenameConfirm,
         onRenameCancel,
         stickyTop,
     }: FlatTreeRowViewProps) {
         const renameInputRef = useRef<HTMLInputElement>(null);
+        const createInputRef = useRef<HTMLInputElement>(null);
         const paddingLeft =
             row.depth * metrics.indentStep + metrics.basePadding;
         const noteOffset = Math.round(14 * metrics.scale);
@@ -499,6 +528,17 @@ const FlatTreeRowView = memo(
                 renameInputRef.current.select();
             }
         }, [isRenaming]);
+
+        useEffect(() => {
+            if (
+                row.kind === "create" &&
+                creatingMode === row.mode &&
+                createInputRef.current
+            ) {
+                createInputRef.current.focus();
+                createInputRef.current.select();
+            }
+        }, [creatingMode, row]);
 
         if (isFolder) {
             return (
@@ -540,6 +580,50 @@ const FlatTreeRowView = memo(
                     />
                     <span className="whitespace-nowrap">{row.name}</span>
                 </button>
+            );
+        }
+
+        if (row.kind === "create") {
+            const createOffset = Math.round(14 * metrics.scale);
+            return (
+                <div
+                    className="flex items-center gap-1.5 mx-1 py-0.5"
+                    style={{
+                        paddingLeft: paddingLeft + createOffset,
+                        width: "calc(100% - 8px)",
+                        fontSize: metrics.fontSize,
+                        minHeight: metrics.rowHeight,
+                        boxSizing: "border-box",
+                    }}
+                >
+                    {row.mode === "folder" ? (
+                        <FolderIcon open={false} size={metrics.mediumIcon} />
+                    ) : (
+                        <NoteIcon size={metrics.smallIcon} />
+                    )}
+                    <input
+                        ref={createInputRef}
+                        value={newItemName}
+                        onChange={(event) =>
+                            onNewItemNameChange(event.currentTarget.value)
+                        }
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") onCreateConfirm();
+                            if (event.key === "Escape") onCreateCancel();
+                        }}
+                        onBlur={onCreateConfirm}
+                        placeholder={
+                            row.mode === "folder" ? "New folder" : "New note"
+                        }
+                        className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
+                        style={{
+                            backgroundColor: "var(--bg-primary)",
+                            border: "1px solid var(--accent)",
+                            color: "var(--text-primary)",
+                            fontSize: metrics.inputFontSize,
+                        }}
+                    />
+                </div>
             );
         }
 
@@ -604,6 +688,7 @@ const FlatTreeRowView = memo(
                         shift: e.shiftKey,
                     })
                 }
+                onAuxClick={(e) => onNoteAuxClick(note, e)}
                 onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
@@ -644,6 +729,8 @@ const FlatTreeRowView = memo(
         if (prev.metrics !== next.metrics) return false;
         if (prev.stickyTop !== next.stickyTop) return false;
         if (prev.renamingNoteId !== next.renamingNoteId) return false;
+        if (prev.creatingMode !== next.creatingMode) return false;
+        if (prev.newItemName !== next.newItemName) return false;
 
         const path = prev.row.path;
 
@@ -660,6 +747,10 @@ const FlatTreeRowView = memo(
                 (next.draggingFolderPath === path)
             )
                 return false;
+            return true;
+        }
+
+        if (prev.row.kind === "create") {
             return true;
         }
 
@@ -824,8 +915,9 @@ export function FileTree() {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<FileTreeContextPayload> | null>(null);
     const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
+    const [clipboardVersion, setClipboardVersion] = useState(0);
+    const [focusedFolderPath, setFocusedFolderPath] = useState("");
 
-    const inputRef = useRef<HTMLInputElement>(null);
     const treeScrollRef = useRef<HTMLDivElement>(null);
     const dragStateRef = useRef<DragState | null>(null);
     const dragOverPathRef = useRef<string | null>(null);
@@ -872,7 +964,43 @@ export function FileTree() {
         () => flattenTreeRows(tree, visibleExpandedFolders, sortMode),
         [sortMode, tree, visibleExpandedFolders],
     );
+    const displayRows = useMemo(() => {
+        if (!creatingMode) return flatRows;
+
+        const createRow: FlatTreeRow = {
+            kind: "create",
+            mode: creatingMode,
+            parentPath: creatingParentPath,
+            path: creatingParentPath
+                ? `${creatingParentPath}/__creating__`
+                : "__creating__",
+            depth: creatingParentPath
+                ? creatingParentPath.split("/").length
+                : 0,
+        };
+
+        if (!creatingParentPath) {
+            return [createRow, ...flatRows];
+        }
+
+        const folderIndex = flatRows.findIndex(
+            (row) => row.kind === "folder" && row.path === creatingParentPath,
+        );
+        if (folderIndex === -1) {
+            return [createRow, ...flatRows];
+        }
+
+        return [
+            ...flatRows.slice(0, folderIndex + 1),
+            createRow,
+            ...flatRows.slice(folderIndex + 1),
+        ];
+    }, [creatingMode, creatingParentPath, flatRows]);
     const canCollapseAll = expandedFolders.size > 0;
+    const treeClipboard = useMemo(
+        () => readFileTreeClipboard(vaultPath),
+        [clipboardVersion, vaultPath],
+    );
     const treeScale = fileTreeScale / 100;
     const metrics: TreeMetrics = useMemo(
         () => ({
@@ -891,7 +1019,7 @@ export function FileTree() {
     );
     // --- Virtualization ---
 
-    const contentHeight = flatRows.length * metrics.rowHeight;
+    const contentHeight = displayRows.length * metrics.rowHeight;
     const bottomScrollBuffer = metrics.rowHeight * 0.75;
     const totalHeight = contentHeight + bottomScrollBuffer;
     const startIdx = Math.max(
@@ -899,11 +1027,11 @@ export function FileTree() {
         Math.floor(scrollTop / metrics.rowHeight) - VIRTUAL_OVERSCAN,
     );
     const endIdx = Math.min(
-        flatRows.length,
+        displayRows.length,
         Math.ceil((scrollTop + viewportHeight) / metrics.rowHeight) +
             VIRTUAL_OVERSCAN,
     );
-    const visibleRows = flatRows.slice(startIdx, endIdx);
+    const visibleRows = displayRows.slice(startIdx, endIdx);
     const offsetY = startIdx * metrics.rowHeight;
 
     // --- Sticky folder overlay ---
@@ -912,33 +1040,34 @@ export function FileTree() {
     const folderLastDescendant = useMemo(() => {
         const map = new Map<number, number>();
         const stack: number[] = [];
-        for (let i = 0; i < flatRows.length; i++) {
+        for (let i = 0; i < displayRows.length; i++) {
             while (
                 stack.length > 0 &&
-                flatRows[stack[stack.length - 1]].depth >= flatRows[i].depth
+                displayRows[stack[stack.length - 1]].depth >=
+                    displayRows[i].depth
             ) {
                 map.set(stack.pop()!, i - 1);
             }
-            if (flatRows[i].kind === "folder") {
+            if (displayRows[i].kind === "folder") {
                 stack.push(i);
             }
         }
         while (stack.length > 0) {
-            map.set(stack.pop()!, flatRows.length - 1);
+            map.set(stack.pop()!, displayRows.length - 1);
         }
         return map;
-    }, [flatRows]);
+    }, [displayRows]);
 
     // Compute which folders should appear as sticky overlay headers
     const stickyFolders = useMemo(() => {
-        if (flatRows.length === 0) return [];
+        if (displayRows.length === 0) return [];
 
         const result: {
             row: FlatTreeRow & { kind: "folder" };
             top: number;
         }[] = [];
         let searchStart = 0;
-        let searchEnd = flatRows.length - 1;
+        let searchEnd = displayRows.length - 1;
 
         for (let depth = 0; depth < 50; depth++) {
             const stickyPosition = depth * metrics.rowHeight;
@@ -949,7 +1078,7 @@ export function FileTree() {
             } | null = null;
 
             for (let i = searchStart; i <= searchEnd; i++) {
-                const row = flatRows[i];
+                const row = displayRows[i];
                 if (row.kind !== "folder" || row.depth !== depth) continue;
 
                 const rowTop = i * metrics.rowHeight;
@@ -983,7 +1112,7 @@ export function FileTree() {
         }
 
         return result;
-    }, [flatRows, scrollTop, metrics.rowHeight, folderLastDescendant]);
+    }, [displayRows, scrollTop, metrics.rowHeight, folderLastDescendant]);
 
     const stickyFolderPaths = useMemo(
         () => new Set(stickyFolders.map((f) => f.row.path)),
@@ -1019,6 +1148,16 @@ export function FileTree() {
     }, []);
 
     useEffect(() => {
+        const handleStorage = (event: StorageEvent) => {
+            if (event.key !== "vaultai.fileTree.clipboard") return;
+            setClipboardVersion((value) => value + 1);
+        };
+
+        window.addEventListener("storage", handleStorage);
+        return () => window.removeEventListener("storage", handleStorage);
+    }, []);
+
+    useEffect(() => {
         const el = treeScrollRef.current;
         if (!el) return;
 
@@ -1034,7 +1173,7 @@ export function FileTree() {
         scrollTop,
         totalHeight,
         viewportHeight,
-        flatRows.length,
+        displayRows.length,
         metrics.rowHeight,
     ]);
 
@@ -1073,7 +1212,7 @@ export function FileTree() {
     useEffect(() => {
         if (!revealActive || !activeNoteId) return;
 
-        const rowIdx = flatRows.findIndex(
+        const rowIdx = displayRows.findIndex(
             (r) => r.kind === "note" && r.note.id === activeNoteId,
         );
         if (rowIdx === -1) return;
@@ -1091,7 +1230,13 @@ export function FileTree() {
         // Defer to next frame so the DOM has the correct totalHeight
         const raf = requestAnimationFrame(() => scrollToRow(rowIdx, "instant"));
         return () => cancelAnimationFrame(raf);
-    }, [activeNoteId, revealActive, flatRows, scrollToRow, metrics.rowHeight]);
+    }, [
+        activeNoteId,
+        revealActive,
+        displayRows,
+        scrollToRow,
+        metrics.rowHeight,
+    ]);
 
     // Handle REVEAL_NOTE_IN_TREE_EVENT: expand folders + defer scroll
     useEffect(() => {
@@ -1116,19 +1261,19 @@ export function FileTree() {
             window.removeEventListener(REVEAL_NOTE_IN_TREE_EVENT, handleReveal);
     }, []);
 
-    // Scroll to pending reveal note after flatRows updates
+    // Scroll to pending reveal note after visible tree rows update
     useEffect(() => {
         const noteId = pendingRevealRef.current;
         if (!noteId) return;
 
-        const rowIdx = flatRows.findIndex(
+        const rowIdx = displayRows.findIndex(
             (r) => r.kind === "note" && r.note.id === noteId,
         );
         if (rowIdx === -1) return;
 
         pendingRevealRef.current = null;
         requestAnimationFrame(() => scrollToRow(rowIdx));
-    }, [flatRows, scrollToRow]);
+    }, [displayRows, scrollToRow]);
 
     const applyMovedIds = useCallback((movedIds: Map<string, string>) => {
         if (movedIds.size === 0) return;
@@ -1396,6 +1541,7 @@ export function FileTree() {
 
     const handleFolderClick = useCallback((path: string) => {
         if (wasJustDraggingRef.current) return;
+        setFocusedFolderPath(path);
         handleToggleFolder(path);
     }, []);
 
@@ -1508,6 +1654,7 @@ export function FileTree() {
         modifiers: { cmd: boolean; shift: boolean },
     ) => {
         if (wasJustDraggingRef.current) return;
+        setFocusedFolderPath(getParentPath(note.id));
 
         if (modifiers.cmd) {
             setSelectedNoteIds((prev) => {
@@ -1548,8 +1695,23 @@ export function FileTree() {
         await openTreeNote(note);
     };
 
+    const handleNoteAuxClick = useCallback(
+        (note: NoteDto, event: React.MouseEvent) => {
+            if (event.button !== 1) return;
+            if (wasJustDraggingRef.current) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            setSelectedNoteIds(new Set([note.id]));
+            setLastClickedNoteId(note.id);
+            void handleOpenNoteInNewTab(note);
+        },
+        [handleOpenNoteInNewTab],
+    );
+
     const handleNoteContextMenu = (e: React.MouseEvent, note: NoteDto) => {
         e.preventDefault();
+        setFocusedFolderPath(getParentPath(note.id));
 
         const preserveSelection =
             selectedNoteIds.size > 1 && selectedNoteIds.has(note.id);
@@ -1568,6 +1730,7 @@ export function FileTree() {
 
     const handleFolderContextMenu = (e: React.MouseEvent, path: string) => {
         e.preventDefault();
+        setFocusedFolderPath(path);
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -1581,6 +1744,7 @@ export function FileTree() {
 
     const handleBlankContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
+        setFocusedFolderPath("");
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -1607,12 +1771,137 @@ export function FileTree() {
         [applyMoveOperations],
     );
 
+    const handleCopyNotes = useCallback(
+        (notesToCopy: NoteDto[]) => {
+            if (!vaultPath || notesToCopy.length === 0) return;
+            writeFileTreeClipboard({
+                kind: "notes",
+                vaultPath,
+                noteIds: notesToCopy.map((note) => note.id),
+            });
+            setClipboardVersion((value) => value + 1);
+        },
+        [vaultPath],
+    );
+
+    const handleCopyFolder = useCallback(
+        (folderPath: string) => {
+            if (!vaultPath || !folderPath) return;
+            writeFileTreeClipboard({
+                kind: "folder",
+                vaultPath,
+                folderPath,
+            });
+            setClipboardVersion((value) => value + 1);
+            setFocusedFolderPath(folderPath);
+        },
+        [vaultPath],
+    );
+
+    const persistCopiedNote = useCallback(
+        async (note: NoteDto, targetPath: string) => {
+            const { tabs: currentTabs } = useEditorStore.getState();
+            const existing = currentTabs.find((tab) => tab.noteId === note.id);
+            const content =
+                existing?.content ?? (await readNoteContent(note.id)).content;
+            const created = await createNote(targetPath);
+            if (!created) return null;
+
+            const detail = await vaultInvoke<{
+                title: string;
+                path: string;
+            }>("save_note", {
+                noteId: created.id,
+                content,
+            });
+
+            updateNoteMetadata(created.id, {
+                title: detail.title,
+                path: detail.path,
+                modified_at: Math.floor(Date.now() / 1000),
+            });
+            touchContent();
+            return created;
+        },
+        [createNote, readNoteContent, touchContent, updateNoteMetadata],
+    );
+
+    const handlePasteIntoFolder = useCallback(
+        async (targetFolder: string) => {
+            const clipboard = readFileTreeClipboard(vaultPath);
+            if (!clipboard) return;
+
+            const currentNotes = useVaultStore.getState().notes;
+            const reservedNoteIds = new Set(
+                currentNotes.map((note) => note.id),
+            );
+
+            if (clipboard.kind === "notes") {
+                const notesToCopy = clipboard.noteIds
+                    .map((noteId) =>
+                        currentNotes.find((note) => note.id === noteId),
+                    )
+                    .filter((note): note is NoteDto => Boolean(note));
+
+                for (const note of notesToCopy) {
+                    const nextPath = buildCopiedNotePath(
+                        note.id,
+                        targetFolder,
+                        reservedNoteIds,
+                    );
+                    const created = await persistCopiedNote(note, nextPath);
+                    if (!created) continue;
+                    reservedNoteIds.add(created.id);
+                }
+                return;
+            }
+
+            if (!canPasteFolderClipboard(clipboard, targetFolder)) {
+                return;
+            }
+
+            const sourcePrefix = `${clipboard.folderPath}/`;
+            const notesToCopy = currentNotes
+                .filter((note) => note.id.startsWith(sourcePrefix))
+                .sort((left, right) => left.id.localeCompare(right.id));
+            if (notesToCopy.length === 0) return;
+
+            const rootFolderPath = buildCopiedFolderPath(
+                clipboard.folderPath,
+                targetFolder,
+                reservedNoteIds,
+            );
+            setExpandedFolders((prev) => {
+                const next = new Set(prev);
+                if (targetFolder) next.add(targetFolder);
+                next.add(rootFolderPath);
+                return next;
+            });
+
+            for (const note of notesToCopy) {
+                const suffix = note.id.slice(sourcePrefix.length);
+                const nextPath = `${rootFolderPath}/${suffix}`;
+                const created = await persistCopiedNote(note, nextPath);
+                if (!created) continue;
+                reservedNoteIds.add(created.id);
+            }
+        },
+        [persistCopiedNote, vaultPath],
+    );
+
     const startCreating = useCallback(
         (mode: "note" | "folder", parentPath = "") => {
+            if (parentPath) {
+                setExpandedFolders((prev) => {
+                    if (prev.has(parentPath)) return prev;
+                    const next = new Set(prev);
+                    next.add(parentPath);
+                    return next;
+                });
+            }
             setNewItemName("");
             setCreatingParentPath(parentPath);
             setCreatingMode(mode);
-            setTimeout(() => inputRef.current?.focus(), 0);
         },
         [],
     );
@@ -1775,6 +2064,56 @@ export function FileTree() {
         [vaultPath],
     );
 
+    const handleTreeKeyDown = useCallback(
+        (event: React.KeyboardEvent<HTMLDivElement>) => {
+            const target = event.target;
+            if (target instanceof HTMLInputElement) return;
+            if (!(event.metaKey || event.ctrlKey)) return;
+            if (event.altKey) return;
+
+            const lowerKey = event.key.toLowerCase();
+            if (lowerKey === "c") {
+                if (selectedNoteIds.size > 0) {
+                    const notesToCopy = notes.filter((note) =>
+                        selectedNoteIds.has(note.id),
+                    );
+                    if (notesToCopy.length > 0) {
+                        event.preventDefault();
+                        handleCopyNotes(notesToCopy);
+                    }
+                    return;
+                }
+
+                if (focusedFolderPath) {
+                    event.preventDefault();
+                    handleCopyFolder(focusedFolderPath);
+                }
+                return;
+            }
+
+            if (lowerKey === "v" && treeClipboard) {
+                if (
+                    treeClipboard.kind === "folder" &&
+                    !canPasteFolderClipboard(treeClipboard, focusedFolderPath)
+                ) {
+                    return;
+                }
+
+                event.preventDefault();
+                void handlePasteIntoFolder(focusedFolderPath);
+            }
+        },
+        [
+            focusedFolderPath,
+            handleCopyFolder,
+            handleCopyNotes,
+            handlePasteIntoFolder,
+            notes,
+            selectedNoteIds,
+            treeClipboard,
+        ],
+    );
+
     const openMoveMenu = useCallback(
         (menu: ContextMenuState<FileTreeContextPayload>) => {
             if (menu.payload.kind !== "note") return;
@@ -1802,6 +2141,15 @@ export function FileTree() {
                     },
                     { type: "separator" },
                     {
+                        label: "Paste",
+                        action: () => void handlePasteIntoFolder(""),
+                        disabled:
+                            !treeClipboard ||
+                            (treeClipboard.kind === "folder" &&
+                                !canPasteFolderClipboard(treeClipboard, "")),
+                    },
+                    { type: "separator" },
+                    {
                         label: "Expand All",
                         action: () =>
                             setExpandedFolders(new Set(allFolderPaths)),
@@ -1823,6 +2171,19 @@ export function FileTree() {
                     {
                         label: "New Folder Here",
                         action: () => startCreating("folder", path),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Copy",
+                        action: () => handleCopyFolder(path),
+                    },
+                    {
+                        label: "Paste Here",
+                        action: () => void handlePasteIntoFolder(path),
+                        disabled:
+                            !treeClipboard ||
+                            (treeClipboard.kind === "folder" &&
+                                !canPasteFolderClipboard(treeClipboard, path)),
                     },
                     { type: "separator" },
                     {
@@ -1860,6 +2221,26 @@ export function FileTree() {
                     {
                         label: "Open in New Tab",
                         action: () => void handleOpenNoteInNewTab(note),
+                    },
+                    { type: "separator" },
+                    {
+                        label:
+                            contextTargetNotes.length > 1
+                                ? "Copy Selected Notes"
+                                : "Copy Note",
+                        action: () => handleCopyNotes(contextTargetNotes),
+                    },
+                    {
+                        label: "Paste in Parent Folder",
+                        action: () =>
+                            void handlePasteIntoFolder(getParentPath(note.id)),
+                        disabled:
+                            !treeClipboard ||
+                            (treeClipboard.kind === "folder" &&
+                                !canPasteFolderClipboard(
+                                    treeClipboard,
+                                    getParentPath(note.id),
+                                )),
                     },
                     { type: "separator" },
                     {
@@ -1945,14 +2326,18 @@ export function FileTree() {
         contextMenu,
         expandedFolders.size,
         getContextTargetNotes,
+        handleCopyFolder,
+        handleCopyNotes,
         handleDelete,
         handleDuplicateNote,
         handleOpenNoteInNewTab,
+        handlePasteIntoFolder,
         handleRevealFolderInFinder,
         handleRevealNoteInFinder,
         openMoveMenu,
         openTreeNote,
         startCreating,
+        treeClipboard,
     ]);
 
     // Ref-backed stable callbacks so memo'd FlatTreeRowView stays fresh
@@ -2148,43 +2533,15 @@ export function FileTree() {
                 )}
             </div>
 
-            {/* New item input */}
-            {creatingMode && (
-                <div
-                    className="px-2 py-1 shrink-0"
-                    style={{ borderBottom: "1px solid var(--border)" }}
-                >
-                    <input
-                        ref={inputRef}
-                        value={newItemName}
-                        onChange={(e) => setNewItemName(e.target.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter") void confirmCreate();
-                            if (e.key === "Escape") cancelCreate();
-                        }}
-                        onBlur={() => void confirmCreate()}
-                        placeholder={
-                            creatingMode === "folder"
-                                ? "folder-name"
-                                : "note-name"
-                        }
-                        className="w-full text-xs px-2 py-1 rounded outline-none"
-                        style={{
-                            backgroundColor: "var(--bg-primary)",
-                            border: "1px solid var(--accent)",
-                            color: "var(--text-primary)",
-                            fontSize: metrics.inputFontSize,
-                        }}
-                    />
-                </div>
-            )}
-
             {/* Tree (virtualized) */}
             <div
                 ref={treeScrollRef}
                 data-folder-path=""
                 className="flex-1 overflow-auto px-1"
+                tabIndex={0}
                 onScroll={handleTreeScroll}
+                onKeyDown={handleTreeKeyDown}
+                onMouseDown={() => treeScrollRef.current?.focus()}
                 onContextMenu={(event) => {
                     if (event.target !== event.currentTarget) return;
                     handleBlankContextMenu(event);
@@ -2201,7 +2558,7 @@ export function FileTree() {
                     outlineOffset: dragOverPath === "" ? -1 : 0,
                 }}
             >
-                {notes.length === 0 ? (
+                {displayRows.length === 0 ? (
                     <p
                         className="text-xs px-3 py-2"
                         style={{
@@ -2259,6 +2616,7 @@ export function FileTree() {
                                                 stableFolderContextMenu
                                             }
                                             onNoteClick={stableNoteClick}
+                                            onNoteAuxClick={handleNoteAuxClick}
                                             onNoteMouseDown={
                                                 stableNoteMouseDown
                                             }
@@ -2266,6 +2624,13 @@ export function FileTree() {
                                                 stableNoteContextMenu
                                             }
                                             renamingNoteId={renamingNoteId}
+                                            creatingMode={creatingMode}
+                                            newItemName={newItemName}
+                                            onNewItemNameChange={setNewItemName}
+                                            onCreateConfirm={() =>
+                                                void confirmCreate()
+                                            }
+                                            onCreateCancel={cancelCreate}
                                             onRenameConfirm={
                                                 stableRenameConfirm
                                             }
@@ -2295,7 +2660,9 @@ export function FileTree() {
                                     const key =
                                         row.kind === "folder"
                                             ? `folder:${row.path}`
-                                            : `note:${row.note.id}`;
+                                            : row.kind === "note"
+                                              ? `note:${row.note.id}`
+                                              : `create:${row.path}`;
                                     if (
                                         row.kind === "folder" &&
                                         stickyFolderPaths.has(row.path)
@@ -2335,6 +2702,7 @@ export function FileTree() {
                                                 stableFolderContextMenu
                                             }
                                             onNoteClick={stableNoteClick}
+                                            onNoteAuxClick={handleNoteAuxClick}
                                             onNoteMouseDown={
                                                 stableNoteMouseDown
                                             }
@@ -2342,6 +2710,13 @@ export function FileTree() {
                                                 stableNoteContextMenu
                                             }
                                             renamingNoteId={renamingNoteId}
+                                            creatingMode={creatingMode}
+                                            newItemName={newItemName}
+                                            onNewItemNameChange={setNewItemName}
+                                            onCreateConfirm={() =>
+                                                void confirmCreate()
+                                            }
+                                            onCreateCancel={cancelCreate}
                                             onRenameConfirm={
                                                 stableRenameConfirm
                                             }

@@ -110,7 +110,9 @@ function migrateGlobalTheme(vaultPath: string) {
 
 function readInitialVaultPath(): string | null {
     try {
-        const urlVault = new URLSearchParams(window.location.search).get("vault");
+        const urlVault = new URLSearchParams(window.location.search).get(
+            "vault",
+        );
         if (urlVault) return decodeURIComponent(urlVault);
         return localStorage.getItem(LAST_VAULT_KEY);
     } catch {
@@ -126,6 +128,14 @@ function loadTheme(vaultPath: string | null): ThemePreference {
     );
 }
 
+function getEffectiveVaultPath(
+    state: ReturnType<typeof useVaultStore.getState>,
+) {
+    return (
+        state.vaultPath ?? (state.isLoading ? state.vaultOpenState.path : null)
+    );
+}
+
 function saveTheme(vaultPath: string | null, preference: ThemePreference) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(
@@ -136,7 +146,10 @@ function saveTheme(vaultPath: string | null, preference: ThemePreference) {
 
 const initialVaultPath = readInitialVaultPath();
 const initialPreference = loadTheme(initialVaultPath);
-const initialTheme = resolveTheme(initialPreference.mode, initialPreference.themeName);
+const initialTheme = resolveTheme(
+    initialPreference.mode,
+    initialPreference.themeName,
+);
 
 export const useThemeStore = create<ThemeStore>((set, get) => ({
     ...initialTheme,
@@ -162,7 +175,10 @@ if (typeof window !== "undefined") {
         applyDark(state.isDark);
         applyThemeColors(state.themeName, state.isDark);
         if (!isApplyingExternal) {
-            saveTheme(_currentVaultPath, { mode: state.mode, themeName: state.themeName });
+            saveTheme(_currentVaultPath, {
+                mode: state.mode,
+                themeName: state.themeName,
+            });
         }
     });
 
@@ -178,7 +194,7 @@ if (typeof window !== "undefined") {
 
     // Reload theme when the active vault changes
     useVaultStore.subscribe((state) => {
-        const newVaultPath = state.vaultPath;
+        const newVaultPath = getEffectiveVaultPath(state);
         if (newVaultPath === _currentVaultPath) return;
         _currentVaultPath = newVaultPath;
         const pref = loadTheme(newVaultPath);

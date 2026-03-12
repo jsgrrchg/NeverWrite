@@ -237,6 +237,50 @@ describe("chatStore", () => {
         );
     });
 
+    it("clears the auth error banner when setup status becomes ready again", async () => {
+        useChatStore.setState({
+            runtimeConnection: {
+                status: "error",
+                message:
+                    "You were signed out. Reconnect in AI setup to continue chatting.",
+            },
+            setupStatus: {
+                ...readySetupStatus,
+                authReady: false,
+                onboardingRequired: true,
+            },
+        });
+
+        await useChatStore.getState().refreshSetupStatus();
+
+        expect(useChatStore.getState().runtimeConnection).toEqual({
+            status: "ready",
+            message: null,
+        });
+    });
+
+    it("clears the auth error banner after startAuth succeeds", async () => {
+        useChatStore.setState({
+            runtimeConnection: {
+                status: "error",
+                message:
+                    "You were signed out. Reconnect in AI setup to continue chatting.",
+            },
+            setupStatus: {
+                ...readySetupStatus,
+                authReady: false,
+                onboardingRequired: true,
+            },
+        });
+
+        await useChatStore.getState().startAuth({ methodId: "openai-api-key" });
+
+        expect(useChatStore.getState().runtimeConnection).toEqual({
+            status: "ready",
+            message: null,
+        });
+    });
+
     it("hydrates existing backend sessions before creating a new one", async () => {
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") {
@@ -979,7 +1023,15 @@ describe("chatStore", () => {
                         mode_id: "default",
                         created_at: 10,
                         updated_at: 20,
-                        messages: [],
+                        messages: [
+                            {
+                                id: "msg-1",
+                                role: "user",
+                                kind: "text",
+                                content: "Hello",
+                                timestamp: 20,
+                            },
+                        ],
                     },
                 ];
             }
@@ -1032,7 +1084,15 @@ describe("chatStore", () => {
                         mode_id: "default",
                         created_at: 10,
                         updated_at: 20,
-                        messages: [],
+                        messages: [
+                            {
+                                id: "msg-1",
+                                role: "user",
+                                kind: "text",
+                                content: "Hello",
+                                timestamp: 20,
+                            },
+                        ],
                     },
                 ];
             }
@@ -1052,23 +1112,18 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-history-1");
     });
 
-    it("persists empty sessions so blank chats can be restored after reopening", async () => {
+    it("does not persist empty sessions and ignores empty persisted histories", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [],
         });
-        let firstBoot = true;
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") return runtimePayload;
             if (command === "ai_get_setup_status") return readySetupStatus;
             if (command === "ai_list_sessions") return [];
             if (command === "ai_create_session") return sessionPayload;
-            if (command === "ai_save_session_history") return undefined;
             if (command === "ai_load_session_histories") {
-                if (firstBoot) {
-                    return [];
-                }
                 return [
                     {
                         version: 1,
@@ -1089,52 +1144,14 @@ describe("chatStore", () => {
 
         await useChatStore.getState().initialize();
 
-        await vi.waitFor(() => {
-            expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-                vaultPath: "/vault",
-                history: expect.objectContaining({
-                    session_id: "codex-session-1",
-                    messages: [],
-                }),
-            });
-        });
-        firstBoot = false;
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.anything(),
+        );
 
-        resetChatStore();
-        useChatTabsStore.setState({
-            tabs: [
-                {
-                    id: "tab-empty",
-                    sessionId: "codex-session-1",
-                    historySessionId: "codex-session-1",
-                },
-            ],
-            activeTabId: "tab-empty",
-        });
-
-        invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_list_runtimes") return runtimePayload;
-            if (command === "ai_get_setup_status") return readySetupStatus;
-            if (command === "ai_list_sessions") return [];
-            if (command === "ai_load_session_histories") {
-                return [
-                    {
-                        version: 1,
-                        session_id: "codex-session-1",
-                        model_id: "test-model",
-                        mode_id: "default",
-                        created_at: 10,
-                        updated_at: 20,
-                        messages: [],
-                    },
-                ];
-            }
-            if (command === "ai_create_session") return sessionPayload;
-            return sessionPayload;
-        });
-
-        await useChatStore.getState().initialize();
-
+        expect(useChatStore.getState().sessionOrder).toEqual([
+            "codex-session-1",
+        ]);
         expect(
             useChatStore.getState().sessionsById["codex-session-1"],
         ).toMatchObject({
@@ -1142,17 +1159,13 @@ describe("chatStore", () => {
             isPersistedSession: false,
             messages: [],
         });
+        expect(useChatStore.getState().activeSessionId).toBe("codex-session-1");
     });
 
-    it("waits for the initial empty-session persistence before initialize resolves", async () => {
+    it("does not wait for persistence when the initial session is still empty", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [],
-        });
-
-        let resolveSave: (() => void) | null = null;
-        const savePromise = new Promise<void>((resolve) => {
-            resolveSave = resolve;
         });
 
         invokeMock.mockImplementation(async (command) => {
@@ -1161,7 +1174,6 @@ describe("chatStore", () => {
             if (command === "ai_list_sessions") return [];
             if (command === "ai_load_session_histories") return [];
             if (command === "ai_create_session") return sessionPayload;
-            if (command === "ai_save_session_history") return savePromise;
             return sessionPayload;
         });
 
@@ -1174,16 +1186,13 @@ describe("chatStore", () => {
             });
 
         await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(resolved).toBe(false);
-
-        const resolvePendingSave = resolveSave as (() => void) | null;
-        if (!resolvePendingSave) {
-            throw new Error("Missing save resolver");
-        }
-        resolvePendingSave();
         await initializePromise;
 
         expect(resolved).toBe(true);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.anything(),
+        );
     });
 
     it("removes chat tabs when deleting a session", async () => {

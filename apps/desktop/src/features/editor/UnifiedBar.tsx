@@ -1,20 +1,27 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
+    useRef,
     useState,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
     ATTACH_EXTERNAL_TAB_EVENT,
     type AttachExternalTabPayload,
     createDetachedWindowPayload,
+    createGhostWindow,
+    destroyGhostWindow,
     findWindowTabDropTarget,
     getCurrentWindowLabel,
     getDetachedWindowPosition,
     isPointerOutsideCurrentWindow,
+    moveGhostWindow,
     openDetachedNoteWindow,
+    publishWindowTabDropZone,
 } from "../../app/detachedWindows";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
@@ -97,14 +104,59 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const vaultPath = useVaultStore((s) => s.vaultPath);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
         tabId: string;
     }> | null>(null);
     const [historyContextMenu, setHistoryContextMenu] =
         useState<ContextMenuState<void> | null>(null);
 
-    const handleDetachTab = useCallback(
+    const ghostRef = useRef<WebviewWindow | null>(null);
+    const ghostCancelledRef = useRef(false);
+
+    const handleDetachStart = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
+            const tab = useEditorStore
+                .getState()
+                .tabs.find((t) => t.id === tabId);
+            if (!tab) return;
+            ghostCancelledRef.current = false;
+
+            try {
+                const ghost = await createGhostWindow(
+                    tab.title,
+                    coords.screenX,
+                    coords.screenY,
+                );
+                if (ghostCancelledRef.current) {
+                    void destroyGhostWindow(ghost);
+                    return;
+                }
+                ghostRef.current = ghost;
+            } catch (error) {
+                console.error("Failed to create ghost window:", error);
+            }
+        },
+        [],
+    );
+
+    const handleDetachMove = useCallback(
+        (coords: { screenX: number; screenY: number }) => {
+            const ghost = ghostRef.current;
+            if (!ghost) return;
+            void moveGhostWindow(ghost, coords.screenX, coords.screenY);
+        },
+        [],
+    );
+
+    const handleDetachEnd = useCallback(
+        async (tabId: string, coords: { screenX: number; screenY: number }) => {
+            ghostCancelledRef.current = true;
+            if (ghostRef.current) {
+                await destroyGhostWindow(ghostRef.current);
+                ghostRef.current = null;
+            }
+
             const currentTabs = useEditorStore.getState().tabs;
             const tab = currentTabs.find((item) => item.id === tabId);
             if (!tab) return;
@@ -113,6 +165,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 coords.screenX,
                 coords.screenY,
                 getCurrentWindowLabel(),
+                vaultPath,
             );
 
             if (targetWindowLabel) {
@@ -131,13 +184,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
-            await openDetachedNoteWindow(createDetachedWindowPayload(tab), {
-                title: tab.title,
-                position: getDetachedWindowPosition(
-                    coords.screenX,
-                    coords.screenY,
-                ),
-            });
+            await openDetachedNoteWindow(
+                createDetachedWindowPayload(tab, vaultPath),
+                {
+                    title: tab.title,
+                    position: getDetachedWindowPosition(
+                        coords.screenX,
+                        coords.screenY,
+                    ),
+                },
+            );
 
             if (windowMode === "note" && currentTabs.length === 1) {
                 await appWindow.close();
@@ -146,8 +202,25 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             closeTab(tabId);
         },
-        [closeTab, windowMode],
+        [closeTab, vaultPath, windowMode],
     );
+
+    const handleDetachCancel = useCallback(() => {
+        ghostCancelledRef.current = true;
+        if (ghostRef.current) {
+            void destroyGhostWindow(ghostRef.current);
+            ghostRef.current = null;
+        }
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (ghostRef.current) {
+                void destroyGhostWindow(ghostRef.current);
+                ghostRef.current = null;
+            }
+        };
+    }, []);
 
     const {
         dragOffsetX,
@@ -165,7 +238,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         tabs,
         onCommitReorder: reorderTabs,
         shouldDetach: isPointerOutsideCurrentWindow,
-        onDetach: handleDetachTab,
+        onDetachStart: handleDetachStart,
+        onDetachMove: handleDetachMove,
+        onDetachEnd: handleDetachEnd,
+        onDetachCancel: handleDetachCancel,
     });
 
     const handleTabClick = useCallback(
@@ -234,6 +310,108 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     }, []);
 
     const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");
+
+    useLayoutEffect(() => {
+        const label = getCurrentWindowLabel();
+        let disposed = false;
+        let frame: number | null = null;
+        let resizeObserver: ResizeObserver | null = null;
+        const cleanupListeners: Array<() => void> = [];
+
+        const schedulePublish = () => {
+            if (disposed) return;
+            if (frame !== null) {
+                window.cancelAnimationFrame(frame);
+            }
+
+            frame = window.requestAnimationFrame(() => {
+                frame = null;
+                const strip = tabStripRef.current;
+                if (!strip) {
+                    publishWindowTabDropZone(label, null);
+                    return;
+                }
+
+                const rect = strip.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) {
+                    publishWindowTabDropZone(label, null);
+                    return;
+                }
+
+                const left = window.screenX + rect.left;
+                const top = window.screenY + rect.top;
+                publishWindowTabDropZone(label, {
+                    left: Math.round(left),
+                    top: Math.round(top),
+                    right: Math.round(left + rect.width),
+                    bottom: Math.round(top + rect.height),
+                    vaultPath,
+                });
+            });
+        };
+
+        schedulePublish();
+        window.addEventListener("resize", schedulePublish);
+        window.addEventListener("focus", schedulePublish);
+
+        const strip = tabStripRef.current;
+        if (strip && typeof ResizeObserver !== "undefined") {
+            resizeObserver = new ResizeObserver(() => {
+                schedulePublish();
+            });
+            resizeObserver.observe(strip);
+        }
+
+        void appWindow
+            .onMoved(() => {
+                schedulePublish();
+            })
+            .then((unlisten) => {
+                if (disposed) {
+                    void unlisten();
+                    return;
+                }
+                cleanupListeners.push(unlisten);
+            });
+
+        void appWindow
+            .onResized(() => {
+                schedulePublish();
+            })
+            .then((unlisten) => {
+                if (disposed) {
+                    void unlisten();
+                    return;
+                }
+                cleanupListeners.push(unlisten);
+            });
+
+        void appWindow
+            .onScaleChanged(() => {
+                schedulePublish();
+            })
+            .then((unlisten) => {
+                if (disposed) {
+                    void unlisten();
+                    return;
+                }
+                cleanupListeners.push(unlisten);
+            });
+
+        return () => {
+            disposed = true;
+            if (frame !== null) {
+                window.cancelAnimationFrame(frame);
+            }
+            resizeObserver?.disconnect();
+            window.removeEventListener("resize", schedulePublish);
+            window.removeEventListener("focus", schedulePublish);
+            cleanupListeners.forEach((unlisten) => {
+                void unlisten();
+            });
+            publishWindowTabDropZone(label, null);
+        };
+    }, [tabOrderKey, tabStripRef, vaultPath]);
 
     useEffect(() => {
         if (!activeTabId || draggingTabId) return;
@@ -532,11 +710,23 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 onPointerUp={(event) =>
                                                     handlePointerUp(
                                                         event.pointerId,
+                                                        {
+                                                            screenX:
+                                                                event.screenX,
+                                                            screenY:
+                                                                event.screenY,
+                                                        },
                                                     )
                                                 }
                                                 onPointerCancel={(event) =>
                                                     handlePointerUp(
                                                         event.pointerId,
+                                                        {
+                                                            screenX:
+                                                                event.screenX,
+                                                            screenY:
+                                                                event.screenY,
+                                                        },
                                                     )
                                                 }
                                                 onLostPointerCapture={(event) =>

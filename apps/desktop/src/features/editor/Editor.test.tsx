@@ -141,6 +141,7 @@ describe("Editor", () => {
         expect(mockInvoke()).toHaveBeenCalledWith("save_note", {
             noteId: "notes/current",
             content: "Updated body",
+            vaultPath: "/vault",
         });
     });
 
@@ -208,5 +209,42 @@ describe("Editor", () => {
             "save_note",
             expect.anything(),
         );
+    });
+
+    it("closes the active tab on Cmd+W", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Current body",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-2",
+        );
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "w",
+                    metaKey: true,
+                    bubbles: true,
+                }),
+            );
+        });
+
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-1",
+        ]);
+        expect(useEditorStore.getState().activeTabId).toBe("tab-1");
     });
 });

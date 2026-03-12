@@ -8,16 +8,14 @@ import type { Tab } from "./store/editorStore";
 
 const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "vaultai:detached-window:";
+const WINDOW_TAB_DROP_ZONE_STORAGE_PREFIX = "vaultai:window-tab-drop-zone:";
 const DETACH_WINDOW_WIDTH = 960;
 const DETACH_WINDOW_HEIGHT = 720;
 const DETACH_OUTSIDE_MARGIN = 30;
-const TAB_DROP_ZONE_HEIGHT = 128;
-const TAB_DROP_ZONE_TOP_PADDING = 22;
-const TAB_DROP_ZONE_SIDE_PADDING = 28;
 const DETACHED_WINDOW_CURSOR_OFFSET_X = 120;
 const DETACHED_WINDOW_CURSOR_OFFSET_Y = 18;
 const TRAFFIC_LIGHT_X = 14;
-const TRAFFIC_LIGHT_Y = 22;
+const NOTE_TRAFFIC_LIGHT_Y = 20;
 const SETTINGS_TRAFFIC_LIGHT_Y = 20;
 const VAULT_TRAFFIC_LIGHT_Y = 20;
 export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
@@ -25,10 +23,30 @@ export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
 export interface DetachedWindowPayload {
     tabs: Tab[];
     activeTabId: string | null;
+    vaultPath: string | null;
 }
 
 export interface AttachExternalTabPayload {
     tab: Tab;
+}
+
+export interface WindowTabDropZoneBounds {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    vaultPath: string | null;
+}
+
+interface StoredWindowTabDropZoneBounds extends WindowTabDropZoneBounds {
+    updatedAt: number;
+}
+
+interface WindowTabDropTargetCandidate extends WindowTabDropZoneBounds {
+    label: string;
+    minimized: boolean;
+    visible: boolean;
+    updatedAt: number;
 }
 
 export function getWindowMode() {
@@ -36,6 +54,7 @@ export function getWindowMode() {
     const w = params.get("window");
     if (w === "note") return "note";
     if (w === "settings") return "settings";
+    if (w === "ghost") return "ghost";
     return "main";
 }
 
@@ -44,7 +63,7 @@ export function getCurrentWindowLabel() {
 }
 
 function getTrafficLightPosition() {
-    return new LogicalPosition(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
+    return new LogicalPosition(TRAFFIC_LIGHT_X, NOTE_TRAFFIC_LIGHT_Y);
 }
 
 function getSettingsTrafficLightPosition() {
@@ -57,6 +76,15 @@ function getVaultTrafficLightPosition() {
 
 function getDetachedWindowStorageKey(label: string) {
     return `${DETACHED_WINDOW_STORAGE_PREFIX}${label}`;
+}
+
+function getWindowTabDropZoneStorageKey(label: string) {
+    return `${WINDOW_TAB_DROP_ZONE_STORAGE_PREFIX}${label}`;
+}
+
+export function getDetachedNoteWindowUrl(vaultPath: string | null) {
+    if (!vaultPath) return "/?window=note";
+    return `/?window=note&vault=${encodeURIComponent(vaultPath)}`;
 }
 
 export function readDetachedWindowPayload(label: string) {
@@ -73,11 +101,82 @@ export function readDetachedWindowPayload(label: string) {
     }
 }
 
-export function createDetachedWindowPayload(tab: Tab): DetachedWindowPayload {
+export function createDetachedWindowPayload(
+    tab: Tab,
+    vaultPath: string | null,
+): DetachedWindowPayload {
     return {
         tabs: [tab],
         activeTabId: tab.id,
+        vaultPath,
     };
+}
+
+export function publishWindowTabDropZone(
+    label: string,
+    bounds: WindowTabDropZoneBounds | null,
+) {
+    const key = getWindowTabDropZoneStorageKey(label);
+    if (!bounds) {
+        window.localStorage.removeItem(key);
+        return;
+    }
+
+    const stored: StoredWindowTabDropZoneBounds = {
+        ...bounds,
+        updatedAt: Date.now(),
+    };
+    window.localStorage.setItem(key, JSON.stringify(stored));
+}
+
+function readWindowTabDropZone(label: string) {
+    const raw = window.localStorage.getItem(
+        getWindowTabDropZoneStorageKey(label),
+    );
+    if (!raw) return null;
+
+    try {
+        const parsed = JSON.parse(
+            raw,
+        ) as Partial<StoredWindowTabDropZoneBounds>;
+        if (
+            typeof parsed.left !== "number" ||
+            typeof parsed.top !== "number" ||
+            typeof parsed.right !== "number" ||
+            typeof parsed.bottom !== "number"
+        ) {
+            return null;
+        }
+
+        return {
+            left: parsed.left,
+            top: parsed.top,
+            right: parsed.right,
+            bottom: parsed.bottom,
+            vaultPath:
+                typeof parsed.vaultPath === "string" ||
+                parsed.vaultPath === null
+                    ? parsed.vaultPath
+                    : null,
+            updatedAt:
+                typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
+        } satisfies StoredWindowTabDropZoneBounds;
+    } catch {
+        return null;
+    }
+}
+
+function pointIsInsideBounds(
+    screenX: number,
+    screenY: number,
+    bounds: WindowTabDropZoneBounds,
+) {
+    return (
+        screenX >= bounds.left &&
+        screenX <= bounds.right &&
+        screenY >= bounds.top &&
+        screenY <= bounds.bottom
+    );
 }
 
 export function isPointerOutsideCurrentWindow(
@@ -96,6 +195,7 @@ export async function findWindowTabDropTarget(
     screenX: number,
     screenY: number,
     excludeLabel: string,
+    vaultPath: string | null,
 ) {
     const windows = await getAllWebviewWindows();
 
@@ -104,55 +204,61 @@ export async function findWindowTabDropTarget(
             .filter(
                 (window) =>
                     window.label !== excludeLabel &&
-                    window.label !== "settings",
+                    window.label !== "settings" &&
+                    !window.label.startsWith("ghost-"),
             )
             .map(async (window) => {
-                const [position, size, minimized, visible] = await Promise.all([
-                    window.outerPosition(),
-                    window.outerSize(),
+                const bounds = readWindowTabDropZone(window.label);
+                if (!bounds || bounds.vaultPath !== vaultPath) {
+                    return null;
+                }
+
+                const [minimized, visible] = await Promise.all([
                     window.isMinimized(),
                     window.isVisible(),
                 ]);
 
                 return {
                     label: window.label,
-                    left: position.x,
-                    top: position.y,
-                    right: position.x + size.width,
-                    bottom: position.y + size.height,
+                    left: bounds.left,
+                    top: bounds.top,
+                    right: bounds.right,
+                    bottom: bounds.bottom,
+                    vaultPath: bounds.vaultPath,
                     minimized,
                     visible,
+                    updatedAt: bounds.updatedAt,
                 };
             }),
     );
 
     const match = candidates
         .filter(
-            (window) =>
+            (window): window is WindowTabDropTargetCandidate =>
+                window !== null &&
                 window.visible &&
                 !window.minimized &&
-                screenX >= window.left - TAB_DROP_ZONE_SIDE_PADDING &&
-                screenX <= window.right + TAB_DROP_ZONE_SIDE_PADDING &&
-                screenY >= window.top - TAB_DROP_ZONE_TOP_PADDING &&
-                screenY <= window.top + TAB_DROP_ZONE_HEIGHT,
+                pointIsInsideBounds(screenX, screenY, window),
         )
         .sort((left, right) => {
-            const leftInsideHeader =
-                screenX >= left.left &&
-                screenX <= left.right &&
-                screenY >= left.top &&
-                screenY <= left.top + TAB_DROP_ZONE_HEIGHT;
-            const rightInsideHeader =
-                screenX >= right.left &&
-                screenX <= right.right &&
-                screenY >= right.top &&
-                screenY <= right.top + TAB_DROP_ZONE_HEIGHT;
+            const leftCenterX = (left.left + left.right) / 2;
+            const leftCenterY = (left.top + left.bottom) / 2;
+            const rightCenterX = (right.left + right.right) / 2;
+            const rightCenterY = (right.top + right.bottom) / 2;
+            const leftDistance = Math.hypot(
+                screenX - leftCenterX,
+                screenY - leftCenterY,
+            );
+            const rightDistance = Math.hypot(
+                screenX - rightCenterX,
+                screenY - rightCenterY,
+            );
 
-            if (leftInsideHeader !== rightInsideHeader) {
-                return leftInsideHeader ? -1 : 1;
+            if (leftDistance !== rightDistance) {
+                return leftDistance - rightDistance;
             }
 
-            return Math.abs(screenY - left.top) - Math.abs(screenY - right.top);
+            return right.updatedAt - left.updatedAt;
         })[0];
 
     return match?.label ?? null;
@@ -235,7 +341,7 @@ export async function openDetachedNoteWindow(
     );
 
     const detachedWindow = new WebviewWindow(label, {
-        url: "/?window=note",
+        url: getDetachedNoteWindowUrl(payload.vaultPath),
         title: options?.title ?? payload.tabs[0]?.title ?? "Note",
         width: DETACH_WINDOW_WIDTH,
         height: DETACH_WINDOW_HEIGHT,
@@ -267,4 +373,72 @@ export function getDetachedWindowPosition(screenX: number, screenY: number) {
         x: Math.max(0, Math.round(screenX - DETACHED_WINDOW_CURSOR_OFFSET_X)),
         y: Math.max(0, Math.round(screenY - DETACHED_WINDOW_CURSOR_OFFSET_Y)),
     };
+}
+
+// ---------------------------------------------------------------------------
+// Ghost drag preview window
+// ---------------------------------------------------------------------------
+
+const GHOST_WINDOW_WIDTH = 200;
+const GHOST_WINDOW_HEIGHT = 36;
+const GHOST_CURSOR_OFFSET_X = 20;
+const GHOST_CURSOR_OFFSET_Y = 12;
+
+function getGhostWindowPosition(screenX: number, screenY: number) {
+    return {
+        x: Math.max(0, Math.round(screenX - GHOST_CURSOR_OFFSET_X)),
+        y: Math.max(0, Math.round(screenY - GHOST_CURSOR_OFFSET_Y)),
+    };
+}
+
+export async function createGhostWindow(
+    title: string,
+    screenX: number,
+    screenY: number,
+): Promise<WebviewWindow> {
+    const label = `ghost-${crypto.randomUUID()}`;
+    const pos = getGhostWindowPosition(screenX, screenY);
+
+    const ghost = new WebviewWindow(label, {
+        url: `/?window=ghost&title=${encodeURIComponent(title)}`,
+        title: "",
+        width: GHOST_WINDOW_WIDTH,
+        height: GHOST_WINDOW_HEIGHT,
+        resizable: false,
+        decorations: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        focus: false,
+        visible: false,
+        x: pos.x,
+        y: pos.y,
+    });
+
+    await new Promise<void>((resolve, reject) => {
+        void ghost.once("tauri://created", () => resolve());
+        void ghost.once("tauri://error", (e) => reject(e.payload));
+    });
+
+    await ghost.setIgnoreCursorEvents(true);
+    await ghost.show();
+
+    return ghost;
+}
+
+export async function moveGhostWindow(
+    ghost: WebviewWindow,
+    screenX: number,
+    screenY: number,
+) {
+    const pos = getGhostWindowPosition(screenX, screenY);
+    await ghost.setPosition(new LogicalPosition(pos.x, pos.y));
+}
+
+export async function destroyGhostWindow(ghost: WebviewWindow) {
+    try {
+        await ghost.destroy();
+    } catch {
+        // Window already closed
+    }
 }

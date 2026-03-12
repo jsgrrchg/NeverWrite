@@ -24,7 +24,6 @@ import {
 } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit } from "@codemirror/language";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useShallow } from "zustand/react/shallow";
@@ -32,7 +31,6 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
-import { getWindowMode } from "../../app/detachedWindows";
 import { findWikilinks } from "../../app/utils/wikilinks";
 import { useEditorStore, type Tab } from "../../app/store/editorStore";
 import { useThemeStore } from "../../app/store/themeStore";
@@ -100,8 +98,6 @@ import {
     WikilinkSuggester,
     type WikilinkSuggesterState,
 } from "./WikilinkSuggester";
-
-const appWindow = getCurrentWindow();
 
 type SavedNoteDetail = {
     id: string;
@@ -1548,6 +1544,7 @@ export function Editor({
     // Keyboard shortcuts
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
+            if (e.defaultPrevented) return;
             const { tabs, activeTabId, closeTab, switchTab } =
                 useEditorStore.getState();
 
@@ -1569,15 +1566,6 @@ export function Editor({
                         }
                     }
                     tabStatesRef.current.delete(tab?.noteId ?? activeTabId);
-                    if (getWindowMode() === "note" && tabs.length === 1) {
-                        void appWindow.close().catch((error) => {
-                            console.error(
-                                "No se pudo cerrar la ventana de nota:",
-                                error,
-                            );
-                        });
-                        return;
-                    }
                     closeTab(activeTabId);
                 }
             }

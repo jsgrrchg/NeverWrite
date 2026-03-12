@@ -16,7 +16,13 @@ vi.mock("@tauri-apps/api/window", () => ({
         listen: vi.fn(),
         once: vi.fn(),
         onCloseRequested: vi.fn(),
+        onMoved: vi.fn().mockResolvedValue(vi.fn()),
+        onResized: vi.fn().mockResolvedValue(vi.fn()),
+        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
         setFocus: vi.fn(),
+        startDragging: vi.fn(),
+        emitTo: vi.fn(),
+        close: vi.fn(),
         label: "main",
     }),
 }));
@@ -32,6 +38,9 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
         once = vi.fn();
         show = vi.fn();
         setFocus = vi.fn();
+        destroy = vi.fn();
+        setIgnoreCursorEvents = vi.fn();
+        setPosition = vi.fn();
         outerPosition = vi.fn().mockResolvedValue({ x: 0, y: 0 });
         outerSize = vi.fn().mockResolvedValue({ width: 1200, height: 800 });
         isMinimized = vi.fn().mockResolvedValue(false);
