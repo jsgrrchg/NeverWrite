@@ -1,39 +1,39 @@
-import { invoke } from "@tauri-apps/api/core";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { findNoteByWikilink } from "./wikilinkResolution";
 
-export function navigateWikilink(target: string) {
-    const note = findNoteByWikilink(target);
+export async function navigateWikilink(target: string) {
+    const note = await findNoteByWikilink(target);
     if (note) {
         const { tabs, openNote } = useEditorStore.getState();
         const existing = tabs.find((t) => t.noteId === note.id);
         if (existing) {
-            openNote(note.id, note.title, existing.content);
+            openNote(note.id, note.title ?? target, existing.content);
             return;
         }
-        void invoke<{ content: string }>("read_note", { noteId: note.id })
-            .then((detail) => {
-                useEditorStore
-                    .getState()
-                    .openNote(note.id, note.title, detail.content);
-            })
-            .catch((e) => console.error("Error reading linked note:", e));
+        try {
+            const detail = await vaultInvoke<{ content: string }>("read_note", {
+                noteId: note.id,
+            });
+            useEditorStore
+                .getState()
+                .openNote(note.id, note.title ?? target, detail.content);
+        } catch (e) {
+            console.error("Error reading linked note:", e);
+        }
     } else {
         // Broken link: create the note
         const { createNote } = useVaultStore.getState();
-        void createNote(target).then((created) => {
-            if (created) {
-                useEditorStore
-                    .getState()
-                    .openNote(created.id, created.title, "");
-            }
-        });
+        const created = await createNote(target);
+        if (created) {
+            useEditorStore.getState().openNote(created.id, created.title, "");
+        }
     }
 }
 
-export function openWikilinkInNewTab(target: string) {
-    const note = findNoteByWikilink(target);
+export async function openWikilinkInNewTab(target: string) {
+    const note = await findNoteByWikilink(target);
     if (!note) return;
 
     const { tabs, insertExternalTab } = useEditorStore.getState();
@@ -43,24 +43,25 @@ export function openWikilinkInNewTab(target: string) {
         insertExternalTab({
             id: crypto.randomUUID(),
             noteId: note.id,
-            title: note.title,
+            title: note.title ?? target,
             content: existing.content,
         });
         return;
     }
 
-    void invoke<{ content: string }>("read_note", { noteId: note.id })
-        .then((detail) => {
-            useEditorStore.getState().insertExternalTab({
-                id: crypto.randomUUID(),
-                noteId: note.id,
-                title: note.title,
-                content: detail.content,
-            });
-        })
-        .catch((error) =>
-            console.error("Error opening linked note in new tab:", error),
-        );
+    try {
+        const detail = await vaultInvoke<{ content: string }>("read_note", {
+            noteId: note.id,
+        });
+        useEditorStore.getState().insertExternalTab({
+            id: crypto.randomUUID(),
+            noteId: note.id,
+            title: note.title ?? target,
+            content: detail.content,
+        });
+    } catch (error) {
+        console.error("Error opening linked note in new tab:", error);
+    }
 }
 
 export function resolveRelativeNotePath(
@@ -110,14 +111,6 @@ export function getNoteLinkTarget(href: string): string | null {
         activeNoteId,
         normalizedTarget,
     );
-    if (resolvedPath && findNoteByWikilink(resolvedPath)) {
-        return resolvedPath;
-    }
-
     const directTarget = normalizedTarget.replace(/^\/+/, "");
-    if (directTarget && findNoteByWikilink(directTarget)) {
-        return directTarget;
-    }
-
     return resolvedPath || directTarget || normalizedTarget;
 }

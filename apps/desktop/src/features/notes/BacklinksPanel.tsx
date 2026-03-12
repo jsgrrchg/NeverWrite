@@ -5,7 +5,7 @@ import {
     useState,
     useLayoutEffect,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useEditorStore,
     type PendingReveal,
@@ -148,7 +148,7 @@ export function BacklinksPanel() {
         }
 
         const requestId = ++requestIdRef.current;
-        invoke<BacklinkDto[]>("get_backlinks", { noteId: activeNoteId })
+        vaultInvoke<BacklinkDto[]>("get_backlinks", { noteId: activeNoteId })
             .then((nextBacklinks) => {
                 if (requestId !== requestIdRef.current) return;
                 setBacklinks(nextBacklinks);
@@ -171,7 +171,7 @@ export function BacklinksPanel() {
     if (!activeTab) return null;
 
     const readBacklink = async (bl: BacklinkDto) =>
-        invoke<{ content: string }>("read_note", {
+        vaultInvoke<{ content: string }>("read_note", {
             noteId: bl.id,
         });
 

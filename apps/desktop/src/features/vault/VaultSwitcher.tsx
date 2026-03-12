@@ -88,6 +88,7 @@ export function VaultSwitcher() {
             style={{
                 position: "relative",
                 borderTop: "1px solid var(--border)",
+                boxShadow: "0 -4px 8px rgba(0,0,0,0.06)",
                 flexShrink: 0,
             }}
         >
@@ -144,7 +145,7 @@ export function VaultSwitcher() {
                         payload: { path: vaultPath },
                     });
                 }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs"
+                className="w-full flex items-center gap-2 px-3 py-3 text-xs"
                 style={{ color: "var(--text-secondary)" }}
             >
                 <svg

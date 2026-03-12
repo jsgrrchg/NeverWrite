@@ -11,6 +11,7 @@ import {
     aiLoadSessionHistories,
     aiPruneSessionHistories,
     aiRespondPermission,
+    aiRespondUserInput,
     aiSaveSessionHistory,
     aiSendMessage,
     aiStartAuth,
@@ -35,7 +36,10 @@ import type {
     AIChatSession,
     AIComposerPart,
     AIPermissionRequestPayload,
+    AIPlanUpdatePayload,
+    AIStatusEventPayload,
     AIToolActivityPayload,
+    AIUserInputRequestPayload,
     AIRuntimeConnectionState,
     AIRuntimeDescriptor,
     AIRuntimeSetupStatus,
@@ -268,7 +272,10 @@ interface ChatStore {
         message_id: string;
     }) => void;
     applyToolActivity: (payload: AIToolActivityPayload) => void;
+    applyStatusEvent: (payload: AIStatusEventPayload) => void;
+    applyPlanUpdate: (payload: AIPlanUpdatePayload) => void;
     applyPermissionRequest: (payload: AIPermissionRequestPayload) => void;
+    applyUserInputRequest: (payload: AIUserInputRequestPayload) => void;
     setActiveSession: (sessionId: string) => void;
     resumeSession: (sessionId: string) => Promise<string | null>;
     loadSession: (sessionId: string) => Promise<void>;
@@ -279,6 +286,10 @@ interface ChatStore {
     sendMessage: () => Promise<void>;
     stopStreaming: () => Promise<void>;
     respondPermission: (requestId: string, optionId?: string) => Promise<void>;
+    respondUserInput: (
+        requestId: string,
+        answers: Record<string, string[]>,
+    ) => Promise<void>;
     newSession: (runtimeId?: string) => Promise<void>;
     deleteSession: (sessionId: string) => Promise<void>;
     deleteAllSessions: () => Promise<void>;
@@ -286,6 +297,12 @@ interface ChatStore {
     attachFolder: (folderPath: string, name: string) => void;
     attachCurrentNote: (note: AIChatNoteSummary | null) => void;
     attachSelection: (note: AIChatNoteSummary | null) => void;
+    attachAudio: (filePath: string, fileName: string) => void;
+    attachFile: (filePath: string, fileName: string, mimeType: string) => void;
+    updateAttachment: (
+        attachmentId: string,
+        patch: Partial<AIChatAttachment>,
+    ) => void;
     removeAttachment: (attachmentId: string) => void;
     clearAttachments: () => void;
     toggleAutoContext: () => void;
@@ -367,6 +384,53 @@ function createErrorMessage(content: string): AIChatMessage {
         content,
         title: "Runtime error",
         timestamp: Date.now(),
+    };
+}
+
+function createStatusMessage(payload: AIStatusEventPayload): AIChatMessage {
+    return {
+        id: `status:${payload.event_id}`,
+        role: "system",
+        kind: "status",
+        title: payload.title,
+        content: payload.detail ?? payload.title,
+        timestamp: Date.now(),
+        meta: {
+            status_event: payload.kind,
+            status: payload.status,
+            emphasis: payload.emphasis,
+        },
+    };
+}
+
+function createPlanMessage(payload: AIPlanUpdatePayload): AIChatMessage {
+    const detail = payload.detail?.trim() || undefined;
+    const stepsContent = payload.entries
+        .map((entry) => entry.content)
+        .join("\n");
+    const content = [detail, stepsContent].filter(Boolean).join("\n\n");
+    const inProgress = payload.entries.some(
+        (entry) => entry.status === "in_progress",
+    );
+    const completedCount = payload.entries.filter(
+        (entry) => entry.status === "completed",
+    ).length;
+
+    return {
+        id: `plan:${payload.plan_id}`,
+        role: "assistant",
+        kind: "plan",
+        title: payload.title?.trim() || "Plan",
+        content,
+        timestamp: Date.now(),
+        inProgress,
+        planEntries: payload.entries,
+        planDetail: detail,
+        meta: {
+            status: inProgress ? "in_progress" : "updated",
+            completed_count: completedCount,
+            total_count: payload.entries.length,
+        },
     };
 }
 
@@ -464,7 +528,13 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
 
     const history = session.messages
         .filter((message) => !message.inProgress)
-        .filter((message) => message.kind !== "permission")
+        .filter(
+            (message) =>
+                message.kind !== "permission" &&
+                message.kind !== "plan" &&
+                message.kind !== "user_input_request" &&
+                message.kind !== "status",
+        )
         .map((message) => {
             const role =
                 message.role === "assistant"
@@ -501,6 +571,28 @@ function updatePermissionMessageState(
     patch: Record<string, string | number | boolean | null>,
 ) {
     const messageId = `permission:${requestId}`;
+    return {
+        ...session,
+        messages: session.messages.map((message) =>
+            message.id === messageId
+                ? {
+                      ...message,
+                      meta: {
+                          ...message.meta,
+                          ...patch,
+                      },
+                  }
+                : message,
+        ),
+    };
+}
+
+function updateUserInputMessageState(
+    session: AIChatSession,
+    requestId: string,
+    patch: Record<string, string | number | boolean | null>,
+) {
+    const messageId = `user-input:${requestId}`;
     return {
         ...session,
         messages: session.messages.map((message) =>
@@ -659,6 +751,12 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             timestamp: m.timestamp,
             title: m.title,
             meta: m.meta,
+            permission_request_id: m.permissionRequestId,
+            permission_options: m.permissionOptions,
+            user_input_request_id: m.userInputRequestId,
+            user_input_questions: m.userInputQuestions,
+            plan_entries: m.planEntries,
+            plan_detail: m.planDetail,
         }));
 
     const timestamps = messages.map((m) => m.timestamp);
@@ -725,20 +823,177 @@ function clearStaleStreamingCheck(sessionId: string) {
     }
 }
 
-function persistSession(session: AIChatSession) {
+// ---------------------------------------------------------------------------
+// Delta buffering: accumulate rapid deltas and flush to Zustand on rAF
+// ---------------------------------------------------------------------------
+interface DeltaBuffer {
+    messageDelta: Map<string, { message_id: string; text: string }>;
+    thinkingDelta: Map<string, Map<string, string>>;
+    rafId: number | null;
+}
+
+const _deltaBuffer: DeltaBuffer = {
+    messageDelta: new Map(),
+    thinkingDelta: new Map(),
+    rafId: null,
+};
+
+function flushDeltas() {
+    _deltaBuffer.rafId = null;
+    const { messageDelta, thinkingDelta } = _deltaBuffer;
+
+    if (messageDelta.size === 0 && thinkingDelta.size === 0) return;
+
+    const msgEntries = new Map(messageDelta);
+    const thinkEntries = new Map(thinkingDelta);
+    messageDelta.clear();
+    thinkingDelta.clear();
+
+    useChatStore.setState((state) => {
+        let sessionsById = state.sessionsById;
+        let changed = false;
+
+        // Apply message deltas
+        for (const [sessionId, { message_id, text }] of msgEntries) {
+            const session = sessionsById[sessionId];
+            if (!session) continue;
+
+            const messages = session.messages;
+            const lastMsg = messages[messages.length - 1];
+
+            let newMessages: typeof messages;
+            if (
+                lastMsg &&
+                lastMsg.role === "assistant" &&
+                lastMsg.kind === "text" &&
+                lastMsg.inProgress
+            ) {
+                newMessages = messages.slice();
+                newMessages[newMessages.length - 1] = {
+                    ...lastMsg,
+                    content: lastMsg.content + text,
+                };
+            } else {
+                const idTaken = messages.some((m) => m.id === message_id);
+                newMessages = [
+                    ...messages,
+                    {
+                        id: idTaken
+                            ? `${message_id}:${Date.now()}`
+                            : message_id,
+                        role: "assistant" as const,
+                        kind: "text" as const,
+                        content: text,
+                        title: "Assistant",
+                        timestamp: Date.now(),
+                        inProgress: true,
+                    },
+                ];
+            }
+
+            sessionsById = {
+                ...sessionsById,
+                [sessionId]: { ...session, messages: newMessages },
+            };
+            changed = true;
+        }
+
+        // Apply thinking deltas
+        for (const [sessionId, msgMap] of thinkEntries) {
+            const session = sessionsById[sessionId];
+            if (!session) continue;
+
+            const messages = session.messages.slice();
+            for (const [messageId, text] of msgMap) {
+                const idx = messages.findIndex((m) => m.id === messageId);
+                if (idx !== -1) {
+                    const msg = messages[idx];
+                    messages[idx] = {
+                        ...msg,
+                        content: msg.content + text,
+                        inProgress: true,
+                    };
+                }
+            }
+
+            sessionsById = {
+                ...sessionsById,
+                [sessionId]: { ...session, messages },
+            };
+            changed = true;
+        }
+
+        if (!changed) return state;
+
+        // Touch sessionOrder for all affected sessions
+        let sessionOrder = state.sessionOrder;
+        for (const sid of new Set([
+            ...msgEntries.keys(),
+            ...thinkEntries.keys(),
+        ])) {
+            sessionOrder = touchSessionOrder(sessionOrder, sid);
+        }
+
+        return { sessionsById, sessionOrder };
+    });
+}
+
+function scheduleDeltaFlush() {
+    if (_deltaBuffer.rafId === null) {
+        _deltaBuffer.rafId = requestAnimationFrame(flushDeltas);
+    }
+}
+
+function bufferMessageDelta(
+    session_id: string,
+    message_id: string,
+    delta: string,
+) {
+    const existing = _deltaBuffer.messageDelta.get(session_id);
+    if (existing) {
+        existing.text += delta;
+    } else {
+        _deltaBuffer.messageDelta.set(session_id, { message_id, text: delta });
+    }
+    scheduleDeltaFlush();
+}
+
+function bufferThinkingDelta(
+    session_id: string,
+    message_id: string,
+    delta: string,
+) {
+    let sessionMap = _deltaBuffer.thinkingDelta.get(session_id);
+    if (!sessionMap) {
+        sessionMap = new Map();
+        _deltaBuffer.thinkingDelta.set(session_id, sessionMap);
+    }
+    const existing = sessionMap.get(message_id);
+    sessionMap.set(message_id, existing ? existing + delta : delta);
+    scheduleDeltaFlush();
+}
+
+function flushDeltasSync() {
+    if (_deltaBuffer.rafId !== null) {
+        cancelAnimationFrame(_deltaBuffer.rafId);
+        _deltaBuffer.rafId = null;
+    }
+    flushDeltas();
+}
+
+async function persistSession(session: AIChatSession) {
     const vaultPath = useVaultStore.getState().vaultPath;
-    if (!vaultPath || session.messages.length === 0) return;
+    if (!vaultPath) return;
 
     const historyRetentionDays = useChatStore.getState().historyRetentionDays;
-    aiSaveSessionHistory(vaultPath, toPersistedHistory(session))
-        .then(() =>
-            historyRetentionDays > 0
-                ? aiPruneSessionHistories(vaultPath, historyRetentionDays)
-                : undefined,
-        )
-        .catch((error) =>
-            console.warn("Failed to persist session history:", error),
-        );
+    try {
+        await aiSaveSessionHistory(vaultPath, toPersistedHistory(session));
+        if (historyRetentionDays > 0) {
+            await aiPruneSessionHistories(vaultPath, historyRetentionDays);
+        }
+    } catch (error) {
+        console.warn("Failed to persist session history:", error);
+    }
 }
 
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
@@ -758,6 +1013,12 @@ function restoreMessagesFromHistory(
         timestamp: m.timestamp,
         title: m.title,
         meta: m.meta,
+        permissionRequestId: m.permission_request_id,
+        permissionOptions: m.permission_options,
+        userInputRequestId: m.user_input_request_id,
+        userInputQuestions: m.user_input_questions,
+        planEntries: m.plan_entries,
+        planDetail: m.plan_detail,
     }));
 }
 
@@ -1085,7 +1346,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                                   status: "pending",
                               },
                           }
-                        : item,
+                        : item.kind === "user_input_request" &&
+                            item.meta?.status === "responding"
+                          ? {
+                                ...item,
+                                meta: {
+                                    ...item.meta,
+                                    status: "pending",
+                                },
+                            }
+                          : item,
                 ),
             };
             return {
@@ -1135,70 +1405,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     applyMessageDelta: ({ session_id, message_id, delta }) => {
         scheduleStaleStreamingCheck(session_id);
-        set((state) => {
-            const session = state.sessionsById[session_id];
-            if (!session) return state;
-
-            const messages = session.messages;
-            const lastMsg = messages[messages.length - 1];
-
-            // If the last message is an in-progress assistant text, append to it
-            if (
-                lastMsg &&
-                lastMsg.role === "assistant" &&
-                lastMsg.kind === "text" &&
-                lastMsg.inProgress
-            ) {
-                return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: {
-                            ...session,
-                            messages: messages.map((m, i) =>
-                                i === messages.length - 1
-                                    ? { ...m, content: `${m.content}${delta}` }
-                                    : m,
-                            ),
-                        },
-                    },
-                    sessionOrder: touchSessionOrder(
-                        state.sessionOrder,
-                        session_id,
-                    ),
-                };
-            }
-
-            // Otherwise create a new text segment at the end
-            // (tools/thinking appeared since last text, so we split)
-            const idTaken = messages.some((m) => m.id === message_id);
-            return {
-                sessionsById: {
-                    ...state.sessionsById,
-                    [session_id]: {
-                        ...session,
-                        messages: [
-                            ...messages,
-                            {
-                                id: idTaken
-                                    ? `${message_id}:${Date.now()}`
-                                    : message_id,
-                                role: "assistant" as const,
-                                kind: "text" as const,
-                                content: delta,
-                                title: "Assistant",
-                                timestamp: Date.now(),
-                                inProgress: true,
-                            },
-                        ],
-                    },
-                },
-                sessionOrder: touchSessionOrder(state.sessionOrder, session_id),
-            };
-        });
+        bufferMessageDelta(session_id, message_id, delta);
     },
 
     applyMessageCompleted: ({ session_id }) => {
         clearStaleStreamingCheck(session_id);
+        flushDeltasSync();
         set((state) => {
             const session = state.sessionsById[session_id];
             if (!session) return state;
@@ -1227,6 +1439,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     applyThinkingStarted: ({ session_id, message_id }) => {
         scheduleStaleStreamingCheck(session_id);
+        flushDeltasSync();
         set((state) => {
             const session = state.sessionsById[session_id];
             if (!session) return state;
@@ -1263,33 +1476,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     applyThinkingDelta: ({ session_id, message_id, delta }) => {
         scheduleStaleStreamingCheck(session_id);
-        set((state) => {
-            const session = state.sessionsById[session_id];
-            if (!session) return state;
-
-            return {
-                sessionsById: {
-                    ...state.sessionsById,
-                    [session_id]: {
-                        ...session,
-                        messages: session.messages.map((message) =>
-                            message.id === message_id
-                                ? {
-                                      ...message,
-                                      content: `${message.content}${delta}`,
-                                      inProgress: true,
-                                  }
-                                : message,
-                        ),
-                    },
-                },
-                sessionOrder: touchSessionOrder(state.sessionOrder, session_id),
-            };
-        });
+        bufferThinkingDelta(session_id, message_id, delta);
     },
 
     applyThinkingCompleted: ({ session_id, message_id }) => {
         scheduleStaleStreamingCheck(session_id);
+        flushDeltasSync();
         set((state) => {
             const session = state.sessionsById[session_id];
             if (!session) return state;
@@ -1361,6 +1553,76 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         });
     },
 
+    applyStatusEvent: (payload) => {
+        scheduleStaleStreamingCheck(payload.session_id);
+        set((state) => {
+            const session = state.sessionsById[payload.session_id];
+            if (!session) return state;
+
+            const messageId = `status:${payload.event_id}`;
+            const nextMessage = createStatusMessage(payload);
+            const exists = session.messages.some(
+                (message) => message.id === messageId,
+            );
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [payload.session_id]: {
+                        ...session,
+                        messages: exists
+                            ? session.messages.map((message) =>
+                                  message.id === messageId
+                                      ? nextMessage
+                                      : message,
+                              )
+                            : [...session.messages, nextMessage],
+                    },
+                },
+                sessionOrder: touchSessionOrder(
+                    state.sessionOrder,
+                    payload.session_id,
+                ),
+            };
+        });
+    },
+
+    applyPlanUpdate: (payload) => {
+        scheduleStaleStreamingCheck(payload.session_id);
+        set((state) => {
+            const session = state.sessionsById[payload.session_id];
+            if (!session) return state;
+
+            const nextMessage = createPlanMessage(payload);
+            const exists = session.messages.some(
+                (message) => message.id === nextMessage.id,
+            );
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [payload.session_id]: {
+                        ...session,
+                        messages: exists
+                            ? session.messages.map((message) =>
+                                  message.id === nextMessage.id
+                                      ? {
+                                            ...nextMessage,
+                                            timestamp: message.timestamp,
+                                        }
+                                      : message,
+                              )
+                            : [...session.messages, nextMessage],
+                    },
+                },
+                sessionOrder: touchSessionOrder(
+                    state.sessionOrder,
+                    payload.session_id,
+                ),
+            };
+        });
+    },
+
     applyPermissionRequest: (payload) =>
         set((state) => {
             const session = state.sessionsById[payload.session_id];
@@ -1376,6 +1638,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 timestamp: Date.now(),
                 permissionRequestId: payload.request_id,
                 permissionOptions: payload.options,
+                diffs: payload.diffs.length > 0 ? payload.diffs : undefined,
                 meta: {
                     status: "pending",
                     target: payload.target ?? null,
@@ -1392,6 +1655,55 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                     [payload.session_id]: {
                         ...session,
                         status: "waiting_permission",
+                        messages: exists
+                            ? session.messages.map((message) =>
+                                  message.id === messageId
+                                      ? nextMessage
+                                      : message,
+                              )
+                            : [...session.messages, nextMessage],
+                    },
+                },
+                sessionOrder: touchSessionOrder(
+                    state.sessionOrder,
+                    payload.session_id,
+                ),
+            };
+        }),
+
+    applyUserInputRequest: (payload) =>
+        set((state) => {
+            const session = state.sessionsById[payload.session_id];
+            if (!session) return state;
+
+            const messageId = `user-input:${payload.request_id}`;
+            const nextMessage: AIChatMessage = {
+                id: messageId,
+                role: "assistant",
+                kind: "user_input_request",
+                title: payload.title,
+                content: payload.questions
+                    .map((question) => question.question.trim())
+                    .filter(Boolean)
+                    .join("\n"),
+                timestamp: Date.now(),
+                userInputRequestId: payload.request_id,
+                userInputQuestions: payload.questions,
+                meta: {
+                    status: "pending",
+                },
+            };
+
+            const exists = session.messages.some(
+                (message) => message.id === messageId,
+            );
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [payload.session_id]: {
+                        ...session,
+                        status: "waiting_user_input",
                         messages: exists
                             ? session.messages.map((message) =>
                                   message.id === messageId
@@ -1550,7 +1862,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             });
             useChatTabsStore
                 .getState()
-                .replaceSessionId(sessionId, migratedSession.sessionId);
+                .replaceSessionId(
+                    sessionId,
+                    migratedSession.sessionId,
+                    migratedSession.historySessionId,
+                );
 
             return migratedSession.sessionId;
         } catch (error) {
@@ -1601,6 +1917,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (
             session.status === "streaming" ||
             session.status === "waiting_permission" ||
+            session.status === "waiting_user_input" ||
             session.isResumingSession
         ) {
             return;
@@ -1652,6 +1969,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (
             session.status === "streaming" ||
             session.status === "waiting_permission" ||
+            session.status === "waiting_user_input" ||
             session.isResumingSession
         ) {
             return;
@@ -1691,6 +2009,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (
             session.status === "streaming" ||
             session.status === "waiting_permission" ||
+            session.status === "waiting_user_input" ||
             session.isResumingSession
         ) {
             return;
@@ -1771,7 +2090,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (
             !session ||
             session.status === "streaming" ||
-            session.status === "waiting_permission"
+            session.status === "waiting_permission" ||
+            session.status === "waiting_user_input"
         ) {
             return;
         }
@@ -1950,6 +2270,63 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
     },
 
+    respondUserInput: async (requestId, answers) => {
+        const { activeSessionId } = get();
+        if (!activeSessionId) return;
+
+        set((state) => {
+            const session = state.sessionsById[activeSessionId];
+            if (!session) return state;
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [activeSessionId]: updateUserInputMessageState(
+                        { ...session, status: "streaming" },
+                        requestId,
+                        {
+                            status: "responding",
+                            answered: true,
+                        },
+                    ),
+                },
+            };
+        });
+
+        try {
+            const session = await aiRespondUserInput(
+                activeSessionId,
+                requestId,
+                answers,
+            );
+            get().upsertSession(session);
+            set((state) => {
+                const currentSession = state.sessionsById[activeSessionId];
+                if (!currentSession) return state;
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [activeSessionId]: updateUserInputMessageState(
+                            currentSession,
+                            requestId,
+                            {
+                                status: "resolved",
+                                answered: true,
+                            },
+                        ),
+                    },
+                };
+            });
+        } catch (error) {
+            get().applySessionError({
+                session_id: activeSessionId,
+                message: getAiErrorMessage(
+                    error,
+                    "Failed to respond to the input request.",
+                ),
+            });
+        }
+    },
+
     newSession: async (runtimeId) => {
         const runtimes = get().runtimes;
         const nextRuntimeId = runtimeId ?? getDefaultRuntimeId(runtimes);
@@ -1961,6 +2338,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 useVaultStore.getState().vaultPath,
             );
             get().upsertSession(session, true);
+            await persistSession(session);
 
             // Restore saved preferences
             const prefs = loadAiPreferences();
@@ -2028,8 +2406,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     deleteSession: async (sessionId) => {
         const vaultPath = useVaultStore.getState().vaultPath;
+        const historySessionId =
+            get().sessionsById[sessionId]?.historySessionId ?? sessionId;
         if (vaultPath) {
-            await aiDeleteSessionHistory(vaultPath, sessionId).catch(() => {});
+            await aiDeleteSessionHistory(vaultPath, historySessionId).catch(
+                () => {},
+            );
         }
         useChatTabsStore.getState().removeTabsForSession(sessionId);
         const state = get();
@@ -2112,6 +2494,65 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }));
     },
 
+    attachAudio: (filePath, fileName) => {
+        const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+        const mimeMap: Record<string, string> = {
+            mp3: "audio/mpeg",
+            wav: "audio/wav",
+            ogg: "audio/ogg",
+            flac: "audio/flac",
+        };
+        const mimeType = mimeMap[ext] ?? "audio/*";
+        set((state) => ({
+            sessionsById: updateActiveSession(state, (session) => ({
+                ...session,
+                attachments: [
+                    ...session.attachments,
+                    {
+                        id: crypto.randomUUID(),
+                        type: "audio",
+                        noteId: null,
+                        label: fileName,
+                        path: null,
+                        filePath,
+                        mimeType,
+                        status: "pending",
+                    },
+                ],
+            })),
+        }));
+    },
+
+    attachFile: (filePath, fileName, mimeType) =>
+        set((state) => ({
+            sessionsById: updateActiveSession(state, (session) => ({
+                ...session,
+                attachments: [
+                    ...session.attachments,
+                    {
+                        id: crypto.randomUUID(),
+                        type: "file",
+                        noteId: null,
+                        label: fileName,
+                        path: null,
+                        filePath,
+                        mimeType,
+                        status: "ready",
+                    },
+                ],
+            })),
+        })),
+
+    updateAttachment: (attachmentId, patch) =>
+        set((state) => ({
+            sessionsById: updateActiveSession(state, (session) => ({
+                ...session,
+                attachments: session.attachments.map((a) =>
+                    a.id === attachmentId ? { ...a, ...patch } : a,
+                ),
+            })),
+        })),
+
     removeAttachment: (attachmentId) =>
         set((state) => ({
             sessionsById: updateActiveSession(state, (session) => ({
@@ -2186,6 +2627,9 @@ if (typeof window !== "undefined") {
         }
     });
 }
+
+/** Flush any buffered message/thinking deltas synchronously (useful in tests). */
+export { flushDeltasSync };
 
 export function resetChatStore() {
     try {

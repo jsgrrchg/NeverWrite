@@ -1,5 +1,12 @@
-import { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+    useDeferredValue,
+    useState,
+    useEffect,
+    useMemo,
+    useRef,
+    useLayoutEffect,
+} from "react";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useEditorStore,
     type PendingReveal,
@@ -7,7 +14,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { revealNoteInTree } from "../../app/utils/navigation";
-import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { findWikilinks } from "../../app/utils/wikilinks";
 
 interface BacklinkDto {
@@ -17,7 +24,7 @@ interface BacklinkDto {
 
 interface ResolvedOutgoingLink {
     target: string;
-    note: NoteDto;
+    note: { id: string; title: string };
 }
 
 interface BrokenOutgoingLink {
@@ -45,118 +52,10 @@ interface OutgoingContextMenuState {
     link: OutgoingLink;
 }
 
-function normalizeWikilinkTarget(target: string): string {
-    const trimmed = target.trim();
-    const withoutSubpath = trimmed.split(/[#^]/, 1)[0]?.trim() ?? "";
-    return withoutSubpath
-        .replace(/\.md$/i, "")
-        .replace(/[’‘]/g, "'")
-        .replace(/[“”]/g, '"')
-        .replace(/…/g, "...")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, " ")
-        .toLowerCase();
-}
-
-function getWikilinkVariants(target: string): string[] {
-    const normalized = normalizeWikilinkTarget(target);
-    if (!normalized) return [];
-    const trimmed = normalized.replace(/[\s.,!?:;]+$/g, "");
-    return trimmed && trimmed !== normalized
-        ? [normalized, trimmed]
-        : [normalized];
-}
-
-function isStrongPrefixCandidate(target: string): boolean {
-    return target.length >= 24 && target.split(/\s+/).length >= 4;
-}
-
-function isPrefixExpansion(candidate: string, target: string): boolean {
-    if (candidate === target || !candidate.startsWith(target)) {
-        return false;
-    }
-
-    const next = candidate.charAt(target.length);
-    return next === " " || next === "-" || next === ":" || next === "(";
-}
-
-function findUniquePrefixNote(
-    target: string,
-    notes: NoteDto[],
-): NoteDto | null {
-    const variants = getWikilinkVariants(target).filter(
-        isStrongPrefixCandidate,
-    );
-    if (!variants.length) return null;
-
-    const matches: NoteDto[] = [];
-
-    for (const note of notes) {
-        const aliases = [
-            normalizeWikilinkTarget(note.title),
-            normalizeWikilinkTarget(note.id.split("/").pop() ?? ""),
-        ];
-
-        if (
-            !aliases.some((alias) =>
-                variants.some((variant) => isPrefixExpansion(alias, variant)),
-            )
-        ) {
-            continue;
-        }
-
-        matches.push(note);
-        if (matches.length > 1) return null;
-    }
-
-    return matches[0] ?? null;
-}
-
-interface NoteIndex {
-    byId: Map<string, NoteDto>;
-    byTitle: Map<string, NoteDto>;
-    byFilename: Map<string, NoteDto[]>;
-    notes: NoteDto[];
-}
-
-function buildNoteIndex(notes: NoteDto[]): NoteIndex {
-    const byId = new Map<string, NoteDto>();
-    const byTitle = new Map<string, NoteDto>();
-    const byFilename = new Map<string, NoteDto[]>();
-
-    for (const note of notes) {
-        byId.set(normalizeWikilinkTarget(note.id), note);
-        byTitle.set(normalizeWikilinkTarget(note.title), note);
-
-        const filename = normalizeWikilinkTarget(
-            note.id.split("/").pop() ?? "",
-        );
-        if (filename) {
-            const existing = byFilename.get(filename);
-            if (existing) existing.push(note);
-            else byFilename.set(filename, [note]);
-        }
-    }
-
-    return { byId, byTitle, byFilename, notes };
-}
-
-function resolveNote(target: string, index: NoteIndex): NoteDto | null {
-    const variants = getWikilinkVariants(target);
-    for (const v of variants) {
-        const byId = index.byId.get(v);
-        if (byId) return byId;
-    }
-    for (const v of variants) {
-        const byTitle = index.byTitle.get(v);
-        if (byTitle) return byTitle;
-    }
-    for (const v of variants) {
-        const matches = index.byFilename.get(v);
-        if (matches?.length === 1) return matches[0];
-    }
-    return findUniquePrefixNote(target, index.notes);
+interface ResolvedWikilinkDto {
+    target: string;
+    resolved_note_id: string | null;
+    resolved_title: string | null;
 }
 
 function LinkIcon() {
@@ -501,63 +400,107 @@ export function LinksPanel() {
             queueReveal: s.queueReveal,
         })),
     );
-    const notes = useVaultStore((s) => s.notes);
-    const tabs = useEditorStore((s) => s.tabs);
 
-    // Single shallow selector — re-renders only when these 3 values change
-    const { activeNoteId, activeContent, activeTitle } = useEditorStore(
+    // Single shallow selector — re-renders only when these 3 values change.
+    // `tabs` is NOT subscribed here — event handlers use getState() instead.
+    const { activeNoteId, activeTitle, activeContent } = useEditorStore(
         useShallow((s) => {
             const tab = s.tabs.find((t) => t.id === s.activeTabId);
             return {
                 activeNoteId: tab?.noteId ?? null,
-                activeContent: tab?.content ?? null,
                 activeTitle: tab?.title ?? null,
+                activeContent: tab?.content ?? "",
             };
         }),
     );
+    const deferredActiveContent = useDeferredValue(activeContent);
 
     const [backlinks, setBacklinks] = useState<BacklinkDto[]>([]);
+    const [outgoingLinks, setOutgoingLinks] = useState<OutgoingLink[]>([]);
     const [backlinkContextMenu, setBacklinkContextMenu] =
         useState<BacklinkContextMenuState | null>(null);
     const [outgoingContextMenu, setOutgoingContextMenu] =
         useState<OutgoingContextMenuState | null>(null);
     const backlinkRequestIdRef = useRef(0);
+    const outgoingRequestIdRef = useRef(0);
 
+    // Backlinks only depend on which note is active — not on content.
     useEffect(() => {
         if (!activeNoteId) {
             backlinkRequestIdRef.current += 1;
+            queueMicrotask(() => setBacklinks([]));
             return;
         }
-        const requestId = ++backlinkRequestIdRef.current;
-        invoke<BacklinkDto[]>("get_backlinks", { noteId: activeNoteId })
+        const blRequestId = ++backlinkRequestIdRef.current;
+        vaultInvoke<BacklinkDto[]>("get_backlinks", { noteId: activeNoteId })
             .then((nextBacklinks) => {
-                if (requestId !== backlinkRequestIdRef.current) return;
+                if (blRequestId !== backlinkRequestIdRef.current) return;
                 setBacklinks(nextBacklinks);
             })
             .catch(() => {
-                if (requestId !== backlinkRequestIdRef.current) return;
+                if (blRequestId !== backlinkRequestIdRef.current) return;
                 setBacklinks([]);
             });
     }, [activeNoteId]);
 
-    const noteIndex = useMemo(() => buildNoteIndex(notes), [notes]);
+    // Outgoing links depend on content (parsed wikilinks).
+    useEffect(() => {
+        if (!activeNoteId) {
+            outgoingRequestIdRef.current += 1;
+            queueMicrotask(() => setOutgoingLinks([]));
+            return;
+        }
 
-    const outgoingLinks = useMemo(() => {
-        if (!activeContent) return [];
-        const seen = new Set<string>();
-        return findWikilinks(activeContent)
-            .filter(({ target }) => {
-                if (seen.has(target)) return false;
-                seen.add(target);
-                return true;
+        const uniqueTargets = [
+            ...new Set(
+                findWikilinks(deferredActiveContent)
+                    .map((link) => link.target)
+                    .filter(Boolean),
+            ),
+        ];
+
+        if (uniqueTargets.length === 0) {
+            outgoingRequestIdRef.current += 1;
+            queueMicrotask(() => setOutgoingLinks([]));
+            return;
+        }
+
+        const olRequestId = ++outgoingRequestIdRef.current;
+        vaultInvoke<ResolvedWikilinkDto[]>("resolve_wikilinks_batch", {
+            noteId: activeNoteId,
+            targets: uniqueTargets,
+        })
+            .then((links) => {
+                if (olRequestId !== outgoingRequestIdRef.current) return;
+                const resolvedByTarget = new Map(
+                    links.map((link) => [link.target, link]),
+                );
+
+                setOutgoingLinks(
+                    uniqueTargets.map((target) => {
+                        const resolved = resolvedByTarget.get(target);
+                        return resolved?.resolved_note_id
+                            ? ({
+                                  target,
+                                  note: {
+                                      id: resolved.resolved_note_id,
+                                      title:
+                                          resolved.resolved_title ??
+                                          resolved.resolved_note_id,
+                                  },
+                              } as ResolvedOutgoingLink)
+                            : ({
+                                  target,
+                                  note: null,
+                              } as BrokenOutgoingLink);
+                    }),
+                );
             })
-            .map(({ target }) => {
-                const note = resolveNote(target, noteIndex);
-                return note
-                    ? ({ target, note } satisfies ResolvedOutgoingLink)
-                    : ({ target, note: null } satisfies BrokenOutgoingLink);
+            .catch(() => {
+                if (olRequestId !== outgoingRequestIdRef.current) return;
+                setOutgoingLinks([]);
             });
-    }, [activeContent, noteIndex]);
+    }, [activeNoteId, deferredActiveContent]);
 
     const revealTargets = useMemo(() => {
         if (!activeNoteId) return [];
@@ -586,13 +529,15 @@ export function LinksPanel() {
     ];
 
     const openNoteById = async (id: string, title: string) => {
-        const existing = tabs.find((t) => t.noteId === id);
+        const existing = useEditorStore
+            .getState()
+            .tabs.find((t) => t.noteId === id);
         if (existing) {
             openNote(id, title, existing.content);
             return;
         }
         try {
-            const detail = await invoke<{ content: string }>("read_note", {
+            const detail = await vaultInvoke<{ content: string }>("read_note", {
                 noteId: id,
             });
             openNote(id, title, detail.content);
@@ -603,11 +548,13 @@ export function LinksPanel() {
 
     const openBacklinkInNewTab = async (bl: BacklinkDto) => {
         try {
-            const existing = tabs.find((t) => t.noteId === bl.id);
+            const existing = useEditorStore
+                .getState()
+                .tabs.find((t) => t.noteId === bl.id);
             const content =
                 existing?.content ??
                 (
-                    await invoke<{ content: string }>("read_note", {
+                    await vaultInvoke<{ content: string }>("read_note", {
                         noteId: bl.id,
                     })
                 ).content;
@@ -662,11 +609,13 @@ export function LinksPanel() {
 
     const openOutgoingInNewTab = async (link: ResolvedOutgoingLink) => {
         try {
-            const existing = tabs.find((t) => t.noteId === link.note.id);
+            const existing = useEditorStore
+                .getState()
+                .tabs.find((t) => t.noteId === link.note.id);
             const content =
                 existing?.content ??
                 (
-                    await invoke<{ content: string }>("read_note", {
+                    await vaultInvoke<{ content: string }>("read_note", {
                         noteId: link.note.id,
                     })
                 ).content;
@@ -751,7 +700,10 @@ export function LinksPanel() {
                 }}
             />
 
-            <SectionHeader label="Outgoing Links" count={outgoingLinks.length} />
+            <SectionHeader
+                label="Outgoing Links"
+                count={outgoingLinks.length}
+            />
             {outgoingLinks.length === 0 ? (
                 <div
                     className="px-3 pb-2 text-xs"

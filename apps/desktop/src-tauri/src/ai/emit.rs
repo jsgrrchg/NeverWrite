@@ -12,7 +12,10 @@ pub const AI_THINKING_STARTED_EVENT: &str = "ai://thinking-started";
 pub const AI_THINKING_DELTA_EVENT: &str = "ai://thinking-delta";
 pub const AI_THINKING_COMPLETED_EVENT: &str = "ai://thinking-completed";
 pub const AI_TOOL_ACTIVITY_EVENT: &str = "ai://tool-activity";
+pub const AI_STATUS_EVENT: &str = "ai://status-event";
 pub const AI_PERMISSION_REQUEST_EVENT: &str = "ai://permission-request";
+pub const AI_USER_INPUT_REQUEST_EVENT: &str = "ai://user-input-request";
+pub const AI_PLAN_UPDATED_EVENT: &str = "ai://plan-updated";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiSessionErrorPayload {
@@ -51,10 +54,70 @@ pub struct AiToolActivityPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AiStatusEventPayload {
+    pub session_id: String,
+    pub event_id: String,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub detail: Option<String>,
+    pub emphasis: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiPlanEntryPayload {
+    pub content: String,
+    pub priority: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiPlanUpdatePayload {
+    pub session_id: String,
+    pub plan_id: String,
+    pub title: Option<String>,
+    pub detail: Option<String>,
+    pub entries: Vec<AiPlanEntryPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiUserInputQuestionOptionPayload {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiUserInputQuestionPayload {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub is_other: bool,
+    pub is_secret: bool,
+    pub options: Option<Vec<AiUserInputQuestionOptionPayload>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiUserInputRequestPayload {
+    pub session_id: String,
+    pub request_id: String,
+    pub title: String,
+    pub questions: Vec<AiUserInputQuestionPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AiPermissionOptionPayload {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiFileDiffPayload {
+    pub path: String,
+    /// "add" | "delete" | "update"
+    pub kind: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +128,7 @@ pub struct AiPermissionRequestPayload {
     pub title: String,
     pub target: Option<String>,
     pub options: Vec<AiPermissionOptionPayload>,
+    pub diffs: Vec<AiFileDiffPayload>,
 }
 
 pub fn emit_session_created(app: &AppHandle, session: &AiSession) {
@@ -135,6 +199,18 @@ pub fn emit_thinking_completed(app: &AppHandle, session_id: String, message_id: 
 
 pub fn emit_tool_activity(app: &AppHandle, payload: AiToolActivityPayload) {
     let _ = app.emit(AI_TOOL_ACTIVITY_EVENT, payload);
+}
+
+pub fn emit_status_event(app: &AppHandle, payload: AiStatusEventPayload) {
+    let _ = app.emit(AI_STATUS_EVENT, payload);
+}
+
+pub fn emit_user_input_request(app: &AppHandle, payload: AiUserInputRequestPayload) {
+    let _ = app.emit(AI_USER_INPUT_REQUEST_EVENT, payload);
+}
+
+pub fn emit_plan_update(app: &AppHandle, payload: AiPlanUpdatePayload) {
+    let _ = app.emit(AI_PLAN_UPDATED_EVENT, payload);
 }
 
 pub fn emit_permission_request(app: &AppHandle, payload: AiPermissionRequestPayload) {

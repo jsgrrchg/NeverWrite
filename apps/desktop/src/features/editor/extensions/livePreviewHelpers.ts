@@ -1,5 +1,9 @@
 import { Decoration } from "@codemirror/view";
-import { type EditorState, StateField } from "@codemirror/state";
+import {
+    type EditorState,
+    type Transaction,
+    StateField,
+} from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import {
@@ -269,13 +273,44 @@ export type LinkReferenceMap = Map<
     { url: string; title: string | null }
 >;
 
+// Characters that can affect link reference definitions: [label]: url
+const LINK_REF_SIGNIFICANT = /[\[\]:]/;
+
+function linkRefNeedsRebuild(transaction: Transaction): boolean {
+    if (!transaction.docChanged) return false;
+    let dominated = true;
+    transaction.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        if (!dominated) return;
+        if (toA > fromA) {
+            if (
+                LINK_REF_SIGNIFICANT.test(
+                    transaction.startState.doc.sliceString(fromA, toA),
+                )
+            ) {
+                dominated = false;
+                return;
+            }
+        }
+        if (toB > fromB) {
+            if (
+                LINK_REF_SIGNIFICANT.test(
+                    transaction.state.doc.sliceString(fromB, toB),
+                )
+            ) {
+                dominated = false;
+            }
+        }
+    });
+    return !dominated;
+}
+
 /** StateField that caches the link reference index, rebuilding only on doc changes. */
 export const linkReferenceField = StateField.define<LinkReferenceMap>({
     create(state) {
         return buildLinkReferenceIndex(state);
     },
     update(refs, transaction) {
-        if (!transaction.docChanged) return refs;
+        if (!linkRefNeedsRebuild(transaction)) return refs;
         return buildLinkReferenceIndex(transaction.state);
     },
 });

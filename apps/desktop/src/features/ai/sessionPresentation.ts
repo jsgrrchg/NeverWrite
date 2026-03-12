@@ -8,7 +8,11 @@ function truncateText(value: string, maxLength: number) {
 function getLastMeaningfulMessage(messages: AIChatMessage[]) {
     return [...messages]
         .reverse()
-        .find((message) => message.content.trim().length > 0);
+        .find(
+            (message) =>
+                message.kind !== "status" &&
+                message.content.trim().length > 0,
+        );
 }
 
 export function getSessionTitle(session: AIChatSession) {
@@ -31,8 +35,16 @@ export function getSessionPreview(session: AIChatSession) {
         return truncateText(lastMessage.content, 72);
     }
 
+    if (lastMessage.kind === "plan") {
+        return truncateText(`Plan: ${lastMessage.content}`, 72);
+    }
+
     if (lastMessage.kind === "permission") {
         return truncateText(`Permission: ${lastMessage.content}`, 72);
+    }
+
+    if (lastMessage.kind === "user_input_request") {
+        return truncateText(`Input: ${lastMessage.content}`, 72);
     }
 
     if (lastMessage.kind === "error") {

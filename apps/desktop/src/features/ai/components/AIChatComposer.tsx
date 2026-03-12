@@ -18,10 +18,7 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
-import {
-    getChatPillMetrics,
-    type ChatPillMetrics,
-} from "./chatPillMetrics";
+import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import type {
     AIChatNoteSummary,
     AIChatSessionStatus,
@@ -48,6 +45,8 @@ interface AIChatComposerProps {
     onFolderAttach: (folderPath: string, name: string) => void;
     onToggleAutoContext?: () => void;
     onToggleExpanded?: () => void;
+    onAttachAudio?: () => void;
+    onAttachFile?: () => void;
     onSubmit: () => void;
     onStop: () => void;
 }
@@ -114,7 +113,8 @@ const SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "plan",
         label: "/plan",
-        description: "Create or refine a step-by-step plan before making changes.",
+        description:
+            "Create or refine a step-by-step plan before making changes.",
         insertText: "/plan ",
     },
     {
@@ -514,9 +514,12 @@ export function AIChatComposer({
     onFolderAttach,
     onToggleAutoContext,
     onToggleExpanded,
+    onAttachAudio,
+    onAttachFile,
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
+    const [attachMenuOpen, setAttachMenuOpen] = useState(false);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
     const [mentionState, setMentionState] =
@@ -697,20 +700,26 @@ export function AIChatComposer({
 
         let span: HTMLSpanElement;
         if (item.kind === "note") {
-            span = createMentionNode({
-                id: crypto.randomUUID(),
-                type: "mention",
-                noteId: item.note.id,
-                label: item.note.title,
-                path: item.note.path,
-            }, pillMetrics);
+            span = createMentionNode(
+                {
+                    id: crypto.randomUUID(),
+                    type: "mention",
+                    noteId: item.note.id,
+                    label: item.note.title,
+                    path: item.note.path,
+                },
+                pillMetrics,
+            );
         } else if (item.kind === "folder") {
-            span = createFolderMentionNode({
-                id: crypto.randomUUID(),
-                type: "folder_mention",
-                folderPath: item.folderPath,
-                label: item.name,
-            }, pillMetrics);
+            span = createFolderMentionNode(
+                {
+                    id: crypto.randomUUID(),
+                    type: "folder_mention",
+                    folderPath: item.folderPath,
+                    label: item.name,
+                },
+                pillMetrics,
+            );
         } else if (item.kind === "plan") {
             span = createPlanMentionNode(pillMetrics);
         } else {
@@ -1221,6 +1230,159 @@ export function AIChatComposer({
                     }}
                 >
                     <div className="min-w-0 flex-1">{footer}</div>
+                    {(onAttachAudio || onAttachFile) && (
+                        <div className="relative">
+                            <button
+                                type="button"
+                                tabIndex={-1}
+                                onClick={() => setAttachMenuOpen((v) => !v)}
+                                onMouseDown={(e) => e.preventDefault()}
+                                className="flex shrink-0 items-center justify-center rounded-md"
+                                style={{
+                                    width: 28,
+                                    height: 28,
+                                    color: "var(--text-secondary)",
+                                    backgroundColor: attachMenuOpen
+                                        ? "color-mix(in srgb, var(--text-secondary) 12%, transparent)"
+                                        : "transparent",
+                                    border: "none",
+                                    outline: "none",
+                                    appearance: "none",
+                                    WebkitAppearance: "none",
+                                }}
+                                title="Attach file"
+                                aria-label="Attach file"
+                                disabled={disabled}
+                            >
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <path d="M13.5 7.5l-5.8 5.8a3.2 3.2 0 0 1-4.5-4.5l5.8-5.8a2.1 2.1 0 0 1 3 3L6.2 11.8a1.1 1.1 0 0 1-1.5-1.5L10 5" />
+                                </svg>
+                            </button>
+                            {attachMenuOpen && (
+                                <>
+                                    <div
+                                        style={{
+                                            position: "fixed",
+                                            inset: 0,
+                                            zIndex: 50,
+                                        }}
+                                        onClick={() => setAttachMenuOpen(false)}
+                                    />
+                                    <div
+                                        className="absolute rounded-lg border"
+                                        style={{
+                                            bottom: "100%",
+                                            left: 0,
+                                            marginBottom: 4,
+                                            minWidth: 160,
+                                            zIndex: 51,
+                                            backgroundColor:
+                                                "var(--bg-elevated, var(--bg-secondary))",
+                                            borderColor: "var(--border)",
+                                            boxShadow:
+                                                "var(--shadow-soft, 0 2px 8px rgba(0,0,0,0.15))",
+                                            padding: "4px 0",
+                                        }}
+                                    >
+                                        {onAttachAudio && (
+                                            <button
+                                                type="button"
+                                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+                                                style={{
+                                                    color: "var(--text-primary)",
+                                                    backgroundColor:
+                                                        "transparent",
+                                                    border: "none",
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    (
+                                                        e.currentTarget as HTMLElement
+                                                    ).style.backgroundColor =
+                                                        "color-mix(in srgb, var(--text-secondary) 10%, transparent)";
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    (
+                                                        e.currentTarget as HTMLElement
+                                                    ).style.backgroundColor =
+                                                        "transparent";
+                                                }}
+                                                onClick={() => {
+                                                    setAttachMenuOpen(false);
+                                                    onAttachAudio();
+                                                }}
+                                            >
+                                                <svg
+                                                    width="14"
+                                                    height="14"
+                                                    viewBox="0 0 16 16"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                >
+                                                    <path d="M8 1v8M5 6a3 3 0 0 0 6 0M6 12h4M8 12v2" />
+                                                </svg>
+                                                Audio
+                                            </button>
+                                        )}
+                                        {onAttachFile && (
+                                            <button
+                                                type="button"
+                                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+                                                style={{
+                                                    color: "var(--text-primary)",
+                                                    backgroundColor:
+                                                        "transparent",
+                                                    border: "none",
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    (
+                                                        e.currentTarget as HTMLElement
+                                                    ).style.backgroundColor =
+                                                        "color-mix(in srgb, var(--text-secondary) 10%, transparent)";
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    (
+                                                        e.currentTarget as HTMLElement
+                                                    ).style.backgroundColor =
+                                                        "transparent";
+                                                }}
+                                                onClick={() => {
+                                                    setAttachMenuOpen(false);
+                                                    onAttachFile();
+                                                }}
+                                            >
+                                                <svg
+                                                    width="14"
+                                                    height="14"
+                                                    viewBox="0 0 16 16"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                >
+                                                    <path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5L9 1Z" />
+                                                    <path d="M9 1v4h4" />
+                                                </svg>
+                                                File
+                                            </button>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    )}
                     {hasActiveNote && (
                         <button
                             type="button"

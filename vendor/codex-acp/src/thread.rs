@@ -37,7 +37,7 @@ use codex_protocol::protocol::{
     ExitedReviewModeEvent, FileChange, ItemCompletedEvent, ItemStartedEvent,
     ListCustomPromptsResponseEvent, McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent,
     McpToolCallBeginEvent, McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent,
-    PatchApplyEndEvent, PatchApplyStatus, ReasoningContentDeltaEvent,
+    PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent,
     ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget,
     SandboxPolicy, StreamErrorEvent, TerminalInteractionEvent, TokenCountEvent, TurnAbortedEvent,
     TurnCompleteEvent, TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent,
@@ -75,6 +75,12 @@ use crate::{
 
 static APPROVAL_PRESETS: LazyLock<Vec<ApprovalPreset>> = LazyLock::new(builtin_approval_presets);
 const INIT_COMMAND_PROMPT: &str = include_str!("./prompt_for_init_command.md");
+const VAULTAI_USER_INPUT_RESPONSE_PREFIX: &str = "__vaultai_user_input_response__:";
+const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
+const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
+const VAULTAI_STATUS_EMPHASIS_KEY: &str = "vaultaiStatusEmphasis";
+const VAULTAI_PLAN_TITLE_KEY: &str = "vaultaiPlanTitle";
+const VAULTAI_PLAN_DETAIL_KEY: &str = "vaultaiPlanDetail";
 
 /// Trait for abstracting over the `CodexThread` to make testing easier.
 #[async_trait::async_trait]
@@ -363,11 +369,311 @@ struct ActiveCommand {
 struct PromptState {
     active_commands: HashMap<String, ActiveCommand>,
     active_web_search: Option<String>,
+    active_plan_text: HashMap<String, String>, //Adaptation VaultAI
     thread: Arc<dyn CodexThreadImpl>,
     event_count: usize,
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
     seen_reasoning_deltas: bool,
+}
+// Adaptation made for VaultAI
+#[derive(Debug, serde::Deserialize)]
+struct VaultAiUserInputAnswerPayload {
+    turn_id: String,
+    response: codex_protocol::request_user_input::RequestUserInputResponse,
+}
+
+fn vaultai_status_meta(kind: &str, emphasis: &str) -> Meta {
+    let mut meta = Meta::new();
+    meta.insert(VAULTAI_STATUS_EVENT_TYPE_KEY.to_string(), json!("status"));
+    meta.insert(VAULTAI_STATUS_KIND_KEY.to_string(), json!(kind));
+    meta.insert(VAULTAI_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
+    meta
+}
+//Adaptation made for VaultAI
+fn vaultai_user_input_meta() -> Meta {
+    let mut meta = Meta::new();
+    meta.insert(
+        VAULTAI_STATUS_EVENT_TYPE_KEY.to_string(),
+        json!("user_input_request"),
+    );
+    meta
+}
+
+fn vaultai_plan_meta(title: Option<&str>, detail: Option<&str>) -> Option<Meta> {
+    let mut meta = Meta::new();
+    if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
+        meta.insert(VAULTAI_PLAN_TITLE_KEY.to_string(), json!(title));
+    }
+    if let Some(detail) = detail.filter(|value| !value.trim().is_empty()) {
+        meta.insert(VAULTAI_PLAN_DETAIL_KEY.to_string(), json!(detail));
+    }
+    (!meta.is_empty()).then_some(meta)
+}
+
+fn turn_item_id(item: &TurnItem) -> &str {
+    match item {
+        TurnItem::UserMessage(item) => &item.id,
+        TurnItem::AgentMessage(item) => &item.id,
+        TurnItem::Plan(item) => &item.id,
+        TurnItem::Reasoning(item) => &item.id,
+        TurnItem::WebSearch(item) => &item.id,
+        TurnItem::ContextCompaction(item) => &item.id,
+    }
+}
+
+fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
+    match item {
+        TurnItem::UserMessage(..) => ("Preparing input", None),
+        TurnItem::AgentMessage(..) => ("Drafting response", None),
+        TurnItem::Plan(item) => ("Updating plan", Some(item.text.clone())),
+        TurnItem::Reasoning(item) => (
+            "Reasoning",
+            item.summary_text
+                .first()
+                .cloned()
+                .or_else(|| item.raw_content.first().cloned()),
+        ),
+        TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
+        TurnItem::ContextCompaction(..) => ("Compacting context", None),
+    }
+}
+
+fn format_review_target(target: &ReviewTarget) -> String {
+    match target {
+        ReviewTarget::UncommittedChanges => "Reviewing working tree changes".to_string(),
+        ReviewTarget::BaseBranch { branch } => format!("Reviewing changes against {branch}"),
+        ReviewTarget::Commit { sha, title } => {
+            if let Some(title) = title {
+                format!("Reviewing commit {sha}: {title}")
+            } else {
+                format!("Reviewing commit {sha}")
+            }
+        }
+        ReviewTarget::Custom { instructions } => instructions.clone(),
+    }
+}
+// Adaptation made for VaultAI
+fn summarize_user_input_questions(
+    questions: &[codex_protocol::request_user_input::RequestUserInputQuestion],
+) -> Option<String> {
+    if questions.is_empty() {
+        return None;
+    }
+
+    Some(
+        questions
+            .iter()
+            .map(|question| question.question.trim())
+            .filter(|question| !question.is_empty())
+            .take(2)
+            .join("\n"),
+    )
+}
+//adaptation VaultAI
+fn plan_entry_status_from_marker(line: &str) -> Option<(StepStatus, &str)> {
+    let trimmed = line.trim_start();
+    let (rest, default_status) = if let Some(rest) = trimmed.strip_prefix("- ") {
+        (rest, StepStatus::Pending)
+    } else if let Some(rest) = trimmed.strip_prefix("* ") {
+        (rest, StepStatus::Pending)
+    } else if let Some(rest) = trimmed.strip_prefix("+ ") {
+        (rest, StepStatus::Pending)
+    } else {
+        let digit_count = trimmed
+            .chars()
+            .take_while(|char| char.is_ascii_digit())
+            .count();
+        if digit_count == 0 {
+            return None;
+        }
+
+        let marker = trimmed.as_bytes().get(digit_count).copied();
+        let spacing = trimmed.as_bytes().get(digit_count + 1).copied();
+        if !matches!(marker, Some(b'.' | b')')) || spacing != Some(b' ') {
+            return None;
+        }
+
+        (&trimmed[digit_count + 2..], StepStatus::Pending)
+    };
+
+    let rest = rest.trim_start();
+    let statuses = [
+        ("[x]", StepStatus::Completed),
+        ("[X]", StepStatus::Completed),
+        ("[ ]", StepStatus::Pending),
+        ("[~]", StepStatus::InProgress),
+        ("[/]", StepStatus::InProgress),
+        ("[>]", StepStatus::InProgress),
+        ("[-]", StepStatus::InProgress),
+    ];
+
+    for (marker, status) in statuses {
+        if let Some(content) = rest.strip_prefix(marker) {
+            return Some((status, content.trim_start()));
+        }
+    }
+
+    Some((default_status, rest))
+}
+
+fn push_plan_item(items: &mut Vec<PlanItemArg>, step: String, status: StepStatus) {
+    let step = step.trim().to_string();
+    if step.is_empty() {
+        return;
+    }
+
+    items.push(PlanItemArg { step, status });
+}
+
+#[derive(Debug, Clone)]
+struct ParsedPlanText {
+    title: Option<String>,
+    detail: Option<String>,
+    entries: Vec<PlanItemArg>,
+}
+
+fn normalize_plan_context_lines(lines: Vec<String>) -> Vec<String> {
+    let mut lines = lines;
+    while matches!(lines.first(), Some(line) if line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while matches!(lines.last(), Some(line) if line.trim().is_empty()) {
+        lines.pop();
+    }
+
+    let mut normalized = Vec::new();
+    let mut previous_blank = false;
+    for line in lines {
+        let is_blank = line.trim().is_empty();
+        if is_blank && previous_blank {
+            continue;
+        }
+        previous_blank = is_blank;
+        normalized.push(line);
+    }
+
+    normalized
+}
+
+fn split_plan_title_and_detail(lines: Vec<String>) -> (Option<String>, Option<String>) {
+    let lines = normalize_plan_context_lines(lines);
+    if lines.is_empty() {
+        return (None, None);
+    }
+
+    let first = lines[0].trim();
+    if let Some(title) = first.strip_prefix("# ") {
+        let detail = lines[1..].join("\n").trim().to_string();
+        return (
+            Some(title.trim().to_string()),
+            (!detail.is_empty()).then_some(detail),
+        );
+    }
+
+    (None, Some(lines.join("\n").trim().to_string()))
+}
+
+fn is_plan_item_continuation(line: &str) -> bool {
+    line.starts_with("  ") || line.starts_with('\t')
+}
+
+fn parse_plan_text(text: &str, streaming: bool) -> ParsedPlanText {
+    let mut items = Vec::new();
+    let mut current_item: Option<(String, StepStatus)> = None;
+    let mut context_lines: Vec<String> = Vec::new();
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim_end();
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            if let Some((content, _status)) = current_item.as_mut()
+                && !content.is_empty()
+            {
+                content.push('\n');
+            } else if !context_lines.is_empty() {
+                context_lines.push(String::new());
+            }
+            continue;
+        }
+
+        if let Some((status, content)) = plan_entry_status_from_marker(trimmed) {
+            if let Some((existing_content, existing_status)) = current_item.take() {
+                push_plan_item(&mut items, existing_content, existing_status);
+            }
+
+            current_item = Some((content.to_string(), status));
+            continue;
+        }
+
+        if let Some((content, _status)) = current_item.as_mut()
+            && is_plan_item_continuation(raw_line)
+        {
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(trimmed);
+            continue;
+        }
+
+        if let Some((existing_content, existing_status)) = current_item.take() {
+            push_plan_item(&mut items, existing_content, existing_status);
+        }
+        context_lines.push(trimmed.to_string());
+    }
+
+    if let Some((content, status)) = current_item.take() {
+        push_plan_item(&mut items, content, status);
+    }
+    let (title, detail) = split_plan_title_and_detail(context_lines);
+
+    if items.is_empty() {
+        let fallback = text.trim();
+        if !fallback.is_empty() {
+            let detail = if detail.as_ref().is_some_and(|value| !value.is_empty()) {
+                detail
+            } else {
+                Some(fallback.to_string())
+            };
+            return ParsedPlanText {
+                title,
+                detail,
+                entries: Vec::new(),
+            };
+        }
+    } else if streaming
+        && !items
+            .iter()
+            .any(|item| matches!(item.status, StepStatus::InProgress))
+        && let Some(last_pending) = items
+            .iter_mut()
+            .rfind(|item| matches!(item.status, StepStatus::Pending))
+    {
+        last_pending.status = StepStatus::InProgress;
+    }
+
+    ParsedPlanText {
+        title,
+        detail,
+        entries: items,
+    }
+}
+
+fn extract_user_input_answer_payload(
+    prompt: &[ContentBlock],
+) -> Result<Option<VaultAiUserInputAnswerPayload>, Error> {
+    let Some(ContentBlock::Text(text)) = prompt.first() else {
+        return Ok(None);
+    };
+
+    let Some(raw_payload) = text.text.strip_prefix(VAULTAI_USER_INPUT_RESPONSE_PREFIX) else {
+        return Ok(None);
+    };
+
+    serde_json::from_str::<VaultAiUserInputAnswerPayload>(raw_payload)
+        .map(Some)
+        .map_err(|err| Error::invalid_params().data(err.to_string()))
 }
 
 impl PromptState {
@@ -378,6 +684,7 @@ impl PromptState {
         Self {
             active_commands: HashMap::new(),
             active_web_search: None,
+            active_plan_text: HashMap::new(),
             thread,
             event_count: 0,
             response_tx: Some(response_tx),
@@ -391,6 +698,63 @@ impl PromptState {
             return false;
         };
         !response_tx.is_closed()
+    }
+
+    async fn send_status_tool_call(
+        &self,
+        client: &SessionClient,
+        call_id: impl Into<ToolCallId>,
+        kind: &str,
+        title: impl Into<String>,
+        detail: Option<String>,
+        emphasis: &str,
+        status: ToolCallStatus,
+    ) {
+        let mut tool_call = ToolCall::new(call_id, title)
+            .kind(ToolKind::Other)
+            .status(status)
+            .meta(vaultai_status_meta(kind, emphasis));
+
+        if let Some(detail) = detail {
+            tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+        }
+
+        client.send_tool_call(tool_call).await;
+    }
+
+    async fn send_status_tool_call_update(
+        &self,
+        client: &SessionClient,
+        call_id: impl Into<ToolCallId>,
+        title: impl Into<String>,
+        detail: Option<String>,
+        status: ToolCallStatus,
+    ) {
+        let mut fields = ToolCallUpdateFields::new()
+            .title(title.into())
+            .status(status);
+
+        if let Some(detail) = detail {
+            fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+        }
+
+        client
+            .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
+            .await;
+    }
+    //Adaptation VaultAI
+    async fn emit_plan_text_update(&self, client: &SessionClient, text: &str, streaming: bool) {
+        let parsed = parse_plan_text(text, streaming);
+        if parsed.entries.is_empty() && parsed.title.is_none() && parsed.detail.is_none() {
+            return;
+        }
+
+        client
+            .update_plan_with_meta(
+                parsed.entries,
+                vaultai_plan_meta(parsed.title.as_deref(), parsed.detail.as_deref()),
+            )
+            .await;
     }
 
     #[expect(clippy::too_many_lines)]
@@ -431,6 +795,17 @@ impl PromptState {
                 turn_id,
             }) => {
                 info!("Task started with context window of {turn_id} {model_context_window:?} {collaboration_mode_kind:?}");
+                let detail = model_context_window.map(|size| format!("Context window: {size}"));
+                self.send_status_tool_call(
+                    client,
+                    format!("vaultai:status:turn:{turn_id}"),
+                    "turn_started",
+                    "New turn",
+                    detail,
+                    "neutral",
+                    ToolCallStatus::Completed,
+                )
+                .await;
             }
             EventMsg::TokenCount(TokenCountEvent { info, .. }) => {
                 if let Some(info) = info
@@ -446,6 +821,17 @@ impl PromptState {
             }
             EventMsg::ItemStarted(ItemStartedEvent { thread_id, turn_id, item }) => {
                 info!("Item started with thread_id: {thread_id}, turn_id: {turn_id}, item: {item:?}");
+                let (title, detail) = describe_turn_item(&item);
+                self.send_status_tool_call(
+                    client,
+                    format!("vaultai:status:item:{}", turn_item_id(&item)),
+                    "item_activity",
+                    title,
+                    detail,
+                    "neutral",
+                    ToolCallStatus::InProgress,
+                )
+                .await;
             }
             EventMsg::UserMessage(UserMessageEvent {
                 message,
@@ -519,7 +905,24 @@ impl PromptState {
             EventMsg::PlanUpdate(UpdatePlanArgs { explanation, plan }) => {
                 // Send this to the client via session/update notification
                 info!("Agent plan updated. Explanation: {:?}", explanation);
-                client.update_plan(plan).await;
+                client.update_plan_with_meta(plan, vaultai_plan_meta(None, explanation.as_deref()))
+                    .await;
+            }
+            EventMsg::PlanDelta(PlanDeltaEvent {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+            }) => {
+                info!(
+                    "Plan delta received: thread_id: {thread_id}, turn_id: {turn_id}, item_id: {item_id}, delta: {delta:?}"
+                );
+                let plan_text = {
+                    let plan_text = self.active_plan_text.entry(item_id).or_default();
+                    plan_text.push_str(&delta);
+                    plan_text.clone()
+                };
+                self.emit_plan_text_update(client, &plan_text, true).await;
             }
             EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id }) => {
                 info!("Web search started: call_id={}", call_id);
@@ -638,6 +1041,24 @@ impl PromptState {
                 item,
             }) => {
                 info!("Item completed: thread_id={}, turn_id={}, item={:?}", thread_id, turn_id, item);
+                if let TurnItem::Plan(plan_item) = &item {
+                    let buffered_text = self.active_plan_text.remove(&plan_item.id);
+                    let final_text = if !plan_item.text.trim().is_empty() {
+                        plan_item.text.clone()
+                    } else {
+                        buffered_text.unwrap_or_default()
+                    };
+                    self.emit_plan_text_update(client, &final_text, false).await;
+                }
+                let (title, detail) = describe_turn_item(&item);
+                self.send_status_tool_call_update(
+                    client,
+                    format!("vaultai:status:item:{}", turn_item_id(&item)),
+                    title,
+                    detail,
+                    ToolCallStatus::Completed,
+                )
+                .await;
                 // Notify the client when context compaction completes so users see
                 // a status message rather than silence during /compact.
                 if matches!(item, TurnItem::ContextCompaction(..)) {
@@ -678,6 +1099,19 @@ impl PromptState {
                 error!(
                     "Handled error during turn: {message} {codex_error_info:?} {additional_details:?}"
                 );
+                let detail = additional_details
+                    .filter(|details| !details.trim().is_empty())
+                    .unwrap_or_else(|| message.clone());
+                self.send_status_tool_call(
+                    client,
+                    format!("vaultai:status:stream_error:{}", self.event_count),
+                    "stream_error",
+                    "Streaming interrupted",
+                    Some(detail),
+                    "error",
+                    ToolCallStatus::Failed,
+                )
+                .await;
             }
             EventMsg::Error(ErrorEvent {
                 message,
@@ -720,6 +1154,16 @@ impl PromptState {
             }
             EventMsg::EnteredReviewMode(review_request) => {
                 info!("Review begin: request={review_request:?}");
+                self.send_status_tool_call(
+                    client,
+                    format!("vaultai:status:review:{}", self.event_count),
+                    "review_mode",
+                    "Review mode active",
+                    Some(format_review_target(&review_request.target)),
+                    "info",
+                    ToolCallStatus::Completed,
+                )
+                .await;
             }
             EventMsg::ExitedReviewMode(event) => {
                 info!("Review end: output={event:?}");
@@ -757,6 +1201,59 @@ impl PromptState {
             }
             EventMsg::ModelReroute(ModelRerouteEvent { from_model, to_model, reason }) => {
                 info!("Model reroute: from={from_model}, to={to_model}, reason={reason:?}");
+                let reason = match reason {
+                    codex_protocol::protocol::ModelRerouteReason::HighRiskCyberActivity => {
+                        Some("High-risk cyber activity".to_string())
+                    }
+                };
+                let detail = reason
+                    .map(|reason| format!("{from_model} -> {to_model}. {reason}"))
+                    .or_else(|| Some(format!("{from_model} -> {to_model}")));
+                self.send_status_tool_call(
+                    client,
+                    format!("vaultai:status:model_reroute:{}", self.event_count),
+                    "model_reroute",
+                    format!("Switched to {to_model}"),
+                    detail,
+                    "info",
+                    ToolCallStatus::Completed,
+                )
+                .await;
+            }
+            // Adaptation VaultAI
+            EventMsg::RequestUserInput(event) => {
+                info!(
+                    "RequestUserInput: call_id={}, turn_id={}, questions={}",
+                    event.call_id,
+                    event.turn_id,
+                    event.questions.len()
+                );
+                let title = event
+                    .questions
+                    .first()
+                    .map(|question| question.header.clone())
+                    .filter(|header| !header.trim().is_empty())
+                    .unwrap_or_else(|| "Input requested".to_string());
+                let detail = summarize_user_input_questions(&event.questions);
+                client
+                    .send_tool_call(
+                        ToolCall::new(event.call_id.clone(), title)
+                            .kind(ToolKind::Other)
+                            .status(ToolCallStatus::Pending)
+                            .content(
+                                detail
+                                    .into_iter()
+                                    .map(|text| ToolCallContent::Content(Content::new(text)))
+                                    .collect(),
+                            )
+                            .raw_input(json!({
+                                "request_id": event.call_id,
+                                "turn_id": event.turn_id,
+                                "questions": event.questions,
+                            }))
+                            .meta(vaultai_user_input_meta()),
+                    )
+                    .await;
             }
 
             EventMsg::ContextCompacted(..) => {
@@ -791,8 +1288,7 @@ impl PromptState {
             | EventMsg::CollabResumeBegin(..)
             | EventMsg::CollabResumeEnd(..)
             | EventMsg::CollabCloseBegin(..)
-            | EventMsg::CollabCloseEnd(..)
-            | EventMsg::PlanDelta(..) => {}
+            | EventMsg::CollabCloseEnd(..) => {}
             e @ (EventMsg::McpListToolsResponse(..)
             // returned from Op::ListCustomPrompts, ignore
             | EventMsg::ListCustomPromptsResponse(..)
@@ -800,7 +1296,6 @@ impl PromptState {
             // Used for returning a single history entry
             | EventMsg::GetHistoryEntryResponse(..)
             | EventMsg::DeprecationNotice(..)
-            | EventMsg::RequestUserInput(..)
             | EventMsg::ListRemoteSkillsResponse(..)
             | EventMsg::RemoteSkillDownloaded(..)) => {
                 warn!("Unexpected event: {:?}", e);
@@ -1752,22 +2247,25 @@ impl SessionClient {
             .await;
     }
 
-    async fn update_plan(&self, plan: Vec<PlanItemArg>) {
-        self.send_notification(SessionUpdate::Plan(Plan::new(
-            plan.into_iter()
-                .map(|entry| {
-                    PlanEntry::new(
-                        entry.step,
-                        PlanEntryPriority::Medium,
-                        match entry.status {
-                            StepStatus::Pending => PlanEntryStatus::Pending,
-                            StepStatus::InProgress => PlanEntryStatus::InProgress,
-                            StepStatus::Completed => PlanEntryStatus::Completed,
-                        },
-                    )
-                })
-                .collect(),
-        )))
+    async fn update_plan_with_meta(&self, plan: Vec<PlanItemArg>, meta: Option<Meta>) {
+        self.send_notification(SessionUpdate::Plan(
+            Plan::new(
+                plan.into_iter()
+                    .map(|entry| {
+                        PlanEntry::new(
+                            entry.step,
+                            PlanEntryPriority::Medium,
+                            match entry.status {
+                                StepStatus::Pending => PlanEntryStatus::Pending,
+                                StepStatus::InProgress => PlanEntryStatus::InProgress,
+                                StepStatus::Completed => PlanEntryStatus::Completed,
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+            .meta(meta),
+        ))
         .await;
     }
 
@@ -2322,12 +2820,24 @@ impl<A: Auth> ThreadActor<A> {
             .modes(self.modes())
             .config_options(self.config_options().await?))
     }
-
+    // Adaptation made for VaultAI
     async fn handle_prompt(
         &mut self,
         request: PromptRequest,
     ) -> Result<oneshot::Receiver<Result<StopReason, Error>>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
+        // Adaptation made por Valt AI
+        if let Some(payload) = extract_user_input_answer_payload(&request.prompt)? {
+            self.thread
+                .submit(Op::UserInputAnswer {
+                    id: payload.turn_id,
+                    response: payload.response,
+                })
+                .await
+                .map_err(|e| Error::internal_error().data(e.to_string()))?;
+            drop(response_tx.send(Ok(StopReason::EndTurn)));
+            return Ok(response_rx);
+        }
 
         let items = build_prompt_items(request.prompt);
         let op;
@@ -3500,6 +4010,122 @@ mod tests {
                 ..
             }) if text == "test delta"
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_plan_text_handles_markdown_and_streaming_status() {
+        let parsed = parse_plan_text(
+            "# Final plan\nSummary paragraph\n- [x] Inspect current state\n- Implement live plan updates\n  including final completion handling",
+            true,
+        );
+
+        assert_eq!(parsed.title.as_deref(), Some("Final plan"));
+        assert_eq!(parsed.detail.as_deref(), Some("Summary paragraph"));
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].step, "Inspect current state");
+        assert!(matches!(parsed.entries[0].status, StepStatus::Completed));
+        assert_eq!(
+            parsed.entries[1].step,
+            "Implement live plan updates\nincluding final completion handling"
+        );
+        assert!(matches!(parsed.entries[1].status, StepStatus::InProgress));
+    }
+
+    #[test]
+    fn test_parse_plan_text_keeps_non_step_sections_outside_entries() {
+        let parsed = parse_plan_text(
+            "# Final plan\nSummary paragraph\n- [x] Inspect current state\n## Tests\nCover sync and resume flows",
+            false,
+        );
+
+        assert_eq!(parsed.title.as_deref(), Some("Final plan"));
+        assert_eq!(
+            parsed.detail.as_deref(),
+            Some("Summary paragraph\n## Tests\nCover sync and resume flows")
+        );
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].step, "Inspect current state");
+    }
+
+    #[tokio::test]
+    async fn test_plan_delta_emits_plan_updates() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client =
+            SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut prompt_state = PromptState::new(thread, response_tx);
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::PlanDelta(PlanDeltaEvent {
+                    thread_id: codex_protocol::ThreadId::new().to_string(),
+                    turn_id: "turn-1".into(),
+                    item_id: "plan-1".into(),
+                    delta: "# Final plan\nSummary paragraph\n- [x] Inspect current state\n- Implement live plan updates\n".into(),
+                }),
+            )
+            .await;
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: codex_protocol::ThreadId::new(),
+                    turn_id: "turn-1".into(),
+                    item: TurnItem::Plan(codex_protocol::items::PlanItem {
+                        id: "plan-1".into(),
+                        text: "# Final plan\nSummary paragraph\n- [x] Inspect current state\n- Implement live plan updates\n".into(),
+                    }),
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let plan_updates = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::Plan(plan) => Some(plan.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(plan_updates.len(), 2, "notifications={notifications:?}");
+        assert_eq!(
+            plan_updates[0]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(VAULTAI_PLAN_TITLE_KEY))
+                .and_then(|value| value.as_str()),
+            Some("Final plan")
+        );
+        assert_eq!(
+            plan_updates[0]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(VAULTAI_PLAN_DETAIL_KEY))
+                .and_then(|value| value.as_str()),
+            Some("Summary paragraph")
+        );
+        assert_eq!(plan_updates[0].entries.len(), 2);
+        assert_eq!(plan_updates[0].entries[0].content, "Inspect current state");
+        assert_eq!(
+            plan_updates[0].entries[0].status,
+            PlanEntryStatus::Completed
+        );
+        assert_eq!(
+            plan_updates[0].entries[1].content,
+            "Implement live plan updates"
+        );
+        assert_eq!(
+            plan_updates[0].entries[1].status,
+            PlanEntryStatus::InProgress
+        );
+        assert_eq!(plan_updates[1].entries[1].status, PlanEntryStatus::Pending);
 
         Ok(())
     }

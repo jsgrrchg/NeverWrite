@@ -1,10 +1,6 @@
 import type { EditorState } from "@codemirror/state";
-
-type NoteLike = {
-    id: string;
-    title: string;
-    path: string;
-};
+import { useVaultStore } from "../../../app/store/vaultStore";
+import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 
 export type WikilinkContext = {
     wholeFrom: number;
@@ -19,25 +15,31 @@ export type WikilinkSuggestionItem = {
     insertText: string;
 };
 
-function normalizeTarget(value: string): string {
-    return value
-        .replace(/\.md$/i, "")
-        .replace(/[’‘]/g, "'")
-        .replace(/[“”]/g, '"')
-        .replace(/…/g, "...")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase();
-}
+type WikilinkSuggestionDto = {
+    id: string;
+    title: string;
+    subtitle: string;
+    insert_text: string;
+};
 
-function getNoteInsertText(note: NoteLike) {
-    return note.title?.trim() || note.id.split("/").pop()?.replace(/\.md$/i, "") || note.id;
-}
+const suggestionCache = new Map<string, WikilinkSuggestionItem[]>();
 
-function getLastSegment(note: NoteLike) {
-    return note.id.split("/").pop()?.replace(/\.md$/i, "") || note.id;
+let cachedVaultPath: string | null = null;
+let cachedResolverRevision: number | null = null;
+
+function ensureFreshSuggestionCache() {
+    const { vaultPath, resolverRevision } = useVaultStore.getState();
+    if (
+        cachedVaultPath === vaultPath &&
+        cachedResolverRevision === resolverRevision
+    ) {
+        return resolverRevision;
+    }
+
+    suggestionCache.clear();
+    cachedVaultPath = vaultPath;
+    cachedResolverRevision = resolverRevision;
+    return resolverRevision;
 }
 
 export function getWikilinkContext(state: EditorState): WikilinkContext | null {
@@ -74,55 +76,33 @@ export function getWikilinkContext(state: EditorState): WikilinkContext | null {
     };
 }
 
-export function getWikilinkSuggestions(
-    notes: NoteLike[],
+export async function getWikilinkSuggestions(
+    noteId: string,
     query: string,
     limit = 8,
-): WikilinkSuggestionItem[] {
-    const normalizedQuery = normalizeTarget(query);
+): Promise<WikilinkSuggestionItem[]> {
+    const resolverRevision = ensureFreshSuggestionCache();
+    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${query}`;
+    const cached = suggestionCache.get(cacheKey);
+    if (cached) {
+        return cached;
+    }
 
-    const ranked = notes
-        .map((note) => {
-            const insertText = getNoteInsertText(note);
-            const title = insertText;
-            const normalizedTitle = normalizeTarget(title);
-            const lastSegment = getLastSegment(note);
-            const normalizedLastSegment = normalizeTarget(lastSegment);
+    const suggestions = await vaultInvoke<WikilinkSuggestionDto[]>(
+        "suggest_wikilinks",
+        {
+            noteId,
+            query,
+            limit,
+        },
+    );
 
-            let rank = Number.POSITIVE_INFINITY;
-
-            if (!normalizedQuery) {
-                rank = 1000;
-            } else if (normalizedTitle.startsWith(normalizedQuery)) {
-                rank = 0;
-            } else if (normalizedLastSegment.startsWith(normalizedQuery)) {
-                rank = 1;
-            } else if (normalizedTitle.includes(normalizedQuery)) {
-                rank = 2;
-            } else if (normalizedLastSegment.includes(normalizedQuery)) {
-                rank = 3;
-            }
-
-            return {
-                id: note.id,
-                title,
-                subtitle: note.path,
-                insertText,
-                rank,
-            };
-        })
-        .filter((item) => Number.isFinite(item.rank))
-        .sort((left, right) => {
-            if (left.rank !== right.rank) return left.rank - right.rank;
-            return left.title.localeCompare(right.title, undefined, {
-                sensitivity: "base",
-            });
-        });
-
-    return ranked.slice(0, limit).map(({ id, title, subtitle, insertText }) => ({
-        id,
-        title,
-        subtitle,
-        insertText,
+    const items = suggestions.map((item) => ({
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        insertText: item.insert_text,
     }));
+    suggestionCache.set(cacheKey, items);
+    return items;
 }

@@ -245,6 +245,10 @@ beforeEach(async () => {
         vaultPath: null,
         notes: [],
         vaultRevision: 0,
+        contentRevision: 0,
+        structureRevision: 0,
+        resolverRevision: 0,
+        tagsRevision: 0,
         isLoading: false,
         vaultOpenState: {
             path: null,

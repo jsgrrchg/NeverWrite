@@ -12,7 +12,8 @@ import {
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     extractYouTubeVideoId,
     getYouTubePreview,
@@ -214,7 +215,7 @@ async function loadNotePreviewContent(noteId: string) {
     const pending = notePreviewRequestCache.get(noteId);
     if (pending) return pending;
 
-    const request = invoke<{ content: string }>("read_note", { noteId })
+    const request = vaultInvoke<{ content: string }>("read_note", { noteId })
         .then((detail) => {
             notePreviewContentCache.set(noteId, detail.content);
             notePreviewRequestCache.delete(noteId);
@@ -839,9 +840,41 @@ function buildCodeBlockDecorations(state: EditorState): DecorationSet {
     return builder.finish();
 }
 
+/**
+ * Characters that can create or destroy block-level elements (code blocks,
+ * math blocks, tables, images, embeds).  When a doc change only inserts /
+ * deletes characters outside this set we can cheaply remap existing
+ * decorations instead of rebuilding them from scratch.
+ */
+const BLOCK_MARKER_RE = /[`$!|\n\[#]/;
+
 /** Returns true when a transaction requires block decorations to be rebuilt. */
 function needsBlockRebuild(tr: Transaction): boolean {
-    if (tr.docChanged) return true;
+    if (tr.docChanged) {
+        // Fast-path: for simple edits that cannot create / destroy block
+        // elements, skip the expensive full rebuild.
+        let hasPotentialBlockChange = false;
+        tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+            if (hasPotentialBlockChange) return;
+            // Check deleted text
+            if (toA - fromA > 0) {
+                const deleted = tr.startState.doc.sliceString(fromA, toA);
+                if (BLOCK_MARKER_RE.test(deleted)) {
+                    hasPotentialBlockChange = true;
+                    return;
+                }
+            }
+            // Check inserted text
+            if (toB - fromB > 0) {
+                const inserted = tr.state.doc.sliceString(fromB, toB);
+                if (BLOCK_MARKER_RE.test(inserted)) {
+                    hasPotentialBlockChange = true;
+                    return;
+                }
+            }
+        });
+        return hasPotentialBlockChange;
+    }
     if (!tr.selection) return false;
     const prev = tr.startState.selection.main;
     const curr = tr.state.selection.main;
@@ -859,7 +892,9 @@ export function createCodeBlockLivePreviewExtension() {
         },
         update(decorations, transaction) {
             if (!needsBlockRebuild(transaction)) {
-                return decorations;
+                return transaction.docChanged
+                    ? decorations.map(transaction.changes)
+                    : decorations;
             }
             return buildCodeBlockDecorations(transaction.state);
         },
@@ -979,7 +1014,9 @@ export function createBlockMathLivePreviewExtension() {
         },
         update(decorations, transaction) {
             if (!needsBlockRebuild(transaction)) {
-                return decorations;
+                return transaction.docChanged
+                    ? decorations.map(transaction.changes)
+                    : decorations;
             }
             return buildBlockMathDecorations(transaction.state);
         },
@@ -1711,7 +1748,9 @@ export function createImageLivePreviewExtension(vaultRoot: string | null) {
         },
         update(decorations, transaction) {
             if (!needsBlockRebuild(transaction)) {
-                return decorations;
+                return transaction.docChanged
+                    ? decorations.map(transaction.changes)
+                    : decorations;
             }
             return buildBlockDecorations(transaction.state, vaultRoot);
         },
@@ -1730,7 +1769,9 @@ export function createTableLivePreviewExtension(
         },
         update(decorations, transaction) {
             if (!needsBlockRebuild(transaction)) {
-                return decorations;
+                return transaction.docChanged
+                    ? decorations.map(transaction.changes)
+                    : decorations;
             }
             return buildTableDecorations(transaction.state, interactions);
         },

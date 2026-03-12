@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { vaultInvoke } from "../utils/vaultInvoke";
 import { useVaultStore } from "./vaultStore";
 
 const MAX_HISTORY = 30;
@@ -77,11 +77,19 @@ function createTab(noteId: string, title: string, content: string): Tab {
     };
 }
 
-function ensureTabHistory(tab: Tab): Tab {
-    if (tab.history && tab.history.length > 0) return tab;
+function ensureTabHistory(tab: TabInput): Tab {
+    if (tab.history && tab.history.length > 0) {
+        return {
+            ...tab,
+            history: tab.history,
+            historyIndex: tab.historyIndex ?? 0,
+        };
+    }
     return {
         ...tab,
-        history: [{ noteId: tab.noteId, title: tab.title, content: tab.content }],
+        history: [
+            { noteId: tab.noteId, title: tab.title, content: tab.content },
+        ],
         historyIndex: 0,
     };
 }
@@ -159,23 +167,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             // If there's an active tab, navigate within it
             if (activeTab) {
                 const tab = ensureTabHistory(activeTab);
-                // Save current content to current history entry
-                const history = [...tab.history];
-                history[tab.historyIndex] = {
-                    noteId: tab.noteId,
-                    title: tab.title,
-                    content: tab.content,
-                };
-                // Truncate forward entries
-                const trimmed = history.slice(0, tab.historyIndex + 1);
-                // Push new entry
-                const newEntry: HistoryEntry = { noteId, title, content };
-                trimmed.push(newEntry);
+                // Single slice: keep entries up to current, snapshot current, push new
+                const kept = tab.history.slice(0, tab.historyIndex);
+                kept.push(
+                    {
+                        noteId: tab.noteId,
+                        title: tab.title,
+                        content: tab.content,
+                    },
+                    { noteId, title, content },
+                );
                 // Cap at MAX_HISTORY
                 const capped =
-                    trimmed.length > MAX_HISTORY
-                        ? trimmed.slice(trimmed.length - MAX_HISTORY)
-                        : trimmed;
+                    kept.length > MAX_HISTORY
+                        ? kept.slice(kept.length - MAX_HISTORY)
+                        : kept;
                 const newIndex = capped.length - 1;
 
                 return {
@@ -207,32 +213,39 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
-    goBack: () => get().navigateToHistoryIndex(
-        (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ?? 1) - 1,
-    ),
+    goBack: () =>
+        get().navigateToHistoryIndex(
+            (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ??
+                1) - 1,
+        ),
 
-    goForward: () => get().navigateToHistoryIndex(
-        (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ?? -1) + 1,
-    ),
+    goForward: () =>
+        get().navigateToHistoryIndex(
+            (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ??
+                -1) + 1,
+        ),
 
     navigateToHistoryIndex: (targetIndex) => {
         const state = get();
-        const tabIdx = state.tabs.findIndex(
-            (t) => t.id === state.activeTabId,
-        );
+        const tabIdx = state.tabs.findIndex((t) => t.id === state.activeTabId);
         if (tabIdx === -1) return;
         const tab = ensureTabHistory(state.tabs[tabIdx]);
         if (targetIndex < 0 || targetIndex >= tab.history.length) return;
         if (targetIndex === tab.historyIndex) return;
 
         // Snapshot current content into history, then jump
-        const history = [...tab.history];
-        history[tab.historyIndex] = {
+        const currentSnapshot: HistoryEntry = {
             noteId: tab.noteId,
             title: tab.title,
             content: tab.content,
         };
-        const entry = history[targetIndex];
+        const history =
+            tab.historyIndex === targetIndex
+                ? tab.history
+                : tab.history.map((h, i) =>
+                      i === tab.historyIndex ? currentSnapshot : h,
+                  );
+        const entry = tab.history[targetIndex];
 
         // Splice updated tab directly — avoids iterating every tab
         const tabs = [...state.tabs];
@@ -282,19 +295,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     updateTabContent: (tabId, content) => {
         set((state) => ({
-            tabs: state.tabs.map((t) => {
-                if (t.id !== tabId) return t;
-                // Also update current history entry
-                if (!t.history?.length) return { ...t, content };
-                const history = [...t.history];
-                if (history[t.historyIndex]) {
-                    history[t.historyIndex] = {
-                        ...history[t.historyIndex],
-                        content,
-                    };
-                }
-                return { ...t, content, history };
-            }),
+            tabs: state.tabs.map((t) =>
+                t.id !== tabId ? t : { ...t, content },
+            ),
         }));
     },
 
@@ -393,7 +396,7 @@ async function loadHistoryEntryContent(
     noteId: string,
 ) {
     try {
-        const detail = await invoke<{ content: string }>("read_note", {
+        const detail = await vaultInvoke<{ content: string }>("read_note", {
             noteId,
         });
         useEditorStore.setState((state) => ({
@@ -421,6 +424,7 @@ async function loadHistoryEntryContent(
 // Debounced session persistence — only write when tab list or active tab changes
 let _sessionTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastSessionJson = "";
+let _lastSessionSig = "";
 
 useEditorStore.subscribe((state) => {
     if (!sessionReady) return;
@@ -428,16 +432,26 @@ useEditorStore.subscribe((state) => {
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
 
+    // Cheap fingerprint: skip expensive serialization on content-only edits
+    let sig = state.activeTabId ?? "";
+    for (const t of state.tabs) {
+        sig += `|${t.noteId}|${t.title}|${t.historyIndex}|${t.history.length}`;
+    }
+    if (sig === _lastSessionSig) return;
+    _lastSessionSig = sig;
+
     const session: PersistedSession = {
-        noteIds: state.tabs.map((t) => ({
-            noteId: t.noteId,
-            title: t.title,
-            history: t.history.map((h) => ({
-                noteId: h.noteId,
-                title: h.title,
+        noteIds: state.tabs
+            .filter((t) => t.noteId)
+            .map((t) => ({
+                noteId: t.noteId,
+                title: t.title,
+                history: t.history.map((h) => ({
+                    noteId: h.noteId,
+                    title: h.title,
+                })),
+                historyIndex: t.historyIndex,
             })),
-            historyIndex: t.historyIndex,
-        })),
         activeNoteId:
             state.tabs.find((t) => t.id === state.activeTabId)?.noteId ?? null,
     };

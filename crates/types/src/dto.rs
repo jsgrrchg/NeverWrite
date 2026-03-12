@@ -108,13 +108,111 @@ pub struct VaultOpenStateDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultNoteChangeDto {
+    pub vault_path: String,
     pub kind: String,
     pub note: Option<NoteDto>,
     pub note_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedLinkDto {
+    pub target: String,
+    pub note_id: Option<String>,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedWikilinkDto {
+    pub target: String,
+    pub resolved_note_id: Option<String>,
+    pub resolved_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikilinkSuggestionDto {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub insert_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutlineHeadingDto {
+    pub id: String,
+    pub title: String,
+    pub level: u8,
+    pub anchor: usize,
+    pub head: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppErrorDto {
     pub code: String,
     pub message: String,
+}
+
+// ── Advanced Search ────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchTermParam {
+    pub value: String,
+    pub negated: bool,
+    pub is_regex: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentSearchParam {
+    pub value: String,
+    /// "content" | "line" | "section"
+    pub scope: String,
+    pub negated: bool,
+    pub is_regex: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropertyFilterParam {
+    /// Frontmatter property key
+    pub key: String,
+    /// Value to match against (substring, case-insensitive)
+    pub value: String,
+    pub negated: bool,
+    pub is_regex: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvancedSearchParams {
+    /// Title/path terms (no operator or default search)
+    pub terms: Vec<SearchTermParam>,
+    /// tag: filters
+    pub tag_filters: Vec<SearchTermParam>,
+    /// file: filters
+    pub file_filters: Vec<SearchTermParam>,
+    /// path: filters
+    pub path_filters: Vec<SearchTermParam>,
+    /// content: / line: / section: searches
+    pub content_searches: Vec<ContentSearchParam>,
+    /// [key:value] frontmatter property filters
+    pub property_filters: Vec<PropertyFilterParam>,
+    /// "relevance" | "title" | "modified"
+    pub sort_by: String,
+    pub sort_asc: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentMatchDto {
+    pub line_number: usize,
+    pub line_content: String,
+    pub match_start: usize,
+    pub match_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvancedSearchResultDto {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub score: f64,
+    pub tags: Vec<String>,
+    pub modified_at: u64,
+    pub matches: Vec<ContentMatchDto>,
 }

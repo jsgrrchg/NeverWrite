@@ -31,11 +31,13 @@ import {
     measureLineLeadingIndent,
     addLineDecoration,
 } from "./livePreviewHelpers";
-import {
-    selectionTouchesLine,
-    selectionTouchesRange,
-} from "./selectionActivity";
+import { selectionTouchesLine } from "./selectionActivity";
 import { InlineMathWidget } from "./livePreviewBlocks";
+import {
+    perfCount,
+    perfMeasure,
+    perfNow,
+} from "../../../app/utils/perfInstrumentation";
 
 const headingMarks: Record<number, Decoration> = {
     1: Decoration.mark({ class: "cm-lp-h1" }),
@@ -61,7 +63,7 @@ const LOOSE_UNORDERED_LIST_RE = /^([ \t]*)([•◦▪‣–—−])([ \t]+)/;
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/g;
 const INLINE_HTML_RE = /<(sub|sup|kbd)>([^<\n]+)<\/\1>/gi;
 const INLINE_BR_RE = /<br\s*\/?>/gi;
-const INLINE_MATH_RE = /(^|[^\\$])\$(?!\$)([^\n$]|\\\$)+?\$(?!\$)/g;
+const INLINE_MATH_RE = /(^|[^\\$])\$(?!\$)(?!\s)([^\n$]|\\\$)+?\$(?!\$)/g;
 const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
 const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.*)$/;
 const CALLOUT_RE = /^\s*>\s+\[!([a-zA-Z0-9-]+)\]([+-])?(?:\s+(.*))?$/;
@@ -69,6 +71,11 @@ const EXTENDED_TASK_RE = /^(\s*(?:[-+*]|\d+[.)])\s+)\[( |x|X|~|\/)\](\s+.*)?$/;
 const UNORDERED_LIST_MARKER_WIDTH = "1.45em";
 const TASK_LIST_MARKER_WIDTH = "1.2em";
 const NARRATIVE_LIST_ITEM_THRESHOLD = 72;
+
+// Characters that can affect markdown structure.  When an edit only involves
+// characters NOT in this set we can skip the full decoration rebuild and simply
+// map existing decorations through the position changes.
+const MARKDOWN_SIGNIFICANT = /[!#$()*+./:<=>\[\\\]^_`{|}~\n\r-]/;
 const MAX_STYLED_LIST_LEVEL = 3;
 
 type LivePreviewNode = {
@@ -392,7 +399,7 @@ function hideRangeUnlessEditing(
     deco: Decoration = hideMark,
 ) {
     if (from >= to) return;
-    if (!selectionTouchesRange(context.state, from, to)) {
+    if (!selectionTouchesLine(context.state, from, to)) {
         pushDeco(context, from, to, deco);
     }
 }
@@ -536,7 +543,7 @@ const horizontalRuleRule: NodeRule = (node, context) => {
     if (node.name !== "HorizontalRule") return;
 
     const line = context.state.doc.lineAt(node.from);
-    if (selectionTouchesRange(context.state, line.from, line.to)) return;
+    if (selectionTouchesLine(context.state, line.from, line.to)) return;
 
     pushDeco(context, line.from, line.to, hideMark);
     addLineDecoration(context.lineDecos, line.from, "cm-lp-hr-line");
@@ -549,7 +556,7 @@ const listMarkRule: NodeRule = (node, context) => {
     const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
     const line = context.state.doc.lineAt(node.from);
     const hideTo = extendPastFollowingWhitespace(context.state, node.to);
-    const isEditingMarker = selectionTouchesRange(
+    const isEditingMarker = selectionTouchesLine(
         context.state,
         node.from,
         hideTo,
@@ -700,7 +707,7 @@ const taskMarkerRule: NodeRule = (node, context) => {
     if (node.name !== "TaskMarker") return;
 
     const prefixEnd = extendPastFollowingWhitespace(context.state, node.to);
-    const isEditingMarker = selectionTouchesRange(
+    const isEditingMarker = selectionTouchesLine(
         context.state,
         node.from,
         prefixEnd,
@@ -897,7 +904,7 @@ function applyLooseListFallback(context: BuildContext) {
 
         const markerFrom = line.from + indent.length;
         const hideTo = markerFrom + marker.length + spacing.length;
-        const isEditingMarker = selectionTouchesRange(
+        const isEditingMarker = selectionTouchesLine(
             context.state,
             markerFrom,
             hideTo,
@@ -1066,7 +1073,7 @@ function applyCalloutDecorations(context: BuildContext) {
             const bodyTo = context.state.doc.line(blockEnd).to;
             if (
                 bodyFrom < bodyTo &&
-                !selectionTouchesRange(context.state, bodyFrom, bodyTo)
+                !selectionTouchesLine(context.state, bodyFrom, bodyTo)
             ) {
                 pushDeco(context, bodyFrom, bodyTo, Decoration.replace({}));
             }
@@ -1140,7 +1147,7 @@ function applyExtendedTaskFallback(context: BuildContext) {
         const prefix = match[1];
         const markerStart = line.from + prefix.length;
         const markerEnd = markerStart + 3;
-        const isEditingMarker = selectionTouchesRange(
+        const isEditingMarker = selectionTouchesLine(
             context.state,
             markerStart,
             markerEnd + 1,
@@ -1260,7 +1267,7 @@ function applyRichRegexRules(context: BuildContext) {
         const tex = blockMathMatch[1].trim();
         if (!tex) continue;
 
-        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
+        if (!selectionTouchesLine(context.state, absFrom, absTo)) {
             pushDeco(
                 context,
                 absFrom,
@@ -1292,7 +1299,7 @@ function applyRichRegexRules(context: BuildContext) {
             .trim();
         if (!tex) continue;
 
-        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
+        if (!selectionTouchesLine(context.state, absFrom, absTo)) {
             pushDeco(
                 context,
                 absFrom,
@@ -1374,28 +1381,118 @@ function buildInlineDecorations(
     return builder.finish();
 }
 
+function isSimpleEdit(update: ViewUpdate): boolean {
+    let safe = true;
+    update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        if (!safe) return;
+        if (toA > fromA) {
+            if (
+                MARKDOWN_SIGNIFICANT.test(
+                    update.startState.doc.sliceString(fromA, toA),
+                )
+            ) {
+                safe = false;
+                return;
+            }
+        }
+        if (toB > fromB) {
+            if (
+                MARKDOWN_SIGNIFICANT.test(
+                    update.state.doc.sliceString(fromB, toB),
+                )
+            ) {
+                safe = false;
+            }
+        }
+    });
+    return safe;
+}
+
 export function createInlineLivePreviewPlugin() {
     return ViewPlugin.fromClass(
         class {
             decorations: DecorationSet;
 
             constructor(view: EditorView) {
-                this.decorations = this.build(view);
+                this.decorations = this.build(view, "initial");
             }
 
             update(update: ViewUpdate) {
-                if (
-                    update.docChanged ||
-                    update.selectionSet ||
-                    update.viewportChanged
-                ) {
-                    this.decorations = this.build(update.view);
+                if (update.docChanged) {
+                    // Fast path: for edits that don't involve markdown-significant
+                    // characters, just remap decoration positions instead of
+                    // rebuilding the entire viewport.
+                    if (isSimpleEdit(update)) {
+                        this.decorations = this.decorations.map(update.changes);
+                        perfCount("editor.livePreviewInline.docChanged.mapped");
+                        return;
+                    }
+                    this.decorations = this.build(update.view, "docChanged");
+                    return;
                 }
+
+                if (update.viewportChanged) {
+                    this.decorations = this.build(
+                        update.view,
+                        "viewportChanged",
+                    );
+                    return;
+                }
+
+                if (!update.selectionSet) return;
+
+                // With line-level hide/show, decorations only change when the
+                // selection moves to a different line range.
+                const prev = update.startState.selection.main;
+                const curr = update.state.selection.main;
+                if (
+                    update.startState.doc.lineAt(prev.from).number ===
+                        update.state.doc.lineAt(curr.from).number &&
+                    update.startState.doc.lineAt(prev.to).number ===
+                        update.state.doc.lineAt(curr.to).number
+                ) {
+                    return;
+                }
+                this.decorations = this.build(update.view, "selectionSet");
             }
 
-            build(view: EditorView): DecorationSet {
+            build(
+                view: EditorView,
+                reason:
+                    | "initial"
+                    | "docChanged"
+                    | "viewportChanged"
+                    | "selectionSet",
+            ): DecorationSet {
                 const { from, to } = view.viewport;
-                return buildInlineDecorations(view.state, from, to);
+                const startMs = perfNow();
+                const decorations = buildInlineDecorations(
+                    view.state,
+                    from,
+                    to,
+                );
+                const visibleLines =
+                    view.state.doc.lineAt(to).number -
+                    view.state.doc.lineAt(from).number +
+                    1;
+
+                if (reason === "docChanged") {
+                    perfCount("editor.livePreviewInline.docChanged");
+                }
+
+                perfMeasure(
+                    `editor.livePreviewInline.build.${reason}`,
+                    startMs,
+                    {
+                        viewportFrom: from,
+                        viewportTo: to,
+                        viewportChars: Math.max(0, to - from),
+                        visibleLines,
+                        docLines: view.state.doc.lines,
+                    },
+                );
+
+                return decorations;
             }
         },
         { decorations: (value) => value.decorations },

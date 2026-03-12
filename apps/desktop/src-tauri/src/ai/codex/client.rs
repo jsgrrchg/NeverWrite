@@ -18,6 +18,7 @@ use agent_client_protocol::{
     SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest, ToolCall,
     ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tokio::{process::Command, runtime::Builder, sync::oneshot, task::LocalSet};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -30,12 +31,22 @@ use vault_ai_ai::{
 
 use crate::ai::emit::{
     emit_message_completed, emit_message_delta, emit_message_started, emit_permission_request,
-    emit_session_error, emit_thinking_completed, emit_thinking_delta, emit_thinking_started,
-    emit_tool_activity, AiPermissionOptionPayload, AiPermissionRequestPayload,
-    AiToolActivityPayload,
+    emit_plan_update, emit_session_error, emit_status_event, emit_thinking_completed,
+    emit_thinking_delta, emit_thinking_started, emit_tool_activity, emit_user_input_request,
+    AiFileDiffPayload, AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload,
+    AiPlanUpdatePayload, AiStatusEventPayload, AiToolActivityPayload,
+    AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
 
 use super::{process::CodexProcessSpec, setup::apply_auth_env};
+
+const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
+const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
+const VAULTAI_STATUS_EMPHASIS_KEY: &str = "vaultaiStatusEmphasis";
+const VAULTAI_USER_INPUT_EVENT_TYPE: &str = "user_input_request";
+const VAULTAI_USER_INPUT_RESPONSE_PREFIX: &str = "__vaultai_user_input_response__:";
+const VAULTAI_PLAN_TITLE_KEY: &str = "vaultaiPlanTitle";
+const VAULTAI_PLAN_DETAIL_KEY: &str = "vaultaiPlanDetail";
 
 enum RuntimeCommand {
     CreateSession {
@@ -75,6 +86,12 @@ enum RuntimeCommand {
     RespondPermission {
         request_id: String,
         option_id: Option<String>,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    RespondUserInput {
+        session_id: String,
+        request_id: String,
+        answers: HashMap<String, Vec<String>>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
 }
@@ -211,6 +228,68 @@ impl PermissionState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct UserInputState {
+    pending: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl UserInputState {
+    fn register(&self, request_id: String, turn_id: String) {
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.insert(request_id, turn_id);
+        }
+    }
+
+    fn resolve_turn_id(&self, request_id: &str) -> Result<String, String> {
+        self.pending
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(request_id)
+            .ok_or_else(|| format!("User input request not found: {request_id}"))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawUserInputQuestionOption {
+    label: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawUserInputQuestion {
+    id: String,
+    header: String,
+    question: String,
+    #[serde(rename = "isOther", default)]
+    is_other: bool,
+    #[serde(rename = "isSecret", default)]
+    is_secret: bool,
+    options: Option<Vec<RawUserInputQuestionOption>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawUserInputRequest {
+    request_id: String,
+    turn_id: String,
+    questions: Vec<RawUserInputQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UserInputAnswerPayload {
+    turn_id: String,
+    response: UserInputResponsePayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UserInputResponsePayload {
+    answers: HashMap<String, UserInputAnswerValuePayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UserInputAnswerValuePayload {
+    answers: Vec<String>,
+}
+
 /// Drop guard that ensures `emit_message_completed` fires even if the
 /// spawned prompt task panics or is cancelled.
 struct TurnCompletionGuard {
@@ -243,6 +322,7 @@ struct VaultAiAcpClient {
     streaming: StreamingState,
     tools: ToolState,
     permissions: PermissionState,
+    user_inputs: UserInputState,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +361,41 @@ impl Client for VaultAiAcpClient {
             .and_then(|locations| locations.first())
             .map(|location| location.path.display().to_string());
 
+        // Extract diffs from tool call content (for patch approval requests).
+        let diffs: Vec<AiFileDiffPayload> = args
+            .tool_call
+            .fields
+            .content
+            .as_ref()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ToolCallContent::Diff(diff) => {
+                            let kind = if diff.old_text.is_none() {
+                                "add"
+                            } else if diff.new_text.is_empty() {
+                                "delete"
+                            } else {
+                                "update"
+                            };
+                            Some(AiFileDiffPayload {
+                                path: diff.path.display().to_string(),
+                                kind: kind.to_string(),
+                                old_text: diff.old_text.clone(),
+                                new_text: if diff.new_text.is_empty() {
+                                    None
+                                } else {
+                                    Some(diff.new_text.clone())
+                                },
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Register the tool call so subsequent ToolCallUpdates can find it.
         let pending_tool_call = ToolCall::try_from(args.tool_call.clone())
             .unwrap_or_else(|_| ToolCall::new(args.tool_call.tool_call_id.clone(), title.clone()));
@@ -301,6 +416,7 @@ impl Client for VaultAiAcpClient {
                     .into_iter()
                     .map(map_permission_option)
                     .collect(),
+                diffs,
             },
         );
 
@@ -344,12 +460,31 @@ impl Client for VaultAiAcpClient {
                     emit_thinking_completed(&self.app, session_id.clone(), thinking_id);
                 }
                 let tool_call = self.tools.upsert_tool_call(&session_id, tool_call);
-                emit_tool_activity(&self.app, map_tool_call(&session_id, &tool_call));
+                if let Some(payload) = map_user_input_request(&session_id, &tool_call) {
+                    self.user_inputs
+                        .register(payload.request_id.clone(), payload.turn_id.clone());
+                    emit_user_input_request(&self.app, payload.into_emit_payload());
+                } else if let Some(payload) = map_status_event(&session_id, &tool_call) {
+                    emit_status_event(&self.app, payload);
+                } else {
+                    emit_tool_activity(&self.app, map_tool_call(&session_id, &tool_call));
+                }
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 if let Some(tool_call) = self.tools.apply_tool_update(&session_id, update) {
-                    emit_tool_activity(&self.app, map_tool_call(&session_id, &tool_call));
+                    if let Some(payload) = map_user_input_request(&session_id, &tool_call) {
+                        self.user_inputs
+                            .register(payload.request_id.clone(), payload.turn_id.clone());
+                        emit_user_input_request(&self.app, payload.into_emit_payload());
+                    } else if let Some(payload) = map_status_event(&session_id, &tool_call) {
+                        emit_status_event(&self.app, payload);
+                    } else {
+                        emit_tool_activity(&self.app, map_tool_call(&session_id, &tool_call));
+                    }
                 }
+            }
+            SessionUpdate::Plan(plan) => {
+                emit_plan_update(&self.app, map_plan_update(&session_id, plan));
             }
             _ => {}
         }
@@ -511,6 +646,24 @@ impl CodexRuntimeHandle {
             .map_err(|error| error.to_string())?;
         response_rx.recv().map_err(|error| error.to_string())?
     }
+
+    pub fn respond_user_input(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        answers: HashMap<String, Vec<String>>,
+    ) -> Result<(), String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(RuntimeCommand::RespondUserInput {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                answers,
+                response_tx,
+            })
+            .map_err(|error| error.to_string())?;
+        response_rx.recv().map_err(|error| error.to_string())?
+    }
 }
 
 async fn run_actor(
@@ -531,6 +684,7 @@ struct RuntimeActor {
     streaming: StreamingState,
     tools: ToolState,
     permissions: PermissionState,
+    user_inputs: UserInputState,
     initialized: bool,
 }
 
@@ -543,6 +697,7 @@ impl RuntimeActor {
             streaming: StreamingState::new(),
             tools: ToolState::default(),
             permissions: PermissionState::default(),
+            user_inputs: UserInputState::default(),
             initialized: false,
         }
     }
@@ -608,6 +763,17 @@ impl RuntimeActor {
                 let result = self.respond_permission(request_id, option_id);
                 let _ = response_tx.send(result);
             }
+            RuntimeCommand::RespondUserInput {
+                session_id,
+                request_id,
+                answers,
+                response_tx,
+            } => {
+                let result = self
+                    .respond_user_input(session_id, request_id, answers)
+                    .await;
+                let _ = response_tx.send(result);
+            }
         }
     }
 
@@ -655,6 +821,7 @@ impl RuntimeActor {
             streaming: self.streaming.clone(),
             tools: self.tools.clone(),
             permissions: self.permissions.clone(),
+            user_inputs: self.user_inputs.clone(),
         });
 
         let (connection, io_task) =
@@ -894,6 +1061,45 @@ impl RuntimeActor {
             .unwrap_or(RequestPermissionOutcome::Cancelled);
         self.permissions.resolve(&request_id, outcome)
     }
+
+    async fn respond_user_input(
+        &mut self,
+        session_id: String,
+        request_id: String,
+        answers: HashMap<String, Vec<String>>,
+    ) -> Result<(), String> {
+        let turn_id = self.user_inputs.resolve_turn_id(&request_id)?;
+        let connection = self
+            .connection
+            .as_ref()
+            .ok_or_else(|| "ACP runtime is not initialized.".to_string())?
+            .clone();
+
+        let response = UserInputAnswerPayload {
+            turn_id,
+            response: UserInputResponsePayload {
+                answers: answers
+                    .into_iter()
+                    .map(|(question_id, answers)| {
+                        (question_id, UserInputAnswerValuePayload { answers })
+                    })
+                    .collect(),
+            },
+        };
+        let content = format!(
+            "{VAULTAI_USER_INPUT_RESPONSE_PREFIX}{}",
+            serde_json::to_string(&response).map_err(|error| error.to_string())?
+        );
+
+        connection
+            .prompt(PromptRequest::new(
+                SessionId::new(session_id),
+                vec![ContentBlock::from(content)],
+            ))
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh"];
@@ -927,6 +1133,26 @@ struct MappedModels {
     models: Vec<AiModelOption>,
     efforts_by_model: std::collections::HashMap<String, Vec<String>>,
     acp_model_ids: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedUserInputRequest {
+    session_id: String,
+    request_id: String,
+    turn_id: String,
+    title: String,
+    questions: Vec<AiUserInputQuestionPayload>,
+}
+
+impl ParsedUserInputRequest {
+    fn into_emit_payload(self) -> AiUserInputRequestPayload {
+        AiUserInputRequestPayload {
+            session_id: self.session_id,
+            request_id: self.request_id,
+            title: self.title,
+            questions: self.questions,
+        }
+    }
 }
 
 fn map_session_models(state: agent_client_protocol::SessionModelState) -> MappedModels {
@@ -1091,6 +1317,130 @@ fn map_tool_call(session_id: &str, tool_call: &ToolCall) -> AiToolActivityPayloa
             .map(|location| location.path.display().to_string()),
         summary: summarize_tool_content(tool_call),
     }
+}
+
+fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEventPayload> {
+    let meta = tool_call.meta.as_ref()?;
+    let event_type = meta.get(VAULTAI_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    if event_type != "status" {
+        return None;
+    }
+
+    let kind = meta
+        .get(VAULTAI_STATUS_KIND_KEY)
+        .and_then(|value| value.as_str())
+        .unwrap_or("status")
+        .to_string();
+    let emphasis = meta
+        .get(VAULTAI_STATUS_EMPHASIS_KEY)
+        .and_then(|value| value.as_str())
+        .unwrap_or("neutral")
+        .to_string();
+
+    Some(AiStatusEventPayload {
+        session_id: session_id.to_string(),
+        event_id: tool_call.tool_call_id.0.to_string(),
+        kind,
+        status: match tool_call.status {
+            ToolCallStatus::Pending => "pending".to_string(),
+            ToolCallStatus::InProgress => "in_progress".to_string(),
+            ToolCallStatus::Completed => "completed".to_string(),
+            ToolCallStatus::Failed => "failed".to_string(),
+            _ => "other".to_string(),
+        },
+        title: tool_call.title.clone(),
+        detail: summarize_tool_content(tool_call),
+        emphasis,
+    })
+}
+
+fn map_plan_update(session_id: &str, plan: agent_client_protocol::Plan) -> AiPlanUpdatePayload {
+    let title = plan
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get(VAULTAI_PLAN_TITLE_KEY))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let detail = plan
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get(VAULTAI_PLAN_DETAIL_KEY))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+
+    AiPlanUpdatePayload {
+        session_id: session_id.to_string(),
+        plan_id: format!("{session_id}:plan"),
+        title,
+        detail,
+        entries: plan
+            .entries
+            .into_iter()
+            .map(|entry| AiPlanEntryPayload {
+                content: entry.content,
+                priority: match entry.priority {
+                    agent_client_protocol::PlanEntryPriority::High => "high".to_string(),
+                    agent_client_protocol::PlanEntryPriority::Medium => "medium".to_string(),
+                    agent_client_protocol::PlanEntryPriority::Low => "low".to_string(),
+                    _ => "medium".to_string(),
+                },
+                status: match entry.status {
+                    agent_client_protocol::PlanEntryStatus::Pending => "pending".to_string(),
+                    agent_client_protocol::PlanEntryStatus::InProgress => "in_progress".to_string(),
+                    agent_client_protocol::PlanEntryStatus::Completed => "completed".to_string(),
+                    _ => "pending".to_string(),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn map_user_input_request(
+    session_id: &str,
+    tool_call: &ToolCall,
+) -> Option<ParsedUserInputRequest> {
+    let meta = tool_call.meta.as_ref()?;
+    let event_type = meta.get(VAULTAI_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    if event_type != VAULTAI_USER_INPUT_EVENT_TYPE {
+        return None;
+    }
+
+    let raw_input = tool_call.raw_input.as_ref()?;
+    let request = serde_json::from_value::<RawUserInputRequest>(raw_input.clone()).ok()?;
+    let questions = request
+        .questions
+        .into_iter()
+        .map(|question| AiUserInputQuestionPayload {
+            id: question.id,
+            header: question.header,
+            question: question.question,
+            is_other: question.is_other,
+            is_secret: question.is_secret,
+            options: question.options.map(|options| {
+                options
+                    .into_iter()
+                    .map(|option| AiUserInputQuestionOptionPayload {
+                        label: option.label,
+                        description: option.description,
+                    })
+                    .collect()
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    let title = questions
+        .first()
+        .map(|question| question.header.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| tool_call.title.clone());
+
+    Some(ParsedUserInputRequest {
+        session_id: session_id.to_string(),
+        request_id: request.request_id,
+        turn_id: request.turn_id,
+        title,
+        questions,
+    })
 }
 
 fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {

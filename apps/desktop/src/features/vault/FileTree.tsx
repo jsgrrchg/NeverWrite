@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
@@ -18,6 +18,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
+import { perfMeasure, perfNow } from "../../app/utils/perfInstrumentation";
 
 // --- Sort ---
 
@@ -68,6 +69,7 @@ type FlatTreeRow =
     | { kind: "note"; note: NoteDto; path: string; depth: number };
 
 function buildTree(notes: NoteDto[]): Record<string, TreeNode> {
+    const startMs = perfNow();
     const root: Record<string, TreeNode> = {};
     for (const note of notes) {
         const parts = note.id.split("/");
@@ -83,6 +85,10 @@ function buildTree(notes: NoteDto[]): Record<string, TreeNode> {
             }
         }
     }
+    perfMeasure("vault.fileTree.buildTree", startMs, {
+        noteCount: notes.length,
+        rootNodeCount: Object.keys(root).length,
+    });
     return root;
 }
 
@@ -134,6 +140,7 @@ function flattenTreeRows(
     prefix = "",
     depth = 0,
 ): FlatTreeRow[] {
+    const startMs = prefix === "" && depth === 0 ? perfNow() : null;
     const rows: FlatTreeRow[] = [];
 
     for (const [key, node] of sortedEntries(map, sortMode)) {
@@ -160,9 +167,16 @@ function flattenTreeRows(
         }
     }
 
+    if (prefix === "" && depth === 0) {
+        perfMeasure("vault.fileTree.flattenRows", startMs, {
+            rowCount: rows.length,
+            expandedFolderCount: expandedFolders.size,
+            sortMode,
+        });
+    }
+
     return rows;
 }
-
 
 function sortedEntries(
     map: Record<string, TreeNode>,
@@ -230,12 +244,12 @@ function FolderIcon({ open, size = 15 }: { open: boolean; size?: number }) {
             >
                 <path
                     d="M1.5 3.5A1 1 0 0 1 2.5 2.5H6l1.5 1.5h5a1 1 0 0 1 1 1V5H2.5V3.5Z"
-                    fill="var(--accent)"
+                    fill="#000000"
                     opacity="0.7"
                 />
                 <path
                     d="M1 5.5h13l-1.5 7.5H2.5L1 5.5Z"
-                    fill="var(--accent)"
+                    fill="#000000"
                     opacity="0.5"
                 />
             </svg>
@@ -251,7 +265,7 @@ function FolderIcon({ open, size = 15 }: { open: boolean; size?: number }) {
         >
             <path
                 d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                fill="var(--accent)"
+                fill="#000000"
                 opacity="0.5"
             />
         </svg>
@@ -444,210 +458,230 @@ interface FlatTreeRowViewProps {
     stickyTop?: number;
 }
 
-const FlatTreeRowView = memo(function FlatTreeRowView({
-    row,
-    metrics,
-    activeNoteId,
-    expandedFolders,
-    selectedNoteIds,
-    draggingNoteIds,
-    draggingFolderPath,
-    dragOverPath,
-    onFolderClick,
-    onFolderMouseDown,
-    onFolderContextMenu,
-    onNoteClick,
-    onNoteMouseDown,
-    onNoteContextMenu,
-    renamingNoteId,
-    onRenameConfirm,
-    onRenameCancel,
-    stickyTop,
-}: FlatTreeRowViewProps) {
-    const renameInputRef = useRef<HTMLInputElement>(null);
-    const paddingLeft = row.depth * metrics.indentStep + metrics.basePadding;
-    const noteOffset = Math.round(14 * metrics.scale);
+const FlatTreeRowView = memo(
+    function FlatTreeRowView({
+        row,
+        metrics,
+        activeNoteId,
+        expandedFolders,
+        selectedNoteIds,
+        draggingNoteIds,
+        draggingFolderPath,
+        dragOverPath,
+        onFolderClick,
+        onFolderMouseDown,
+        onFolderContextMenu,
+        onNoteClick,
+        onNoteMouseDown,
+        onNoteContextMenu,
+        renamingNoteId,
+        onRenameConfirm,
+        onRenameCancel,
+        stickyTop,
+    }: FlatTreeRowViewProps) {
+        const renameInputRef = useRef<HTMLInputElement>(null);
+        const paddingLeft =
+            row.depth * metrics.indentStep + metrics.basePadding;
+        const noteOffset = Math.round(14 * metrics.scale);
 
-    const isFolder = row.kind === "folder";
-    const isDragOver = dragOverPath === row.path;
-    const isDraggingFolder =
-        row.kind === "folder" && draggingFolderPath === row.path;
-    const isExpanded = row.kind === "folder" && expandedFolders.has(row.path);
-    const isRenaming = row.kind === "note" && row.note.id === renamingNoteId;
+        const isFolder = row.kind === "folder";
+        const isDragOver = dragOverPath === row.path;
+        const isDraggingFolder =
+            row.kind === "folder" && draggingFolderPath === row.path;
+        const isExpanded =
+            row.kind === "folder" && expandedFolders.has(row.path);
+        const isRenaming =
+            row.kind === "note" && row.note.id === renamingNoteId;
 
-    useEffect(() => {
-        if (isRenaming && renameInputRef.current) {
-            renameInputRef.current.focus();
-            renameInputRef.current.select();
+        useEffect(() => {
+            if (isRenaming && renameInputRef.current) {
+                renameInputRef.current.focus();
+                renameInputRef.current.select();
+            }
+        }, [isRenaming]);
+
+        if (isFolder) {
+            return (
+                <button
+                    onMouseDown={(event) => onFolderMouseDown(row.path, event)}
+                    onClick={() => onFolderClick(row.path)}
+                    onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onFolderContextMenu(event, row.path);
+                    }}
+                    data-folder-path={row.path}
+                    data-drag-over={isDragOver ? "true" : "false"}
+                    className="file-tree-row flex items-center gap-1.5 min-w-full text-left text-xs rounded whitespace-nowrap"
+                    style={{
+                        paddingLeft,
+                        color: "var(--text-secondary)",
+                        height: metrics.rowHeight,
+                        fontSize: metrics.fontSize,
+                        boxSizing: "border-box",
+                        backgroundColor: isDragOver
+                            ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
+                            : stickyTop != null
+                              ? "var(--bg-secondary)"
+                              : "transparent",
+                        outline: isDragOver
+                            ? "1px solid var(--accent)"
+                            : "none",
+                        opacity: isDraggingFolder ? 0.4 : 1,
+                        ...(stickyTop != null && {
+                            boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                    }}
+                >
+                    <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
+                    <FolderIcon
+                        open={!!isExpanded || isDragOver}
+                        size={metrics.mediumIcon}
+                    />
+                    <span className="whitespace-nowrap">{row.name}</span>
+                </button>
+            );
         }
-    }, [isRenaming]);
 
-    if (isFolder) {
+        const note = row.note;
+        const isActive = note.id === activeNoteId;
+        const isSelected = selectedNoteIds.has(note.id);
+        const isDraggingThis = draggingNoteIds.has(note.id);
+
+        if (isRenaming) {
+            return (
+                <div
+                    className="flex items-center gap-1.5 mx-1 py-0.5"
+                    style={{
+                        paddingLeft: paddingLeft + noteOffset,
+                        width: "calc(100% - 8px)",
+                        fontSize: metrics.fontSize,
+                        minHeight: metrics.rowHeight,
+                    }}
+                >
+                    <NoteIcon size={metrics.smallIcon} />
+                    <input
+                        ref={renameInputRef}
+                        defaultValue={note.title}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                                const value = e.currentTarget.value.trim();
+                                if (value) onRenameConfirm(note, value);
+                                else onRenameCancel();
+                            }
+                            if (e.key === "Escape") onRenameCancel();
+                        }}
+                        onBlur={() => {
+                            const value =
+                                renameInputRef.current?.value.trim() ?? "";
+                            if (value) onRenameConfirm(note, value);
+                            else onRenameCancel();
+                        }}
+                        className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
+                        style={{
+                            backgroundColor: "var(--bg-primary)",
+                            border: "1px solid var(--accent)",
+                            color: "var(--text-primary)",
+                            fontSize: metrics.inputFontSize,
+                        }}
+                    />
+                </div>
+            );
+        }
+
         return (
-            <button
-                onMouseDown={(event) => onFolderMouseDown(row.path, event)}
-                onClick={() => onFolderClick(row.path)}
+            <div
+                role="button"
+                tabIndex={0}
+                data-note-id={note.id}
+                data-selected={isSelected ? "true" : "false"}
+                data-active={isActive ? "true" : "false"}
+                data-drag-over={isDragOver ? "true" : "false"}
+                onMouseDown={(e) => onNoteMouseDown(note, e)}
+                onClick={(e) =>
+                    onNoteClick(note, {
+                        cmd: e.metaKey || e.ctrlKey,
+                        shift: e.shiftKey,
+                    })
+                }
+                onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onNoteClick(note, { cmd: false, shift: false });
+                    }
+                }}
                 onContextMenu={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    onFolderContextMenu(event, row.path);
+                    onNoteContextMenu(event, note);
                 }}
-                data-folder-path={row.path}
-                className="flex items-center gap-1.5 w-full text-left text-xs rounded"
-                style={{
-                    paddingLeft,
-                    color: "var(--text-secondary)",
-                    height: metrics.rowHeight,
-                    fontSize: metrics.fontSize,
-                    boxSizing: "border-box",
-                    backgroundColor: isDragOver
-                        ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
-                        : stickyTop != null
-                          ? "var(--bg-secondary)"
-                          : "transparent",
-                    outline: isDragOver ? "1px solid var(--accent)" : "none",
-                    opacity: isDraggingFolder ? 0.4 : 1,
-                    ...(stickyTop != null && {
-                        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                    }),
-                }}
-            >
-                <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
-                <FolderIcon
-                    open={!!isExpanded || isDragOver}
-                    size={metrics.mediumIcon}
-                />
-                <span className="truncate">{row.name}</span>
-            </button>
-        );
-    }
-
-    const note = row.note;
-    const isActive = note.id === activeNoteId;
-    const isSelected = selectedNoteIds.has(note.id);
-    const isDraggingThis = draggingNoteIds.has(note.id);
-
-    if (isRenaming) {
-        return (
-            <div
-                className="flex items-center gap-1.5 mx-1 py-0.5"
+                className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded mx-1 cursor-pointer whitespace-nowrap"
                 style={{
                     paddingLeft: paddingLeft + noteOffset,
-                    width: "calc(100% - 8px)",
-                    fontSize: metrics.fontSize,
+                    minWidth: "calc(100% - 8px)",
+                    backgroundColor: isSelected
+                        ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                        : "transparent",
+                    color: "var(--text-primary)",
+                    boxShadow: isActive
+                        ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
+                        : "none",
+                    opacity: isDraggingThis ? 0.4 : 1,
                     minHeight: metrics.rowHeight,
+                    fontSize: metrics.fontSize,
+                    boxSizing: "border-box",
                 }}
             >
                 <NoteIcon size={metrics.smallIcon} />
-                <input
-                    ref={renameInputRef}
-                    defaultValue={note.title}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                            const value = e.currentTarget.value.trim();
-                            if (value) onRenameConfirm(note, value);
-                            else onRenameCancel();
-                        }
-                        if (e.key === "Escape") onRenameCancel();
-                    }}
-                    onBlur={() => {
-                        const value =
-                            renameInputRef.current?.value.trim() ?? "";
-                        if (value) onRenameConfirm(note, value);
-                        else onRenameCancel();
-                    }}
-                    className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
-                    style={{
-                        backgroundColor: "var(--bg-primary)",
-                        border: "1px solid var(--accent)",
-                        color: "var(--text-primary)",
-                        fontSize: metrics.inputFontSize,
-                    }}
-                />
+                <span className="whitespace-nowrap">{note.title}</span>
             </div>
         );
-    }
+    },
+    (prev, next) => {
+        // Custom comparator: only re-render when the row's visual state changes.
+        // Callback props are stable (ref-backed) so they don't need comparison.
+        if (prev.row !== next.row) return false;
+        if (prev.metrics !== next.metrics) return false;
+        if (prev.stickyTop !== next.stickyTop) return false;
+        if (prev.renamingNoteId !== next.renamingNoteId) return false;
 
-    return (
-        <div
-            role="button"
-            tabIndex={0}
-            data-note-id={note.id}
-            onMouseDown={(e) => onNoteMouseDown(note, e)}
-            onClick={(e) =>
-                onNoteClick(note, {
-                    cmd: e.metaKey || e.ctrlKey,
-                    shift: e.shiftKey,
-                })
-            }
-            onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onNoteClick(note, { cmd: false, shift: false });
-                }
-            }}
-            onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onNoteContextMenu(event, note);
-            }}
-            className="flex items-center gap-1.5 w-full text-left py-1 text-xs rounded mx-1 cursor-pointer"
-            style={{
-                paddingLeft: paddingLeft + noteOffset,
-                width: "calc(100% - 8px)",
-                backgroundColor: isSelected
-                    ? "color-mix(in srgb, var(--accent) 22%, transparent)"
-                    : "transparent",
-                color: "var(--text-primary)",
-                boxShadow: isActive
-                    ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
-                    : "none",
-                opacity: isDraggingThis ? 0.4 : 1,
-                minHeight: metrics.rowHeight,
-                fontSize: metrics.fontSize,
-                boxSizing: "border-box",
-            }}
-        >
-            <NoteIcon size={metrics.smallIcon} />
-            <span className="truncate">{note.title}</span>
-        </div>
-    );
-}, (prev, next) => {
-    // Custom comparator: only re-render when the row's visual state changes.
-    // Callback props are stable (ref-backed) so they don't need comparison.
-    if (prev.row !== next.row) return false;
-    if (prev.metrics !== next.metrics) return false;
-    if (prev.stickyTop !== next.stickyTop) return false;
-    if (prev.renamingNoteId !== next.renamingNoteId) return false;
+        const path = prev.row.path;
 
-    const path = prev.row.path;
+        if (prev.row.kind === "folder") {
+            if (
+                prev.expandedFolders.has(path) !==
+                next.expandedFolders.has(path)
+            )
+                return false;
+            if ((prev.dragOverPath === path) !== (next.dragOverPath === path))
+                return false;
+            if (
+                (prev.draggingFolderPath === path) !==
+                (next.draggingFolderPath === path)
+            )
+                return false;
+            return true;
+        }
 
-    if (prev.row.kind === "folder") {
-        if (prev.expandedFolders.has(path) !== next.expandedFolders.has(path))
+        const noteId = prev.row.note.id;
+        if ((prev.activeNoteId === noteId) !== (next.activeNoteId === noteId))
+            return false;
+        if (
+            prev.selectedNoteIds.has(noteId) !==
+            next.selectedNoteIds.has(noteId)
+        )
+            return false;
+        if (
+            prev.draggingNoteIds.has(noteId) !==
+            next.draggingNoteIds.has(noteId)
+        )
             return false;
         if ((prev.dragOverPath === path) !== (next.dragOverPath === path))
             return false;
-        if (
-            (prev.draggingFolderPath === path) !==
-            (next.draggingFolderPath === path)
-        )
-            return false;
+
         return true;
-    }
-
-    const noteId = prev.row.note.id;
-    if ((prev.activeNoteId === noteId) !== (next.activeNoteId === noteId))
-        return false;
-    if (prev.selectedNoteIds.has(noteId) !== next.selectedNoteIds.has(noteId))
-        return false;
-    if (prev.draggingNoteIds.has(noteId) !== next.draggingNoteIds.has(noteId))
-        return false;
-    if ((prev.dragOverPath === path) !== (next.dragOverPath === path))
-        return false;
-
-    return true;
-});
-
+    },
+);
 
 // --- Open vault form ---
 
@@ -740,11 +774,13 @@ interface DragState {
 export function FileTree() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const notes = useVaultStore((s) => s.notes);
+    const structureRevision = useVaultStore((s) => s.structureRevision);
+    const contentRevision = useVaultStore((s) => s.contentRevision);
     const createNote = useVaultStore((s) => s.createNote);
     const deleteNote = useVaultStore((s) => s.deleteNote);
     const renameNote = useVaultStore((s) => s.renameNote);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
-    const touchVault = useVaultStore((s) => s.touchVault);
+    const touchContent = useVaultStore((s) => s.touchContent);
     const activeNoteId = useEditorStore(
         (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
     );
@@ -807,7 +843,14 @@ export function FileTree() {
         if (selectedNoteIds.size <= 1) return new Set([activeNoteId]);
         return selectedNoteIds;
     }, [activeNoteId, selectedNoteIds]);
-    const tree = useMemo(() => buildTree(notes), [notes]);
+    const treeRevision =
+        sortMode === "modified_desc" || sortMode === "modified_asc"
+            ? `${structureRevision}:${contentRevision}`
+            : structureRevision;
+    // Intentionally keyed by revisions instead of the full notes array to avoid
+    // rebuilding the folder tree for content-only updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const tree = useMemo(() => buildTree(notes), [treeRevision]);
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {
         if (!revealActive || !activeNoteId) return [];
@@ -849,16 +892,7 @@ export function FileTree() {
     // --- Virtualization ---
 
     const contentHeight = flatRows.length * metrics.rowHeight;
-    const bottomScrollBuffer =
-        contentHeight > viewportHeight
-            ? Math.max(
-                  metrics.rowHeight * 4,
-                  Math.min(
-                      Math.round(viewportHeight * 0.22),
-                      metrics.rowHeight * 8,
-                  ),
-              )
-            : 0;
+    const bottomScrollBuffer = metrics.rowHeight * 0.75;
     const totalHeight = contentHeight + bottomScrollBuffer;
     const startIdx = Math.max(
         0,
@@ -960,24 +994,49 @@ export function FileTree() {
     useEffect(() => {
         const el = treeScrollRef.current;
         if (!el) return;
-        const syncViewportHeight = () => {
+        const syncViewportMetrics = () => {
             setViewportHeight(el.clientHeight);
+            setScrollTop(el.scrollTop);
         };
 
-        syncViewportHeight();
+        syncViewportMetrics();
 
         if (typeof ResizeObserver === "undefined") {
-            window.addEventListener("resize", syncViewportHeight);
+            window.addEventListener("resize", syncViewportMetrics);
             return () =>
-                window.removeEventListener("resize", syncViewportHeight);
+                window.removeEventListener("resize", syncViewportMetrics);
         }
 
-        const ro = new ResizeObserver(([entry]) => {
-            setViewportHeight(Math.round(entry.contentRect.height));
+        const ro = new ResizeObserver(() => {
+            syncViewportMetrics();
         });
         ro.observe(el);
-        return () => ro.disconnect();
+        window.addEventListener("resize", syncViewportMetrics);
+        return () => {
+            ro.disconnect();
+            window.removeEventListener("resize", syncViewportMetrics);
+        };
     }, []);
+
+    useEffect(() => {
+        const el = treeScrollRef.current;
+        if (!el) return;
+
+        const maxScrollTop = Math.max(0, totalHeight - el.clientHeight);
+        if (el.scrollTop > maxScrollTop) {
+            el.scrollTop = maxScrollTop;
+        }
+
+        if (scrollTop !== el.scrollTop) {
+            setScrollTop(el.scrollTop);
+        }
+    }, [
+        scrollTop,
+        totalHeight,
+        viewportHeight,
+        flatRows.length,
+        metrics.rowHeight,
+    ]);
 
     // RAF-batched scroll handler
     const handleTreeScroll = useCallback(() => {
@@ -988,10 +1047,7 @@ export function FileTree() {
         });
     }, []);
 
-    const handleRenameCancel = useCallback(
-        () => setRenamingNoteId(null),
-        [],
-    );
+    const handleRenameCancel = useCallback(() => setRenamingNoteId(null), []);
 
     // Scroll to row by index helper
     const scrollToRow = useCallback(
@@ -1000,9 +1056,7 @@ export function FileTree() {
             if (!container) return;
             const rowTop = rowIdx * metrics.rowHeight;
             const targetScrollTop =
-                rowTop -
-                container.clientHeight / 2 +
-                metrics.rowHeight / 2;
+                rowTop - container.clientHeight / 2 + metrics.rowHeight / 2;
             const maxScrollTop = Math.max(
                 0,
                 totalHeight - container.clientHeight,
@@ -1403,16 +1457,14 @@ export function FileTree() {
 
     const readNoteContent = useCallback(
         (noteId: string) =>
-            invoke<{ content: string }>("read_note", { noteId }),
+            vaultInvoke<{ content: string }>("read_note", { noteId }),
         [],
     );
 
     const openTreeNote = useCallback(
         async (note: NoteDto) => {
             const { tabs: currentTabs } = useEditorStore.getState();
-            const existing = currentTabs.find(
-                (tab) => tab.noteId === note.id,
-            );
+            const existing = currentTabs.find((tab) => tab.noteId === note.id);
             if (existing) {
                 openNote(note.id, note.title, existing.content);
                 return;
@@ -1689,31 +1741,25 @@ export function FileTree() {
                 const created = await createNote(copyPath);
                 if (!created) return;
 
-                const detail = await invoke<{ title: string; path: string }>(
-                    "save_note",
-                    {
-                        noteId: created.id,
-                        content,
-                    },
-                );
+                const detail = await vaultInvoke<{
+                    title: string;
+                    path: string;
+                }>("save_note", {
+                    noteId: created.id,
+                    content,
+                });
 
                 updateNoteMetadata(created.id, {
                     title: detail.title,
                     path: detail.path,
                     modified_at: Math.floor(Date.now() / 1000),
                 });
-                touchVault();
+                touchContent();
             } catch (error) {
                 console.error("Error duplicating note:", error);
             }
         },
-        [
-            createNote,
-            notes,
-            readNoteContent,
-            touchVault,
-            updateNoteMetadata,
-        ],
+        [createNote, notes, readNoteContent, touchContent, updateNoteMetadata],
     );
 
     const handleRevealNoteInFinder = useCallback((note: NoteDto) => {
@@ -2137,7 +2183,7 @@ export function FileTree() {
             <div
                 ref={treeScrollRef}
                 data-folder-path=""
-                className="flex-1 overflow-y-auto px-1"
+                className="flex-1 overflow-auto px-1"
                 onScroll={handleTreeScroll}
                 onContextMenu={(event) => {
                     if (event.target !== event.currentTarget) return;
@@ -2147,7 +2193,7 @@ export function FileTree() {
                     backgroundColor:
                         dragOverPath === ""
                             ? "color-mix(in srgb, var(--accent) 8%, transparent)"
-                            : undefined,
+                            : "var(--bg-secondary)",
                     outline:
                         dragOverPath === ""
                             ? "1px solid color-mix(in srgb, var(--accent) 50%, transparent)"
@@ -2185,7 +2231,7 @@ export function FileTree() {
                                             position: "absolute",
                                             top,
                                             left: 0,
-                                            right: 0,
+                                            minWidth: "100%",
                                             zIndex: 20 - row.depth,
                                         }}
                                     >
@@ -2232,9 +2278,9 @@ export function FileTree() {
                         {/* Virtualized rows */}
                         <div
                             style={{
-                                height: contentHeight,
-                                minHeight: "100%",
+                                height: totalHeight,
                                 position: "relative",
+                                minWidth: "fit-content",
                             }}
                         >
                             <div
@@ -2242,7 +2288,7 @@ export function FileTree() {
                                     position: "absolute",
                                     top: offsetY,
                                     left: 0,
-                                    right: 0,
+                                    minWidth: "100%",
                                 }}
                             >
                                 {visibleRows.map((row) => {
@@ -2305,15 +2351,6 @@ export function FileTree() {
                                 })}
                             </div>
                         </div>
-                        {bottomScrollBuffer > 0 && (
-                            <div
-                                aria-hidden="true"
-                                style={{
-                                    height: bottomScrollBuffer,
-                                    pointerEvents: "none",
-                                }}
-                            />
-                        )}
                     </>
                 )}
             </div>

@@ -8,7 +8,6 @@ import {
 import {
     DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
-    MAX_SIDEBAR_WIDTH,
     MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
@@ -74,6 +73,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const rightFrameRef = useRef<number | null>(null);
     const rightCollapsePreviewRef = useRef(false);
     const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
+    const effectiveRightForLeftCalc = rightPanelCollapsed ? 0 : rightPanelWidth;
+    const maxLeftWidthForLayout = Math.max(
+        MIN_SIDEBAR_WIDTH,
+        layoutWidth -
+            effectiveRightForLeftCalc -
+            RESIZER_HITBOX_WIDTH * 2 -
+            MIN_CENTER_PEEK_WIDTH,
+    );
     const maxRightWidthForLayout = Math.max(
         MIN_RIGHT_PANEL_WIDTH,
         layoutWidth -
@@ -146,7 +153,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             }
             const clamped = Math.max(
                 MIN_SIDEBAR_WIDTH,
-                Math.min(MAX_SIDEBAR_WIDTH, s.pendingWidth),
+                Math.min(maxLeftWidthForLayout, s.pendingWidth),
             );
             const snapped =
                 LEFT_SNAP_POINTS.find(
@@ -157,6 +164,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         [
             applyLeftWidth,
             collapseSidebarToWidth,
+            maxLeftWidthForLayout,
             showSidebarAtWidth,
             syncLeftPreview,
         ],
@@ -218,13 +226,13 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             s.pendingWidth = Math.max(
                 0,
                 Math.min(
-                    MAX_SIDEBAR_WIDTH,
+                    maxLeftWidthForLayout,
                     s.startWidth + e.clientX - s.startX,
                 ),
             );
             scheduleLeftWidth();
         },
-        [scheduleLeftWidth],
+        [maxLeftWidthForLayout, scheduleLeftWidth],
     );
 
     const onLeftUp = useCallback(

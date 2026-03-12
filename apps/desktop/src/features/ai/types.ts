@@ -2,6 +2,7 @@ export type AIChatSessionStatus =
     | "idle"
     | "streaming"
     | "waiting_permission"
+    | "waiting_user_input"
     | "review_required"
     | "error";
 
@@ -76,7 +77,15 @@ export interface AIConfigOption {
     options: AIConfigSelectOption[];
 }
 
-export type AIAttachmentType = "note" | "current_note" | "selection" | "folder";
+export type AIAttachmentType =
+    | "note"
+    | "current_note"
+    | "selection"
+    | "folder"
+    | "audio"
+    | "file";
+
+export type AIAttachmentStatus = "pending" | "processing" | "ready" | "error";
 
 export interface AIChatAttachment {
     id: string;
@@ -85,6 +94,11 @@ export interface AIChatAttachment {
     label: string;
     path: string | null;
     content?: string;
+    filePath?: string;
+    mimeType?: string;
+    transcription?: string;
+    status?: AIAttachmentStatus;
+    errorMessage?: string;
 }
 
 export type AIChatRole = "user" | "assistant" | "system";
@@ -93,10 +107,46 @@ export type AIChatMessageKind =
     | "text"
     | "thinking"
     | "tool"
+    | "plan"
+    | "status"
     | "permission"
-    | "proposed_edit"
-    | "proposed_new_note"
+    | "user_input_request"
     | "error";
+
+export interface AIUserInputQuestionOption {
+    label: string;
+    description: string;
+}
+
+export interface AIUserInputQuestion {
+    id: string;
+    header: string;
+    question: string;
+    is_other: boolean;
+    is_secret: boolean;
+    options?: AIUserInputQuestionOption[];
+}
+
+export interface AIUserInputRequestPayload {
+    session_id: string;
+    request_id: string;
+    title: string;
+    questions: AIUserInputQuestion[];
+}
+
+export interface AIPlanEntry {
+    content: string;
+    priority: "high" | "medium" | "low" | string;
+    status: "pending" | "in_progress" | "completed" | string;
+}
+
+export interface AIPlanUpdatePayload {
+    session_id: string;
+    plan_id: string;
+    title?: string;
+    detail?: string;
+    entries: AIPlanEntry[];
+}
 
 export interface AIChatMessage {
     id: string;
@@ -109,6 +159,11 @@ export interface AIChatMessage {
     meta?: Record<string, string | number | boolean | null>;
     permissionRequestId?: string;
     permissionOptions?: AIPermissionOption[];
+    diffs?: AIFileDiff[];
+    userInputRequestId?: string;
+    userInputQuestions?: AIUserInputQuestion[];
+    planEntries?: AIPlanEntry[];
+    planDetail?: string;
 }
 
 export interface AIChatSession {
@@ -227,10 +282,27 @@ export interface AIToolActivityPayload {
     summary?: string | null;
 }
 
+export interface AIStatusEventPayload {
+    session_id: string;
+    event_id: string;
+    kind: string;
+    status: string;
+    title: string;
+    detail?: string | null;
+    emphasis: string;
+}
+
 export interface AIPermissionOption {
     option_id: string;
     name: string;
     kind: string;
+}
+
+export interface AIFileDiff {
+    path: string;
+    kind: "add" | "delete" | "update";
+    old_text?: string | null;
+    new_text?: string | null;
 }
 
 export interface AIPermissionRequestPayload {
@@ -240,6 +312,7 @@ export interface AIPermissionRequestPayload {
     title: string;
     target?: string | null;
     options: AIPermissionOption[];
+    diffs: AIFileDiff[];
 }
 
 export interface AIChatNoteSummary {
@@ -290,6 +363,12 @@ export interface PersistedMessage {
     timestamp: number;
     title?: string;
     meta?: Record<string, string | number | boolean | null>;
+    permission_request_id?: string;
+    permission_options?: AIPermissionOption[];
+    user_input_request_id?: string;
+    user_input_questions?: AIUserInputQuestion[];
+    plan_entries?: AIPlanEntry[];
+    plan_detail?: string;
 }
 
 export interface PersistedSessionHistory {

@@ -464,6 +464,7 @@ describe("AIChatPanel tabs lifecycle", () => {
 
     it("exports a chat tab to markdown and opens the created note", async () => {
         const sessionA = createSession("session-a", "First conversation");
+        const sessionB = createSession("session-b", "Second conversation");
         const createNote = vi.fn(async (name: string) => ({
             id: "exports/chat-export.md",
             path: "exports/chat-export.md",
@@ -496,15 +497,20 @@ describe("AIChatPanel tabs lifecycle", () => {
             runtimes: [runtimeDescriptor],
             sessionsById: {
                 [sessionA.sessionId]: sessionA,
+                [sessionB.sessionId]: sessionB,
             },
-            sessionOrder: [sessionA.sessionId],
+            sessionOrder: [sessionA.sessionId, sessionB.sessionId],
             activeSessionId: sessionA.sessionId,
             composerPartsBySessionId: {
                 [sessionA.sessionId]: [],
+                [sessionB.sessionId]: [],
             },
         }));
         useChatTabsStore.setState({
-            tabs: [{ id: "tab-a", sessionId: sessionA.sessionId }],
+            tabs: [
+                { id: "tab-a", sessionId: sessionA.sessionId },
+                { id: "tab-b", sessionId: sessionB.sessionId },
+            ],
             activeTabId: "tab-a",
         });
 
@@ -520,10 +526,16 @@ describe("AIChatPanel tabs lifecycle", () => {
             expect(createNote).toHaveBeenCalledWith(
                 "Chat exportado - First conversation",
             );
-            expect(invokeMock).toHaveBeenCalledWith("save_note", {
-                noteId: "exports/chat-export.md",
-                content: expect.stringContaining("# Chat exportado: First conversation"),
-            });
+            expect(invokeMock).toHaveBeenCalledWith(
+                "save_note",
+                expect.objectContaining({
+                    noteId: "exports/chat-export.md",
+                    vaultPath: "/vault",
+                    content: expect.stringContaining(
+                        "# Chat exportado: First conversation",
+                    ),
+                }),
+            );
             expect(
                 useEditorStore
                     .getState()

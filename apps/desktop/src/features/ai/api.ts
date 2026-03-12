@@ -11,7 +11,10 @@ import type {
     AIMessageDeltaPayload,
     AIMessageStartedPayload,
     AIPermissionRequestPayload,
+    AIPlanUpdatePayload,
+    AIStatusEventPayload,
     AIToolActivityPayload,
+    AIUserInputRequestPayload,
     AIRuntimeDescriptor,
     AIRuntimeSetupStatus,
     AISessionErrorPayload,
@@ -28,7 +31,10 @@ export const AI_THINKING_STARTED_EVENT = "ai://thinking-started";
 export const AI_THINKING_DELTA_EVENT = "ai://thinking-delta";
 export const AI_THINKING_COMPLETED_EVENT = "ai://thinking-completed";
 export const AI_TOOL_ACTIVITY_EVENT = "ai://tool-activity";
+export const AI_STATUS_EVENT = "ai://status-event";
 export const AI_PERMISSION_REQUEST_EVENT = "ai://permission-request";
+export const AI_USER_INPUT_REQUEST_EVENT = "ai://user-input-request";
+export const AI_PLAN_UPDATED_EVENT = "ai://plan-updated";
 
 function normalizeConfigOption(
     option: AIBackendSessionPayload["config_options"][number],
@@ -269,6 +275,24 @@ export async function aiRespondPermission(
     return normalizeBackendSession(session);
 }
 
+export async function aiRespondUserInput(
+    sessionId: string,
+    requestId: string,
+    answers: Record<string, string[]>,
+) {
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_respond_user_input",
+        {
+            input: {
+                session_id: sessionId,
+                request_id: requestId,
+                answers,
+            },
+        },
+    );
+    return normalizeBackendSession(session);
+}
+
 export async function listenToAiSessionCreated(
     callback: (session: AIChatSession) => void,
 ): Promise<UnlistenFn> {
@@ -367,6 +391,14 @@ export async function listenToAiToolActivity(
     });
 }
 
+export async function listenToAiStatusEvent(
+    callback: (payload: AIStatusEventPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIStatusEventPayload>(AI_STATUS_EVENT, (event) => {
+        callback(event.payload);
+    });
+}
+
 export async function aiSaveSessionHistory(
     vaultPath: string,
     history: PersistedSessionHistory,
@@ -413,5 +445,187 @@ export async function listenToAiPermissionRequest(
         (event) => {
             callback(event.payload);
         },
+    );
+}
+
+export async function listenToAiUserInputRequest(
+    callback: (payload: AIUserInputRequestPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIUserInputRequestPayload>(
+        AI_USER_INPUT_REQUEST_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiPlanUpdated(
+    callback: (payload: AIPlanUpdatePayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIPlanUpdatePayload>(AI_PLAN_UPDATED_EVENT, (event) => {
+        callback(event.payload);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Whisper API
+// ---------------------------------------------------------------------------
+
+export interface WhisperModelDto {
+    id: string;
+    label: string;
+    sizeBytes: number;
+    recommended: boolean;
+    downloaded: boolean;
+}
+
+export interface WhisperStatusDto {
+    selectedModel: string;
+    enabled: boolean;
+    downloadedModels: string[];
+}
+
+export interface WhisperTranscriptionDto {
+    text: string;
+    language: string | null;
+    durationMs: number;
+}
+
+interface WhisperModelRaw {
+    id: string;
+    label: string;
+    size_bytes: number;
+    recommended: boolean;
+    downloaded: boolean;
+}
+
+interface WhisperStatusRaw {
+    selected_model: string;
+    enabled: boolean;
+    downloaded_models: string[];
+}
+
+interface WhisperTranscriptionRaw {
+    text: string;
+    language: string | null;
+    duration_ms: number;
+}
+
+export async function whisperListModels(): Promise<WhisperModelDto[]> {
+    const models = await invoke<WhisperModelRaw[]>("whisper_list_models");
+    return models.map((m) => ({
+        id: m.id,
+        label: m.label,
+        sizeBytes: m.size_bytes,
+        recommended: m.recommended,
+        downloaded: m.downloaded,
+    }));
+}
+
+export async function whisperGetStatus(): Promise<WhisperStatusDto> {
+    const status = await invoke<WhisperStatusRaw>("whisper_get_status");
+    return {
+        selectedModel: status.selected_model,
+        enabled: status.enabled,
+        downloadedModels: status.downloaded_models,
+    };
+}
+
+export async function whisperDownloadModel(modelId: string): Promise<void> {
+    await invoke("whisper_download_model", { modelId });
+}
+
+export async function whisperDeleteModel(modelId: string): Promise<void> {
+    await invoke("whisper_delete_model", { modelId });
+}
+
+export async function whisperSetSelectedModel(modelId: string): Promise<void> {
+    await invoke("whisper_set_selected_model", { modelId });
+}
+
+export async function whisperSetEnabled(enabled: boolean): Promise<void> {
+    await invoke("whisper_set_enabled", { enabled });
+}
+
+export async function whisperTranscribe(
+    audioPath: string,
+): Promise<WhisperTranscriptionDto> {
+    const result = await invoke<WhisperTranscriptionRaw>("whisper_transcribe", {
+        audioPath,
+    });
+    return {
+        text: result.text,
+        language: result.language,
+        durationMs: result.duration_ms,
+    };
+}
+
+export interface WhisperAudioInfoDto {
+    sizeBytes: number;
+    tooLarge: boolean;
+    maxSizeBytes: number;
+}
+
+export async function whisperCheckAudioFile(
+    audioPath: string,
+): Promise<WhisperAudioInfoDto> {
+    const raw = await invoke<{
+        size_bytes: number;
+        too_large: boolean;
+        max_size_bytes: number;
+    }>("whisper_check_audio_file", { audioPath });
+    return {
+        sizeBytes: raw.size_bytes,
+        tooLarge: raw.too_large,
+        maxSizeBytes: raw.max_size_bytes,
+    };
+}
+
+export async function whisperCancelDownload(): Promise<void> {
+    await invoke("whisper_cancel_download");
+}
+
+export const WHISPER_DOWNLOAD_PROGRESS_EVENT = "whisper://download-progress";
+export const WHISPER_DOWNLOAD_COMPLETE_EVENT = "whisper://download-complete";
+export const WHISPER_DOWNLOAD_ERROR_EVENT = "whisper://download-error";
+
+export interface WhisperDownloadProgressPayload {
+    model_id: string;
+    progress: number;
+}
+
+export interface WhisperDownloadCompletePayload {
+    model_id: string;
+}
+
+export interface WhisperDownloadErrorPayload {
+    model_id: string;
+    error: string;
+}
+
+export async function listenToWhisperDownloadProgress(
+    callback: (payload: WhisperDownloadProgressPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<WhisperDownloadProgressPayload>(
+        WHISPER_DOWNLOAD_PROGRESS_EVENT,
+        (event) => callback(event.payload),
+    );
+}
+
+export async function listenToWhisperDownloadComplete(
+    callback: (payload: WhisperDownloadCompletePayload) => void,
+): Promise<UnlistenFn> {
+    return listen<WhisperDownloadCompletePayload>(
+        WHISPER_DOWNLOAD_COMPLETE_EVENT,
+        (event) => callback(event.payload),
+    );
+}
+
+export async function listenToWhisperDownloadError(
+    callback: (payload: WhisperDownloadErrorPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<WhisperDownloadErrorPayload>(
+        WHISPER_DOWNLOAD_ERROR_EVENT,
+        (event) => callback(event.payload),
     );
 }

@@ -7,7 +7,7 @@ const SIDEBAR_COLLAPSED_KEY = "vaultai.sidebar.collapsed";
 const SIDEBAR_VIEW_KEY = "vaultai.sidebar.view";
 export const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
-export const MAX_SIDEBAR_WIDTH = 480;
+export const MAX_SIDEBAR_WIDTH = 2000;
 
 function clampSidebarWidth(width: number) {
     return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, width));

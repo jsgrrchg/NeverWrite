@@ -6,7 +6,7 @@ import {
     useMemo,
     useDeferredValue,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
@@ -122,7 +122,7 @@ function QuickSwitcherDialog() {
                 return;
             }
             try {
-                const detail = await invoke<{ content: string }>("read_note", {
+                const detail = await vaultInvoke<{ content: string }>("read_note", {
                     noteId: note.id,
                 });
                 openNote(note.id, note.title, detail.content);

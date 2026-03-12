@@ -7,6 +7,7 @@ const CHAT_TABS_PERSIST_VERSION = 1;
 export interface ChatWorkspaceTab {
     id: string;
     sessionId: string;
+    historySessionId?: string;
     pinned?: boolean;
 }
 
@@ -22,20 +23,30 @@ interface ChatTabsStore {
     activeTabId: string | null;
     openSessionTab: (
         sessionId: string,
-        options?: { activate?: boolean },
+        options?: { activate?: boolean; historySessionId?: string | null },
     ) => void;
     closeTab: (tabId: string) => void;
     setActiveTab: (tabId: string) => void;
-    ensureSessionTab: (sessionId: string) => string;
+    ensureSessionTab: (
+        sessionId: string,
+        historySessionId?: string | null,
+    ) => string;
     removeTabsForSession: (sessionId: string) => void;
     pruneInvalidTabs: (validSessionIds: string[]) => void;
     hydrateForVault: (payload: PersistedChatWorkspace | null) => void;
     restoreWorkspace: (
         payload: PersistedChatWorkspace | null,
-        validSessionIds: string[],
+        validSessions: Array<{
+            sessionId: string;
+            historySessionId?: string | null;
+        }>,
         fallbackSessionId?: string | null,
     ) => void;
-    replaceSessionId: (oldSessionId: string, newSessionId: string) => void;
+    replaceSessionId: (
+        oldSessionId: string,
+        newSessionId: string,
+        historySessionId?: string | null,
+    ) => void;
     reset: () => void;
 }
 
@@ -133,9 +144,7 @@ function buildPersistedWorkspace(
     };
 }
 
-function normalizeParsedWorkspace(
-    raw: unknown,
-): PersistedChatWorkspace | null {
+function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
     if (!raw || typeof raw !== "object") return null;
 
     const candidate = raw as {
@@ -153,6 +162,7 @@ function normalizeParsedWorkspace(
             const current = tab as {
                 id?: unknown;
                 sessionId?: unknown;
+                historySessionId?: unknown;
                 pinned?: unknown;
             };
 
@@ -165,16 +175,23 @@ function normalizeParsedWorkspace(
                 return null;
             }
 
-            return current.pinned === true
-                ? {
-                      id: current.id,
-                      sessionId: current.sessionId,
-                      pinned: true,
-                  }
-                : {
-                      id: current.id,
-                      sessionId: current.sessionId,
-                  };
+            const normalizedTab: ChatWorkspaceTab = {
+                id: current.id,
+                sessionId: current.sessionId,
+            };
+
+            if (
+                typeof current.historySessionId === "string" &&
+                current.historySessionId.length > 0
+            ) {
+                normalizedTab.historySessionId = current.historySessionId;
+            }
+
+            if (current.pinned === true) {
+                normalizedTab.pinned = true;
+            }
+
+            return normalizedTab;
         })
         .filter((tab): tab is ChatWorkspaceTab => tab !== null);
 
@@ -186,10 +203,41 @@ function normalizeParsedWorkspace(
     );
 }
 
-function createTab(sessionId: string): ChatWorkspaceTab {
-    return {
+function createTab(
+    sessionId: string,
+    historySessionId?: string | null,
+): ChatWorkspaceTab {
+    const tab: ChatWorkspaceTab = {
         id: crypto.randomUUID(),
         sessionId,
+    };
+
+    if (historySessionId) {
+        tab.historySessionId = historySessionId;
+    }
+
+    return tab;
+}
+
+function resolveTabHistorySessionId(tab: ChatWorkspaceTab) {
+    if (tab.historySessionId) return tab.historySessionId;
+    if (tab.sessionId.startsWith("persisted:")) {
+        return tab.sessionId.slice("persisted:".length) || null;
+    }
+    return null;
+}
+
+function syncTabMetadata(
+    tab: ChatWorkspaceTab,
+    historySessionId?: string | null,
+): ChatWorkspaceTab {
+    if (!historySessionId || tab.historySessionId === historySessionId) {
+        return tab;
+    }
+
+    return {
+        ...tab,
+        historySessionId,
     };
 }
 
@@ -199,7 +247,10 @@ function getNextActiveTabIdAfterRemoval(
     previousActiveTabId: string | null,
 ): string | null {
     if (!tabs.length) return null;
-    if (previousActiveTabId && tabs.some((tab) => tab.id === previousActiveTabId)) {
+    if (
+        previousActiveTabId &&
+        tabs.some((tab) => tab.id === previousActiveTabId)
+    ) {
         return previousActiveTabId;
     }
 
@@ -226,6 +277,25 @@ export function readPersistedChatWorkspace(
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 const lastPersistedJsonByVaultPath = new Map<string, string>();
+let pendingPersistVaultPath: string | null = null;
+let pendingPersistJson: string | null = null;
+
+function flushPendingPersistence() {
+    if (!pendingPersistVaultPath || pendingPersistJson === null) {
+        return;
+    }
+
+    lastPersistedJsonByVaultPath.set(
+        pendingPersistVaultPath,
+        pendingPersistJson,
+    );
+    localStorage.setItem(
+        getChatTabsStorageKey(pendingPersistVaultPath),
+        pendingPersistJson,
+    );
+    pendingPersistVaultPath = null;
+    pendingPersistJson = null;
+}
 
 export function markChatTabsReady() {
     useChatTabsStore.setState({ isReady: true });
@@ -240,7 +310,10 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         if (!sessionId) return;
 
         const activate = options?.activate !== false;
-        const tabId = get().ensureSessionTab(sessionId);
+        const tabId = get().ensureSessionTab(
+            sessionId,
+            options?.historySessionId ?? null,
+        );
 
         if (activate) {
             get().setActiveTab(tabId);
@@ -249,7 +322,9 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
 
     closeTab: (tabId) => {
         set((state) => {
-            const removedTabIndex = state.tabs.findIndex((tab) => tab.id === tabId);
+            const removedTabIndex = state.tabs.findIndex(
+                (tab) => tab.id === tabId,
+            );
             if (removedTabIndex === -1) return state;
 
             const tabs = state.tabs.filter((tab) => tab.id !== tabId);
@@ -273,22 +348,34 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
                 : state,
         ),
 
-    ensureSessionTab: (sessionId) => {
+    ensureSessionTab: (sessionId, historySessionId = null) => {
         let ensuredTabId = "";
 
         set((state) => {
-            const existing = state.tabs.find((tab) => tab.sessionId === sessionId);
+            const existing = state.tabs.find(
+                (tab) => tab.sessionId === sessionId,
+            );
             if (existing) {
                 ensuredTabId = existing.id;
+                const nextTabs = state.tabs.map((tab) =>
+                    tab.id === existing.id
+                        ? syncTabMetadata(tab, historySessionId)
+                        : tab,
+                );
+                const tabsChanged = nextTabs.some(
+                    (tab, index) => tab !== state.tabs[index],
+                );
 
                 if (!state.activeTabId) {
-                    return { activeTabId: existing.id };
+                    return tabsChanged
+                        ? { tabs: nextTabs, activeTabId: existing.id }
+                        : { activeTabId: existing.id };
                 }
 
-                return state;
+                return tabsChanged ? { tabs: nextTabs } : state;
             }
 
-            const tab = createTab(sessionId);
+            const tab = createTab(sessionId, historySessionId);
             ensuredTabId = tab.id;
             const tabs = [...state.tabs, tab];
 
@@ -311,7 +398,9 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
 
             if (!removedTabIndexes.length) return state;
 
-            const tabs = state.tabs.filter((tab) => tab.sessionId !== sessionId);
+            const tabs = state.tabs.filter(
+                (tab) => tab.sessionId !== sessionId,
+            );
             const activeTabId =
                 state.tabs[removedTabIndexes[0]]?.id === state.activeTabId
                     ? getNextActiveTabIdAfterRemoval(
@@ -341,12 +430,18 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
             }
 
             const tabs = normalizeTabs(
-                state.tabs.filter((tab) => validSessionIdSet.has(tab.sessionId)),
+                state.tabs.filter((tab) =>
+                    validSessionIdSet.has(tab.sessionId),
+                ),
                 state.activeTabId,
             );
             const activeTabId =
                 state.tabs[removedTabIndex]?.id === state.activeTabId
-                    ? getNextActiveTabIdAfterRemoval(tabs, removedTabIndex, null)
+                    ? getNextActiveTabIdAfterRemoval(
+                          tabs,
+                          removedTabIndex,
+                          null,
+                      )
                     : resolveActiveTabId(tabs, state.activeTabId);
 
             return { tabs, activeTabId };
@@ -361,24 +456,61 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         });
     },
 
-    restoreWorkspace: (payload, validSessionIds, fallbackSessionId = null) => {
-        const validSessionIdSet = new Set(validSessionIds);
+    restoreWorkspace: (payload, validSessions, fallbackSessionId = null) => {
+        const validSessionIdSet = new Set(
+            validSessions.map((s) => s.sessionId),
+        );
+        const sessionIdByHistoryId = new Map<string, string>();
+        const historyIdBySessionId = new Map<string, string>();
+        for (const session of validSessions) {
+            const historySessionId = session.historySessionId ?? null;
+            if (!historySessionId) continue;
+            sessionIdByHistoryId.set(historySessionId, session.sessionId);
+            historyIdBySessionId.set(session.sessionId, historySessionId);
+        }
         const workspace = normalizeWorkspace(payload);
 
         let tabs = normalizeTabs(
-            (workspace?.tabs ?? []).filter((tab) =>
-                validSessionIdSet.has(tab.sessionId),
-            ),
+            (workspace?.tabs ?? [])
+                .map((tab): ChatWorkspaceTab | null => {
+                    if (validSessionIdSet.has(tab.sessionId)) {
+                        return syncTabMetadata(
+                            tab,
+                            historyIdBySessionId.get(tab.sessionId) ??
+                                resolveTabHistorySessionId(tab),
+                        );
+                    }
+
+                    const historySessionId = resolveTabHistorySessionId(tab);
+                    if (!historySessionId) return null;
+
+                    const resolvedSessionId =
+                        sessionIdByHistoryId.get(historySessionId);
+                    if (!resolvedSessionId) return null;
+
+                    return {
+                        ...tab,
+                        sessionId: resolvedSessionId,
+                        historySessionId,
+                    };
+                })
+                .filter((tab): tab is ChatWorkspaceTab => tab !== null),
             workspace?.activeTabId ?? null,
         );
-        let activeTabId = resolveActiveTabId(tabs, workspace?.activeTabId ?? null);
+        let activeTabId = resolveActiveTabId(
+            tabs,
+            workspace?.activeTabId ?? null,
+        );
 
         if (
             tabs.length === 0 &&
             fallbackSessionId &&
             validSessionIdSet.has(fallbackSessionId)
         ) {
-            const fallbackTab = createTab(fallbackSessionId);
+            const fallbackTab = createTab(
+                fallbackSessionId,
+                historyIdBySessionId.get(fallbackSessionId) ?? null,
+            );
             tabs = [fallbackTab];
             activeTabId = fallbackTab.id;
         }
@@ -389,7 +521,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         });
     },
 
-    replaceSessionId: (oldSessionId, newSessionId) => {
+    replaceSessionId: (oldSessionId, newSessionId, historySessionId = null) => {
         if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) {
             return;
         }
@@ -399,7 +531,15 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
             const tabs = normalizeTabs(
                 state.tabs.map((tab) =>
                     tab.sessionId === oldSessionId
-                        ? { ...tab, sessionId: newSessionId }
+                        ? {
+                              ...tab,
+                              sessionId: newSessionId,
+                              historySessionId:
+                                  historySessionId ??
+                                  tab.historySessionId ??
+                                  resolveTabHistorySessionId(tab) ??
+                                  undefined,
+                          }
                         : tab,
                 ),
                 activeTabId,
@@ -420,8 +560,18 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
     },
 }));
 
+let _lastChatTabsSig = "";
+
 useChatTabsStore.subscribe((state) => {
     if (!state.isReady) return;
+
+    // Cheap fingerprint to skip expensive serialization when nothing relevant changed
+    let sig = state.activeTabId ?? "";
+    for (const t of state.tabs) {
+        sig += `|${t.id}|${t.sessionId ?? ""}|${t.label}`;
+    }
+    if (sig === _lastChatTabsSig) return;
+    _lastChatTabsSig = sig;
 
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
@@ -434,17 +584,24 @@ useChatTabsStore.subscribe((state) => {
         clearTimeout(persistTimer);
     }
 
+    pendingPersistVaultPath = vaultPath;
+    pendingPersistJson = json;
     persistTimer = setTimeout(() => {
-        lastPersistedJsonByVaultPath.set(vaultPath, json);
-        localStorage.setItem(getChatTabsStorageKey(vaultPath), json);
+        flushPendingPersistence();
+        persistTimer = null;
     }, 500);
 });
 
-export function resetChatTabsStore() {
+export function flushChatTabsPersistence() {
     if (persistTimer) {
         clearTimeout(persistTimer);
         persistTimer = null;
     }
+    flushPendingPersistence();
+}
+
+export function resetChatTabsStore() {
+    flushChatTabsPersistence();
 
     lastPersistedJsonByVaultPath.clear();
 

@@ -26,6 +26,7 @@ const STATUS_COLORS: Record<AIChatSessionStatus, string> = {
     idle: "var(--text-secondary)",
     streaming: "var(--accent)",
     waiting_permission: "#d97706",
+    waiting_user_input: "#c2410c",
     review_required: "#0891b2",
     error: "#dc2626",
 };
@@ -34,6 +35,7 @@ const STATUS_LABELS: Record<AIChatSessionStatus, string> = {
     idle: "Idle",
     streaming: "Streaming",
     waiting_permission: "Waiting for approval",
+    waiting_user_input: "Waiting for input",
     review_required: "Review required",
     error: "Error",
 };
@@ -54,13 +56,11 @@ export function AIChatTabs({
 }: AIChatTabsProps) {
     const isCompact = density !== "comfortable";
     const isTight = density === "tight";
-    const [contextMenu, setContextMenu] = useState<
-        ContextMenuState<{
-            tabId: string;
-            sessionId: string;
-            hasSession: boolean;
-        }> | null
-    >(null);
+    const [contextMenu, setContextMenu] = useState<ContextMenuState<{
+        tabId: string;
+        sessionId: string;
+        hasSession: boolean;
+    }> | null>(null);
 
     if (!tabs.length) {
         return (
@@ -77,7 +77,7 @@ export function AIChatTabs({
         <div
             role="tablist"
             aria-label="Chat tabs"
-            className={`flex min-w-0 flex-1 items-center overflow-hidden ${
+            className={`scrollbar-hidden flex min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden ${
                 isCompact ? "gap-0.5 px-0.5" : "gap-1 px-1"
             }`}
         >
@@ -111,12 +111,9 @@ export function AIChatTabs({
                             });
                         }}
                         style={{
-                            width: isTight
-                                ? 124
-                                : isCompact
-                                  ? 156
-                                  : 240,
-                            minWidth: isTight ? 60 : isCompact ? 72 : 80,
+                            width: isTight ? 88 : isCompact ? 112 : 172,
+                            minWidth: isTight ? 42 : isCompact ? 52 : 58,
+                            flexShrink: 0,
                             borderColor: isActive
                                 ? "color-mix(in srgb, var(--accent) 45%, var(--border))"
                                 : "var(--border)",

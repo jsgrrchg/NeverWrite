@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useState, type ReactElement } from "react";
-import type { AIChatMessage } from "../types";
+import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+import { memo, useState, type ReactElement } from "react";
+import type { AIChatMessage, AIFileDiff } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
@@ -18,9 +18,11 @@ function openNoteByAbsolutePath(absPath: string) {
         openNote(note.id, note.title, existing.content);
         return;
     }
-    void invoke<{ content: string }>("read_note", { noteId: note.id })
+    void vaultInvoke<{ content: string }>("read_note", { noteId: note.id })
         .then((detail) => {
-            useEditorStore.getState().openNote(note.id, note.title, detail.content);
+            useEditorStore
+                .getState()
+                .openNote(note.id, note.title, detail.content);
         })
         .catch((e) => console.error("Error opening note:", e));
 }
@@ -66,9 +68,7 @@ function renderUserContent(
                 key={key++}
                 label={isFetch ? "@fetch" : displayLabel}
                 metrics={pillMetrics}
-                variant={
-                    isFetch ? "success" : isFolder ? "folder" : "accent"
-                }
+                variant={isFetch ? "success" : isFolder ? "folder" : "accent"}
             />,
         );
 
@@ -86,6 +86,10 @@ interface AIChatMessageItemProps {
     message: AIChatMessage;
     pillMetrics: ChatPillMetrics;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
+    onUserInputResponse?: (
+        requestId: string,
+        answers: Record<string, string[]>,
+    ) => void;
 }
 
 function stripMarkdownBold(text: string) {
@@ -230,9 +234,7 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
     const isInProgress = status === "in_progress";
 
     const isRead = toolKind === "read" || toolKind === "search";
-    const accent = toolKind === "delete"
-        ? "#ef4444"
-        : "#6b7280"; // neutral gray for read/edit/move
+    const accent = toolKind === "delete" ? "#ef4444" : "#6b7280"; // neutral gray for read/edit/move
 
     const actionLabel = isRead
         ? "Read"
@@ -265,9 +267,10 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                 className="flex items-center gap-2 px-3 py-1.5"
                 style={{
                     cursor: detail ? "pointer" : "default",
-                    borderBottom: detail && expanded
-                        ? `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`
-                        : "none",
+                    borderBottom:
+                        detail && expanded
+                            ? `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`
+                            : "none",
                 }}
                 onClick={detail ? () => setExpanded((v) => !v) : undefined}
             >
@@ -320,9 +323,32 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                         cursor: target ? "pointer" : "default",
                         textDecoration: "none",
                     }}
-                    onClick={target ? (e) => { e.stopPropagation(); openNoteByAbsolutePath(target); } : undefined}
-                    onMouseEnter={target ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; } : undefined}
-                    onMouseLeave={target ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; } : undefined}
+                    onClick={
+                        target
+                            ? (e) => {
+                                  e.stopPropagation();
+                                  openNoteByAbsolutePath(target);
+                              }
+                            : undefined
+                    }
+                    onMouseEnter={
+                        target
+                            ? (e) => {
+                                  (
+                                      e.currentTarget as HTMLElement
+                                  ).style.textDecoration = "underline";
+                              }
+                            : undefined
+                    }
+                    onMouseLeave={
+                        target
+                            ? (e) => {
+                                  (
+                                      e.currentTarget as HTMLElement
+                                  ).style.textDecoration = "none";
+                              }
+                            : undefined
+                    }
                 >
                     {shortTarget ?? message.title ?? actionLabel}
                 </span>
@@ -358,7 +384,9 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                         strokeLinejoin="round"
                         className="shrink-0"
                         style={{
-                            transform: expanded ? "rotate(180deg)" : "rotate(0)",
+                            transform: expanded
+                                ? "rotate(180deg)"
+                                : "rotate(0)",
                             transition: "transform 0.15s ease",
                             opacity: 0.6,
                         }}
@@ -372,13 +400,14 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
             {expanded && detail && (
                 <div className="px-3 py-1.5">
                     <pre
-                        className="max-h-32 overflow-auto rounded px-2 py-1.5"
+                        className="max-h-32 overflow-y-auto rounded px-2 py-1.5"
                         style={{
                             backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-tertiary))`,
                             border: `1px solid color-mix(in srgb, ${accent} 10%, var(--border))`,
                             color: "var(--text-secondary)",
                             fontSize: "0.78em",
                             lineHeight: 1.4,
+                            overflowWrap: "anywhere",
                             whiteSpace: "pre-wrap",
                             wordBreak: "break-word",
                             margin: 0,
@@ -414,7 +443,9 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
 
     // Show detail content if it differs from the label (e.g. long shell commands)
     const detail =
-        message.content && message.content !== label && message.content !== title
+        message.content &&
+        message.content !== label &&
+        message.content !== title
             ? message.content
             : null;
 
@@ -452,7 +483,9 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
                         strokeLinejoin="round"
                         style={{
                             flexShrink: 0,
-                            transform: expanded ? "rotate(180deg)" : "rotate(0)",
+                            transform: expanded
+                                ? "rotate(180deg)"
+                                : "rotate(0)",
                             transition: "transform 0.15s ease",
                         }}
                     >
@@ -462,18 +495,814 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
             </div>
             {expanded && detail && (
                 <pre
-                    className="mt-1 max-h-40 overflow-auto rounded px-2 py-1.5"
+                    className="mt-1 max-h-40 overflow-y-auto rounded px-2 py-1.5"
                     style={{
                         backgroundColor: "var(--bg-tertiary)",
                         border: "1px solid var(--border)",
                         fontSize: "0.82em",
                         lineHeight: 1.4,
+                        overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
                         wordBreak: "break-word",
+                        margin: 0,
                     }}
                 >
                     {detail}
                 </pre>
+            )}
+        </div>
+    );
+}
+
+function PlanMessage({
+    message,
+    pillMetrics,
+}: {
+    message: AIChatMessage;
+    pillMetrics: ChatPillMetrics;
+}) {
+    const entries = message.planEntries ?? [];
+    const detail = message.planDetail?.trim() || null;
+    const completedCount = entries.filter(
+        (entry) => entry.status === "completed",
+    ).length;
+    const inProgress = entries.some((entry) => entry.status === "in_progress");
+
+    return (
+        <div
+            className="min-w-0 max-w-full rounded-lg px-3 py-2"
+            style={{
+                border: "1px solid color-mix(in srgb, #0f766e 22%, var(--border))",
+                backgroundColor:
+                    "color-mix(in srgb, #0f766e 5%, var(--bg-secondary))",
+            }}
+        >
+            <div className="flex items-center gap-2">
+                <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    stroke="#0f766e"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="shrink-0"
+                >
+                    <path d="M3 3.25h8M3 7h8M3 10.75h5" />
+                    <path d="M1.75 3.25h.5M1.75 7h.5M1.75 10.75h.5" />
+                </svg>
+                <span
+                    className="min-w-0 flex-1 font-medium"
+                    style={{
+                        color: "var(--text-primary)",
+                        fontSize: "0.84em",
+                    }}
+                >
+                    {message.title ?? "Plan"}
+                </span>
+                <span
+                    style={{
+                        color: "#0f766e",
+                        fontSize: "0.76em",
+                        opacity: 0.85,
+                    }}
+                >
+                    {completedCount}/{entries.length}
+                </span>
+            </div>
+
+            {detail ? (
+                <div
+                    className="mt-2 rounded-md px-2.5 py-2"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--bg-primary) 70%, transparent)",
+                        border: "1px solid color-mix(in srgb, #0f766e 12%, var(--border))",
+                    }}
+                >
+                    <div
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.78em",
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        <MarkdownContent
+                            content={detail}
+                            pillMetrics={pillMetrics}
+                        />
+                    </div>
+                </div>
+            ) : null}
+
+            {entries.length > 0 ? (
+                <div className="mt-2 flex flex-col gap-1.5">
+                    {entries.map((entry, index) => {
+                        const isCompleted = entry.status === "completed";
+                        const isActive = entry.status === "in_progress";
+                        return (
+                            <div
+                                key={`${entry.content}:${index}`}
+                                className="flex min-w-0 items-start gap-2"
+                                style={{
+                                    color: isCompleted
+                                        ? "var(--text-secondary)"
+                                        : "var(--text-primary)",
+                                    opacity: isCompleted ? 0.72 : 1,
+                                }}
+                            >
+                                <span
+                                    className="mt-[3px] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
+                                    style={{
+                                        backgroundColor: isCompleted
+                                            ? "color-mix(in srgb, #0f766e 18%, transparent)"
+                                            : isActive
+                                              ? "color-mix(in srgb, var(--accent) 16%, transparent)"
+                                              : "color-mix(in srgb, var(--text-secondary) 12%, transparent)",
+                                        color: isCompleted
+                                            ? "#0f766e"
+                                            : isActive
+                                              ? "var(--accent)"
+                                              : "var(--text-secondary)",
+                                        fontSize: "0.7em",
+                                    }}
+                                >
+                                    {isCompleted
+                                        ? "✓"
+                                        : isActive
+                                          ? "•"
+                                          : String(index + 1)}
+                                </span>
+                                <div className="min-w-0">
+                                    <div
+                                        style={{
+                                            fontSize: "0.8em",
+                                            overflowWrap: "anywhere",
+                                            wordBreak: "break-word",
+                                            textDecoration: isCompleted
+                                                ? "line-through"
+                                                : "none",
+                                        }}
+                                    >
+                                        {entry.content}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : !detail ? (
+                <div
+                    className="mt-2"
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: "0.8em",
+                    }}
+                >
+                    No plan steps yet.
+                </div>
+            ) : null}
+
+            <div
+                className="mt-2"
+                style={{
+                    color: "var(--text-secondary)",
+                    fontSize: "0.76em",
+                    opacity: 0.72,
+                }}
+            >
+                {inProgress ? "Plan updating..." : "Plan updated"}
+            </div>
+        </div>
+    );
+}
+
+function StatusMessage({ message }: { message: AIChatMessage }) {
+    const statusKind = String(message.meta?.status_event ?? "status");
+    const status = String(message.meta?.status ?? "");
+    const emphasis = String(message.meta?.emphasis ?? "neutral");
+    const title = message.title ?? message.content;
+    const detail =
+        message.content && message.content !== title ? message.content : null;
+
+    if (statusKind === "turn_started") {
+        return (
+            <div className="flex min-w-0 max-w-full items-center gap-3 py-2">
+                <div
+                    className="h-px flex-1"
+                    style={{ backgroundColor: "var(--border)", opacity: 0.5 }}
+                />
+                <span
+                    className="shrink-0 uppercase tracking-[0.14em]"
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: "0.68em",
+                        opacity: 0.7,
+                    }}
+                >
+                    {title}
+                </span>
+                <div
+                    className="h-px flex-1"
+                    style={{ backgroundColor: "var(--border)", opacity: 0.5 }}
+                />
+            </div>
+        );
+    }
+
+    if (emphasis === "error" || statusKind === "stream_error") {
+        return (
+            <div
+                className="min-w-0 max-w-full rounded-lg px-2.5 py-2"
+                style={{
+                    border: "1px solid color-mix(in srgb, #dc2626 30%, var(--border))",
+                    backgroundColor:
+                        "color-mix(in srgb, #dc2626 8%, transparent)",
+                }}
+            >
+                <div
+                    className="flex items-center gap-2"
+                    style={{ color: "#f87171" }}
+                >
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <circle cx="7" cy="7" r="5.5" />
+                        <path d="M7 4.5v3M7 9.5h.005" />
+                    </svg>
+                    <span
+                        className="font-medium"
+                        style={{ fontSize: "0.84em" }}
+                    >
+                        {title}
+                    </span>
+                </div>
+                {detail && (
+                    <div
+                        className="mt-1 whitespace-pre-wrap"
+                        style={{
+                            color: "var(--text-primary)",
+                            fontSize: "0.8em",
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                        }}
+                    >
+                        {detail}
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    if (statusKind === "model_reroute" || statusKind === "review_mode") {
+        const accent = statusKind === "review_mode" ? "#0f766e" : "#0891b2";
+        return (
+            <div
+                className="min-w-0 max-w-full rounded-lg px-2.5 py-2"
+                style={{
+                    border: `1px solid color-mix(in srgb, ${accent} 28%, var(--border))`,
+                    backgroundColor: `color-mix(in srgb, ${accent} 6%, transparent)`,
+                }}
+            >
+                <div
+                    className="uppercase tracking-[0.14em] text-xs font-medium"
+                    style={{ color: accent }}
+                >
+                    {title}
+                </div>
+                {detail && (
+                    <div
+                        className="mt-1 whitespace-pre-wrap"
+                        style={{
+                            color: "var(--text-primary)",
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            fontSize: "0.83em",
+                        }}
+                    >
+                        {detail}
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    const isInProgress = status === "in_progress";
+    const isCompleted = status === "completed";
+
+    return (
+        <div
+            className="min-w-0 max-w-full py-0.5"
+            style={{
+                color: "var(--text-secondary)",
+                opacity: isCompleted ? 0.5 : 0.72,
+                fontSize: "0.83em",
+            }}
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                {isInProgress ? (
+                    <span
+                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full shrink-0"
+                        style={{ backgroundColor: "var(--accent)" }}
+                    />
+                ) : (
+                    <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                        style={{ opacity: isCompleted ? 0.8 : 0.55 }}
+                    >
+                        <circle cx="6" cy="6" r="4" />
+                        {isCompleted ? (
+                            <path d="M4.2 6.1L5.4 7.3L7.9 4.8" />
+                        ) : null}
+                    </svg>
+                )}
+                <span className="min-w-0 flex-1 truncate">{title}</span>
+            </div>
+            {detail && (
+                <div
+                    className="mt-0.5 pl-5"
+                    style={{
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                        opacity: 0.8,
+                    }}
+                >
+                    {detail}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Diff Preview (for permission cards with file changes)
+// ---------------------------------------------------------------------------
+
+interface DiffLine {
+    type: "add" | "remove" | "context" | "separator";
+    prefix: string;
+    text: string;
+}
+
+function simpleDiff(oldLines: string[], newLines: string[]): DiffLine[] {
+    const MAX = 500;
+    const a = oldLines.slice(0, MAX);
+    const b = newLines.slice(0, MAX);
+    const m = a.length;
+    const n = b.length;
+
+    // LCS table
+    const dp: number[][] = Array.from({ length: m + 1 }, () =>
+        new Array<number>(n + 1).fill(0),
+    );
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] =
+                a[i - 1] === b[j - 1]
+                    ? dp[i - 1][j - 1] + 1
+                    : Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+    }
+
+    // Backtrack
+    const stack: DiffLine[] = [];
+    let i = m;
+    let j = n;
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+            stack.push({ type: "context", prefix: "  ", text: a[i - 1] });
+            i--;
+            j--;
+        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+            stack.push({ type: "add", prefix: "+ ", text: b[j - 1] });
+            j--;
+        } else {
+            stack.push({ type: "remove", prefix: "- ", text: a[i - 1] });
+            i--;
+        }
+    }
+    stack.reverse();
+
+    // Only show lines near changes (3 lines of context)
+    const CTX = 3;
+    const near = new Set<number>();
+    for (let idx = 0; idx < stack.length; idx++) {
+        if (stack[idx].type !== "context") {
+            for (
+                let k = Math.max(0, idx - CTX);
+                k <= Math.min(stack.length - 1, idx + CTX);
+                k++
+            ) {
+                near.add(k);
+            }
+        }
+    }
+
+    const result: DiffLine[] = [];
+    let last = -1;
+    for (let idx = 0; idx < stack.length; idx++) {
+        if (near.has(idx)) {
+            if (last >= 0 && idx - last > 1) {
+                result.push({
+                    type: "separator",
+                    prefix: "",
+                    text: "···",
+                });
+            }
+            result.push(stack[idx]);
+            last = idx;
+        }
+    }
+
+    if (oldLines.length > MAX || newLines.length > MAX) {
+        result.push({
+            type: "separator",
+            prefix: "",
+            text: `(truncated — file has ${Math.max(oldLines.length, newLines.length)} lines)`,
+        });
+    }
+
+    return result;
+}
+
+function computeDiffLines(diff: AIFileDiff): DiffLine[] {
+    if (diff.kind === "add") {
+        return (diff.new_text ?? "").split("\n").map((line) => ({
+            type: "add" as const,
+            prefix: "+ ",
+            text: line,
+        }));
+    }
+    if (diff.kind === "delete") {
+        return (diff.old_text ?? "").split("\n").map((line) => ({
+            type: "remove" as const,
+            prefix: "- ",
+            text: line,
+        }));
+    }
+    return simpleDiff(
+        (diff.old_text ?? "").split("\n"),
+        (diff.new_text ?? "").split("\n"),
+    );
+}
+
+function computeFileDiffStats(diff: AIFileDiff): {
+    additions: number;
+    deletions: number;
+} {
+    const lines = computeDiffLines(diff);
+    let additions = 0;
+    let deletions = 0;
+    for (const line of lines) {
+        if (line.type === "add") additions++;
+        else if (line.type === "remove") deletions++;
+    }
+    return { additions, deletions };
+}
+
+function computeDiffStats(diffs: AIFileDiff[]): {
+    additions: number;
+    deletions: number;
+} {
+    let additions = 0;
+    let deletions = 0;
+    for (const diff of diffs) {
+        const s = computeFileDiffStats(diff);
+        additions += s.additions;
+        deletions += s.deletions;
+    }
+    return { additions, deletions };
+}
+
+function DiffLineView({ line }: { line: DiffLine }) {
+    return (
+        <div
+            style={{
+                padding: "0 8px",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                backgroundColor:
+                    line.type === "add"
+                        ? "color-mix(in srgb, #16a34a 8%, transparent)"
+                        : line.type === "remove"
+                          ? "color-mix(in srgb, #dc2626 8%, transparent)"
+                          : "transparent",
+                color:
+                    line.type === "add"
+                        ? "#16a34a"
+                        : line.type === "remove"
+                          ? "#dc2626"
+                          : "var(--text-secondary)",
+                borderLeft:
+                    line.type === "add"
+                        ? "2px solid #16a34a"
+                        : line.type === "remove"
+                          ? "2px solid #dc2626"
+                          : "2px solid transparent",
+                opacity: line.type === "separator" ? 0.5 : 1,
+                textAlign: line.type === "separator" ? "center" : "left",
+            }}
+        >
+            {line.prefix}
+            {line.text}
+        </div>
+    );
+}
+
+function ChangeReviewFileList({ diffs }: { diffs: AIFileDiff[] }) {
+    const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+    return (
+        <div className="flex flex-col">
+            {diffs.map((diff) => {
+                const filename = diff.path.split("/").pop() ?? diff.path;
+                const isOpen = expanded[diff.path] ?? false;
+                const lines = isOpen ? computeDiffLines(diff) : [];
+                const stats = computeFileDiffStats(diff);
+
+                return (
+                    <div key={diff.path} className="min-w-0">
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setExpanded((prev) => ({
+                                    ...prev,
+                                    [diff.path]: !prev[diff.path],
+                                }))
+                            }
+                            className="flex w-full items-center gap-1.5 px-3 py-1"
+                            style={{
+                                background: "transparent",
+                                border: "none",
+                                borderBottom:
+                                    "1px solid color-mix(in srgb, #d97706 8%, var(--border))",
+                                cursor: "pointer",
+                                fontSize: "0.78em",
+                                color: "var(--text-secondary)",
+                            }}
+                        >
+                            <svg
+                                width="8"
+                                height="8"
+                                viewBox="0 0 8 8"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                style={{
+                                    transform: isOpen
+                                        ? "rotate(90deg)"
+                                        : "rotate(0deg)",
+                                    transition: "transform 0.15s ease",
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <path d="M2 1.5L5.5 4L2 6.5" />
+                            </svg>
+                            <span
+                                style={{
+                                    color:
+                                        diff.kind === "add"
+                                            ? "#16a34a"
+                                            : diff.kind === "delete"
+                                              ? "#dc2626"
+                                              : "var(--text-primary)",
+                                    fontWeight: 500,
+                                }}
+                            >
+                                {filename}
+                            </span>
+                            <span
+                                style={{
+                                    opacity: 0.5,
+                                    fontSize: "0.9em",
+                                }}
+                            >
+                                {diff.kind === "add"
+                                    ? "new file"
+                                    : diff.kind === "delete"
+                                      ? "deleted"
+                                      : "modified"}
+                            </span>
+                            <span
+                                style={{
+                                    marginLeft: "auto",
+                                    display: "flex",
+                                    gap: 6,
+                                    fontSize: "0.9em",
+                                }}
+                            >
+                                {stats.additions > 0 && (
+                                    <span style={{ color: "#16a34a" }}>
+                                        +{stats.additions}
+                                    </span>
+                                )}
+                                {stats.deletions > 0 && (
+                                    <span style={{ color: "#dc2626" }}>
+                                        -{stats.deletions}
+                                    </span>
+                                )}
+                            </span>
+                        </button>
+
+                        {isOpen && lines.length > 0 && (
+                            <div
+                                style={{
+                                    maxHeight: 300,
+                                    overflow: "auto",
+                                    fontSize: "0.72em",
+                                    fontFamily: "var(--font-mono, monospace)",
+                                    lineHeight: 1.5,
+                                    borderBottom:
+                                        "1px solid color-mix(in srgb, #d97706 8%, var(--border))",
+                                }}
+                            >
+                                {lines.map((line, idx) => (
+                                    <DiffLineView key={idx} line={line} />
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+function ChangeReviewPanel({
+    message,
+    onPermissionResponse,
+}: {
+    message: AIChatMessage;
+    onPermissionResponse?: (requestId: string, optionId?: string) => void;
+}) {
+    const diffs = message.diffs ?? [];
+    const status = String(message.meta?.status ?? "pending");
+    const resolvedOptionId =
+        message.meta?.resolved_option !== undefined &&
+        message.meta?.resolved_option !== null
+            ? String(message.meta.resolved_option)
+            : null;
+    const resolvedOptionLabel =
+        message.permissionOptions?.find((o) => o.option_id === resolvedOptionId)
+            ?.name ?? null;
+    const isPending = status === "pending";
+    const isResponding = status === "responding";
+    const isResolved = status === "resolved";
+
+    const stats = computeDiffStats(diffs);
+    const fileCount = diffs.length;
+    const fileWord = fileCount === 1 ? "file" : "files";
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                border: "1px solid color-mix(in srgb, #d97706 25%, var(--border))",
+                backgroundColor:
+                    "color-mix(in srgb, #d97706 4%, var(--bg-secondary))",
+            }}
+        >
+            {/* Summary bar */}
+            <div
+                className="flex items-center gap-2 px-3 py-2"
+                style={{
+                    borderBottom:
+                        "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                }}
+            >
+                <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    stroke="#d97706"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="shrink-0"
+                >
+                    <path d="M7 1L2 12h10L7 1z" />
+                    <path d="M7 5.5v2.5" />
+                    <circle cx="7" cy="10" r="0.5" fill="#d97706" />
+                </svg>
+                <span
+                    style={{
+                        color: "var(--text-primary)",
+                        fontWeight: 600,
+                        fontSize: "0.83em",
+                    }}
+                >
+                    Edit {fileCount} {fileWord}
+                </span>
+                <span
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: "0.78em",
+                        opacity: 0.7,
+                    }}
+                >
+                    ·
+                </span>
+                <span style={{ display: "flex", gap: 6, fontSize: "0.78em" }}>
+                    {stats.additions > 0 && (
+                        <span style={{ color: "#16a34a", fontWeight: 500 }}>
+                            +{stats.additions}
+                        </span>
+                    )}
+                    {stats.deletions > 0 && (
+                        <span style={{ color: "#dc2626", fontWeight: 500 }}>
+                            -{stats.deletions}
+                        </span>
+                    )}
+                </span>
+            </div>
+
+            {/* File list with expandable diffs */}
+            <ChangeReviewFileList diffs={diffs} />
+
+            {/* Actions */}
+            {message.permissionRequestId &&
+            message.permissionOptions?.length ? (
+                <div
+                    className="flex items-center gap-2 px-3 py-2"
+                    style={{
+                        borderTop:
+                            "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                    }}
+                >
+                    {message.permissionOptions.map((option) => {
+                        const isReject = option.kind.startsWith("reject");
+                        return (
+                            <button
+                                key={option.option_id}
+                                type="button"
+                                onClick={() =>
+                                    onPermissionResponse?.(
+                                        message.permissionRequestId!,
+                                        option.option_id,
+                                    )
+                                }
+                                disabled={!isPending}
+                                className="rounded-md px-3 py-1 font-medium transition-opacity"
+                                style={{
+                                    fontSize: "0.79em",
+                                    marginLeft: isReject ? 0 : "auto",
+                                    color: !isPending
+                                        ? "var(--text-secondary)"
+                                        : isReject
+                                          ? "var(--text-secondary)"
+                                          : "#fff",
+                                    backgroundColor: !isPending
+                                        ? "color-mix(in srgb, var(--text-secondary) 10%, transparent)"
+                                        : isReject
+                                          ? "color-mix(in srgb, var(--text-secondary) 12%, transparent)"
+                                          : "var(--accent)",
+                                    border: "1px solid color-mix(in srgb, var(--text-secondary) 20%, transparent)",
+                                    opacity: !isPending ? 0.5 : 1,
+                                    cursor: isPending ? "pointer" : "default",
+                                }}
+                            >
+                                {option.name}
+                            </button>
+                        );
+                    })}
+                </div>
+            ) : null}
+
+            {/* Status footer */}
+            {(isResponding || isResolved) && (
+                <div
+                    className="px-3 py-1.5"
+                    style={{
+                        color: "var(--text-secondary)",
+                        borderTop:
+                            "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                        opacity: 0.7,
+                        fontSize: "0.79em",
+                    }}
+                >
+                    {isResponding
+                        ? "Sending decision..."
+                        : `Decision sent${resolvedOptionLabel ? `: ${resolvedOptionLabel}` : "."}`}
+                </div>
             )}
         </div>
     );
@@ -526,6 +1355,16 @@ function PermissionMessage({
     pillMetrics: ChatPillMetrics;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
+    // Delegate to Change Review Panel when diffs are present
+    if (message.diffs && message.diffs.length > 0) {
+        return (
+            <ChangeReviewPanel
+                message={message}
+                onPermissionResponse={onPermissionResponse}
+            />
+        );
+    }
+
     const target = message.meta?.target ? String(message.meta.target) : null;
     const shortTarget = target?.split("/").pop() ?? null;
     const status = String(message.meta?.status ?? "pending");
@@ -552,25 +1391,25 @@ function PermissionMessage({
     const hasLongTitle = title.length > MAX_HEADER_PREVIEW;
     const canExpand = hasLongTitle || isLong;
     const [expanded, setExpanded] = useState(() => !canExpand);
-    const preview = isLong
-        ? `${details.slice(0, MAX_PREVIEW)}...`
-        : details;
+    const preview = isLong ? `${details.slice(0, MAX_PREVIEW)}...` : details;
 
     return (
         <div
             className="min-w-0 max-w-full overflow-hidden rounded-lg"
             style={{
                 border: "1px solid color-mix(in srgb, #d97706 25%, var(--border))",
-                backgroundColor: "color-mix(in srgb, #d97706 4%, var(--bg-secondary))",
+                backgroundColor:
+                    "color-mix(in srgb, #d97706 4%, var(--bg-secondary))",
             }}
         >
             {/* Header */}
             <div
                 className="flex items-center gap-2 px-3 py-2"
                 style={{
-                    borderBottom: details || shortTarget
-                        ? "1px solid color-mix(in srgb, #d97706 15%, var(--border))"
-                        : "none",
+                    borderBottom:
+                        details || shortTarget
+                            ? "1px solid color-mix(in srgb, #d97706 15%, var(--border))"
+                            : "none",
                 }}
             >
                 <svg
@@ -623,11 +1462,7 @@ function PermissionMessage({
                                 ? "Collapse permission message"
                                 : "Expand permission message"
                         }
-                        title={
-                            expanded
-                                ? "Collapse message"
-                                : "Expand message"
-                        }
+                        title={expanded ? "Collapse message" : "Expand message"}
                     >
                         <svg
                             width="10"
@@ -658,7 +1493,8 @@ function PermissionMessage({
                         <div
                             className="mb-1.5 inline-flex items-center gap-1 rounded px-1.5 py-0.5"
                             style={{
-                                backgroundColor: "color-mix(in srgb, #d97706 10%, transparent)",
+                                backgroundColor:
+                                    "color-mix(in srgb, #d97706 10%, transparent)",
                                 color: "#d97706",
                                 fontSize: "0.79em",
                             }}
@@ -719,7 +1555,8 @@ function PermissionMessage({
                 <div
                     className="flex flex-wrap gap-2 px-3 py-2"
                     style={{
-                        borderTop: "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                        borderTop:
+                            "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
                     }}
                 >
                     {message.permissionOptions.map((option) => {
@@ -748,8 +1585,7 @@ function PermissionMessage({
                                         : isReject
                                           ? "color-mix(in srgb, var(--text-secondary) 12%, transparent)"
                                           : "var(--accent)",
-                                    border:
-                                        "1px solid color-mix(in srgb, var(--text-secondary) 20%, transparent)",
+                                    border: "1px solid color-mix(in srgb, var(--text-secondary) 20%, transparent)",
                                     opacity: !isPending ? 0.5 : 1,
                                     cursor: isPending ? "pointer" : "default",
                                 }}
@@ -767,7 +1603,8 @@ function PermissionMessage({
                     className="px-3 py-1.5"
                     style={{
                         color: "var(--text-secondary)",
-                        borderTop: "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                        borderTop:
+                            "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
                         opacity: 0.7,
                         fontSize: "0.79em",
                     }}
@@ -781,41 +1618,293 @@ function PermissionMessage({
     );
 }
 
-function ProposedEditMessage({ message }: { message: AIChatMessage }) {
-    const label = message.title ?? message.kind.replaceAll("_", " ");
+function UserInputRequestMessage({
+    message,
+    onUserInputResponse,
+}: {
+    message: AIChatMessage;
+    onUserInputResponse?: (
+        requestId: string,
+        answers: Record<string, string[]>,
+    ) => void;
+}) {
+    const status = String(message.meta?.status ?? "pending");
+    const questions = message.userInputQuestions ?? [];
+    const isPending = status === "pending";
+    const isResponding = status === "responding";
+    const isResolved = status === "resolved";
+    const [selectedOptions, setSelectedOptions] = useState<
+        Record<string, string>
+    >({});
+    const [textAnswers, setTextAnswers] = useState<Record<string, string>>({});
+    const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>(
+        {},
+    );
+
+    const submitAnswers = (cancelled = false) => {
+        if (!message.userInputRequestId) return;
+        if (cancelled) {
+            onUserInputResponse?.(message.userInputRequestId, {});
+            return;
+        }
+
+        const answers = questions.reduce<Record<string, string[]>>(
+            (accumulator, question) => {
+                const values: string[] = [];
+                const selected = selectedOptions[question.id]?.trim();
+                const text = textAnswers[question.id]?.trim();
+                const other = otherAnswers[question.id]?.trim();
+
+                if (selected) values.push(selected);
+                if (text) values.push(text);
+                if (other) values.push(`user_note: ${other}`);
+
+                if (values.length > 0) {
+                    accumulator[question.id] = values;
+                }
+                return accumulator;
+            },
+            {},
+        );
+
+        onUserInputResponse?.(message.userInputRequestId, answers);
+    };
 
     return (
         <div
-            className="min-w-0 max-w-full rounded-lg px-2.5 py-2"
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
             style={{
-                border: "1px solid color-mix(in srgb, #0891b2 30%, var(--border))",
-                backgroundColor: "color-mix(in srgb, #0891b2 6%, transparent)",
+                border: "1px solid color-mix(in srgb, #c2410c 24%, var(--border))",
+                backgroundColor:
+                    "color-mix(in srgb, #c2410c 4%, var(--bg-secondary))",
             }}
         >
             <div
-                className="uppercase tracking-[0.14em] text-xs font-medium"
-                style={{ color: "#0891b2" }}
-            >
-                {label}
-            </div>
-            <div
-                className="mt-1 whitespace-pre-wrap"
+                className="flex items-center gap-2 px-3 py-2"
                 style={{
-                    color: "var(--text-primary)",
-                    overflowWrap: "anywhere",
-                    wordBreak: "break-word",
+                    borderBottom:
+                        questions.length > 0
+                            ? "1px solid color-mix(in srgb, #c2410c 15%, var(--border))"
+                            : "none",
                 }}
             >
-                {message.content}
+                <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    stroke="#c2410c"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="shrink-0"
+                >
+                    <path d="M2 3.5A1.5 1.5 0 013.5 2h7A1.5 1.5 0 0112 3.5v5A1.5 1.5 0 0110.5 10h-4L4 12V10H3.5A1.5 1.5 0 012 8.5v-5z" />
+                    <path d="M4.5 5.25h5M4.5 7.25h3.5" />
+                </svg>
+                <span
+                    className="min-w-0 flex-1 font-medium"
+                    style={{
+                        color: "var(--text-primary)",
+                        fontSize: "0.85em",
+                    }}
+                >
+                    {message.title ?? "Input requested"}
+                </span>
             </div>
+
+            <div className="flex flex-col gap-3 px-3 py-3">
+                {questions.map((question) => {
+                    const options = question.options ?? [];
+                    const selected = selectedOptions[question.id] ?? "";
+                    const textValue = textAnswers[question.id] ?? "";
+                    const otherValue = otherAnswers[question.id] ?? "";
+
+                    return (
+                        <div key={question.id} className="min-w-0">
+                            <div
+                                className="mb-1"
+                                style={{
+                                    color: "var(--text-primary)",
+                                    fontSize: "0.8em",
+                                    fontWeight: 600,
+                                }}
+                            >
+                                {question.header}
+                            </div>
+                            <div
+                                className="mb-2"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    fontSize: "0.79em",
+                                    overflowWrap: "anywhere",
+                                    wordBreak: "break-word",
+                                }}
+                            >
+                                {question.question}
+                            </div>
+
+                            {options.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                    {options.map((option) => {
+                                        const isSelected =
+                                            selected === option.label;
+                                        return (
+                                            <button
+                                                key={option.label}
+                                                type="button"
+                                                disabled={!isPending}
+                                                onClick={() =>
+                                                    setSelectedOptions(
+                                                        (current) => ({
+                                                            ...current,
+                                                            [question.id]:
+                                                                option.label,
+                                                        }),
+                                                    )
+                                                }
+                                                className="rounded-md px-2.5 py-1 text-left transition-colors"
+                                                style={{
+                                                    fontSize: "0.78em",
+                                                    color: isSelected
+                                                        ? "#fff"
+                                                        : "var(--text-primary)",
+                                                    backgroundColor: isSelected
+                                                        ? "#c2410c"
+                                                        : "color-mix(in srgb, #c2410c 7%, var(--bg-tertiary))",
+                                                    border: "1px solid color-mix(in srgb, #c2410c 18%, var(--border))",
+                                                    opacity: isPending
+                                                        ? 1
+                                                        : 0.55,
+                                                    cursor: isPending
+                                                        ? "pointer"
+                                                        : "default",
+                                                }}
+                                                title={option.description}
+                                            >
+                                                {option.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : null}
+
+                            {options.length === 0 && (
+                                <input
+                                    type={
+                                        question.is_secret ? "password" : "text"
+                                    }
+                                    value={textValue}
+                                    disabled={!isPending}
+                                    onChange={(event) =>
+                                        setTextAnswers((current) => ({
+                                            ...current,
+                                            [question.id]: event.target.value,
+                                        }))
+                                    }
+                                    className="w-full rounded-md px-2.5 py-2"
+                                    style={{
+                                        backgroundColor: "var(--bg-tertiary)",
+                                        border: "1px solid var(--border)",
+                                        color: "var(--text-primary)",
+                                        fontSize: "0.8em",
+                                    }}
+                                />
+                            )}
+
+                            {question.is_other && (
+                                <textarea
+                                    value={otherValue}
+                                    disabled={!isPending}
+                                    onChange={(event) =>
+                                        setOtherAnswers((current) => ({
+                                            ...current,
+                                            [question.id]: event.target.value,
+                                        }))
+                                    }
+                                    placeholder="Additional note"
+                                    rows={2}
+                                    className="mt-2 w-full resize-y rounded-md px-2.5 py-2"
+                                    style={{
+                                        backgroundColor: "var(--bg-tertiary)",
+                                        border: "1px solid var(--border)",
+                                        color: "var(--text-primary)",
+                                        fontSize: "0.8em",
+                                    }}
+                                />
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+
+            {message.userInputRequestId ? (
+                <div
+                    className="flex flex-wrap gap-2 px-3 py-2"
+                    style={{
+                        borderTop:
+                            "1px solid color-mix(in srgb, #c2410c 15%, var(--border))",
+                    }}
+                >
+                    <button
+                        type="button"
+                        disabled={!isPending}
+                        onClick={() => submitAnswers(true)}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "var(--text-secondary)",
+                            backgroundColor:
+                                "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--text-secondary) 18%, transparent)",
+                            opacity: isPending ? 1 : 0.5,
+                            cursor: isPending ? "pointer" : "default",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        disabled={!isPending}
+                        onClick={() => submitAnswers(false)}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "#fff",
+                            backgroundColor: "#c2410c",
+                            border: "1px solid color-mix(in srgb, #c2410c 35%, transparent)",
+                            opacity: isPending ? 1 : 0.5,
+                            cursor: isPending ? "pointer" : "default",
+                        }}
+                    >
+                        Submit
+                    </button>
+                </div>
+            ) : null}
+
+            {(isResponding || isResolved) && (
+                <div
+                    className="px-3 py-1.5"
+                    style={{
+                        color: "var(--text-secondary)",
+                        borderTop:
+                            "1px solid color-mix(in srgb, #c2410c 15%, var(--border))",
+                        opacity: 0.7,
+                        fontSize: "0.79em",
+                    }}
+                >
+                    {isResponding ? "Sending input..." : "Input sent."}
+                </div>
+            )}
         </div>
     );
 }
 
-export function AIChatMessageItem({
+export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
     pillMetrics,
     onPermissionResponse,
+    onUserInputResponse,
 }: AIChatMessageItemProps) {
     // User text — full width, subtle box (Zed style)
     if (message.kind === "text" && message.role === "user") {
@@ -845,6 +1934,14 @@ export function AIChatMessageItem({
         return <ToolMessage message={message} />;
     }
 
+    if (message.kind === "plan") {
+        return <PlanMessage message={message} pillMetrics={pillMetrics} />;
+    }
+
+    if (message.kind === "status") {
+        return <StatusMessage message={message} />;
+    }
+
     // Error — inline with icon
     if (message.kind === "error") {
         return <ErrorMessage message={message} />;
@@ -861,12 +1958,13 @@ export function AIChatMessageItem({
         );
     }
 
-    // Proposed edit / new note
-    if (
-        message.kind === "proposed_edit" ||
-        message.kind === "proposed_new_note"
-    ) {
-        return <ProposedEditMessage message={message} />;
+    if (message.kind === "user_input_request") {
+        return (
+            <UserInputRequestMessage
+                message={message}
+                onUserInputResponse={onUserInputResponse}
+            />
+        );
     }
 
     // Assistant text — flat, no card
@@ -885,4 +1983,4 @@ export function AIChatMessageItem({
             />
         </div>
     );
-}
+});

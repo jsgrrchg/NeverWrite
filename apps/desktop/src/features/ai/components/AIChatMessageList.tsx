@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AIChatMessageItem } from "./AIChatMessageItem";
 import {
     ContextMenu,
@@ -12,6 +12,10 @@ interface AIChatMessageListProps {
     status: AIChatSessionStatus;
     chatFontSize?: number;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
+    onUserInputResponse?: (
+        requestId: string,
+        answers: Record<string, string[]>,
+    ) => void;
 }
 
 const NEAR_BOTTOM_THRESHOLD = 80;
@@ -22,11 +26,12 @@ function isNearBottom(el: HTMLElement) {
     );
 }
 
-export function AIChatMessageList({
+export const AIChatMessageList = memo(function AIChatMessageList({
     messages,
     status,
     chatFontSize = 20,
     onPermissionResponse,
+    onUserInputResponse,
 }: AIChatMessageListProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const wasNearBottomRef = useRef(true);
@@ -72,7 +77,10 @@ export function AIChatMessageList({
             payload: { hasSelection },
         });
     }, []);
-    const pillMetrics = getChatPillMetrics(chatFontSize);
+    const pillMetrics = useMemo(
+        () => getChatPillMetrics(chatFontSize),
+        [chatFontSize],
+    );
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1">
@@ -94,6 +102,7 @@ export function AIChatMessageList({
                             message={message}
                             pillMetrics={pillMetrics}
                             onPermissionResponse={onPermissionResponse}
+                            onUserInputResponse={onUserInputResponse}
                         />
                     ))}
                     {status === "streaming" && (
@@ -162,4 +171,4 @@ export function AIChatMessageList({
             )}
         </div>
     );
-}
+});

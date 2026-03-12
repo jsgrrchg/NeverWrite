@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{collections::HashMap, path::PathBuf, sync::Mutex};
 
 use serde::Deserialize;
 use tauri::{AppHandle, State};
@@ -23,6 +23,13 @@ pub struct AiRespondPermissionInput {
     pub session_id: String,
     pub request_id: String,
     pub option_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AiRespondUserInputInput {
+    pub session_id: String,
+    pub request_id: String,
+    pub answers: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +221,21 @@ pub fn ai_respond_permission(
         &input.request_id,
         input.option_id.as_deref(),
     )?;
+    emit_session_updated(&app, &session);
+    Ok(session)
+}
+
+#[tauri::command]
+pub fn ai_respond_user_input(
+    input: AiRespondUserInputInput,
+    app: AppHandle,
+    ai_state: State<Mutex<AiManager>>,
+) -> Result<AiSession, String> {
+    let mut ai_state = ai_state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let session =
+        ai_state.respond_user_input(&input.session_id, &input.request_id, input.answers)?;
     emit_session_updated(&app, &session);
     Ok(session)
 }

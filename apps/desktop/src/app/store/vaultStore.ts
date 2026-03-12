@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
 
 export interface NoteDto {
     id: string;
@@ -12,6 +13,7 @@ export interface NoteDto {
 export interface RecentVault {
     path: string;
     name: string;
+    pinned?: boolean;
 }
 
 export interface VaultOpenMetrics {
@@ -48,9 +50,41 @@ export interface VaultOpenState {
 }
 
 export interface VaultNoteChange {
+    vault_path: string;
     kind: "upsert" | "delete";
     note: NoteDto | null;
     note_id: string | null;
+}
+
+function didResolverStructureChange(
+    previousNotes: NoteDto[],
+    change: VaultNoteChange,
+) {
+    if (change.kind === "delete") return true;
+    if (!change.note) return false;
+
+    const previous = previousNotes.find((note) => note.id === change.note!.id);
+    if (!previous) return true;
+
+    return (
+        previous.id !== change.note.id ||
+        previous.path !== change.note.path ||
+        previous.title !== change.note.title
+    );
+}
+
+function didStructureMetadataChange(
+    previousNotes: NoteDto[],
+    noteId: string,
+    patch: Partial<Pick<NoteDto, "title" | "path">>,
+) {
+    const previous = previousNotes.find((note) => note.id === noteId);
+    if (!previous) return false;
+
+    return (
+        (patch.title !== undefined && patch.title !== previous.title) ||
+        (patch.path !== undefined && patch.path !== previous.path)
+    );
 }
 
 const LAST_VAULT_KEY = "vaultai:lastVaultPath";
@@ -119,6 +153,14 @@ export function getRecentVaults(): RecentVault[] {
     }
 }
 
+export function togglePinVault(path: string) {
+    const vaults = getRecentVaults();
+    const updated = vaults.map((v) =>
+        v.path === path ? { ...v, pinned: !v.pinned } : v,
+    );
+    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(updated));
+}
+
 export async function removeVaultFromList(path: string) {
     // Remove from recent vaults
     const updated = getRecentVaults().filter((v) => v.path !== path);
@@ -129,14 +171,24 @@ export async function removeVaultFromList(path: string) {
         localStorage.removeItem(LAST_VAULT_KEY);
     }
 
-    // Clear per-vault editor session
+    // Clear all per-vault localStorage data
     localStorage.removeItem(`vaultai.session.tabs:${path}`);
+    localStorage.removeItem(`vaultai:theme:${path}`);
+    localStorage.removeItem(`vaultai:settings:${path}`);
+    localStorage.removeItem(`vaultai.chat.tabs:${path}`);
 
     // Delete vault index snapshot from disk
     try {
         await invoke("delete_vault_snapshot", { vaultPath: path });
     } catch {
         // Snapshot may not exist — that's fine
+    }
+
+    // Delete AI session histories from disk
+    try {
+        await invoke("ai_delete_all_session_histories", { vaultPath: path });
+    } catch {
+        // No histories — that's fine
     }
 }
 
@@ -172,6 +224,10 @@ interface VaultStore {
     vaultPath: string | null;
     notes: NoteDto[];
     vaultRevision: number;
+    contentRevision: number;
+    structureRevision: number;
+    resolverRevision: number;
+    tagsRevision: number;
     isLoading: boolean;
     vaultOpenState: VaultOpenState;
     error: string | null;
@@ -182,7 +238,7 @@ interface VaultStore {
     createNote: (name: string) => Promise<NoteDto | null>;
     deleteNote: (noteId: string) => Promise<void>;
     renameNote: (noteId: string, newName: string) => Promise<NoteDto | null>;
-    touchVault: () => void;
+    touchContent: () => void;
     updateNoteMetadata: (
         noteId: string,
         patch: Partial<
@@ -195,6 +251,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     vaultPath: null,
     notes: [],
     vaultRevision: 0,
+    contentRevision: 0,
+    structureRevision: 0,
+    resolverRevision: 0,
+    tagsRevision: 0,
     isLoading: false,
     vaultOpenState: IDLE_OPEN_STATE,
     error: null,
@@ -218,7 +278,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
             while (sequence === openVaultSequence) {
                 const openState = normalizeOpenState(
-                    await invoke<VaultOpenState>("get_vault_open_state"),
+                    await invoke<VaultOpenState>("get_vault_open_state", {
+                        vaultPath: path,
+                    }),
                 );
 
                 set({
@@ -231,7 +293,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 });
 
                 if (openState.stage === "ready") {
-                    const notes = await invoke<NoteDto[]>("list_notes");
+                    const notes = await invoke<NoteDto[]>("list_notes", {
+                        vaultPath: path,
+                    });
                     if (sequence !== openVaultSequence) return;
 
                     localStorage.setItem(LAST_VAULT_KEY, path);
@@ -244,6 +308,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                         error: null,
                         vaultOpenState: openState,
                         vaultRevision: state.vaultRevision + 1,
+                        contentRevision: state.contentRevision + 1,
+                        structureRevision: state.structureRevision + 1,
+                        resolverRevision: state.resolverRevision + 1,
+                        tagsRevision: state.tagsRevision + 1,
                     }));
                     return;
                 }
@@ -291,7 +359,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
     cancelOpenVault: async () => {
         try {
-            await invoke("cancel_open_vault");
+            const vaultPath =
+                get().vaultOpenState.path ?? get().vaultPath ?? "";
+            await invoke("cancel_open_vault", { vaultPath });
         } finally {
             set((state) => ({
                 isLoading: false,
@@ -307,20 +377,55 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     },
 
     applyVaultNoteChange: (change) => {
-        set((state) => ({
-            notes: updateNotesWithChange(state.notes, change),
-            vaultRevision: state.vaultRevision + 1,
-        }));
+        set((state) => {
+            const startMs = perfNow();
+            const nextNotes = updateNotesWithChange(state.notes, change);
+            const structureChanged = didResolverStructureChange(
+                state.notes,
+                change,
+            );
+            perfCount(`vault.applyNoteChange.${change.kind}`);
+            perfMeasure(
+                `vault.applyNoteChange.${change.kind}.duration`,
+                startMs,
+                {
+                    beforeCount: state.notes.length,
+                    afterCount: nextNotes.length,
+                    changedNotePresent: change.note ? 1 : 0,
+                    structureChanged: structureChanged ? 1 : 0,
+                },
+            );
+
+            return {
+                notes: nextNotes,
+                vaultRevision: state.vaultRevision + 1,
+                contentRevision:
+                    change.kind === "upsert"
+                        ? state.contentRevision + 1
+                        : state.contentRevision,
+                structureRevision: structureChanged
+                    ? state.structureRevision + 1
+                    : state.structureRevision,
+                resolverRevision: structureChanged
+                    ? state.resolverRevision + 1
+                    : state.resolverRevision,
+                tagsRevision:
+                    change.kind === "upsert" || change.kind === "delete"
+                        ? state.tagsRevision + 1
+                        : state.tagsRevision,
+            };
+        });
     },
 
     createNote: async (name) => {
         const path = name.endsWith(".md") ? name : `${name}.md`;
         try {
+            const vaultPath = get().vaultPath ?? "";
             const detail = await invoke<{
                 id: string;
                 path: string;
                 title: string;
-            }>("create_note", { path, content: "" });
+            }>("create_note", { vaultPath, path, content: "" });
             const now = Math.floor(Date.now() / 1000);
             const note: NoteDto = {
                 id: detail.id,
@@ -332,6 +437,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             set((s) => ({
                 notes: [...s.notes, note],
                 vaultRevision: s.vaultRevision + 1,
+                structureRevision: s.structureRevision + 1,
+                resolverRevision: s.resolverRevision + 1,
+                tagsRevision: s.tagsRevision + 1,
             }));
             return note;
         } catch (e) {
@@ -342,10 +450,14 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
     deleteNote: async (noteId) => {
         try {
-            await invoke("delete_note", { noteId });
+            const vaultPath = get().vaultPath ?? "";
+            await invoke("delete_note", { vaultPath, noteId });
             set((s) => ({
                 notes: s.notes.filter((n) => n.id !== noteId),
                 vaultRevision: s.vaultRevision + 1,
+                structureRevision: s.structureRevision + 1,
+                resolverRevision: s.resolverRevision + 1,
+                tagsRevision: s.tagsRevision + 1,
             }));
         } catch (e) {
             console.error("Error al eliminar nota:", e);
@@ -355,11 +467,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     renameNote: async (noteId, newName) => {
         const newPath = newName.endsWith(".md") ? newName : `${newName}.md`;
         try {
+            const vaultPath = get().vaultPath ?? "";
             const detail = await invoke<{
                 id: string;
                 path: string;
                 title: string;
-            }>("rename_note", { noteId, newPath });
+            }>("rename_note", { vaultPath, noteId, newPath });
             const existing = get().notes.find((n) => n.id === noteId);
             const updated: NoteDto = {
                 id: detail.id,
@@ -372,6 +485,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             set((s) => ({
                 notes: s.notes.map((n) => (n.id === noteId ? updated : n)),
                 vaultRevision: s.vaultRevision + 1,
+                structureRevision: s.structureRevision + 1,
+                resolverRevision: s.resolverRevision + 1,
             }));
             return updated;
         } catch (e) {
@@ -380,14 +495,30 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         }
     },
 
-    touchVault: () =>
-        set((state) => ({ vaultRevision: state.vaultRevision + 1 })),
+    touchContent: () =>
+        set((state) => ({
+            contentRevision: state.contentRevision + 1,
+        })),
 
     updateNoteMetadata: (noteId, patch) => {
-        set((s) => ({
-            notes: s.notes.map((n) =>
-                n.id === noteId ? { ...n, ...patch } : n,
-            ),
-        }));
+        set((s) => {
+            const structureChanged = didStructureMetadataChange(
+                s.notes,
+                noteId,
+                patch,
+            );
+
+            return {
+                notes: s.notes.map((n) =>
+                    n.id === noteId ? { ...n, ...patch } : n,
+                ),
+                structureRevision: structureChanged
+                    ? s.structureRevision + 1
+                    : s.structureRevision,
+                resolverRevision: structureChanged
+                    ? s.resolverRevision + 1
+                    : s.resolverRevision,
+            };
+        });
     },
 }));

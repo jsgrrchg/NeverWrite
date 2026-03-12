@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -21,18 +21,15 @@ interface OutlineNode extends OutlineHeading {
     children: OutlineNode[];
 }
 
-const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
+const ATX_RE = /^\s*(#{1,6})\s+(.+?)\s*$/;
+const SETEXT_H1_RE = /^===+\s*$/;
+const SETEXT_H2_RE = /^---+\s*$/;
+const TRAILING_HASHES_RE = /\s+#+\s*$/;
 
-function stripFrontmatter(content: string) {
-    const match = content.match(FRONTMATTER_RE);
-    if (!match) return content;
-    return content.slice(match[0].length);
-}
-
-function cleanHeadingTitle(raw: string) {
+function cleanHeadingTitle(raw: string): string {
     return raw
         .trim()
-        .replace(/\s+#+\s*$/g, "")
+        .replace(TRAILING_HASHES_RE, "")
         .replace(/!\[\[([^|\]]+)\|([^\]]+)\]\]/g, "$2")
         .replace(/!\[\[([^\]]+)\]\]/g, "$1")
         .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, "$2")
@@ -41,93 +38,102 @@ function cleanHeadingTitle(raw: string) {
         .replace(/!\[([^\]]*)\]\[[^\]]+\]/g, "$1")
         .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
         .replace(/\[([^\]]+)\]\[[^\]]+\]/g, "$1")
-        .replace(/<((?:https?:\/\/|mailto:)?[^>\s@]+@[^>\s]+)>/g, "$1")
-        .replace(/<(https?:\/\/[^>]+)>/g, "$1")
         .replace(/`([^`]+)`/g, "$1")
         .replace(/\[\^([^\]]+)\]/g, "")
-        .replace(/(\*\*|__)(.*?)\1/g, "$2")
-        .replace(/(\*|_)(.*?)\1/g, "$2")
+        .replace(/\*\*(.*?)\*\*/g, "$1")
+        .replace(/__(.*?)__/g, "$1")
+        .replace(/\*(.*?)\*/g, "$1")
+        .replace(/_(.*?)_/g, "$1")
         .replace(/~~(.*?)~~/g, "$1")
         .replace(/==(.*?)==/g, "$1")
-        .replace(/~([^~]+)~/g, "$1")
-        .replace(/\^([^^]+)\^/g, "$1")
-        .replace(/<\/?(?:sub|sup|kbd|br)\s*\/?>/gi, "")
-        .replace(/\\\$/g, "$")
-        .replace(/\\([\\`*_{}[\]()#+\-.!])/g, "$1")
         .replace(/\s+/g, " ")
         .trim();
 }
 
-function parseOutlineHeadings(content: string): OutlineHeading[] {
-    const body = stripFrontmatter(content);
+function splitFrontmatter(content: string): { body: string; offset: number } {
+    const match = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/);
+    if (!match) {
+        return { body: content, offset: 0 };
+    }
+
+    return {
+        body: content.slice(match[0].length),
+        offset: match[0].length,
+    };
+}
+
+function detectFence(trimmed: string): "```" | "~~~" | null {
+    if (trimmed.startsWith("```")) return "```";
+    if (trimmed.startsWith("~~~")) return "~~~";
+    return null;
+}
+
+function extractHeadings(content: string): OutlineHeading[] {
+    const { body, offset: frontmatterOffset } = splitFrontmatter(content);
+    const lines = body.split("\n");
     const headings: OutlineHeading[] = [];
-    const lines = body.split(/\r?\n/);
-    const lineBreakLength = body.includes("\r\n") ? 2 : 1;
-    let offset = 0;
-    let fencedCode: { marker: "```" | "~~~" } | null = null;
+    let offset = frontmatterOffset;
+    let fenceMarker: "```" | "~~~" | null = null;
 
-    for (let index = 0; index < lines.length; index++) {
-        const line = lines[index];
+    for (let index = 0; index < lines.length; index += 1) {
+        const rawLine = lines[index];
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
         const trimmed = line.trim();
+        const detectedFence = detectFence(trimmed);
 
-        const fenceMatch = trimmed.match(/^(```+|~~~+)/);
-        if (fenceMatch) {
-            const marker = fenceMatch[1].startsWith("`") ? "```" : "~~~";
-            if (!fencedCode) {
-                fencedCode = { marker };
-            } else if (fencedCode.marker === marker) {
-                fencedCode = null;
+        if (detectedFence) {
+            if (fenceMarker === null) {
+                fenceMarker = detectedFence;
+            } else if (fenceMarker === detectedFence) {
+                fenceMarker = null;
             }
-            offset += line.length + lineBreakLength;
+            offset += rawLine.length + 1;
             continue;
         }
 
-        if (!fencedCode) {
-            const atxMatch = line.match(/^\s*(#{1,6})\s+(.+?)\s*$/);
-            if (atxMatch) {
-                headings.push({
-                    id: `${offset}:${atxMatch[1].length}:${index}`,
-                    title: cleanHeadingTitle(atxMatch[2]),
-                    level: atxMatch[1].length,
-                    anchor: offset,
-                    head: offset + line.length,
-                });
-                offset += line.length + lineBreakLength;
-                continue;
-            }
-
-            const nextLine = lines[index + 1];
-            if (
-                trimmed &&
-                nextLine &&
-                /^===+\s*$/.test(nextLine.trim())
-            ) {
-                headings.push({
-                    id: `${offset}:1:${index}`,
-                    title: cleanHeadingTitle(trimmed),
-                    level: 1,
-                    anchor: offset,
-                    head: offset + line.length,
-                });
-            } else if (
-                trimmed &&
-                nextLine &&
-                /^---+\s*$/.test(nextLine.trim())
-            ) {
-                headings.push({
-                    id: `${offset}:2:${index}`,
-                    title: cleanHeadingTitle(trimmed),
-                    level: 2,
-                    anchor: offset,
-                    head: offset + line.length,
-                });
+        if (fenceMarker === null) {
+            const atx = ATX_RE.exec(line);
+            if (atx) {
+                const level = atx[1].length;
+                const title = cleanHeadingTitle(atx[2]);
+                if (title) {
+                    headings.push({
+                        id: `${offset}:${level}:${index}`,
+                        title,
+                        level,
+                        anchor: offset,
+                        head: offset + rawLine.length,
+                    });
+                }
+            } else if (trimmed) {
+                const nextLine = lines[index + 1] ?? "";
+                const nextTrimmed = nextLine.endsWith("\r")
+                    ? nextLine.slice(0, -1).trim()
+                    : nextLine.trim();
+                const level = SETEXT_H1_RE.test(nextTrimmed)
+                    ? 1
+                    : SETEXT_H2_RE.test(nextTrimmed)
+                      ? 2
+                      : null;
+                if (level !== null) {
+                    const title = cleanHeadingTitle(trimmed);
+                    if (title) {
+                        headings.push({
+                            id: `${offset}:${level}:${index}`,
+                            title,
+                            level,
+                            anchor: offset,
+                            head: offset + rawLine.length,
+                        });
+                    }
+                }
             }
         }
 
-        offset += line.length + lineBreakLength;
+        offset += rawLine.length + 1;
     }
 
-    return headings.filter((heading) => heading.title.length > 0);
+    return headings;
 }
 
 function buildOutlineTree(headings: OutlineHeading[]): OutlineNode[] {
@@ -234,12 +240,15 @@ export function OutlinePanel({
     content: string | null;
     onSelectHeading: (selection: OutlineSelection) => void;
 }) {
+    const deferredContent = useDeferredValue(content);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<OutlineNode> | null>(null);
-    const tree = useMemo(() => {
-        if (!content) return [];
-        return buildOutlineTree(parseOutlineHeadings(content));
-    }, [content]);
+    const headings = useMemo(
+        () => (deferredContent ? extractHeadings(deferredContent) : []),
+        [deferredContent],
+    );
+
+    const tree = useMemo(() => buildOutlineTree(headings), [headings]);
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
@@ -249,7 +258,7 @@ export function OutlinePanel({
             >
                 Outline
             </div>
-            <div className="flex-1 overflow-y-auto px-1 pb-3">
+            <div className="flex-1 overflow-y-auto pl-1 pr-2.5 pb-3">
                 {tree.length === 0 ? (
                     <div
                         className="px-3 py-2 text-xs"

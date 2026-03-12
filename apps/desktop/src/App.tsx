@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
+import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ActivityBar, type SidebarView } from "./components/layout/ActivityBar";
 import { FileTree } from "./features/vault/FileTree";
@@ -14,6 +14,8 @@ import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { Editor } from "./features/editor/Editor";
+import { NewTabView } from "./features/editor/NewTabView";
+import { SearchView } from "./features/search/SearchView";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
 import { SettingsPanel } from "./features/settings";
@@ -42,6 +44,7 @@ import {
 } from "./features/editor/youtube";
 import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
 import {
+    flushChatTabsPersistence,
     markChatTabsReady,
     readPersistedChatWorkspace,
     resetChatTabsStore,
@@ -535,6 +538,20 @@ function useGlobalShortcuts(
                 return;
             }
 
+            // Cmd+T: new tab
+            if (mod && e.key === "t") {
+                e.preventDefault();
+                if (useVaultStore.getState().vaultPath) {
+                    useEditorStore.getState().insertExternalTab({
+                        id: crypto.randomUUID(),
+                        noteId: "",
+                        title: "New Tab",
+                        content: "",
+                    });
+                }
+                return;
+            }
+
             // Cmd+E: toggle live preview
             if (mod && e.key === "e") {
                 e.preventDefault();
@@ -657,6 +674,15 @@ function useDynamicScrollbars() {
     }, []);
 }
 
+function EditorPanel() {
+    const activeNoteId = useEditorStore(
+        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
+    );
+    if (activeNoteId === "") return <NewTabView />;
+    if (activeNoteId === "__search__") return <SearchView />;
+    return <Editor />;
+}
+
 export default function App() {
     const sidebarView = useLayoutStore((s) => s.sidebarView);
     const setSidebarView = useLayoutStore((s) => s.setSidebarView);
@@ -667,13 +693,20 @@ export default function App() {
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const windowMode = getWindowMode();
+    const pendingNoteReloadsRef = useRef<
+        Map<string, ReturnType<typeof setTimeout>>
+    >(new Map());
+    const noteReloadVersionRef = useRef<Map<string, number>>(new Map());
 
     const openSearchPanel = useCallback(() => {
         useLayoutStore.getState().setSidebarView("search");
         useLayoutStore.getState().expandSidebar();
     }, []);
 
-    const openSettings = useCallback(() => void openSettingsWindow(), []);
+    const openSettings = useCallback(
+        () => void openSettingsWindow(vaultPath),
+        [vaultPath],
+    );
 
     useRegisterCommands(openSearchPanel);
     useGlobalShortcuts(openSearchPanel, openSettings);
@@ -687,16 +720,22 @@ export default function App() {
         const restoredTabs: Tab[] = [];
         for (const entry of session.noteIds) {
             try {
-                const detail = await invoke<{ content: string }>("read_note", {
-                    noteId: entry.noteId,
-                });
+                const detail = await vaultInvoke<{ content: string }>(
+                    "read_note",
+                    {
+                        noteId: entry.noteId,
+                    },
+                );
                 // Restore history entries (content only for current entry)
-                const history = (entry.history ?? [{ noteId: entry.noteId, title: entry.title }])
-                    .map((h) => ({
-                        noteId: h.noteId,
-                        title: h.title,
-                        content: "",
-                    }));
+                const history = (
+                    entry.history ?? [
+                        { noteId: entry.noteId, title: entry.title },
+                    ]
+                ).map((h) => ({
+                    noteId: h.noteId,
+                    title: h.title,
+                    content: "",
+                }));
                 const historyIndex = Math.min(
                     entry.historyIndex ?? history.length - 1,
                     history.length - 1,
@@ -785,7 +824,10 @@ export default function App() {
             const workspace = readPersistedChatWorkspace(vaultPath);
             restoreChatWorkspace(
                 workspace,
-                Object.keys(chatState.sessionsById),
+                Object.values(chatState.sessionsById).map((session) => ({
+                    sessionId: session.sessionId,
+                    historySessionId: session.historySessionId,
+                })),
                 chatState.activeSessionId,
             );
             markChatTabsReady();
@@ -794,18 +836,38 @@ export default function App() {
         return () => {
             cancelled = true;
         };
-    }, [
-        restoreChatWorkspace,
-        vaultPath,
-        windowMode,
-    ]);
+    }, [restoreChatWorkspace, vaultPath, windowMode]);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        const flush = () => {
+            flushChatTabsPersistence();
+        };
+
+        window.addEventListener("beforeunload", flush);
+        return () => {
+            window.removeEventListener("beforeunload", flush);
+        };
+    }, [windowMode]);
 
     useEffect(() => {
         if (windowMode !== "main") return;
 
         let unlisten: (() => void) | undefined;
+        const pendingNoteReloads = pendingNoteReloadsRef.current;
+        const noteReloadVersions = noteReloadVersionRef.current;
 
         void listen<VaultNoteChange>("vault://note-changed", (event) => {
+            // Only process changes for the current vault
+            const currentVaultPath = useVaultStore.getState().vaultPath;
+            if (
+                event.payload.vault_path &&
+                currentVaultPath &&
+                event.payload.vault_path !== currentVaultPath
+            )
+                return;
+
             applyVaultNoteChange(event.payload);
 
             // Reload editor content for open tabs when file changes externally
@@ -817,17 +879,40 @@ export default function App() {
                     .getState()
                     .tabs.find((t) => t.noteId === noteId);
                 if (openTab) {
-                    void invoke<{ title: string; content: string }>(
-                        "read_note",
-                        {
-                            noteId,
-                        },
-                    ).then((detail) => {
-                        useEditorStore.getState().reloadNoteContent(noteId, {
-                            title: detail.title,
-                            content: detail.content,
+                    const previousTimer =
+                        pendingNoteReloads.get(noteId) ?? null;
+                    if (previousTimer) {
+                        clearTimeout(previousTimer);
+                    }
+
+                    const nextVersion =
+                        (noteReloadVersions.get(noteId) ?? 0) + 1;
+                    noteReloadVersions.set(noteId, nextVersion);
+
+                    const timer = setTimeout(() => {
+                        pendingNoteReloads.delete(noteId);
+
+                        void vaultInvoke<{ title: string; content: string }>(
+                            "read_note",
+                            {
+                                noteId,
+                            },
+                        ).then((detail) => {
+                            if (
+                                noteReloadVersions.get(noteId) !== nextVersion
+                            ) {
+                                return;
+                            }
+                            useEditorStore
+                                .getState()
+                                .reloadNoteContent(noteId, {
+                                    title: detail.title,
+                                    content: detail.content,
+                                });
                         });
-                    });
+                    }, 180);
+
+                    pendingNoteReloads.set(noteId, timer);
                 }
             } else if (change.kind === "delete") {
                 invalidateLivePreviewNoteCache(change.note_id);
@@ -837,6 +922,11 @@ export default function App() {
         });
 
         return () => {
+            for (const timer of pendingNoteReloads.values()) {
+                clearTimeout(timer);
+            }
+            pendingNoteReloads.clear();
+            noteReloadVersions.clear();
             if (unlisten) {
                 void unlisten();
             }
@@ -889,13 +979,16 @@ export default function App() {
             <div className="relative flex-1 flex overflow-hidden">
                 <ActivityBar
                     active={sidebarView}
-                    onChange={setSidebarView}
+                    onChange={(view) => {
+                        setSidebarView(view);
+                        useLayoutStore.getState().expandSidebar();
+                    }}
                     onOpenSettings={openSettings}
                 />
                 <div className="flex-1 overflow-hidden">
                     <AppLayout
                         left={<SidebarPanel view={sidebarView} />}
-                        center={<Editor />}
+                        center={<EditorPanel />}
                         right={<RightPanel />}
                     />
                 </div>
