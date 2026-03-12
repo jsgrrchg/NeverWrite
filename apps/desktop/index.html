@@ -10,6 +10,22 @@
         <title>VaultAI</title>
     </head>
     <body>
+        <script>
+            if (
+                new URLSearchParams(location.search).get("window") === "ghost"
+            ) {
+                document.documentElement.style.setProperty(
+                    "background",
+                    "transparent",
+                    "important",
+                );
+                document.body.style.setProperty(
+                    "background",
+                    "transparent",
+                    "important",
+                );
+            }
+        </script>
         <div id="root"></div>
         <script type="module" src="/src/main.tsx"></script>
     </body>

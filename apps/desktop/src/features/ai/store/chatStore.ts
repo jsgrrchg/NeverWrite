@@ -715,6 +715,21 @@ function getDefaultRuntimeId(runtimes: AIRuntimeDescriptor[]) {
     return runtimes[0]?.runtime.id ?? null;
 }
 
+function getRuntimeConnectionPatchForSetup(
+    setupStatus: AIRuntimeSetupStatus,
+): Partial<Pick<ChatStore, "runtimeConnection">> {
+    if (setupStatus.onboardingRequired || !setupStatus.authReady) {
+        return {};
+    }
+
+    return {
+        runtimeConnection: {
+            status: "ready",
+            message: null,
+        },
+    };
+}
+
 function touchSessionOrder(sessionOrder: string[], sessionId: string) {
     if (!sessionOrder.includes(sessionId)) {
         return [sessionId, ...sessionOrder];
@@ -770,6 +785,14 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         updated_at: timestamps.length ? Math.max(...timestamps) : Date.now(),
         messages,
     };
+}
+
+function hasPersistableSessionContent(session: AIChatSession) {
+    return toPersistedHistory(session).messages.length > 0;
+}
+
+function hasPersistedHistoryContent(history: PersistedSessionHistory) {
+    return history.messages.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1007,7 @@ function flushDeltasSync() {
 async function persistSession(session: AIChatSession) {
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
+    if (!hasPersistableSessionContent(session)) return;
 
     const historyRetentionDays = useChatStore.getState().historyRetentionDays;
     try {
@@ -1083,7 +1107,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                     if (retentionDays > 0) {
                         await aiPruneSessionHistories(vaultPath, retentionDays);
                     }
-                    histories = await aiLoadSessionHistories(vaultPath);
+                    histories = (
+                        await aiLoadSessionHistories(vaultPath)
+                    ).filter(hasPersistedHistoryContent);
                     persistedBySessionId = new Map(
                         histories.map((h) => [h.session_id, h]),
                     );
@@ -1187,7 +1213,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     refreshSetupStatus: async () => {
         try {
             const setupStatus = await aiGetSetupStatus();
-            set({ setupStatus });
+            set({
+                setupStatus,
+                ...getRuntimeConnectionPatchForSetup(setupStatus),
+            });
         } catch (error) {
             set({
                 runtimeConnection: {
@@ -1204,7 +1233,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     saveSetup: async (input) => {
         try {
             const setupStatus = await aiUpdateSetup(input);
-            set({ setupStatus });
+            set({
+                setupStatus,
+                ...getRuntimeConnectionPatchForSetup(setupStatus),
+            });
 
             if (!setupStatus.onboardingRequired) {
                 const state = get();
@@ -1239,14 +1271,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                     codexApiKey: input.codexApiKey,
                     openaiApiKey: input.openaiApiKey,
                 });
-                set({ setupStatus });
+                set({
+                    setupStatus,
+                    ...getRuntimeConnectionPatchForSetup(setupStatus),
+                });
             }
 
             const setupStatus = await aiStartAuth(
                 input.methodId,
                 useVaultStore.getState().vaultPath,
             );
-            set({ setupStatus });
+            set({
+                setupStatus,
+                ...getRuntimeConnectionPatchForSetup(setupStatus),
+            });
 
             if (!setupStatus.onboardingRequired) {
                 const state = get();

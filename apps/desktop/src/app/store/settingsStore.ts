@@ -175,7 +175,9 @@ function getStorageKey(vaultPath: string | null): string {
 function migrateGlobalSettings(vaultPath: string) {
     const vaultKey = getStorageKey(vaultPath);
     if (localStorage.getItem(vaultKey)) return; // already migrated
-    const global = extractSettingsFromStorage(localStorage.getItem(SETTINGS_KEY_FALLBACK));
+    const global = extractSettingsFromStorage(
+        localStorage.getItem(SETTINGS_KEY_FALLBACK),
+    );
     if (!global) return;
     localStorage.setItem(vaultKey, JSON.stringify({ state: global }));
 }
@@ -184,6 +186,14 @@ function loadSettings(vaultPath: string | null): Settings {
     if (vaultPath) migrateGlobalSettings(vaultPath);
     const raw = localStorage.getItem(getStorageKey(vaultPath));
     return extractSettingsFromStorage(raw) ?? defaults;
+}
+
+function getEffectiveVaultPath(
+    state: ReturnType<typeof useVaultStore.getState>,
+) {
+    return (
+        state.vaultPath ?? (state.isLoading ? state.vaultOpenState.path : null)
+    );
 }
 
 function saveSettings(vaultPath: string | null, settings: Settings) {
@@ -197,7 +207,9 @@ function saveSettings(vaultPath: string | null, settings: Settings) {
 // In a settings window the vault is passed as a URL param; otherwise fall back to localStorage.
 function readInitialVaultPath(): string | null {
     try {
-        const urlVault = new URLSearchParams(window.location.search).get("vault");
+        const urlVault = new URLSearchParams(window.location.search).get(
+            "vault",
+        );
         if (urlVault) return decodeURIComponent(urlVault);
         return localStorage.getItem(LAST_VAULT_KEY);
     } catch {
@@ -238,7 +250,7 @@ if (typeof window !== "undefined") {
 
 // Reload settings when the active vault changes
 useVaultStore.subscribe((state) => {
-    const newVaultPath = state.vaultPath;
+    const newVaultPath = getEffectiveVaultPath(state);
     if (newVaultPath === _currentVaultPath) return;
     _currentVaultPath = newVaultPath;
     useSettingsStore.setState(loadSettings(newVaultPath));

@@ -32,10 +32,16 @@ interface UseTabDragReorderOptions {
     tabs: Tab[];
     onCommitReorder: (fromIndex: number, toIndex: number) => void;
     shouldDetach?: (clientX: number, clientY: number) => boolean;
-    onDetach?: (
+    onDetachStart?: (
         tabId: string,
         coords: { screenX: number; screenY: number },
     ) => Promise<void> | void;
+    onDetachMove?: (coords: { screenX: number; screenY: number }) => void;
+    onDetachEnd?: (
+        tabId: string,
+        coords: { screenX: number; screenY: number },
+    ) => Promise<void> | void;
+    onDetachCancel?: () => void;
 }
 
 function arraysEqual(left: string[], right: string[]) {
@@ -49,7 +55,10 @@ export function useTabDragReorder({
     tabs,
     onCommitReorder,
     shouldDetach,
-    onDetach,
+    onDetachStart,
+    onDetachMove,
+    onDetachEnd,
+    onDetachCancel,
 }: UseTabDragReorderOptions) {
     const tabStripRef = useRef<HTMLDivElement>(null);
     const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -57,7 +66,14 @@ export function useTabDragReorder({
     const previewOrderRef = useRef<string[] | null>(null);
     const previousPositionsRef = useRef<Record<string, number>>({});
     const suppressClickRef = useRef<string | null>(null);
-    const detachInProgressRef = useRef(false);
+    const detachActiveRef = useRef(false);
+    const detachCleanupRef = useRef<(() => void) | null>(null);
+    const handlePointerUpRef = useRef<
+        (
+            pointerId?: number,
+            screenCoords?: { screenX: number; screenY: number },
+        ) => void
+    >(() => {});
     const latestPointerXRef = useRef(0);
     const edgeScrollDirectionRef = useRef(-1 as -1 | 0 | 1);
     const edgeScrollFrameRef = useRef<number | null>(null);
@@ -212,10 +228,11 @@ export function useTabDragReorder({
             }
 
             if (edgeScrollFrameRef.current === null) {
-                edgeScrollFrameRef.current =
-                    window.requestAnimationFrame(() => {
+                edgeScrollFrameRef.current = window.requestAnimationFrame(
+                    () => {
                         runEdgeScrollRef.current();
-                    });
+                    },
+                );
             }
         },
         [stopEdgeScroll],
@@ -241,6 +258,7 @@ export function useTabDragReorder({
             }
 
             stopEdgeScroll();
+            detachCleanupRef.current?.();
             document.body.classList.remove("dragging-tab");
             setDetachPreviewActive(false);
 
@@ -259,6 +277,7 @@ export function useTabDragReorder({
                 }
             }
 
+            detachActiveRef.current = false;
             sessionRef.current = null;
             previewOrderRef.current = null;
             domShiftRef.current = 0;
@@ -361,6 +380,8 @@ export function useTabDragReorder({
                 if (tabNode) tabWidths[tab.id] = tabNode.offsetWidth;
             }
 
+            detachActiveRef.current = false;
+            detachCleanupRef.current?.();
             domShiftRef.current = 0;
             sessionRef.current = {
                 pointerId: event.pointerId,
@@ -412,7 +433,30 @@ export function useTabDragReorder({
 
             const wantsDetach = shouldDetach?.(event.clientX, event.clientY);
 
-            if (wantsDetach && onDetach && !detachInProgressRef.current) {
+            // Already in ghost mode — check if button was released (missed pointerup)
+            if (wantsDetach && detachActiveRef.current) {
+                if (event.buttons === 0) {
+                    const tid = session.tabId;
+                    const coords = {
+                        screenX: event.screenX,
+                        screenY: event.screenY,
+                    };
+                    finishDrag(event.pointerId, {
+                        commit: false,
+                        suppressClick: true,
+                    });
+                    void onDetachEnd?.(tid, coords);
+                    return;
+                }
+                onDetachMove?.({
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                });
+                return;
+            }
+
+            // Pointer wants to detach — arm hysteresis
+            if (wantsDetach && onDetachStart) {
                 if (session.detachArmedAt === null) {
                     session.detachArmedAt = window.performance.now();
                 }
@@ -430,20 +474,43 @@ export function useTabDragReorder({
                     return;
                 }
 
-                detachInProgressRef.current = true;
-                finishDrag(event.pointerId, {
-                    commit: false,
-                    suppressClick: true,
-                });
+                // Hysteresis passed — enter ghost mode (keep pointer capture)
+                detachActiveRef.current = true;
 
-                void Promise.resolve(
-                    onDetach(tabId, {
-                        screenX: event.screenX,
-                        screenY: event.screenY,
-                    }),
-                ).finally(() => {
-                    detachInProgressRef.current = false;
+                // Install document-level pointerup as fallback (WebKit may not
+                // deliver pointerup to captured elements outside the window).
+                const onDocPointerUp = (e: PointerEvent) => {
+                    if (e.pointerId !== session.pointerId) return;
+                    cleanup();
+                    handlePointerUpRef.current(e.pointerId, {
+                        screenX: e.screenX,
+                        screenY: e.screenY,
+                    });
+                };
+                const cleanup = () => {
+                    document.removeEventListener("pointerup", onDocPointerUp);
+                    detachCleanupRef.current = null;
+                };
+                detachCleanupRef.current = cleanup;
+                document.addEventListener("pointerup", onDocPointerUp);
+
+                void onDetachStart(tabId, {
+                    screenX: event.screenX,
+                    screenY: event.screenY,
                 });
+                return;
+            }
+
+            // Pointer returned to window while ghost was active — cancel ghost
+            if (!wantsDetach && detachActiveRef.current) {
+                detachActiveRef.current = false;
+                detachCleanupRef.current?.();
+                onDetachCancel?.();
+                setDetachPreviewActive(false);
+                session.detachArmedAt = null;
+                // Resume normal drag
+                syncDraggedTab(event.clientX);
+                updateEdgeScroll(event.clientX);
                 return;
             }
 
@@ -461,7 +528,10 @@ export function useTabDragReorder({
             computeDragOffset,
             detachPreviewActive,
             finishDrag,
-            onDetach,
+            onDetachCancel,
+            onDetachEnd,
+            onDetachMove,
+            onDetachStart,
             shouldDetach,
             syncDraggedTab,
             stopEdgeScroll,
@@ -471,11 +541,32 @@ export function useTabDragReorder({
     );
 
     const handlePointerUp = useCallback(
-        (pointerId?: number) => {
+        (
+            pointerId?: number,
+            screenCoords?: { screenX: number; screenY: number },
+        ) => {
+            detachCleanupRef.current?.();
+
+            const session = sessionRef.current;
+
+            if (detachActiveRef.current && session && screenCoords) {
+                const tabId = session.tabId;
+                finishDrag(pointerId, {
+                    commit: false,
+                    suppressClick: true,
+                });
+                void onDetachEnd?.(tabId, screenCoords);
+                return;
+            }
+
             finishDrag(pointerId);
         },
-        [finishDrag],
+        [finishDrag, onDetachEnd],
     );
+
+    useEffect(() => {
+        handlePointerUpRef.current = handlePointerUp;
+    }, [handlePointerUp]);
 
     const handleLostPointerCapture = useCallback(
         (pointerId: number) => {
