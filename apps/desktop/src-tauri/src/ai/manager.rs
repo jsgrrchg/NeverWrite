@@ -35,7 +35,7 @@ pub struct AiAttachmentInput {
 fn build_prompt_with_attachments(
     content: &str,
     attachments: &[AiAttachmentInput],
-    _vault_root: Option<&std::path::Path>,
+    vault_root: Option<&std::path::Path>,
 ) -> String {
     let mut context_parts: Vec<String> = Vec::new();
     for attachment in attachments {
@@ -78,29 +78,28 @@ fn build_prompt_with_attachments(
                     .mime_type
                     .as_deref()
                     .unwrap_or("application/octet-stream");
-                let extracted = if mime.starts_with("text/") || mime == "application/json" {
-                    std::fs::read_to_string(fp).unwrap_or_default()
-                } else if mime == "application/pdf" {
-                    match std::fs::read(fp) {
-                        Ok(bytes) => match pdf_extract::extract_text_from_mem_by_pages(&bytes) {
-                            Ok(pages) if !pages.is_empty() => pages
-                                .iter()
-                                .enumerate()
-                                .map(|(i, text)| format!("--- Page {} ---\n{}", i + 1, text.trim()))
-                                .collect::<Vec<_>>()
-                                .join("\n\n"),
-                            _ => format!("[PDF: could not extract text, {} bytes]", bytes.len()),
-                        },
-                        Err(_) => "[PDF: could not read file]".to_string(),
-                    }
+                if mime == "application/pdf" {
+                    let rel_path = vault_root
+                        .and_then(|root| std::path::Path::new(fp).strip_prefix(root).ok())
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| fp.to_string());
+                    context_parts.push(format!(
+                        "<attached_pdf name=\"{}\" path=\"{}\" />",
+                        attachment.label, rel_path
+                    ));
+                } else if mime.starts_with("text/") || mime == "application/json" {
+                    let text = std::fs::read_to_string(fp).unwrap_or_default();
+                    context_parts.push(format!(
+                        "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
+                        attachment.label, mime, text
+                    ));
                 } else {
                     let size = std::fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
-                    format!("[Binary file: {} bytes, type: {}]", size, mime)
-                };
-                context_parts.push(format!(
-                    "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
-                    attachment.label, mime, extracted
-                ));
+                    context_parts.push(format!(
+                        "<attached_file name=\"{}\" type=\"{}\">\n[Binary file: {} bytes]\n</attached_file>",
+                        attachment.label, mime, size
+                    ));
+                }
             }
         } else if let Some(path) = &attachment.path {
             if let Ok(file_content) = std::fs::read_to_string(path) {

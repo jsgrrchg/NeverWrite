@@ -1,7 +1,16 @@
+import { useState, type MouseEvent } from "react";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../../components/context-menu/ContextMenu";
 import type { AIAttachmentStatus, AIAttachmentType } from "../types";
+import { openChatNoteById } from "./chatNoteNavigation";
+import { truncatePillLabel } from "./chatPillMetrics";
+import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
 
 interface ContextBarAttachment {
     id: string;
+    noteId?: string | null;
     label: string;
     path: string | null;
     removable?: boolean;
@@ -16,8 +25,20 @@ interface AIChatContextBarProps {
     onClearAll?: () => void;
 }
 
+interface AttachmentContextMenuPayload {
+    attachmentId: string;
+    noteId: string;
+}
+
 function normalizeAttachmentLabel(label: string) {
     return label.replace(/^📁\s*/u, "");
+}
+
+function getAttachmentVariant(type?: AIAttachmentType): ChatPillVariant {
+    if (type === "folder") return "folder";
+    if (type === "file") return "file";
+    if (type === "audio") return "neutral";
+    return "accent";
 }
 
 function AttachmentIcon({ type }: { type?: AIAttachmentType }) {
@@ -67,6 +88,22 @@ function AttachmentIcon({ type }: { type?: AIAttachmentType }) {
                 strokeLinejoin="round"
             >
                 <path d="M2 4v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H8L6.5 2.5A1 1 0 0 0 5.8 2H4a2 2 0 0 0-2 2Z" />
+            </svg>
+        );
+    }
+    if (type === "selection") {
+        return (
+            <svg
+                width="11"
+                height="11"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M3 4h10M3 8h10M3 12h6" />
             </svg>
         );
     }
@@ -121,6 +158,8 @@ export function AIChatContextBar({
     onRemoveAttachment,
     onClearAll,
 }: AIChatContextBarProps) {
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<AttachmentContextMenuPayload> | null>(null);
     if (attachments.length === 0) return null;
 
     const removableCount = attachments.filter(
@@ -134,23 +173,48 @@ export function AIChatContextBar({
                 const showIcon =
                     attachment.type === "audio" ||
                     attachment.type === "file" ||
-                    attachment.type === "folder";
+                    attachment.type === "folder" ||
+                    attachment.type === "selection";
+                const palette =
+                    CHAT_PILL_VARIANTS[getAttachmentVariant(attachment.type)];
+                const isError = attachment.status === "error";
+                const foregroundColor = isError ? "#ef4444" : palette.color;
                 return (
                     <div
                         key={attachment.id}
                         className="flex items-center gap-1 rounded-md py-0.5 pl-2 pr-1"
                         style={{
-                            backgroundColor:
-                                attachment.status === "error"
-                                    ? "color-mix(in srgb, #ef4444 12%, transparent)"
-                                    : "color-mix(in srgb, var(--bg-tertiary) 50%, transparent)",
+                            backgroundColor: isError
+                                ? "color-mix(in srgb, #ef4444 12%, transparent)"
+                                : palette.background,
+                        }}
+                        onContextMenu={(event: MouseEvent<HTMLDivElement>) => {
+                            if (
+                                !attachment.noteId ||
+                                (attachment.type !== "note" &&
+                                    attachment.type !== "current_note" &&
+                                    attachment.type !== "selection")
+                            ) {
+                                return;
+                            }
+
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                payload: {
+                                    attachmentId: attachment.id,
+                                    noteId: attachment.noteId,
+                                },
+                            });
                         }}
                     >
                         {showIcon && (
                             <span
                                 style={{
-                                    color: "var(--text-secondary)",
-                                    opacity: 0.7,
+                                    color: foregroundColor,
+                                    opacity: isError ? 1 : 0.8,
                                     display: "flex",
                                 }}
                             >
@@ -159,14 +223,14 @@ export function AIChatContextBar({
                         )}
                         <span
                             className="max-w-[150px] truncate text-xs"
-                            style={{ color: "var(--text-secondary)" }}
+                            style={{ color: foregroundColor }}
                             title={
                                 attachment.errorMessage ??
                                 attachment.path ??
                                 displayLabel
                             }
                         >
-                            {displayLabel}
+                            {truncatePillLabel(displayLabel)}
                         </span>
                         <StatusIndicator
                             status={attachment.status}
@@ -177,7 +241,7 @@ export function AIChatContextBar({
                             onClick={() => onRemoveAttachment(attachment.id)}
                             className="flex items-center justify-center rounded p-0.5 text-xs"
                             style={{
-                                color: "var(--text-secondary)",
+                                color: foregroundColor,
                                 backgroundColor: "transparent",
                                 border: "none",
                                 opacity: 0.6,
@@ -207,6 +271,23 @@ export function AIChatContextBar({
                     Clear all
                 </button>
             )}
+            {contextMenu ? (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open in New Tab",
+                            action: () => {
+                                void openChatNoteById(
+                                    contextMenu.payload.noteId,
+                                    { newTab: true },
+                                );
+                            },
+                        },
+                    ]}
+                />
+            ) : null}
         </div>
     );
 }

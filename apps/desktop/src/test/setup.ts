@@ -63,6 +63,7 @@ vi.mock("@tauri-apps/api/dpi", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
+    confirm: vi.fn().mockResolvedValue(true),
     open: vi.fn(),
 }));
 
@@ -187,6 +188,7 @@ Object.defineProperty(Range.prototype, "getClientRects", {
 });
 
 let useEditorStore: typeof import("../app/store/editorStore").useEditorStore;
+let useSettingsStore: typeof import("../app/store/settingsStore").useSettingsStore;
 let useThemeStore: typeof import("../app/store/themeStore").useThemeStore;
 let useVaultStore: typeof import("../app/store/vaultStore").useVaultStore;
 let useCommandStore: typeof import("../features/command-palette/store/commandStore").useCommandStore;
@@ -233,6 +235,7 @@ beforeEach(async () => {
     });
 
     ({ useEditorStore } = await import("../app/store/editorStore"));
+    ({ useSettingsStore } = await import("../app/store/settingsStore"));
     ({ useThemeStore } = await import("../app/store/themeStore"));
     ({ useVaultStore } = await import("../app/store/vaultStore"));
     ({ useCommandStore } =
@@ -252,9 +255,12 @@ beforeEach(async () => {
         isDark: false,
     });
 
+    useSettingsStore.getState().reset();
+
     useVaultStore.setState({
         vaultPath: null,
         notes: [],
+        entries: [],
         vaultRevision: 0,
         contentRevision: 0,
         structureRevision: 0,

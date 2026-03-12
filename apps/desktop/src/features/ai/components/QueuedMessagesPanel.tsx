@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { QueuedChatMessage } from "../types";
 
 interface QueuedMessagesPanelProps {
@@ -25,6 +26,26 @@ function getStatusColor(status: QueuedChatMessage["status"]) {
     return "#8b5cf6";
 }
 
+function getSecondaryActionButtonStyle(kind: "edit" | "delete") {
+    if (kind === "delete") {
+        return {
+            color: "color-mix(in srgb, var(--text-primary) 76%, #b91c1c)",
+            backgroundColor:
+                "color-mix(in srgb, #ef4444 10%, var(--bg-secondary))",
+            border:
+                "1px solid color-mix(in srgb, #ef4444 32%, var(--border))",
+        };
+    }
+
+    return {
+        color: "color-mix(in srgb, var(--text-primary) 82%, var(--accent) 18%)",
+        backgroundColor:
+            "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))",
+        border:
+            "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
+    };
+}
+
 export function QueuedMessagesPanel({
     items,
     editingItem = null,
@@ -34,6 +55,12 @@ export function QueuedMessagesPanel({
     onSendNow,
     onCancelEdit,
 }: QueuedMessagesPanelProps) {
+    const [collapsed, setCollapsed] = useState(false);
+
+    useEffect(() => {
+        if (editingItem) setCollapsed(false);
+    }, [editingItem]);
+
     if (items.length === 0 && !editingItem) return null;
 
     return (
@@ -47,10 +74,10 @@ export function QueuedMessagesPanel({
         >
             {items.length > 0 && (
                 <div
-                    className="flex items-center justify-between gap-3 px-3 py-2"
+                    className="flex items-center justify-between gap-2.5 px-2.5 py-1.5"
                     style={{
                         borderBottom:
-                            editingItem || items.length > 0
+                            !collapsed && (editingItem || items.length > 0)
                                 ? "1px solid color-mix(in srgb, var(--border) 80%, transparent)"
                                 : "none",
                     }}
@@ -61,24 +88,43 @@ export function QueuedMessagesPanel({
                     >
                         {getQueueTitle(items.length)}
                     </div>
-                    <button
-                        type="button"
-                        onClick={onClearAll}
-                        className="rounded-md px-2 py-1 text-xs"
-                        style={{
-                            color: "var(--text-secondary)",
-                            backgroundColor: "transparent",
-                            border: "none",
-                        }}
-                    >
-                        Clear All
-                    </button>
+                    <div className="flex items-center gap-1">
+                        <button
+                            type="button"
+                            onClick={() => setCollapsed((value) => !value)}
+                            className="rounded-md px-1.5 py-0.5 text-xs"
+                            style={{
+                                color: "var(--text-secondary)",
+                                backgroundColor:
+                                    "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
+                                border:
+                                    "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                                fontWeight: 500,
+                            }}
+                            aria-label={collapsed ? "Expand queue" : "Collapse queue"}
+                            aria-expanded={!collapsed}
+                        >
+                            {collapsed ? "▸" : "▾"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onClearAll}
+                            className="rounded-md px-1.5 py-0.5 text-xs"
+                            style={{
+                                color: "var(--text-secondary)",
+                                backgroundColor: "transparent",
+                                border: "none",
+                            }}
+                        >
+                            Clear All
+                        </button>
+                    </div>
                 </div>
             )}
 
-            {editingItem && (
+            {!collapsed && editingItem && (
                 <div
-                    className="flex items-center justify-between gap-3 px-3 py-2"
+                    className="flex items-center justify-between gap-2.5 px-2.5 py-1.5"
                     style={{
                         borderBottom:
                             items.length > 0
@@ -107,7 +153,7 @@ export function QueuedMessagesPanel({
                     <button
                         type="button"
                         onClick={onCancelEdit}
-                        className="shrink-0 rounded-md px-2 py-1 text-xs"
+                        className="shrink-0 rounded-md px-1.5 py-0.5 text-xs"
                         style={{
                             color: "var(--text-secondary)",
                             backgroundColor: "transparent",
@@ -119,95 +165,95 @@ export function QueuedMessagesPanel({
                 </div>
             )}
 
-            <div className="flex flex-col">
-                {items.map((item, index) => {
-                    const sending = item.status === "sending";
-                    const failed = item.status === "failed";
+            {!collapsed && (
+                <div className="flex flex-col">
+                    {items.map((item, index) => {
+                        const sending = item.status === "sending";
+                        const failed = item.status === "failed";
 
-                    return (
-                        <div
-                            key={item.id}
-                            className="flex items-center gap-3 px-3 py-2"
-                            style={{
-                                borderTop:
-                                    index === 0 && !editingItem
-                                        ? "none"
-                                        : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                            }}
-                        >
-                            <span
-                                aria-hidden="true"
-                                className="h-2 w-2 shrink-0 rounded-full"
+                        return (
+                            <div
+                                key={item.id}
+                                className="flex items-center gap-2.5 px-2.5 py-1.5"
                                 style={{
-                                    backgroundColor: getStatusColor(item.status),
-                                    opacity: sending ? 1 : 0.9,
+                                    borderTop:
+                                        index === 0 && !editingItem
+                                            ? "none"
+                                            : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
                                 }}
-                            />
-                            <div className="min-w-0 flex-1">
-                                <div
-                                    className="truncate text-sm"
-                                    style={{ color: "var(--text-primary)" }}
-                                    title={item.content}
-                                >
-                                    {summarizeContent(item.content)}
-                                </div>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1">
-                                <button
-                                    type="button"
-                                    onClick={() => onCancel(item.id)}
-                                    className="rounded-md px-2 py-1 text-xs"
+                            >
+                                <span
+                                    aria-hidden="true"
+                                    className="h-1.5 w-1.5 shrink-0 rounded-full"
                                     style={{
-                                        color: "var(--text-secondary)",
-                                        backgroundColor: "transparent",
-                                        border: "none",
-                                        opacity: sending ? 0.45 : 1,
+                                        backgroundColor: getStatusColor(item.status),
+                                        opacity: sending ? 1 : 0.9,
                                     }}
-                                    disabled={sending}
-                                    aria-label={`Delete ${summarizeContent(item.content)}`}
-                                >
-                                    Delete
-                                </button>
-                                {!sending && (
+                                />
+                                <div className="min-w-0 flex-1">
+                                    <div
+                                        className="truncate text-sm"
+                                        style={{ color: "var(--text-primary)" }}
+                                        title={item.content}
+                                    >
+                                        {summarizeContent(item.content)}
+                                    </div>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-0.5">
                                     <button
                                         type="button"
-                                        onClick={() => onEdit(item.id)}
-                                        className="rounded-md px-2 py-1 text-xs"
+                                        onClick={() => onCancel(item.id)}
+                                        className="rounded-md px-1.5 py-0.5 text-xs"
                                         style={{
-                                            color: "var(--text-secondary)",
-                                            backgroundColor: "transparent",
-                                            border: "none",
+                                            ...getSecondaryActionButtonStyle("delete"),
+                                            fontWeight: 500,
+                                            opacity: sending ? 0.45 : 1,
                                         }}
-                                        aria-label={`Edit ${summarizeContent(item.content)}`}
+                                        disabled={sending}
+                                        aria-label={`Delete ${summarizeContent(item.content)}`}
                                     >
-                                        Edit
+                                        Delete
                                     </button>
-                                )}
-                                <button
-                                    type="button"
-                                    onClick={() => onSendNow(item.id)}
-                                    className="rounded-md px-2.5 py-1 text-xs"
-                                    style={{
-                                        color: failed
-                                            ? "#ef4444"
-                                            : "var(--accent)",
-                                        backgroundColor:
-                                            "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
-                                        border:
-                                            failed
-                                                ? "1px solid color-mix(in srgb, #ef4444 45%, var(--border))"
-                                                : "1px solid color-mix(in srgb, var(--accent) 55%, var(--border))",
-                                        opacity: sending ? 0.45 : 1,
-                                    }}
-                                    disabled={sending}
-                                >
-                                    Send Now
-                                </button>
+                                    {!sending && (
+                                        <button
+                                            type="button"
+                                            onClick={() => onEdit(item.id)}
+                                            className="rounded-md px-1.5 py-0.5 text-xs"
+                                            style={{
+                                                ...getSecondaryActionButtonStyle("edit"),
+                                                fontWeight: 500,
+                                            }}
+                                            aria-label={`Edit ${summarizeContent(item.content)}`}
+                                        >
+                                            Edit
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => onSendNow(item.id)}
+                                        className="rounded-md px-2 py-0.5 text-xs"
+                                        style={{
+                                            color: failed
+                                                ? "#ef4444"
+                                                : "var(--accent)",
+                                            backgroundColor:
+                                                "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
+                                            border:
+                                                failed
+                                                    ? "1px solid color-mix(in srgb, #ef4444 45%, var(--border))"
+                                                    : "1px solid color-mix(in srgb, var(--accent) 55%, var(--border))",
+                                            opacity: sending ? 0.45 : 1,
+                                        }}
+                                        disabled={sending}
+                                    >
+                                        Send Now
+                                    </button>
+                                </div>
                             </div>
-                        </div>
-                    );
-                })}
-            </div>
+                        );
+                    })}
+                </div>
+            )}
         </div>
     );
 }

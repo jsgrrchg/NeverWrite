@@ -25,6 +25,32 @@ function makeTab(overrides: {
     };
 }
 
+function makeFileTab(overrides: {
+    id: string;
+    relativePath: string;
+    title: string;
+    path: string;
+    content: string;
+    mimeType: string | null;
+    viewer: "text" | "image";
+}) {
+    return {
+        ...overrides,
+        kind: "file" as const,
+        history: [
+            {
+                relativePath: overrides.relativePath,
+                title: overrides.title,
+                path: overrides.path,
+                content: overrides.content,
+                mimeType: overrides.mimeType,
+                viewer: overrides.viewer,
+            },
+        ],
+        historyIndex: 0,
+    };
+}
+
 beforeEach(() => {
     useEditorStore.setState({
         tabs: [],
@@ -87,6 +113,36 @@ describe("editorStore session persistence", () => {
             viewMode: "continuous",
         });
         expect(session?.activePdfEntryId).toBe("reports/q1");
+    });
+
+    it("persists file viewer mode per vault path", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/assets-2026" });
+
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "file-tab-1",
+                    kind: "file",
+                    relativePath: "assets/cover.avif",
+                    title: "cover.avif",
+                    path: "/vaults/assets-2026/assets/cover.avif",
+                    mimeType: "image/avif",
+                    viewer: "image",
+                    content: "",
+                },
+            ],
+            activeTabId: "file-tab-1",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const session = readPersistedSession("/vaults/assets-2026");
+        expect(session?.fileTabs?.[0]).toMatchObject({
+            relativePath: "assets/cover.avif",
+            viewer: "image",
+        });
+        expect(session?.activeFilePath).toBe("assets/cover.avif");
     });
 
     it("falls back to the legacy global session key when needed", () => {
@@ -318,6 +374,75 @@ describe("editorStore navigation history", () => {
         useEditorStore.getState().goBack();
         const tab = useEditorStore.getState().tabs[0];
         expect(tab.content).toBe("edited");
+    });
+
+    it("openFile navigates within the active file tab instead of creating a new one", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeFileTab({
+                    id: "file-tab-a",
+                    relativePath: "src/alpha.ts",
+                    title: "alpha.ts",
+                    path: "/vault/src/alpha.ts",
+                    content: "alpha",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                }),
+            ],
+            activeTabId: "file-tab-a",
+        });
+
+        useEditorStore.getState().openFile(
+            "src/beta.ts",
+            "beta.ts",
+            "/vault/src/beta.ts",
+            "beta",
+            "text/typescript",
+            "text",
+        );
+
+        const tab = useEditorStore.getState().tabs[0];
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+        expect(tab.id).toBe("file-tab-a");
+        expect(tab).toMatchObject({
+            relativePath: "src/beta.ts",
+            content: "beta",
+            historyIndex: 1,
+        });
+    });
+
+    it("goBack restores the previous file in file-tab history", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeFileTab({
+                    id: "file-tab-a",
+                    relativePath: "src/alpha.ts",
+                    title: "alpha.ts",
+                    path: "/vault/src/alpha.ts",
+                    content: "alpha",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                }),
+            ],
+            activeTabId: "file-tab-a",
+        });
+
+        useEditorStore.getState().openFile(
+            "src/beta.ts",
+            "beta.ts",
+            "/vault/src/beta.ts",
+            "beta",
+            "text/typescript",
+            "text",
+        );
+        useEditorStore.getState().goBack();
+
+        const tab = useEditorStore.getState().tabs[0];
+        expect(tab).toMatchObject({
+            relativePath: "src/alpha.ts",
+            content: "alpha",
+            historyIndex: 0,
+        });
     });
 });
 

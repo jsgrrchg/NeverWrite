@@ -2,6 +2,7 @@ import { act, screen } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { Editor } from "./Editor";
 import {
     flushPromises,
@@ -21,6 +22,30 @@ function getEditorView() {
 }
 
 describe("Editor", () => {
+    it("shows line numbers when live preview is disabled", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "First line\nSecond line",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        expect(document.querySelector(".cm-lineNumbers")).toBeNull();
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        });
+
+        expect(document.querySelector(".cm-lineNumbers")).not.toBeNull();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "false",
+        );
+    });
+
     it("hides the selection layer when the selection collapses", async () => {
         setEditorTabs([
             {

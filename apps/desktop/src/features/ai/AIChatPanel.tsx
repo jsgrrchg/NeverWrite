@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -22,9 +22,11 @@ import {
     whisperGetStatus,
     whisperTranscribe,
 } from "./api";
+import { buildSelectionLabel } from "./types";
 import { AIChatAgentControls } from "./components/AIChatAgentControls";
 import { AIChatComposer } from "./components/AIChatComposer";
 import { AIChatContextBar } from "./components/AIChatContextBar";
+import { EditedFilesBufferPanel } from "./components/EditedFilesBufferPanel";
 import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
 import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
@@ -291,7 +293,11 @@ export function AIChatPanel() {
         (state) => state.requireCmdEnterToSend,
     );
     const composerFontSize = useChatStore((state) => state.composerFontSize);
+    const composerFontFamily = useChatStore(
+        (state) => state.composerFontFamily,
+    );
     const chatFontSize = useChatStore((state) => state.chatFontSize);
+    const chatFontFamily = useChatStore((state) => state.chatFontFamily);
     const tabs = useChatTabsStore((state) => state.tabs);
     const activeTabId = useChatTabsStore((state) => state.activeTabId);
     const tabsReady = useChatTabsStore((state) => state.isReady);
@@ -306,11 +312,12 @@ export function AIChatPanel() {
     const notes = useVaultStore((state) => state.notes);
     const createNote = useVaultStore((state) => state.createNote);
     const openNote = useEditorStore((state) => state.openNote);
-    const activeEditorNoteId = useEditorStore(
-        (state) =>
-            state.tabs.find((tab) => tab.id === state.activeTabId)?.noteId ??
-            null,
-    );
+    const activeEditorNoteId = useEditorStore((state) => {
+        const tab = state.tabs.find(
+            (candidate) => candidate.id === state.activeTabId,
+        );
+        return tab && isNoteTab(tab) ? tab.noteId : null;
+    });
     const currentSelection = useEditorStore((state) => state.currentSelection);
     const activeTab = activeTabId
         ? (tabs.find((tab) => tab.id === activeTabId) ?? null)
@@ -370,7 +377,11 @@ export function AIChatPanel() {
               )
                   ? {
                         id: `auto:selection:${currentSelection.noteId}`,
-                        label: `${activeNote.title} selection`,
+                        label: buildSelectionLabel(
+                            currentSelection.text,
+                            currentSelection.startLine,
+                            currentSelection.endLine,
+                        ),
                         path: activeNote.path,
                         removable: false,
                     }
@@ -646,7 +657,11 @@ export function AIChatPanel() {
                     <AIChatMessageList
                         messages={currentSession?.messages ?? []}
                         status={currentSession?.status ?? "idle"}
+                        visibleWorkCycleId={
+                            currentSession?.visibleWorkCycleId ?? null
+                        }
                         chatFontSize={chatFontSize}
+                        chatFontFamily={chatFontFamily}
                         onPermissionResponse={(requestId, optionId) => {
                             void chatActions.respondPermission(
                                 requestId,
@@ -661,6 +676,7 @@ export function AIChatPanel() {
                         }}
                     />
                 ))}
+            <EditedFilesBufferPanel />
             <div
                 className={
                     composerExpanded
@@ -710,6 +726,7 @@ export function AIChatPanel() {
                     hasActiveNote={activeNote !== null}
                     requireCmdEnterToSend={requireCmdEnterToSend}
                     composerFontSize={composerFontSize}
+                    composerFontFamily={composerFontFamily}
                     onToggleAutoContext={toggleAutoContext}
                     expanded={composerExpanded}
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
@@ -739,6 +756,7 @@ export function AIChatPanel() {
                                     )
                                     .map((attachment) => ({
                                         id: attachment.id,
+                                        noteId: attachment.noteId,
                                         label: attachment.label,
                                         path: attachment.path,
                                         removable: true,

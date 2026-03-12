@@ -1,39 +1,16 @@
-import type { CSSProperties } from "react";
-import type { ChatPillMetrics } from "./chatPillMetrics";
+import type { CSSProperties, MouseEventHandler } from "react";
+import { truncatePillLabel, type ChatPillMetrics } from "./chatPillMetrics";
+import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
 
 interface ChatInlinePillProps {
     label: string;
     metrics: ChatPillMetrics;
     title?: string;
     interactive?: boolean;
-    variant?: "accent" | "success" | "neutral" | "folder" | "file";
+    variant?: ChatPillVariant;
     onClick?: () => void;
+    onContextMenu?: MouseEventHandler<HTMLElement>;
 }
-
-const PILL_VARIANTS = {
-    accent: {
-        background: "color-mix(in srgb, var(--accent) 15%, transparent)",
-        color: "var(--accent)",
-    },
-    success: {
-        background: "color-mix(in srgb, #10b981 15%, transparent)",
-        color: "#10b981",
-    },
-    neutral: {
-        background: "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
-        color: "var(--text-secondary)",
-    },
-    folder: {
-        background:
-            "color-mix(in srgb, var(--text-secondary) 12%, var(--bg-tertiary))",
-        color:
-            "color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary))",
-    },
-    file: {
-        background: "color-mix(in srgb, #d97706 12%, transparent)",
-        color: "#d97706",
-    },
-} as const;
 
 export function ChatInlinePill({
     label,
@@ -42,8 +19,9 @@ export function ChatInlinePill({
     interactive = false,
     variant = "accent",
     onClick,
+    onContextMenu,
 }: ChatInlinePillProps) {
-    const palette = PILL_VARIANTS[variant];
+    const palette = CHAT_PILL_VARIANTS[variant];
     const clickable = interactive || typeof onClick === "function";
     const style: CSSProperties = {
         display: "inline-flex",
@@ -75,20 +53,30 @@ export function ChatInlinePill({
                 whiteSpace: "nowrap",
             }}
         >
-            {label}
+            {truncatePillLabel(label)}
         </span>
     );
 
     if (clickable) {
         return (
-            <button type="button" onClick={onClick} style={style} title={title}>
+            <button
+                type="button"
+                onClick={onClick}
+                onContextMenu={onContextMenu}
+                style={style}
+                title={title ?? label}
+            >
                 {content}
             </button>
         );
     }
 
     return (
-        <span style={style} title={title}>
+        <span
+            style={style}
+            title={title ?? label}
+            onContextMenu={onContextMenu}
+        >
             {content}
         </span>
     );

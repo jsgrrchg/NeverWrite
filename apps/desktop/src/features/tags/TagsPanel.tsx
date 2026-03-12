@@ -1,7 +1,11 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useVaultStore } from "../../app/store/vaultStore";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -125,7 +129,9 @@ export function TagsPanel() {
         const note = noteMap.get(noteId);
         if (!note) return;
         const { tabs: currentTabs } = useEditorStore.getState();
-        const existing = currentTabs.find((t) => t.noteId === noteId);
+        const existing = currentTabs.find(
+            (t): t is NoteTab => isNoteTab(t) && t.noteId === noteId,
+        );
         if (existing) {
             openNote(note.id, note.title, existing.content);
             return;
@@ -145,7 +151,10 @@ export function TagsPanel() {
         if (!note) return;
         try {
             const currentTabs = useEditorStore.getState().tabs;
-            const existing = currentTabs.find((tab) => tab.noteId === noteId);
+            const existing = currentTabs.find(
+                (tab): tab is NoteTab =>
+                    isNoteTab(tab) && tab.noteId === noteId,
+            );
             const content =
                 existing?.content ??
                 (

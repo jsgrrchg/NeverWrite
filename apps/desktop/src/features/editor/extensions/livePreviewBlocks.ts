@@ -20,7 +20,7 @@ import {
     getYouTubeThumbnailUrl,
 } from "../youtube";
 
-import { useEditorStore } from "../../../app/store/editorStore";
+import { useEditorStore, isNoteTab } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import {
     type DecoEntry,
@@ -79,7 +79,7 @@ function getActiveNotePath() {
     const activeTab = useEditorStore
         .getState()
         .tabs.find((tab) => tab.id === activeTabId);
-    if (!activeTab) return null;
+    if (!activeTab || !isNoteTab(activeTab)) return null;
 
     return (
         useVaultStore
@@ -592,8 +592,8 @@ class NoteEmbedWidget extends WidgetType {
             .getState()
             .tabs.find(
                 (tab) =>
-                    tab.noteId === note?.id ||
-                    tab.noteId === this.target ||
+                    (isNoteTab(tab) && tab.noteId === note?.id) ||
+                    (isNoteTab(tab) && tab.noteId === this.target) ||
                     tab.title === this.target,
             );
 
@@ -635,7 +635,8 @@ class NoteEmbedWidget extends WidgetType {
             wrapper.appendChild(meta);
         };
 
-        const fullContent = openTab?.content ?? null;
+        const fullContent =
+            openTab && isNoteTab(openTab) ? openTab.content : null;
         if (fullContent !== null) {
             if (note?.id) {
                 notePreviewContentCache.set(note.id, fullContent);

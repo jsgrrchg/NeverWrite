@@ -8,6 +8,7 @@ import type {
     AIChatAttachment,
     AIChatSession,
     AIComposerPart,
+    AIEditedFileBufferEntry,
     AIRuntimeDescriptor,
 } from "./types";
 import { AIChatPanel } from "./AIChatPanel";
@@ -26,17 +27,15 @@ function createSession(
     status: AIChatSession["status"] = "idle",
     overrides: Partial<AIChatSession> = {},
 ): AIChatSession {
-    const defaultMessages =
-        overrides.messages ??
-        [
-            {
-                id: `${sessionId}-user`,
-                role: "user" as const,
-                kind: "text" as const,
-                content: title,
-                timestamp: 10,
-            },
-        ];
+    const defaultMessages = overrides.messages ?? [
+        {
+            id: `${sessionId}-user`,
+            role: "user" as const,
+            kind: "text" as const,
+            content: title,
+            timestamp: 10,
+        },
+    ];
 
     return {
         sessionId,
@@ -50,6 +49,10 @@ function createSession(
         configOptions: overrides.configOptions ?? [],
         messages: defaultMessages,
         attachments: overrides.attachments ?? [],
+        activeWorkCycleId: overrides.activeWorkCycleId ?? null,
+        visibleWorkCycleId: overrides.visibleWorkCycleId ?? null,
+        editedFilesBufferByWorkCycleId:
+            overrides.editedFilesBufferByWorkCycleId ?? {},
         isPersistedSession: overrides.isPersistedSession,
         isResumingSession: overrides.isResumingSession,
         resumeContextPending: overrides.resumeContextPending,
@@ -99,7 +102,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         resetChatTabsStore();
         markChatTabsReady();
         invokeMock.mockReset();
-        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useVaultStore.setState({ vaultPath: "/vault", notes: [], entries: [] });
         useEditorStore.setState({
             tabs: [],
             activeTabId: null,
@@ -283,9 +286,9 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(useChatTabsStore.getState().tabs).toHaveLength(1);
-            expect(
-                useChatTabsStore.getState().tabs[0]?.sessionId,
-            ).toBe("session-b");
+            expect(useChatTabsStore.getState().tabs[0]?.sessionId).toBe(
+                "session-b",
+            );
             expect(useChatStore.getState().activeSessionId).toBe("session-b");
             expect(useChatStore.getState().sessionOrder).toEqual([
                 "session-a",
@@ -385,19 +388,26 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(resumeSession).toHaveBeenCalledWith("persisted:history-1");
-            expect(useChatStore.getState().activeSessionId).toBe("session-live");
+            expect(useChatStore.getState().activeSessionId).toBe(
+                "session-live",
+            );
             expect(
-                useChatTabsStore.getState().tabs.find(
-                    (tab) => tab.id === "tab-persisted",
-                )?.sessionId,
+                useChatTabsStore
+                    .getState()
+                    .tabs.find((tab) => tab.id === "tab-persisted")?.sessionId,
             ).toBe("session-live");
         });
     });
 
     it("preserves drafts, attachments and permission state when switching tabs", async () => {
-        const sessionA = createSession("session-a", "First conversation", "idle", {
-            attachments: [createAttachment("att-a", "Doc A", "doc-a")],
-        });
+        const sessionA = createSession(
+            "session-a",
+            "First conversation",
+            "idle",
+            {
+                attachments: [createAttachment("att-a", "Doc A", "doc-a")],
+            },
+        );
         const sessionB = createSession(
             "session-b",
             "Second conversation",
@@ -463,7 +473,11 @@ describe("AIChatPanel tabs lifecycle", () => {
     });
 
     it("renders the session queue and lets the user edit, clear or send queued items now", async () => {
-        const session = createSession("session-a", "Queued conversation", "streaming");
+        const session = createSession(
+            "session-a",
+            "Queued conversation",
+            "streaming",
+        );
 
         useChatStore.setState((state) => ({
             ...state,
@@ -537,15 +551,15 @@ describe("AIChatPanel tabs lifecycle", () => {
         );
 
         await waitFor(() => {
-            expect(
-                screen.getByText("Editing queued message"),
-            ).toBeTruthy();
+            expect(screen.getByText("Editing queued message")).toBeTruthy();
             expect(
                 screen.getByRole("textbox", { name: "Message VaultAI" })
                     .textContent,
             ).toContain("First queued item");
             expect(
-                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+                useChatStore.getState().queuedMessagesBySessionId[
+                    session.sessionId
+                ],
             ).toHaveLength(1);
         });
 
@@ -553,7 +567,9 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(
-                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+                useChatStore.getState().queuedMessagesBySessionId[
+                    session.sessionId
+                ],
             ).toHaveLength(2);
         });
 
@@ -561,13 +577,19 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(
-                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+                useChatStore.getState().queuedMessagesBySessionId[
+                    session.sessionId
+                ],
             ).toBeUndefined();
         });
     });
 
     it("prioritizes a queued item when clicking send now", async () => {
-        const session = createSession("session-a", "Queued conversation", "streaming");
+        const session = createSession(
+            "session-a",
+            "Queued conversation",
+            "streaming",
+        );
 
         useChatStore.setState((state) => ({
             ...state,
@@ -629,15 +651,21 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(
-                useChatStore.getState().queuedMessagesBySessionId[session.sessionId]?.map(
-                    (item) => item.id,
-                ),
+                useChatStore
+                    .getState()
+                    .queuedMessagesBySessionId[
+                        session.sessionId
+                    ]?.map((item) => item.id),
             ).toEqual(["queued-2", "queued-1"]);
         });
     });
 
     it("queues a new message from the composer while the agent is streaming", async () => {
-        const session = createSession("session-a", "Queued conversation", "streaming");
+        const session = createSession(
+            "session-a",
+            "Queued conversation",
+            "streaming",
+        );
 
         useChatStore.setState((state) => ({
             ...state,
@@ -677,7 +705,9 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(
-                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+                useChatStore.getState().queuedMessagesBySessionId[
+                    session.sessionId
+                ],
             ).toHaveLength(1);
             expect(
                 useChatStore.getState().queuedMessagesBySessionId[
@@ -741,10 +771,13 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         renderComponent(<AIChatPanel />);
 
-        fireEvent.contextMenu(screen.getByRole("tab", { name: /First conversation/i }), {
-            clientX: 24,
-            clientY: 18,
-        });
+        fireEvent.contextMenu(
+            screen.getByRole("tab", { name: /First conversation/i }),
+            {
+                clientX: 24,
+                clientY: 18,
+            },
+        );
         fireEvent.click(screen.getByText("Export chat to Markdown"));
 
         await waitFor(() => {
@@ -764,8 +797,201 @@ describe("AIChatPanel tabs lifecycle", () => {
             expect(
                 useEditorStore
                     .getState()
-                    .tabs.some((tab) => tab.noteId === "exports/chat-export.md"),
+                    .tabs.some(
+                        (tab) => tab.noteId === "exports/chat-export.md",
+                    ),
             ).toBe(true);
+        });
+    });
+
+    it("renders the dedicated edits panel and wires its actions outside the message log", async () => {
+        const rejectEditedFile = vi.fn(async () => {});
+        const rejectAllEditedFiles = vi.fn(async () => {});
+        const keepAllEditedFiles = vi.fn();
+        const workCycleId = "cycle-1";
+        const entry: AIEditedFileBufferEntry = {
+            identityKey: "/vault/src/watcher.rs",
+            originPath: "/vault/src/watcher.rs",
+            path: "/vault/src/watcher.rs",
+            previousPath: null,
+            operation: "update",
+            baseText: "old line",
+            appliedText: "new line",
+            reversible: true,
+            isText: true,
+            supported: true,
+            status: "pending",
+            appliedHash: "hash-1",
+            currentHash: null,
+            additions: 1,
+            deletions: 1,
+            updatedAt: 10,
+        };
+        const session = createSession("session-a", "Edit review", "idle", {
+            visibleWorkCycleId: workCycleId,
+            activeWorkCycleId: workCycleId,
+            editedFilesBufferByWorkCycleId: {
+                [workCycleId]: [entry],
+            },
+        });
+
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/watcher",
+                    title: "watcher",
+                    path: "/vault/src/watcher.rs",
+                    modified_at: 1,
+                    created_at: 1,
+                },
+            ],
+            entries: [
+                {
+                    id: "entry/watcher",
+                    path: "/vault/src/watcher.rs",
+                    relative_path: "src/watcher.rs",
+                    title: "watcher.rs",
+                    file_name: "watcher.rs",
+                    extension: "rs",
+                    kind: "file",
+                    modified_at: 1,
+                    created_at: 1,
+                    size: 20,
+                    mime_type: "text/rust",
+                },
+            ],
+        });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+            rejectEditedFile,
+            rejectAllEditedFiles,
+            keepAllEditedFiles,
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: session.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(screen.getByText("Edits")).toBeTruthy();
+        expect(screen.getByText("watcher.rs")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Reject All" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Keep All" })).toBeTruthy();
+
+        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
+
+        await waitFor(() => {
+            expect(
+                screen.getByTestId("edited-buffer-diff:/vault/src/watcher.rs"),
+            ).toBeTruthy();
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+        expect(rejectEditedFile).toHaveBeenCalledWith(
+            session.sessionId,
+            "/vault/src/watcher.rs",
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Reject All" }));
+        expect(rejectAllEditedFiles).toHaveBeenCalledWith(session.sessionId);
+
+        fireEvent.click(screen.getByRole("button", { name: "Keep All" }));
+        expect(keepAllEditedFiles).toHaveBeenCalledWith(session.sessionId);
+    });
+
+    it("disables Open File for unsupported entries while keeping Review Diff inline", async () => {
+        const workCycleId = "cycle-unsupported";
+        const entry: AIEditedFileBufferEntry = {
+            identityKey: "/vault/tmp/result.txt",
+            originPath: "/vault/tmp/result.txt",
+            path: "/vault/tmp/result.txt",
+            previousPath: null,
+            operation: "update",
+            baseText: "alpha",
+            appliedText: "beta",
+            reversible: true,
+            isText: true,
+            supported: true,
+            status: "pending",
+            appliedHash: "hash-2",
+            currentHash: null,
+            additions: 1,
+            deletions: 1,
+            updatedAt: 20,
+        };
+        const session = createSession("session-b", "Unsupported edit", "idle", {
+            visibleWorkCycleId: workCycleId,
+            activeWorkCycleId: workCycleId,
+            editedFilesBufferByWorkCycleId: {
+                [workCycleId]: [entry],
+            },
+        });
+
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-b", sessionId: session.sessionId }],
+            activeTabId: "tab-b",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        const openFileButton = screen.getByRole("button", {
+            name: "Open File",
+        });
+        expect(openFileButton).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
+
+        await waitFor(() => {
+            expect(
+                screen.getByTestId("edited-buffer-diff:/vault/tmp/result.txt"),
+            ).toBeTruthy();
+            expect(screen.getByText("+ beta")).toBeTruthy();
+            expect(screen.getByText("- alpha")).toBeTruthy();
         });
     });
 });

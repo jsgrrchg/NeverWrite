@@ -1,6 +1,10 @@
 import { useMemo, useState, useCallback } from "react";
 import { useVaultStore, getRecentVaults, togglePinVault, type RecentVault } from "../../app/store/vaultStore";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    type NoteTab,
+} from "../../app/store/editorStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useLayoutStore } from "../../app/store/layoutStore";
 
@@ -60,7 +64,9 @@ export function NewTabView() {
 
     const handleOpen = async (id: string, title: string) => {
         const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find((t) => t.noteId === id);
+        const existing = tabs.find(
+            (t): t is NoteTab => isNoteTab(t) && t.noteId === id,
+        );
         if (existing) {
             openNote(id, title, existing.content);
             return;

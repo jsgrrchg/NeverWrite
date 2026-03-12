@@ -105,7 +105,7 @@ describe("QuickSwitcher", () => {
             await vi.runAllTimersAsync();
         });
 
-        const input = screen.getByPlaceholderText("Search notes...");
+        const input = screen.getByPlaceholderText("Search files and notes...");
         fireEvent.change(input, { target: { value: "Plan" } });
         fireEvent.keyDown(input, { key: "Enter" });
 

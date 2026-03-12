@@ -17,6 +17,10 @@ export interface Settings {
 
     // Navigation
     fileTreeScale: number; // 90–140
+
+    // Developers
+    fileTreeContentMode: "notes_only" | "all_files";
+    fileTreeShowExtensions: boolean;
 }
 
 interface SettingsStore extends Settings {
@@ -57,6 +61,24 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "condensed",
 ];
 
+export const EDITOR_FONT_FAMILY_OPTIONS: {
+    value: EditorFontFamily;
+    label: string;
+}[] = [
+    { value: "system", label: "System" },
+    { value: "sans", label: "Sans" },
+    { value: "serif", label: "Serif" },
+    { value: "reading", label: "Reading" },
+    { value: "rounded", label: "Rounded" },
+    { value: "humanist", label: "Humanist" },
+    { value: "newspaper", label: "Newspaper" },
+    { value: "slab", label: "Slab" },
+    { value: "typewriter", label: "Typewriter" },
+    { value: "courier", label: "Courier New" },
+    { value: "condensed", label: "Condensed" },
+    { value: "mono", label: "Monospace" },
+];
+
 const defaults: Settings = {
     openLastVaultOnLaunch: true,
     editorFontSize: 14,
@@ -68,7 +90,15 @@ const defaults: Settings = {
     livePreviewEnabled: true,
     tabSize: 4,
     fileTreeScale: 100,
+    fileTreeContentMode: "notes_only",
+    fileTreeShowExtensions: false,
 };
+
+function normalizeFileTreeContentMode(
+    value: unknown,
+): Settings["fileTreeContentMode"] {
+    return value === "all_files" ? "all_files" : "notes_only";
+}
 
 function normalizeIntInRange(
     value: unknown,
@@ -92,7 +122,7 @@ function normalizeTabSize(value: unknown): 2 | 4 {
     return normalized <= 2 ? 2 : 4;
 }
 
-function normalizeEditorFontFamily(
+export function normalizeEditorFontFamily(
     value: unknown,
     fallback: EditorFontFamily = defaults.editorFontFamily,
 ): EditorFontFamily {
@@ -145,6 +175,12 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 90,
                 140,
             ),
+            fileTreeContentMode: normalizeFileTreeContentMode(
+                parsed.state.fileTreeContentMode,
+            ),
+            fileTreeShowExtensions:
+                parsed.state.fileTreeShowExtensions ??
+                defaults.fileTreeShowExtensions,
         };
     } catch {
         return null;
@@ -163,6 +199,8 @@ function pickSettings(state: SettingsStore): Settings {
         livePreviewEnabled: state.livePreviewEnabled,
         tabSize: state.tabSize,
         fileTreeScale: state.fileTreeScale,
+        fileTreeContentMode: state.fileTreeContentMode,
+        fileTreeShowExtensions: state.fileTreeShowExtensions,
     };
 }
 

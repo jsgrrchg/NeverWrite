@@ -10,6 +10,8 @@ import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useEditorStore,
     type PendingReveal,
+    isNoteTab,
+    type NoteTab,
 } from "../../app/store/editorStore";
 import { useShallow } from "zustand/react/shallow";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
@@ -407,9 +409,9 @@ export function LinksPanel() {
         useShallow((s) => {
             const tab = s.tabs.find((t) => t.id === s.activeTabId);
             return {
-                activeNoteId: tab?.noteId ?? null,
+                activeNoteId: tab && isNoteTab(tab) ? tab.noteId : null,
                 activeTitle: tab?.title ?? null,
-                activeContent: tab?.content ?? "",
+                activeContent: tab && isNoteTab(tab) ? tab.content : "",
             };
         }),
     );
@@ -531,7 +533,7 @@ export function LinksPanel() {
     const openNoteById = async (id: string, title: string) => {
         const existing = useEditorStore
             .getState()
-            .tabs.find((t) => t.noteId === id);
+            .tabs.find((t): t is NoteTab => isNoteTab(t) && t.noteId === id);
         if (existing) {
             openNote(id, title, existing.content);
             return;
@@ -550,7 +552,9 @@ export function LinksPanel() {
         try {
             const existing = useEditorStore
                 .getState()
-                .tabs.find((t) => t.noteId === bl.id);
+                .tabs.find(
+                    (t): t is NoteTab => isNoteTab(t) && t.noteId === bl.id,
+                );
             const content =
                 existing?.content ??
                 (
@@ -611,7 +615,10 @@ export function LinksPanel() {
         try {
             const existing = useEditorStore
                 .getState()
-                .tabs.find((t) => t.noteId === link.note.id);
+                .tabs.find(
+                    (t): t is NoteTab =>
+                        isNoteTab(t) && t.noteId === link.note.id,
+                );
             const content =
                 existing?.content ??
                 (

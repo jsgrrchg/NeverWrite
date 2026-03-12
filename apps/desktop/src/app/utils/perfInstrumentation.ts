@@ -14,7 +14,7 @@ type PerfMetric = {
 type PerfEvent = {
     name: string;
     durationMs: number | null;
-    meta: Record<string, string | number>;
+    meta: Record<string, string | number | boolean | null>;
     at: number;
     scenario: string | null;
 };
@@ -51,7 +51,7 @@ let initialized = false;
 let enabled = false;
 let activeScenario: string | null = null;
 
-function stringifyMetaValue(value: Exclude<PerfMetaValue, number>): string {
+function stringifyMetaValue(value: PerfMetaValue): string {
     if (value === null) return "null";
     if (value === undefined) return "undefined";
     return String(value);
@@ -141,7 +141,7 @@ function recordEvent(
         updatedAt: 0,
     };
 
-    const normalizedMeta: Record<string, string | number> = {};
+    const normalizedMeta: Record<string, string | number | boolean | null> = {};
     if (meta) {
         for (const [key, value] of Object.entries(meta)) {
             if (typeof value === "number" && Number.isFinite(value)) {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -18,14 +19,21 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
-import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
+import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
+import {
+    getChatPillMetrics,
+    truncatePillLabel,
+    type ChatPillMetrics,
+} from "./chatPillMetrics";
 import type {
     AIChatNoteSummary,
     AIChatSessionStatus,
     AIComposerPart,
     AIMentionSuggestion,
 } from "../types";
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { openChatNoteById } from "./chatNoteNavigation";
+import { getEditorFontFamily } from "../../editor/editorExtensions";
 
 interface AIChatComposerProps {
     parts: AIComposerPart[];
@@ -37,6 +45,7 @@ interface AIChatComposerProps {
     hasActiveNote?: boolean;
     requireCmdEnterToSend?: boolean;
     composerFontSize?: number;
+    composerFontFamily?: EditorFontFamily;
     expanded?: boolean;
     contextBar?: ReactNode;
     footer?: ReactNode;
@@ -47,7 +56,11 @@ interface AIChatComposerProps {
     onToggleExpanded?: () => void;
     onAttachAudio?: () => void;
     onAttachFile?: () => void;
-    onFileAttach?: (filePath: string, fileName: string, mimeType: string) => void;
+    onFileAttach?: (
+        filePath: string,
+        fileName: string,
+        mimeType: string,
+    ) => void;
     onSubmit: () => void;
     onStop: () => void;
 }
@@ -65,6 +78,7 @@ interface MentionState {
 interface ComposerContextMenuPayload {
     hasSelection: boolean;
     hasContent: boolean;
+    mentionNoteId: string | null;
 }
 
 interface SlashState {
@@ -193,11 +207,8 @@ function createMentionNode(
     element.dataset.label = part.label;
     element.dataset.path = part.path;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, {
-        background: "color-mix(in srgb, #f97316 15%, transparent)",
-        color: "#f97316",
-    });
+    element.textContent = truncatePillLabel(part.label);
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
     return element;
 }
 
@@ -210,11 +221,8 @@ function createFolderMentionNode(
     element.dataset.folderPath = part.folderPath;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, {
-        background: "color-mix(in srgb, var(--accent) 15%, transparent)",
-        color: "var(--accent)",
-    });
+    element.textContent = truncatePillLabel(part.label);
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.folder);
     return element;
 }
 
@@ -223,10 +231,7 @@ function createFetchMentionNode(metrics: ChatPillMetrics) {
     element.dataset.kind = "fetch_mention";
     element.contentEditable = "false";
     element.textContent = "@fetch";
-    applyComposerPillStyles(element, metrics, {
-        background: "color-mix(in srgb, #10b981 15%, transparent)",
-        color: "#10b981",
-    });
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.success);
     return element;
 }
 
@@ -235,10 +240,25 @@ function createPlanMentionNode(metrics: ChatPillMetrics) {
     element.dataset.kind = "plan_mention";
     element.contentEditable = "false";
     element.textContent = "/plan";
-    applyComposerPillStyles(element, metrics, {
-        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-        color: "var(--accent)",
-    });
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.neutral);
+    return element;
+}
+
+function createSelectionMentionNode(
+    part: Extract<AIComposerPart, { type: "selection_mention" }>,
+    metrics: ChatPillMetrics,
+) {
+    const element = document.createElement("span");
+    element.dataset.kind = "selection_mention";
+    element.dataset.noteId = part.noteId;
+    element.dataset.label = part.label;
+    element.dataset.path = part.path;
+    element.dataset.selectedText = part.selectedText;
+    element.dataset.startLine = String(part.startLine);
+    element.dataset.endLine = String(part.endLine);
+    element.contentEditable = "false";
+    element.textContent = truncatePillLabel(part.label);
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
     return element;
 }
 
@@ -296,6 +316,28 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
 
     if (node.dataset.kind === "plan_mention") {
         parts.push({ id: crypto.randomUUID(), type: "plan_mention" });
+        return;
+    }
+
+    if (
+        node.dataset.kind === "selection_mention" &&
+        node.dataset.noteId &&
+        node.dataset.label &&
+        node.dataset.path &&
+        node.dataset.selectedText &&
+        node.dataset.startLine &&
+        node.dataset.endLine
+    ) {
+        parts.push({
+            id: crypto.randomUUID(),
+            type: "selection_mention",
+            noteId: node.dataset.noteId,
+            label: node.dataset.label,
+            path: node.dataset.path,
+            selectedText: node.dataset.selectedText,
+            startLine: Number(node.dataset.startLine),
+            endLine: Number(node.dataset.endLine),
+        });
         return;
     }
 
@@ -379,6 +421,8 @@ function syncComposerDom(
             root.append(createFetchMentionNode(metrics));
         } else if (part.type === "plan_mention") {
             root.append(createPlanMentionNode(metrics));
+        } else if (part.type === "selection_mention") {
+            root.append(createSelectionMentionNode(part, metrics));
         }
     }
 
@@ -391,7 +435,8 @@ function isMentionElement(node: Node): node is HTMLElement {
         (node.dataset.kind === "mention" ||
             node.dataset.kind === "folder_mention" ||
             node.dataset.kind === "fetch_mention" ||
-            node.dataset.kind === "plan_mention")
+            node.dataset.kind === "plan_mention" ||
+            node.dataset.kind === "selection_mention")
     );
 }
 
@@ -437,6 +482,31 @@ function extractFolderPaths(notes: AIChatNoteSummary[]): string[] {
     return [...folders].sort();
 }
 
+function getMentionElementFromNode(node: EventTarget | null) {
+    const element =
+        node instanceof HTMLElement
+            ? node
+            : node instanceof Text
+              ? node.parentElement
+              : null;
+    return element?.closest<HTMLElement>("[data-kind='mention']") ?? null;
+}
+
+function getMentionNoteIdFromContextMenuEvent(
+    event: ReactMouseEvent<HTMLElement>,
+) {
+    const path = event.nativeEvent.composedPath?.() ?? [];
+    for (const node of path) {
+        const mention = getMentionElementFromNode(node);
+        if (mention?.dataset.noteId) {
+            return mention.dataset.noteId;
+        }
+    }
+
+    const hovered = document.elementFromPoint(event.clientX, event.clientY);
+    return getMentionElementFromNode(hovered)?.dataset.noteId ?? null;
+}
+
 function normalizeForSearch(value: string): string {
     return value
         .normalize("NFD")
@@ -476,11 +546,7 @@ function getTextPositionForOffset(root: HTMLElement, charOffset: number) {
     return null;
 }
 
-function getInlineTriggerMatch(
-    root: HTMLElement,
-    marker: "@" | "/",
-    pattern: RegExp,
-) {
+function getInlineTriggerMatch(root: HTMLElement, pattern: RegExp) {
     const selection = window.getSelection();
     if (!selection || !selection.rangeCount || !selection.isCollapsed) {
         return null;
@@ -621,6 +687,7 @@ export function AIChatComposer({
     hasActiveNote = false,
     requireCmdEnterToSend = false,
     composerFontSize = 14,
+    composerFontFamily = "system",
     expanded = false,
     contextBar,
     footer,
@@ -710,11 +777,7 @@ export function AIChatComposer({
             return;
         }
 
-        const trigger = getInlineTriggerMatch(
-            composer,
-            "@",
-            /(^|\s)@([^\s@]*)$/,
-        );
+        const trigger = getInlineTriggerMatch(composer, /(^|\s)@([^\s@]*)$/);
         if (!trigger) {
             closeMentionPicker();
             return;
@@ -745,11 +808,7 @@ export function AIChatComposer({
             return;
         }
 
-        const trigger = getInlineTriggerMatch(
-            composer,
-            "/",
-            /(^|\s)\/([^\s/]*)$/,
-        );
+        const trigger = getInlineTriggerMatch(composer, /(^|\s)\/([^\s/]*)$/);
         if (!trigger) {
             closeSlashPicker();
             return;
@@ -926,7 +985,11 @@ export function AIChatComposer({
                 // File drop (PDFs, etc.)
                 if (detail.files && detail.files.length > 0) {
                     detail.files.forEach((file) =>
-                        onFileAttach?.(file.filePath, file.fileName, file.mimeType),
+                        onFileAttach?.(
+                            file.filePath,
+                            file.fileName,
+                            file.mimeType,
+                        ),
                     );
                     focusComposerAtEnd();
                     return;
@@ -1109,6 +1172,7 @@ export function AIChatComposer({
                             color: "var(--text-secondary)",
                             opacity: 0.6,
                             fontSize: composerFontSize,
+                            fontFamily: getEditorFontFamily(composerFontFamily),
                             top: expanded ? 14 : 10,
                             left: expanded ? 16 : 14,
                         }}
@@ -1141,6 +1205,8 @@ export function AIChatComposer({
                             payload: {
                                 hasSelection,
                                 hasContent: serializedValue.trim().length > 0,
+                                mentionNoteId:
+                                    getMentionNoteIdFromContextMenuEvent(event),
                             },
                         });
                     }}
@@ -1317,6 +1383,7 @@ export function AIChatComposer({
                             : "10px 36px 10px 14px",
                         lineHeight: 1.5,
                         fontSize: composerFontSize,
+                        fontFamily: getEditorFontFamily(composerFontFamily),
                         opacity: disabled ? 0.6 : 1,
                         cursor: disabled ? "default" : "text",
                     }}
@@ -1548,6 +1615,38 @@ export function AIChatComposer({
                             )}
                         </button>
                     )}
+                    <button
+                        type="button"
+                        onClick={onSubmit}
+                        disabled={!canSubmit}
+                        className="flex shrink-0 items-center justify-center rounded-full"
+                        style={{
+                            width: 28,
+                            height: 28,
+                            color: isEmpty ? "var(--text-secondary)" : "#fff",
+                            backgroundColor: isEmpty
+                                ? "transparent"
+                                : "var(--accent)",
+                            border: "none",
+                            opacity: canSubmit ? 1 : 0.4,
+                            transition: "all 0.15s ease",
+                        }}
+                        aria-label={isStreaming ? "Queue" : "Send"}
+                        title={isStreaming ? "Queue" : "Send"}
+                    >
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M8 12V4M4 7l4-3 4 3" />
+                        </svg>
+                    </button>
                     {isStreaming && (
                         <button
                             type="button"
@@ -1582,38 +1681,6 @@ export function AIChatComposer({
                             </svg>
                         </button>
                     )}
-                    <button
-                        type="button"
-                        onClick={onSubmit}
-                        disabled={!canSubmit}
-                        className="flex shrink-0 items-center justify-center rounded-full"
-                        style={{
-                            width: 28,
-                            height: 28,
-                            color: isEmpty ? "var(--text-secondary)" : "#fff",
-                            backgroundColor: isEmpty
-                                ? "transparent"
-                                : "var(--accent)",
-                            border: "none",
-                            opacity: canSubmit ? 1 : 0.4,
-                            transition: "all 0.15s ease",
-                        }}
-                        aria-label={isStreaming ? "Queue" : "Send"}
-                        title={isStreaming ? "Queue" : "Send"}
-                    >
-                        <svg
-                            width="16"
-                            height="16"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M8 12V4M4 7l4-3 4 3" />
-                        </svg>
-                    </button>
                 </div>
                 <AIChatMentionPicker
                     open={mentionState.open}
@@ -1655,6 +1722,21 @@ export function AIChatComposer({
                         onClose={() => setContextMenu(null)}
                         minWidth={150}
                         entries={[
+                            ...(contextMenu.payload.mentionNoteId
+                                ? [
+                                      {
+                                          label: "Open in New Tab",
+                                          action: () => {
+                                              void openChatNoteById(
+                                                  contextMenu.payload
+                                                      .mentionNoteId!,
+                                                  { newTab: true },
+                                              );
+                                          },
+                                      } as const,
+                                      { type: "separator" as const },
+                                  ]
+                                : []),
                             {
                                 label: "Cut",
                                 disabled: !contextMenu.payload.hasSelection,

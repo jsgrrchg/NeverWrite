@@ -5,6 +5,7 @@
     "windows": ["main", "note-*", "settings-*", "vault-*", "ghost-*"],
     "permissions": [
         "core:default",
+        "dialog:allow-confirm",
         "dialog:allow-open",
         "core:window:allow-start-dragging",
         "core:window:allow-close",

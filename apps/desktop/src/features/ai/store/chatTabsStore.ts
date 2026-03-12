@@ -568,7 +568,7 @@ useChatTabsStore.subscribe((state) => {
     // Cheap fingerprint to skip expensive serialization when nothing relevant changed
     let sig = state.activeTabId ?? "";
     for (const t of state.tabs) {
-        sig += `|${t.id}|${t.sessionId ?? ""}|${t.label}`;
+        sig += `|${t.id}|${t.sessionId ?? ""}|${t.historySessionId ?? ""}|${t.pinned ? "1" : "0"}`;
     }
     if (sig === _lastChatTabsSig) return;
     _lastChatTabsSig = sig;

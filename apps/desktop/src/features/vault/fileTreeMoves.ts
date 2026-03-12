@@ -1,4 +1,4 @@
-import type { NoteDto } from "../../app/store/vaultStore";
+import type { NoteDto, VaultEntryDto } from "../../app/store/vaultStore";
 
 export interface NoteMoveOperation {
     note: NoteDto;
@@ -31,6 +31,15 @@ export function buildNoteMoveOperations(
             },
         ];
     });
+}
+
+export function buildEntryMovePath(
+    entry: Pick<VaultEntryDto, "relative_path" | "file_name">,
+    targetFolder: string,
+) {
+    const currentParent = getParentPath(entry.relative_path);
+    if (currentParent === targetFolder) return null;
+    return targetFolder ? `${targetFolder}/${entry.file_name}` : entry.file_name;
 }
 
 export function canMoveFolderToTarget(

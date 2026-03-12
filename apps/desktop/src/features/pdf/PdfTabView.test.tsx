@@ -14,10 +14,27 @@ const { getDocumentMock } = vi.hoisted(() => ({
 
 vi.mock("pdfjs-dist/legacy/build/pdf", () => {
     class RenderingCancelledException extends Error {}
+    class TextLayer {
+        container: HTMLElement;
+
+        constructor({ container }: { container: HTMLElement }) {
+            this.container = container;
+        }
+
+        render() {
+            const span = document.createElement("span");
+            span.textContent = "PDF text";
+            this.container.append(span);
+            return Promise.resolve();
+        }
+
+        cancel() {}
+    }
 
     return {
         GlobalWorkerOptions: { workerSrc: "" },
         RenderingCancelledException,
+        TextLayer,
         VerbosityLevel: { ERRORS: 0 },
         getDocument: getDocumentMock,
     };
@@ -37,6 +54,20 @@ function createResolvedRenderTask() {
     };
 }
 
+function createMockPage(renderTask = createResolvedRenderTask()) {
+    return {
+        getViewport: vi.fn(({ scale = 1 }) => ({
+            width: 640 * scale,
+            height: 800 * scale,
+            scale,
+        })),
+        render: vi.fn(() => renderTask),
+        streamTextContent: vi.fn(() => ({})),
+        cleanup: vi.fn(),
+        userUnit: 1,
+    };
+}
+
 describe("PdfTabView", () => {
     beforeEach(() => {
         getDocumentMock.mockReset();
@@ -48,10 +79,7 @@ describe("PdfTabView", () => {
             cancel: vi.fn(),
             promise: renderDeferred.promise,
         };
-        const page = {
-            getViewport: vi.fn(() => ({ width: 640, height: 800 })),
-            render: vi.fn(() => renderTask),
-        };
+        const page = createMockPage(renderTask);
         const pdfDocument = {
             destroy: vi.fn(),
             getPage: vi.fn().mockResolvedValue(page),
@@ -95,11 +123,7 @@ describe("PdfTabView", () => {
         const user = userEvent.setup();
         const pdfDocument = {
             destroy: vi.fn(),
-            getPage: vi.fn().mockImplementation(async () => ({
-                getViewport: vi.fn(() => ({ width: 640, height: 800 })),
-                render: vi.fn(() => createResolvedRenderTask()),
-                cleanup: vi.fn(),
-            })),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
             numPages: 3,
         };
 
@@ -132,6 +156,82 @@ describe("PdfTabView", () => {
         await waitFor(() => {
             expect(screen.getByText("Continuous")).toBeInTheDocument();
             expect(container.querySelectorAll("canvas")).toHaveLength(3);
+            expect(container.querySelectorAll(".textLayer")).toHaveLength(3);
         });
+    });
+
+    it("renders a selectable text layer over the PDF canvas", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/tmp/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            const textLayer = container.querySelector(".textLayer");
+            expect(textLayer).toBeInTheDocument();
+            expect(textLayer).toHaveAttribute("data-selectable", "true");
+            expect(textLayer?.querySelector("span")).toBeInTheDocument();
+        });
+    });
+
+    it("exposes native pinch-zoom touch action on the PDF surface", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/tmp/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(container.querySelector("canvas")).toBeInTheDocument();
+        });
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+        const canvas = container.querySelector("canvas") as HTMLCanvasElement | null;
+
+        expect(scrollSurface?.style.touchAction).toBe("none");
+        expect(canvas?.style.touchAction).toBe("none");
     });
 });

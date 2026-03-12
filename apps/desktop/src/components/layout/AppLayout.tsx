@@ -19,6 +19,7 @@ const RIGHT_SNAP_POINTS = [DEFAULT_RIGHT_PANEL_WIDTH, 360, 500];
 const SNAP_DISTANCE = 18;
 const RESIZER_HITBOX_WIDTH = 10;
 const RESIZER_VISIBLE_WIDTH = 1;
+const RESIZER_OVERLAP = RESIZER_HITBOX_WIDTH / 2;
 const MIN_CENTER_PEEK_WIDTH = 36;
 
 interface ResizeSession {
@@ -78,14 +79,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         MIN_SIDEBAR_WIDTH,
         layoutWidth -
             effectiveRightForLeftCalc -
-            RESIZER_HITBOX_WIDTH * 2 -
             MIN_CENTER_PEEK_WIDTH,
     );
     const maxRightWidthForLayout = Math.max(
         MIN_RIGHT_PANEL_WIDTH,
         layoutWidth -
             effectiveLeft -
-            RESIZER_HITBOX_WIDTH * 2 -
             MIN_CENTER_PEEK_WIDTH,
     );
     const effectiveRight = rightPanelCollapsed
@@ -441,7 +440,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             <div
                 ref={leftResizerRef}
                 className="relative flex-shrink-0 cursor-col-resize touch-none"
-                style={{ width: RESIZER_HITBOX_WIDTH }}
+                style={{
+                    width: RESIZER_HITBOX_WIDTH,
+                    marginLeft: -RESIZER_OVERLAP,
+                    marginRight: -RESIZER_OVERLAP,
+                    zIndex: 2,
+                }}
                 onPointerDown={onLeftDown}
                 onPointerMove={onLeftMove}
                 onPointerUp={onLeftUp}
@@ -484,7 +488,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 <div
                     ref={rightResizerRef}
                     className="relative flex-shrink-0 cursor-col-resize touch-none"
-                    style={{ width: RESIZER_HITBOX_WIDTH }}
+                    style={{
+                        width: RESIZER_HITBOX_WIDTH,
+                        marginLeft: -RESIZER_OVERLAP,
+                        marginRight: -RESIZER_OVERLAP,
+                        zIndex: 2,
+                    }}
                     onPointerDown={onRightDown}
                     onPointerMove={onRightMove}
                     onPointerUp={onRightUp}

@@ -48,7 +48,7 @@ function recordIpc(cmd: string, ms: number) {
 
 // Expose debug API on window for console use
 if (typeof window !== "undefined") {
-    (window as Record<string, unknown>).__ipcDebug = {
+    ((window as unknown) as Record<string, unknown>).__ipcDebug = {
         enable() {
             _ipcTracing = true;
             // Also enable Rust-side timing

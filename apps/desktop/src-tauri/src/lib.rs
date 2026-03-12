@@ -23,7 +23,7 @@ use vault_ai_types::{
 use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
 
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
-const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const OPEN_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 // --- Debug timing ---
@@ -37,9 +37,45 @@ macro_rules! dbg_log {
     };
 }
 
+fn path_has_extension(path: &Path, extension: &str) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+}
+
+fn compute_entry_search_score(query_lower: &str, title: &str, path: &str) -> f64 {
+    let title_lower = title.to_lowercase();
+    let path_lower = path.to_lowercase();
+
+    let title_score = if title_lower.contains(query_lower) {
+        compute_substring_score(query_lower, &title_lower)
+    } else {
+        0.0
+    };
+
+    let path_score = if path_lower.contains(query_lower) {
+        compute_substring_score(query_lower, &path_lower) * 0.8
+    } else {
+        0.0
+    };
+
+    title_score.max(path_score)
+}
+
+fn compute_substring_score(query: &str, target: &str) -> f64 {
+    if target == query {
+        return 1.0;
+    }
+    if target.starts_with(query) {
+        return 0.9 * (query.len() as f64 / target.len().max(1) as f64);
+    }
+    0.5 * (query.len() as f64 / target.len().max(1) as f64)
+}
+
 struct VaultInstance {
     vault: Option<Vault>,
     index: Option<VaultIndex>,
+    entries: Option<Vec<VaultEntryDto>>,
     watcher: Option<RecommendedWatcher>,
     open_job_id: u64,
     open_cancel: Option<Arc<AtomicBool>>,
@@ -51,6 +87,7 @@ impl VaultInstance {
         Self {
             vault: None,
             index: None,
+            entries: None,
             watcher: None,
             open_job_id: 0,
             open_cancel: None,
@@ -198,24 +235,117 @@ struct VaultFingerprint {
     note_count: usize,
     modified_sum: u64,
     size_sum: u64,
+    entry_count: usize,
+    entry_modified_sum: u64,
+    entry_size_sum: u64,
 }
 
 impl VaultFingerprint {
-    fn from_files(files: &[DiscoveredNoteFile]) -> Self {
+    fn from_state(files: &[DiscoveredNoteFile], entries: &[VaultEntryDto]) -> Self {
         let mut modified_sum = 0_u64;
         let mut size_sum = 0_u64;
+        let mut entry_modified_sum = 0_u64;
+        let mut entry_size_sum = 0_u64;
 
         for file in files {
             modified_sum = modified_sum.wrapping_add(file.modified_at);
             size_sum = size_sum.wrapping_add(file.size);
         }
 
+        for entry in entries {
+            entry_modified_sum = entry_modified_sum.wrapping_add(entry.modified_at);
+            entry_size_sum = entry_size_sum.wrapping_add(entry.size);
+        }
+
         Self {
             note_count: files.len(),
             modified_sum,
             size_sum,
+            entry_count: entries.len(),
+            entry_modified_sum,
+            entry_size_sum,
         }
     }
+}
+
+fn fnv1a_hash_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn resolve_vault_scoped_path(vault_root: &Path, path: &str) -> Result<PathBuf, String> {
+    let candidate = PathBuf::from(path);
+    let resolved = if candidate.is_absolute() {
+        normalize_path(&candidate)
+    } else {
+        normalize_path(&vault_root.join(candidate))
+    };
+
+    if !resolved.starts_with(vault_root) {
+        return Err("Path fuera del vault".to_string());
+    }
+
+    Ok(resolved)
+}
+
+fn build_unique_trash_target_path(
+    vault_root: &Path,
+    source_path: &Path,
+) -> Result<PathBuf, String> {
+    let relative_path = source_path
+        .strip_prefix(vault_root)
+        .map_err(|_| "Path fuera del vault".to_string())?;
+    let trash_root = vault_root.join(".trash");
+    let initial_target = trash_root.join(relative_path);
+
+    if !initial_target.exists() {
+        return Ok(initial_target);
+    }
+
+    let parent = initial_target
+        .parent()
+        .ok_or("No se pudo resolver carpeta destino")?;
+    let file_name = initial_target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("Nombre de archivo inválido")?;
+    let stem = initial_target
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(file_name);
+    let extension = initial_target.extension().and_then(|value| value.to_str());
+
+    for index in 2.. {
+        let candidate_name = match extension {
+            Some(ext) if !ext.is_empty() => format!("{stem} {index}.{ext}"),
+            _ => format!("{stem} {index}"),
+        };
+        let candidate = parent.join(candidate_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("No se pudo resolver destino en trash".to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +360,8 @@ struct PersistedVaultMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedVaultSnapshot {
     files: Vec<DiscoveredNoteFile>,
+    #[serde(default)]
+    entries: Vec<VaultEntryDto>,
     index: VaultIndex,
 }
 
@@ -242,6 +374,7 @@ struct LoadedSnapshot {
 struct OpenVaultResult {
     vault: Vault,
     index: VaultIndex,
+    entries: Vec<VaultEntryDto>,
     snapshot_used: bool,
     metrics: VaultOpenMetrics,
 }
@@ -373,12 +506,22 @@ fn snapshot_path(snapshot_dir: &Path) -> PathBuf {
     snapshot_dir.join("snapshot.json")
 }
 
+fn cleanup_obsolete_snapshot(snapshot_dir: &Path, version: u32) {
+    if version < SNAPSHOT_SCHEMA_VERSION {
+        let _ = fs::remove_dir_all(snapshot_dir);
+    }
+}
+
 fn load_snapshot(app: &AppHandle, vault_root: &Path) -> Option<LoadedSnapshot> {
     let snapshot_dir = snapshot_directory(app, vault_root).ok()?;
     let metadata = fs::read(metadata_path(&snapshot_dir)).ok()?;
     let snapshot = fs::read(snapshot_path(&snapshot_dir)).ok()?;
 
     let metadata: PersistedVaultMetadata = serde_json::from_slice(&metadata).ok()?;
+    if metadata.version < SNAPSHOT_SCHEMA_VERSION {
+        cleanup_obsolete_snapshot(&snapshot_dir, metadata.version);
+        return None;
+    }
     let payload: PersistedVaultSnapshot = serde_json::from_slice(&snapshot).ok()?;
 
     Some(LoadedSnapshot { metadata, payload })
@@ -401,6 +544,7 @@ fn save_snapshot(
     app: &AppHandle,
     vault_root: &Path,
     files: &[DiscoveredNoteFile],
+    entries: &[VaultEntryDto],
     index: &VaultIndex,
     fingerprint: &VaultFingerprint,
 ) -> Result<(), String> {
@@ -417,11 +561,62 @@ fn save_snapshot(
 
     let snapshot = PersistedVaultSnapshot {
         files: files.to_vec(),
+        entries: entries.to_vec(),
         index: index.clone(),
     };
 
     write_json_atomic(&metadata_path(&snapshot_dir), &metadata)?;
     write_json_atomic(&snapshot_path(&snapshot_dir), &snapshot)?;
+    Ok(())
+}
+
+fn refresh_entries_cache(instance: &mut VaultInstance) -> Result<(), String> {
+    let Some(vault) = instance.vault.as_ref() else {
+        instance.entries = None;
+        return Ok(());
+    };
+
+    let entries = vault
+        .discover_vault_entries()
+        .map_err(|error| error.to_string())?;
+    instance.entries = Some(entries);
+    Ok(())
+}
+
+fn rebuild_index(instance: &mut VaultInstance) -> Result<(), String> {
+    let Some(vault) = instance.vault.as_ref() else {
+        instance.index = None;
+        return Ok(());
+    };
+
+    let files = vault
+        .discover_markdown_files()
+        .map_err(|error| error.to_string())?;
+    let notes = vault
+        .parse_discovered_files(&files, |_| {})
+        .map_err(|error| error.to_string())?;
+    let mut index = VaultIndex::build(notes);
+
+    let pdf_files = vault
+        .discover_pdf_files()
+        .map_err(|error| error.to_string())?;
+    for pdf_file in pdf_files {
+        match vault_ai_vault::pdf::extract_pdf_text(&vault.root, &pdf_file.path, &pdf_file.id) {
+            Ok(doc) => {
+                index.register_pdf(
+                    &doc,
+                    pdf_file.modified_at,
+                    pdf_file.created_at,
+                    pdf_file.size,
+                );
+            }
+            Err(error) => {
+                eprintln!("[pdf] Failed to extract {}: {error}", pdf_file.id);
+            }
+        }
+    }
+
+    instance.index = Some(index);
     Ok(())
 }
 
@@ -482,9 +677,9 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
         };
         dbg_log!("{event_label} mutex wait: {lock_wait:.2?}");
 
-        match event {
+        let change = match event {
             VaultEvent::FileCreated(ref path) | VaultEvent::FileModified(ref path)
-                if path.extension().is_some_and(|ext| ext == "pdf") =>
+                if path_has_extension(path, "pdf") =>
             {
                 let pdf_id = vault.path_to_entry_id(path);
                 match vault_ai_vault::pdf::extract_pdf_text(&vault.root, path, &pdf_id) {
@@ -523,9 +718,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     note_id: None,
                 })
             }
-            VaultEvent::FileDeleted(ref path)
-                if path.extension().is_some_and(|ext| ext == "pdf") =>
-            {
+            VaultEvent::FileDeleted(ref path) if path_has_extension(path, "pdf") => {
                 let pdf_id = vault.path_to_entry_id(path);
                 index.remove_pdf(&NoteId(pdf_id));
                 Some(VaultNoteChangeDto {
@@ -536,12 +729,11 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 })
             }
             VaultEvent::FileRenamed { ref from, ref to }
-                if from.extension().is_some_and(|ext| ext == "pdf")
-                    || to.extension().is_some_and(|ext| ext == "pdf") =>
+                if path_has_extension(from, "pdf") || path_has_extension(to, "pdf") =>
             {
                 let old_id = vault.path_to_entry_id(from);
                 index.remove_pdf(&NoteId(old_id));
-                if to.extension().is_some_and(|ext| ext == "pdf") {
+                if path_has_extension(to, "pdf") {
                     let new_id = vault.path_to_entry_id(to);
                     if let Ok(doc) = vault_ai_vault::pdf::extract_pdf_text(&vault.root, to, &new_id)
                     {
@@ -575,7 +767,9 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     note_id: None,
                 })
             }
-            VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
+            VaultEvent::FileCreated(path) | VaultEvent::FileModified(path)
+                if path_has_extension(&path, "md") =>
+            {
                 match vault.read_note_from_path(&path) {
                     Ok(note) => {
                         let dto = note_document_to_dto(&note);
@@ -600,7 +794,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     }
                 }
             }
-            VaultEvent::FileDeleted(path) => {
+            VaultEvent::FileDeleted(path) if path_has_extension(&path, "md") => {
                 let note_id = vault.path_to_id(&path);
                 index.remove_note(&NoteId(note_id.clone()));
                 Some(VaultNoteChangeDto {
@@ -610,7 +804,9 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     note_id: Some(note_id),
                 })
             }
-            VaultEvent::FileRenamed { from, to } => {
+            VaultEvent::FileRenamed { from, to }
+                if path_has_extension(&from, "md") || path_has_extension(&to, "md") =>
+            {
                 let old_id = vault.path_to_id(&from);
                 index.remove_note(&NoteId(old_id.clone()));
                 match vault.read_note_from_path(&to) {
@@ -633,7 +829,22 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     }),
                 }
             }
+            VaultEvent::FileCreated(_)
+            | VaultEvent::FileModified(_)
+            | VaultEvent::FileDeleted(_)
+            | VaultEvent::FileRenamed { .. } => Some(VaultNoteChangeDto {
+                vault_path: vault_path.to_string(),
+                kind: "upsert".to_string(),
+                note: None,
+                note_id: None,
+            }),
+        };
+
+        if change.is_some() {
+            let _ = refresh_entries_cache(instance);
         }
+
+        change
     };
 
     dbg_log!("{event_label} total: {:.2?}", watcher_start.elapsed());
@@ -659,6 +870,9 @@ fn run_open_vault_job(
     let files = vault
         .discover_markdown_files()
         .map_err(|error| error.to_string())?;
+    let entries = vault
+        .discover_vault_entries()
+        .map_err(|error| error.to_string())?;
     metrics.scan_ms = scan_started.elapsed().as_millis() as u64;
     update_open_state_for_job(app, vault_path, job_id, |open_state| {
         open_state.metrics.scan_ms = metrics.scan_ms;
@@ -667,7 +881,7 @@ fn run_open_vault_job(
 
     ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
 
-    let fingerprint = VaultFingerprint::from_files(&files);
+    let fingerprint = VaultFingerprint::from_state(&files, &entries);
 
     let snapshot_load_started = Instant::now();
     let snapshot = load_snapshot(app, &vault.root);
@@ -681,13 +895,13 @@ fn run_open_vault_job(
 
     let root_path = vault.root.to_string_lossy().to_string();
 
-    let (mut index, snapshot_used) = match snapshot {
+    let (mut index, snapshot_entries, snapshot_used) = match snapshot {
         Some(loaded)
             if loaded.metadata.version == SNAPSHOT_SCHEMA_VERSION
                 && loaded.metadata.root_path == root_path
                 && loaded.metadata.fingerprint == fingerprint =>
         {
-            (loaded.payload.index, true)
+            (loaded.payload.index, loaded.payload.entries, true)
         }
         Some(loaded)
             if loaded.metadata.version == SNAPSHOT_SCHEMA_VERSION
@@ -794,7 +1008,7 @@ fn run_open_vault_job(
             }
 
             metrics.index_ms = index_started.elapsed().as_millis() as u64;
-            (next_index, true)
+            (next_index, entries.clone(), true)
         }
         _ => {
             update_open_state_for_job(app, vault_path, job_id, |open_state| {
@@ -831,7 +1045,7 @@ fn run_open_vault_job(
                 });
             });
             metrics.index_ms = index_started.elapsed().as_millis() as u64;
-            (index, false)
+            (index, entries.clone(), false)
         }
     };
 
@@ -922,12 +1136,20 @@ fn run_open_vault_job(
     })?;
 
     let snapshot_save_started = Instant::now();
-    let _ = save_snapshot(app, &vault.root, &files, &index, &fingerprint);
+    let _ = save_snapshot(
+        app,
+        &vault.root,
+        &files,
+        &snapshot_entries,
+        &index,
+        &fingerprint,
+    );
     metrics.snapshot_save_ms = snapshot_save_started.elapsed().as_millis() as u64;
 
     Ok(OpenVaultResult {
         vault,
         index,
+        entries: snapshot_entries,
         snapshot_used,
         metrics,
     })
@@ -961,6 +1183,7 @@ fn start_open_vault_inner(
         instance.open_state = VaultOpenState::starting(path.clone());
         instance.vault = None;
         instance.index = None;
+        instance.entries = None;
         instance.watcher = None;
 
         (write_tracker, job_id)
@@ -1003,6 +1226,7 @@ fn start_open_vault_inner(
                     let note_count = result.index.metadata.len();
                     instance.vault = Some(result.vault);
                     instance.index = Some(result.index);
+                    instance.entries = Some(result.entries);
                     instance.watcher = Some(watcher);
                     instance.open_cancel = None;
                     instance.open_state.finish_ready(
@@ -1134,8 +1358,101 @@ fn list_vault_entries(
         .vaults
         .get(&vault_path)
         .ok_or("No hay vault abierto")?;
+    if let Some(entries) = instance.entries.as_ref() {
+        return Ok(entries.clone());
+    }
+
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
     vault.discover_vault_entries().map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct VaultFileDetail {
+    path: String,
+    relative_path: String,
+    file_name: String,
+    mime_type: Option<String>,
+    content: String,
+}
+
+fn build_vault_file_detail(
+    vault: &Vault,
+    relative_path: String,
+    content: String,
+) -> Result<VaultFileDetail, String> {
+    let path = vault
+        .resolve_relative_path(&relative_path)
+        .map_err(|e| e.to_string())?;
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| relative_path.clone());
+
+    let mime_type = vault
+        .discover_vault_entries()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|entry| entry.relative_path == relative_path)
+        .and_then(|entry| entry.mime_type);
+
+    Ok(VaultFileDetail {
+        path: path.to_string_lossy().to_string(),
+        relative_path,
+        file_name,
+        mime_type,
+        content,
+    })
+}
+
+#[tauri::command]
+fn read_vault_file(
+    vault_path: String,
+    relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultFileDetail, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    let content = vault
+        .read_text_file(&relative_path)
+        .map_err(|e| e.to_string())?;
+    build_vault_file_detail(vault, relative_path, content)
+}
+
+#[tauri::command]
+fn save_vault_file(
+    vault_path: String,
+    relative_path: String,
+    content: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultFileDetail, String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let abs_path = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        vault
+            .resolve_relative_path(&relative_path)
+            .map_err(|e| e.to_string())?
+    };
+
+    write_tracker.track_content(abs_path, &content);
+    {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        vault
+            .save_text_file(&relative_path, &content)
+            .map_err(|e| e.to_string())?;
+    }
+    refresh_entries_cache(instance)?;
+
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    build_vault_file_detail(vault, relative_path, content)
 }
 
 #[tauri::command]
@@ -1225,8 +1542,32 @@ fn create_note(
     if let Some(index) = instance.index.as_mut() {
         index.reindex_note(note);
     }
+    refresh_entries_cache(instance)?;
 
     Ok(dto)
+}
+
+#[tauri::command]
+fn create_folder(
+    vault_path: String,
+    path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultEntryDto, String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    let abs_path = vault.root.join(&path);
+    write_tracker.track_any(abs_path);
+
+    let entry = vault.create_folder(&path).map_err(|e| e.to_string())?;
+    refresh_entries_cache(instance)?;
+
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -1251,8 +1592,88 @@ fn delete_note(
     if let Some(index) = instance.index.as_mut() {
         index.remove_note(&NoteId(note_id));
     }
+    refresh_entries_cache(instance)?;
 
     Ok(())
+}
+
+#[tauri::command]
+fn delete_folder(
+    vault_path: String,
+    relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    vault
+        .delete_folder(&relative_path)
+        .map_err(|e| e.to_string())?;
+
+    rebuild_index(instance)?;
+    refresh_entries_cache(instance)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn move_folder(
+    vault_path: String,
+    relative_path: String,
+    new_relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    let old_path = vault.root.join(&relative_path);
+    let new_path = vault.root.join(&new_relative_path);
+    write_tracker.track_any(old_path);
+    write_tracker.track_any(new_path);
+
+    vault
+        .move_folder(&relative_path, &new_relative_path)
+        .map_err(|e| e.to_string())?;
+
+    rebuild_index(instance)?;
+    refresh_entries_cache(instance)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn copy_folder(
+    vault_path: String,
+    relative_path: String,
+    new_relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultEntryDto, String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    let new_path = vault.root.join(&new_relative_path);
+    write_tracker.track_any(new_path);
+
+    let entry = vault
+        .copy_folder(&relative_path, &new_relative_path)
+        .map_err(|e| e.to_string())?;
+
+    rebuild_index(instance)?;
+    refresh_entries_cache(instance)?;
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -1285,8 +1706,173 @@ fn rename_note(
         index.remove_note(&NoteId(note_id));
         index.reindex_note(note);
     }
+    refresh_entries_cache(instance)?;
 
     Ok(dto)
+}
+
+#[tauri::command]
+fn move_vault_entry(
+    vault_path: String,
+    relative_path: String,
+    new_relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultEntryDto, String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    let old_path = vault.resolve_relative_path(&relative_path);
+    let new_path = vault.resolve_relative_path(&new_relative_path);
+    if let Ok(path) = old_path {
+        write_tracker.track_any(path);
+    }
+    if let Ok(path) = new_path {
+        write_tracker.track_any(path);
+    }
+
+    let entry = vault
+        .move_vault_entry(&relative_path, &new_relative_path)
+        .map_err(|e| e.to_string())?;
+
+    refresh_entries_cache(instance)?;
+    Ok(entry)
+}
+
+#[tauri::command]
+fn move_vault_entry_to_trash(
+    vault_path: String,
+    relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    let source_path = resolve_vault_scoped_path(&vault.root, &relative_path)?;
+    if !source_path.exists() {
+        return Err("Archivo no encontrado".to_string());
+    }
+    if !source_path.is_file() {
+        return Err("Solo se pueden mover archivos a trash".to_string());
+    }
+    if source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+    {
+        return Err("Las notas deben eliminarse con Delete Note".to_string());
+    }
+
+    let trash_target = build_unique_trash_target_path(&vault.root, &source_path)?;
+    if let Some(parent) = trash_target.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    write_tracker.track_any(source_path.clone());
+    write_tracker.track_any(trash_target.clone());
+    fs::rename(&source_path, &trash_target).map_err(|error| error.to_string())?;
+
+    refresh_entries_cache(instance)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn ai_get_text_file_hash(
+    vault_path: String,
+    path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Option<String>, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    let resolved_path = resolve_vault_scoped_path(&vault.root, &path)?;
+
+    match fs::read(&resolved_path) {
+        Ok(bytes) => Ok(Some(fnv1a_hash_hex(&bytes))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn ai_restore_text_file(
+    vault_path: String,
+    path: String,
+    previous_path: Option<String>,
+    content: Option<String>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let (write_tracker, current_path, restore_path) = {
+        let state = lock!(state)?;
+        let instance = state
+            .vaults
+            .get(&vault_path)
+            .ok_or("No hay vault abierto")?;
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let current_path = resolve_vault_scoped_path(&vault.root, &path)?;
+        let restore_path = previous_path
+            .as_deref()
+            .map(|value| resolve_vault_scoped_path(&vault.root, value))
+            .transpose()?;
+
+        (state.write_tracker.clone(), current_path, restore_path)
+    };
+
+    if let Some(target_path) = restore_path.as_ref() {
+        write_tracker.track_any(target_path.clone());
+    }
+    write_tracker.track_any(current_path.clone());
+
+    if let Some(text) = content.as_ref() {
+        let final_path = restore_path.as_ref().unwrap_or(&current_path);
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        write_tracker.track_content(final_path.clone(), text);
+        fs::write(final_path, text).map_err(|error| error.to_string())?;
+
+        if final_path != &current_path && current_path.exists() {
+            fs::remove_file(&current_path).map_err(|error| error.to_string())?;
+        }
+        let mut state = lock!(state)?;
+        let instance = state
+            .vaults
+            .get_mut(&vault_path)
+            .ok_or("No hay vault abierto")?;
+        refresh_entries_cache(instance)?;
+        return Ok(());
+    }
+
+    if current_path.exists() {
+        fs::remove_file(&current_path).map_err(|error| error.to_string())?;
+    }
+
+    if let Some(target_path) = restore_path {
+        if target_path.exists() {
+            fs::remove_file(target_path).map_err(|error| error.to_string())?;
+        }
+    }
+
+    let mut state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    refresh_entries_cache(instance)?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1301,18 +1887,56 @@ fn search_notes(
         .get(&vault_path)
         .ok_or("No hay vault abierto")?;
     let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
-    Ok(index
+    let query_lower = query.to_lowercase();
+
+    let mut results: Vec<SearchResultDto> = index
         .search(&query)
         .into_iter()
-        .take(200)
         .map(|r| SearchResultDto {
             id: r.metadata.id.0.clone(),
             path: r.metadata.path.0.to_string_lossy().to_string(),
             title: r.metadata.title.clone(),
+            kind: "note".to_string(),
             score: r.score,
         })
-        .collect())
+        .collect();
+
+    results.extend(
+        vault
+            .discover_vault_entries()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|entry| entry.kind != "note")
+            .filter_map(|entry| {
+                let score = compute_entry_search_score(
+                    &query_lower,
+                    &entry.file_name,
+                    &entry.relative_path,
+                );
+                if score <= 0.0 {
+                    return None;
+                }
+                Some(SearchResultDto {
+                    id: entry.id,
+                    path: entry.path,
+                    title: entry.title,
+                    kind: entry.kind,
+                    score,
+                })
+            }),
+    );
+
+    results.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(200);
+
+    Ok(results)
 }
 
 #[tauri::command]
@@ -1587,11 +2211,21 @@ pub fn run() {
             cancel_open_vault,
             list_notes,
             list_vault_entries,
+            read_vault_file,
+            save_vault_file,
             read_note,
             save_note,
             create_note,
+            create_folder,
+            delete_folder,
             delete_note,
+            move_folder,
+            copy_folder,
             rename_note,
+            move_vault_entry,
+            move_vault_entry_to_trash,
+            ai_get_text_file_hash,
+            ai_restore_text_file,
             search_notes,
             advanced_search,
             get_backlinks,
@@ -1633,4 +2267,40 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_obsolete_snapshot_removes_older_versions() {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-snapshot-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("snapshot.json"), b"{}").unwrap();
+
+        cleanup_obsolete_snapshot(&dir, SNAPSHOT_SCHEMA_VERSION - 1);
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn cleanup_obsolete_snapshot_keeps_current_version() {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-snapshot-test-{}-{}-keep",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("snapshot.json"), b"{}").unwrap();
+
+        cleanup_obsolete_snapshot(&dir, SNAPSHOT_SCHEMA_VERSION);
+
+        assert!(dir.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

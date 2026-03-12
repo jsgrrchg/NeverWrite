@@ -7,8 +7,10 @@ import {
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
 } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
     ATTACH_EXTERNAL_TAB_EVENT,
     type AttachExternalTabPayload,
@@ -23,15 +25,22 @@ import {
     openDetachedNoteWindow,
     publishWindowTabDropZone,
 } from "../../app/detachedWindows";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    isReviewTab,
+} from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { revealNoteInTree } from "../../app/utils/navigation";
+import {
+    closeOpenTabsForVaultPath,
+    moveVaultEntryToTrash,
+} from "../../app/utils/vaultEntries";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripScrollTarget } from "./tabStrip";
@@ -94,11 +103,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     // Primitive selectors — stable when values don't change
     const canGoBack = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return tab && tab.kind !== "pdf" ? tab.historyIndex > 0 : false;
+        return tab && isNoteTab(tab) ? tab.historyIndex > 0 : false;
     });
     const canGoForward = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return tab && tab.kind !== "pdf"
+        return tab && isNoteTab(tab)
             ? tab.historyIndex < tab.history.length - 1
             : false;
     });
@@ -108,14 +117,42 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
     const vaultPath = useVaultStore((s) => s.vaultPath);
+    const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
         tabId: string;
     }> | null>(null);
     const [historyContextMenu, setHistoryContextMenu] =
         useState<ContextMenuState<void> | null>(null);
 
+    const handleMoveTabFileToTrash = useCallback(
+        async (path: string, title: string) => {
+            if (!vaultPath || !path.startsWith(vaultPath)) {
+                return;
+            }
+
+            const relativePath = path
+                .slice(vaultPath.length)
+                .replace(/^[/\\]+/, "");
+            const approved = await confirm(`Move "${title}" to Trash?`, {
+                title: "Move File to Trash",
+                kind: "warning",
+            });
+            if (!approved) return;
+
+            try {
+                await moveVaultEntryToTrash(relativePath);
+                closeOpenTabsForVaultPath(path);
+                await refreshEntries();
+            } catch (error) {
+                console.error("Failed to move file to trash:", error);
+            }
+        },
+        [refreshEntries, vaultPath],
+    );
+
     const ghostRef = useRef<WebviewWindow | null>(null);
     const ghostCancelledRef = useRef(false);
+    const tabDropZoneRef = useRef<HTMLDivElement | null>(null);
 
     const handleDetachStart = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
@@ -329,13 +366,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             frame = window.requestAnimationFrame(() => {
                 frame = null;
-                const strip = tabStripRef.current;
-                if (!strip) {
+                const dropZone = tabDropZoneRef.current;
+                if (!dropZone) {
                     publishWindowTabDropZone(label, null);
                     return;
                 }
 
-                const rect = strip.getBoundingClientRect();
+                const rect = dropZone.getBoundingClientRect();
                 if (rect.width <= 0 || rect.height <= 0) {
                     publishWindowTabDropZone(label, null);
                     return;
@@ -414,7 +451,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             });
             publishWindowTabDropZone(label, null);
         };
-    }, [tabOrderKey, tabStripRef, vaultPath]);
+    }, [tabOrderKey, vaultPath]);
 
     useEffect(() => {
         if (!activeTabId || draggingTabId) return;
@@ -640,7 +677,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{ width: 10, flexShrink: 0 }}
                         />
 
-                        <div className="no-drag flex min-w-0 flex-1 overflow-hidden items-center">
+                        <div
+                            ref={tabDropZoneRef}
+                            className="no-drag flex min-w-0 flex-1 overflow-hidden items-center"
+                        >
                             <div className="no-drag flex min-w-0 flex-1 overflow-hidden">
                                 <div
                                     ref={tabStripRef}
@@ -672,6 +712,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         const isActive = tab.id === activeTabId;
                                         const isDragging =
                                             tab.id === draggingTabId;
+                                        const tabTooltip = isNoteTab(tab)
+                                            ? tab.noteId
+                                            : tab.kind === "file"
+                                              ? tab.relativePath
+                                              : tab.title;
 
                                         return (
                                             <div
@@ -683,7 +728,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         node,
                                                     )
                                                 }
-                                                title={tab.kind === "pdf" ? tab.title : tab.noteId}
+                                                title={tabTooltip}
                                                 onClick={() =>
                                                     handleTabClick(tab.id)
                                                 }
@@ -777,9 +822,50 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 }}
                                             >
                                                 {tab.kind === "pdf" && (
-                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 opacity-60">
+                                                    <svg
+                                                        width="12"
+                                                        height="12"
+                                                        viewBox="0 0 16 16"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="1.2"
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                        className="flex-shrink-0 opacity-60"
+                                                    >
                                                         <path d="M4 2h5l4 4v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" />
                                                         <path d="M9 2v4h4" />
+                                                    </svg>
+                                                )}
+                                                {tab.kind === "file" && (
+                                                    <svg
+                                                        width="12"
+                                                        height="12"
+                                                        viewBox="0 0 16 16"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="1.2"
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                        className="flex-shrink-0 opacity-60"
+                                                    >
+                                                        <path d="M4 2h5l4 4v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" />
+                                                        <path d="M9 2v4h4" />
+                                                    </svg>
+                                                )}
+                                                {tab.kind === "ai-review" && (
+                                                    <svg
+                                                        width="12"
+                                                        height="12"
+                                                        viewBox="0 0 16 16"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="1.2"
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                        className="flex-shrink-0 opacity-60"
+                                                    >
+                                                        <path d="M3 8h10M6 4l-4 4 4 4M10 4l4 4-4 4" />
                                                     </svg>
                                                 )}
                                                 <span className="flex-1 truncate text-[12.5px] font-medium">
@@ -983,7 +1069,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     </>
                 ) : (
                     <>
-                        <div onMouseDown={startWindowDrag} className="flex-1" />
+                        <div
+                            ref={tabDropZoneRef}
+                            onMouseDown={startWindowDrag}
+                            className="flex-1"
+                            style={{ minHeight: 30 }}
+                        />
                         <div
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end flex-shrink-0"
@@ -1110,7 +1201,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     const currentActiveTab = currentTabs.find(
                         (t) => t.id === currentActiveId,
                     );
-                    if (!currentActiveTab) return null;
+                    if (!currentActiveTab || !isNoteTab(currentActiveTab)) {
+                        return null;
+                    }
                     return (
                         <ContextMenu
                             menu={historyContextMenu}
@@ -1139,16 +1232,35 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         );
                         if (!tab) return [];
                         const isPdf = tab.kind === "pdf";
+                        const isFile = tab.kind === "file";
+                        const isReview = isReviewTab(tab);
+                        const noteId = isNoteTab(tab) ? tab.noteId : null;
                         const filePath = isPdf
                             ? tab.path
-                            : (useVaultStore
-                                  .getState()
-                                  .notes.find((note) => note.id === tab.noteId)
-                                  ?.path ?? null);
+                            : isFile
+                              ? tab.path
+                              : (useVaultStore
+                                    .getState()
+                                    .notes.find((note) => note.id === noteId)
+                                    ?.path ?? null);
 
                         const tabIndex = tabs.findIndex(
                             (entry) => entry.id === tab.id,
                         );
+
+                        if (isReview) {
+                            return [
+                                {
+                                    label: "Close",
+                                    action: () => void handleCloseTab(tab.id),
+                                },
+                                {
+                                    label: "Close Others",
+                                    action: () => closeOtherTabs(tab.id),
+                                    disabled: tabs.length <= 1,
+                                },
+                            ];
+                        }
 
                         return [
                             {
@@ -1173,12 +1285,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 disabled: tabIndex <= 0,
                             },
                             { type: "separator" as const },
-                            ...(!isPdf
+                            ...(!isPdf && !isFile
                                 ? [
                                       {
                                           label: "Reveal in Tree",
-                                          action: () =>
-                                              revealNoteInTree(tab.noteId),
+                                          action: () => {
+                                              if (noteId)
+                                                  revealNoteInTree(noteId);
+                                          },
                                       },
                                   ]
                                 : []),
@@ -1194,12 +1308,34 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 label: "Copy Path",
                                 action: () =>
                                     void navigator.clipboard.writeText(
-                                        isPdf ? tab.path : tab.noteId,
+                                        isPdf
+                                            ? tab.path
+                                            : isFile
+                                              ? tab.relativePath
+                                              : (noteId ?? ""),
                                     ),
                             },
-                            ...(isPdf
+                            ...(isPdf || isFile
                                 ? [
                                       { type: "separator" as const },
+                                      {
+                                          label: "Open Externally",
+                                          action: () => void openPath(tab.path),
+                                      },
+                                      {
+                                          label: "Move File to Trash",
+                                          action: () =>
+                                              void handleMoveTabFileToTrash(
+                                                  tab.path,
+                                                  tab.title,
+                                              ),
+                                          danger: true,
+                                          disabled: !vaultPath,
+                                      },
+                                  ]
+                                : []),
+                            ...(isPdf
+                                ? [
                                       {
                                           label: "Add to Chat",
                                           action: () =>
@@ -1208,11 +1344,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                   x: 0,
                                                   y: 0,
                                                   notes: [],
-                                                  files: [{
-                                                      filePath: tab.path,
-                                                      fileName: tab.title,
-                                                      mimeType: "application/pdf",
-                                                  }],
+                                                  files: [
+                                                      {
+                                                          filePath: tab.path,
+                                                          fileName: tab.title,
+                                                          mimeType:
+                                                              "application/pdf",
+                                                      },
+                                                  ],
                                               }),
                                       },
                                   ]

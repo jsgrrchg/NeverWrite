@@ -58,9 +58,20 @@ function HighlightIcon() {
 }
 
 const TOOLBAR_BUTTONS: ToolbarButton[] = [
-    { action: "bold", label: "B", title: "Bold", prominent: true, compact: true },
+    {
+        action: "bold",
+        label: "B",
+        title: "Bold",
+        prominent: true,
+        compact: true,
+    },
     { action: "italic", label: "I", title: "Italic", compact: true },
-    { action: "highlight", label: <HighlightIcon />, title: "Highlight", compact: true },
+    {
+        action: "highlight",
+        label: <HighlightIcon />,
+        title: "Highlight",
+        compact: true,
+    },
     { action: "code", label: "</>", title: "Code" },
     { action: "wikilink", label: "Wiki", title: "Wikilink" },
     { action: "link", label: "Link", title: "Link" },
@@ -72,11 +83,13 @@ export function FloatingSelectionToolbar({
     toolbar,
     editorElement,
     onAction,
+    onAddToChat,
     onClose,
 }: {
     toolbar: FloatingSelectionToolbarState;
     editorElement: HTMLElement | null;
     onAction: (action: SelectionToolbarAction) => void;
+    onAddToChat?: () => void;
     onClose: () => void;
 }) {
     const ref = useRef<HTMLDivElement>(null);
@@ -189,6 +202,68 @@ export function FloatingSelectionToolbar({
                     {button.label}
                 </button>
             ))}
+            {onAddToChat && (
+                <>
+                    <div
+                        style={{
+                            width: 1,
+                            height: 16,
+                            background: "var(--border)",
+                            opacity: 0.5,
+                            flexShrink: 0,
+                        }}
+                    />
+                    <button
+                        type="button"
+                        title="Add to Chat (⌘L)"
+                        aria-label="Add to Chat"
+                        onMouseDown={(event) => {
+                            event.preventDefault();
+                            onAddToChat();
+                        }}
+                        style={{
+                            border: "none",
+                            borderRadius: 999,
+                            background: "transparent",
+                            color: "var(--accent)",
+                            minWidth: 42,
+                            height: 28,
+                            padding: "0 10px",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 4,
+                            letterSpacing: "-0.01em",
+                            whiteSpace: "nowrap",
+                        }}
+                        onMouseEnter={(event) => {
+                            event.currentTarget.style.background =
+                                "var(--bg-tertiary)";
+                        }}
+                        onMouseLeave={(event) => {
+                            event.currentTarget.style.background =
+                                "transparent";
+                        }}
+                    >
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M14 1H2a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3l3 3 3-3h3a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1Z" />
+                        </svg>
+                        Chat
+                    </button>
+                </>
+            )}
         </div>,
         document.body,
     );

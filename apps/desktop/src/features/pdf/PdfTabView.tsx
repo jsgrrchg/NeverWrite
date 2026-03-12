@@ -2,7 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useEditorStore, isPdfTab, type PdfTab } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isPdfTab,
+    type PdfTab,
+} from "../../app/store/editorStore";
+import {
+    isWheelZoomGesture,
+    useWheelZoomModifier,
+} from "../../app/hooks/useWheelZoomModifier";
+import {
+    formatZoomPercentage,
+    persistWheelZoom,
+} from "../../app/utils/zoom";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -10,8 +22,25 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
 const PIXEL_RATIO = window.devicePixelRatio || 1;
-const PDF_DOCUMENT_OPTIONS: Omit<pdfjsLib.DocumentInitParameters, "url"> = {
+const PINCH_SENSITIVITY = 0.0025;
+const PINCH_COMMIT_DELAY = 150;
+const PDF_TEXT_CONTENT_OPTIONS = {
+    includeMarkedContent: true,
+    disableNormalization: true,
+} as const;
+
+type PdfFilter = "none" | "dark" | "sepia" | "grayscale";
+const PDF_FILTERS: { mode: PdfFilter; label: string; css: string }[] = [
+    { mode: "none", label: "Normal", css: "none" },
+    { mode: "dark", label: "Dark", css: "invert(1) hue-rotate(180deg)" },
+    { mode: "sepia", label: "Sepia", css: "sepia(1)" },
+    { mode: "grayscale", label: "B&W", css: "grayscale(1)" },
+];
+
+const PDF_DOCUMENT_OPTIONS = {
     isImageDecoderSupported: false,
     isOffscreenCanvasSupported: false,
     stopAtErrors: true,
@@ -36,9 +65,17 @@ function classifyPdfError(raw: string): string {
     const lower = raw.toLowerCase();
     if (lower.includes("password") || lower.includes("encrypted"))
         return "This PDF is password-protected and cannot be opened in the viewer.";
-    if (lower.includes("invalid") || lower.includes("corrupt") || lower.includes("not a pdf"))
+    if (
+        lower.includes("invalid") ||
+        lower.includes("corrupt") ||
+        lower.includes("not a pdf")
+    )
         return "This file appears to be corrupted or is not a valid PDF.";
-    if (lower.includes("not found") || lower.includes("no such file") || lower.includes("404"))
+    if (
+        lower.includes("not found") ||
+        lower.includes("no such file") ||
+        lower.includes("404")
+    )
         return "The PDF file was not found. It may have been moved or deleted.";
     if (lower.includes("network") || lower.includes("fetch"))
         return "Could not load the PDF file. Check that the file is accessible.";
@@ -60,7 +97,9 @@ type PdfErrorState = {
 
 export function PdfTabView() {
     const tab = useEditorStore((s) => {
-        const current = s.tabs.find((candidate) => candidate.id === s.activeTabId);
+        const current = s.tabs.find(
+            (candidate) => candidate.id === s.activeTabId,
+        );
         return current && isPdfTab(current) ? current : null;
     });
 
@@ -80,9 +119,14 @@ export function PdfTabView() {
 
 function PdfViewer({ tab }: { tab: PdfTab }) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const previousViewModeRef = useRef(tab.viewMode);
+    const pinchZoomRef = useRef(tab.zoom);
+    const pinchTimerRef = useRef(0);
+    const wheelZoomModifierRef = useWheelZoomModifier();
 
+    const [pdfFilter, setPdfFilter] = useState<PdfFilter>("none");
     const [loadedPdf, setLoadedPdf] = useState<LoadedPdfState | null>(null);
     const [errorState, setErrorState] = useState<PdfErrorState | null>(null);
     const [retryCount, setRetryCount] = useState(0);
@@ -125,16 +169,19 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         [],
     );
 
-    const scrollToPage = useCallback((pageNumber: number, behavior: ScrollBehavior) => {
-        const container = containerRef.current;
-        const element = pageRefs.current[pageNumber];
-        if (!container || !element) return;
+    const scrollToPage = useCallback(
+        (pageNumber: number, behavior: ScrollBehavior) => {
+            const container = containerRef.current;
+            const element = pageRefs.current[pageNumber];
+            if (!container || !element) return;
 
-        container.scrollTo({
-            top: Math.max(element.offsetTop - 24, 0),
-            behavior,
-        });
-    }, []);
+            container.scrollTo({
+                top: Math.max(element.offsetTop - 24, 0),
+                behavior,
+            });
+        },
+        [],
+    );
 
     useEffect(() => {
         pageRefs.current = {};
@@ -185,7 +232,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (tab.viewMode !== "continuous" || loading || error || !numPages) {
             return;
         }
-        if (previousViewMode === "continuous" && previousViewMode === tab.viewMode) {
+        if (
+            previousViewMode === "continuous" &&
+            previousViewMode === tab.viewMode
+        ) {
             return;
         }
 
@@ -202,7 +252,8 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (!container) return;
 
         const containerRect = container.getBoundingClientRect();
-        const probeY = containerRect.top + Math.min(container.clientHeight * 0.35, 240);
+        const probeY =
+            containerRect.top + Math.min(container.clientHeight * 0.35, 240);
 
         let closestPage = tab.page;
         let closestDistance = Number.POSITIVE_INFINITY;
@@ -213,7 +264,8 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
             const rect = element.getBoundingClientRect();
             const visible =
-                rect.bottom >= containerRect.top && rect.top <= containerRect.bottom;
+                rect.bottom >= containerRect.top &&
+                rect.top <= containerRect.bottom;
             if (!visible) continue;
 
             const distance = Math.abs(rect.top - probeY);
@@ -286,12 +338,70 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         void openPath(tab.path);
     }, [tab.path]);
 
+    const activeFilter = PDF_FILTERS.find((f) => f.mode === pdfFilter)!;
+    const cycleFilter = useCallback(() => {
+        setPdfFilter((current) => {
+            const index = PDF_FILTERS.findIndex((f) => f.mode === current);
+            return PDF_FILTERS[(index + 1) % PDF_FILTERS.length].mode;
+        });
+    }, []);
+
+    useEffect(() => {
+        pinchZoomRef.current = tab.zoom;
+    }, [tab.zoom]);
+
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        function handleWheel(event: WheelEvent) {
+            if (!isWheelZoomGesture(event, wheelZoomModifierRef)) return;
+            event.preventDefault();
+
+            const prev = pinchZoomRef.current;
+            const next = Math.min(
+                MAX_ZOOM,
+                Math.max(
+                    MIN_ZOOM,
+                    prev * (1 - event.deltaY * PINCH_SENSITIVITY),
+                ),
+            );
+            pinchZoomRef.current = next;
+
+            // Instant visual feedback via CSS transform
+            const content = contentRef.current;
+            if (content) {
+                content.style.transformOrigin = "center top";
+                content.style.transform = `scale(${next / tab.zoom})`;
+            }
+
+            // Debounce the actual re-render
+            window.clearTimeout(pinchTimerRef.current);
+            pinchTimerRef.current = window.setTimeout(() => {
+                const content = contentRef.current;
+                if (content) {
+                    content.style.transform = "";
+                }
+                updatePdfZoom(tab.id, persistWheelZoom(next));
+            }, PINCH_COMMIT_DELAY);
+        }
+
+        container.addEventListener("wheel", handleWheel, { passive: false });
+        return () => {
+            container.removeEventListener("wheel", handleWheel);
+            window.clearTimeout(pinchTimerRef.current);
+        };
+    }, [tab.id, tab.zoom, updatePdfZoom]);
+
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
             if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
                 event.preventDefault();
                 goToPreviousPage();
-            } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+            } else if (
+                event.key === "ArrowRight" ||
+                event.key === "ArrowDown"
+            ) {
                 event.preventDefault();
                 goToNextPage();
             }
@@ -353,10 +463,12 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                             color: "var(--text-primary)",
                         }}
                         onMouseEnter={(event) => {
-                            event.currentTarget.style.borderColor = "var(--accent)";
+                            event.currentTarget.style.borderColor =
+                                "var(--accent)";
                         }}
                         onMouseLeave={(event) => {
-                            event.currentTarget.style.borderColor = "var(--border)";
+                            event.currentTarget.style.borderColor =
+                                "var(--border)";
                         }}
                     >
                         Retry
@@ -370,10 +482,12 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                             color: "var(--text-primary)",
                         }}
                         onMouseEnter={(event) => {
-                            event.currentTarget.style.borderColor = "var(--accent)";
+                            event.currentTarget.style.borderColor =
+                                "var(--accent)";
                         }}
                         onMouseLeave={(event) => {
-                            event.currentTarget.style.borderColor = "var(--border)";
+                            event.currentTarget.style.borderColor =
+                                "var(--border)";
                         }}
                     >
                         Open Externally
@@ -386,7 +500,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     if (!pdf) return null;
 
     return (
-        <div className="h-full flex flex-col" style={{ background: "var(--bg-primary)" }}>
+        <div
+            className="h-full flex flex-col"
+            style={{ background: "var(--bg-primary)" }}
+        >
             <div
                 className="flex items-center gap-2 px-3 shrink-0"
                 style={{
@@ -442,12 +559,12 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 </ToolbarButton>
                 <span
                     style={{
-                        minWidth: 36,
+                        minWidth: 48,
                         textAlign: "center",
                         fontVariantNumeric: "tabular-nums",
                     }}
                 >
-                    {Math.round(tab.zoom * 100)}%
+                    {formatZoomPercentage(tab.zoom)}
                 </span>
                 <ToolbarButton
                     onClick={zoomIn}
@@ -477,8 +594,28 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 >
                     <StackPagesIcon />
                     <span>
-                        {tab.viewMode === "continuous" ? "Continuous" : "Single Page"}
+                        {tab.viewMode === "continuous"
+                            ? "Continuous"
+                            : "Single Page"}
                     </span>
+                </ToolbarButton>
+
+                <div
+                    style={{
+                        width: 1,
+                        height: 16,
+                        background: "var(--border)",
+                        margin: "0 4px",
+                    }}
+                />
+
+                <ToolbarButton
+                    onClick={cycleFilter}
+                    active={pdfFilter !== "none"}
+                    title={`Filter: ${activeFilter.label}`}
+                >
+                    <FilterIcon />
+                    <span>{activeFilter.label}</span>
                 </ToolbarButton>
 
                 <div style={{ flex: 1 }} />
@@ -494,13 +631,20 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 className={`flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
                 style={{
                     padding: 24,
-                    background: "color-mix(in srgb, var(--bg-primary) 92%, #000)",
+                    background:
+                        "color-mix(in srgb, var(--bg-primary) 92%, #000)",
+                    touchAction: "none",
                 }}
             >
                 {tab.viewMode === "continuous" ? (
                     <div
+                        ref={contentRef}
                         className="w-full flex flex-col items-center"
-                        style={{ gap: 20 }}
+                        style={{
+                            gap: 20,
+                            willChange: "transform",
+                            filter: activeFilter.css,
+                        }}
                     >
                         {Array.from({ length: numPages }, (_, index) => (
                             <PdfPageCanvas
@@ -514,7 +658,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                         ))}
                     </div>
                 ) : (
-                    <div className="w-full flex justify-center">
+                    <div
+                        ref={contentRef}
+                        className="w-full flex justify-center"
+                        style={{
+                            willChange: "transform",
+                            filter: activeFilter.css,
+                        }}
+                    >
                         <PdfPageCanvas
                             key={`${tab.path}:${retryCount}:${tab.page}:${tab.zoom}`}
                             pdf={pdf}
@@ -540,14 +691,26 @@ function PdfPageCanvas({
     pageNumber: number;
     zoom: number;
     onRenderError: (message: string) => void;
-    registerElement?: (pageNumber: number, element: HTMLDivElement | null) => void;
+    registerElement?: (
+        pageNumber: number,
+        element: HTMLDivElement | null,
+    ) => void;
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const pageShellRef = useRef<HTMLDivElement>(null);
+    const textLayerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         let cancelled = false;
         let renderTask: pdfjsLib.RenderTask | null = null;
+        let textLayer: pdfjsLib.TextLayer | null = null;
         let currentPage: pdfjsLib.PDFPageProxy | null = null;
+
+        const clearTextLayer = () => {
+            const textLayerElement = textLayerRef.current;
+            if (!textLayerElement) return;
+            textLayerElement.replaceChildren();
+        };
 
         pdf.getPage(pageNumber)
             .then((page) => {
@@ -555,21 +718,46 @@ function PdfPageCanvas({
                 if (cancelled) return;
 
                 const canvas = canvasRef.current;
-                if (!canvas) return;
+                const pageShell = pageShellRef.current;
+                const textLayerElement = textLayerRef.current;
+                if (!canvas || !pageShell || !textLayerElement) return;
 
-                const viewport = page.getViewport({ scale: zoom * PIXEL_RATIO });
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
-                canvas.style.width = `${viewport.width / PIXEL_RATIO}px`;
-                canvas.style.height = `${viewport.height / PIXEL_RATIO}px`;
+                const displayViewport = page.getViewport({ scale: zoom });
+                const renderViewport = page.getViewport({
+                    scale: zoom * PIXEL_RATIO,
+                });
+
+                pageShell.style.width = `${displayViewport.width}px`;
+                pageShell.style.height = `${displayViewport.height}px`;
+                pageShell.style.setProperty(
+                    "--scale-factor",
+                    String(displayViewport.scale),
+                );
+                pageShell.style.setProperty(
+                    "--user-unit",
+                    String(page.userUnit ?? 1),
+                );
+
+                clearTextLayer();
+
+                canvas.width = renderViewport.width;
+                canvas.height = renderViewport.height;
+                canvas.style.width = `${displayViewport.width}px`;
+                canvas.style.height = `${displayViewport.height}px`;
 
                 const context = canvas.getContext("2d");
                 if (!context) {
-                    onRenderError("Could not create a canvas rendering context.");
+                    onRenderError(
+                        "Could not create a canvas rendering context.",
+                    );
                     return;
                 }
 
-                renderTask = page.render({ canvasContext: context, viewport });
+                renderTask = page.render({
+                    canvas,
+                    canvasContext: context,
+                    viewport: renderViewport,
+                });
                 renderTask.promise.catch((err) => {
                     if (
                         cancelled ||
@@ -579,6 +767,25 @@ function PdfPageCanvas({
                     }
                     onRenderError(String(err));
                 });
+
+                textLayer = new pdfjsLib.TextLayer({
+                    textContentSource:
+                        page.streamTextContent(PDF_TEXT_CONTENT_OPTIONS),
+                    container: textLayerElement,
+                    viewport: displayViewport,
+                });
+                textLayer.render().then(
+                    () => {
+                        if (cancelled) return;
+                        const endOfContent = document.createElement("div");
+                        endOfContent.className = "endOfContent";
+                        textLayerElement.append(endOfContent);
+                    },
+                    (err) => {
+                        if (cancelled) return;
+                        onRenderError(String(err));
+                    },
+                );
             })
             .catch((err) => {
                 if (!cancelled) {
@@ -589,6 +796,8 @@ function PdfPageCanvas({
         return () => {
             cancelled = true;
             renderTask?.cancel();
+            textLayer?.cancel();
+            clearTextLayer();
             currentPage?.cleanup?.();
         };
     }, [onRenderError, pageNumber, pdf, zoom]);
@@ -599,13 +808,21 @@ function PdfPageCanvas({
             className="flex justify-center w-full"
             data-page-number={pageNumber}
         >
-            <canvas
-                ref={canvasRef}
-                style={{
-                    boxShadow: "0 2px 16px rgba(0,0,0,0.15)",
-                    background: "#fff",
-                }}
-            />
+            <div ref={pageShellRef} className="pdf-page-shell">
+                <canvas
+                    ref={canvasRef}
+                    style={{
+                        boxShadow: "0 2px 16px rgba(0,0,0,0.15)",
+                        background: "#fff",
+                        touchAction: "none",
+                    }}
+                />
+                <div
+                    ref={textLayerRef}
+                    className="textLayer"
+                    data-selectable="true"
+                />
+            </div>
         </div>
     );
 }
@@ -650,6 +867,24 @@ function ToolbarButton({
         >
             {children}
         </button>
+    );
+}
+
+function FilterIcon() {
+    return (
+        <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="6" cy="6" r="3.5" />
+            <circle cx="10" cy="10" r="3.5" />
+        </svg>
     );
 }
 

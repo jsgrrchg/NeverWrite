@@ -1,15 +1,23 @@
-import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     memo,
     useMemo,
     useState,
+    type MouseEvent,
     type ReactElement,
     type ReactNode,
 } from "react";
-import { useEditorStore } from "../../../app/store/editorStore";
-import { useVaultStore } from "../../../app/store/vaultStore";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../../components/context-menu/ContextMenu";
+import {
+    DIFF_PANEL_MAX_HEIGHT,
+    computeUnifiedDiffLines,
+} from "../diff/reviewDiff";
 import { ChatInlinePill } from "./ChatInlinePill";
 import type { ChatPillMetrics } from "./chatPillMetrics";
+import { openChatNoteByReference } from "./chatNoteNavigation";
+import { DiffLineView } from "./editedFilesPresentation";
 
 interface MarkdownContentProps {
     content: string;
@@ -26,34 +34,6 @@ function parseVaultReference(value: string) {
         path: match[1],
         line: match[2] ?? match[3] ?? null,
     };
-}
-
-async function openVaultFile(absolutePath: string) {
-    const parsedReference = parseVaultReference(absolutePath);
-    const lookupPath = parsedReference?.path ?? absolutePath;
-    const { notes } = useVaultStore.getState();
-    const cleaned = lookupPath.trim();
-    const note =
-        notes.find((n) => n.path === cleaned) ??
-        notes.find((n) => n.path.endsWith(cleaned)) ??
-        notes.find((n) => cleaned.endsWith(n.id + ".md"));
-    if (!note) return;
-
-    const { tabs, openNote } = useEditorStore.getState();
-    const existing = tabs.find((t) => t.noteId === note.id);
-    if (existing) {
-        openNote(note.id, note.title, existing.content);
-        return;
-    }
-
-    try {
-        const detail = await vaultInvoke<{ content: string }>("read_note", {
-            noteId: note.id,
-        });
-        openNote(note.id, note.title, detail.content);
-    } catch {
-        // Note might have been deleted
-    }
 }
 
 interface Block {
@@ -90,35 +70,17 @@ function parseBlocks(text: string): Block[] {
     return blocks;
 }
 
-async function openWikilink(name: string) {
-    const { notes } = useVaultStore.getState();
-    const note =
-        notes.find((n) => n.title === name) ??
-        notes.find((n) => n.title.toLowerCase() === name.toLowerCase()) ??
-        notes.find(
-            (n) =>
-                n.id.endsWith(name) || n.id.endsWith(name.replace(/ /g, "-")),
-        );
-    if (!note) return;
-    const { tabs, openNote } = useEditorStore.getState();
-    const existing = tabs.find((t) => t.noteId === note.id);
-    if (existing) {
-        openNote(note.id, note.title, existing.content);
-        return;
-    }
-    try {
-        const detail = await vaultInvoke<{ content: string }>("read_note", {
-            noteId: note.id,
-        });
-        openNote(note.id, note.title, detail.content);
-    } catch {
-        // Note might have been deleted
-    }
+interface MarkdownPillContextMenuPayload {
+    reference: string;
 }
 
 function renderInlineMarkdown(
     text: string,
     pillMetrics: ChatPillMetrics,
+    onNoteContextMenu: (
+        event: MouseEvent<HTMLElement>,
+        reference: string,
+    ) => void,
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
     // Process: wikilinks, inline code, bold, italic, links, vault file paths (.md[:line])
@@ -147,7 +109,10 @@ function renderInlineMarkdown(
                     label={label.trim()}
                     metrics={pillMetrics}
                     interactive
-                    onClick={() => void openWikilink(target.trim())}
+                    onClick={() => void openChatNoteByReference(target.trim())}
+                    onContextMenu={(event) =>
+                        onNoteContextMenu(event, target.trim())
+                    }
                     title={target.trim()}
                 />,
             );
@@ -168,8 +133,13 @@ function renderInlineMarkdown(
                         label={fileName}
                         metrics={pillMetrics}
                         interactive
-                        variant="file"
-                        onClick={() => void openVaultFile(parsedReference.path)}
+                        variant="accent"
+                        onClick={() =>
+                            void openChatNoteByReference(parsedReference.path)
+                        }
+                        onContextMenu={(event) =>
+                            onNoteContextMenu(event, parsedReference.path)
+                        }
                         title={codeText}
                     />,
                 );
@@ -221,9 +191,14 @@ function renderInlineMarkdown(
                             label={fileName}
                             metrics={pillMetrics}
                             interactive
-                            variant="file"
+                            variant="accent"
                             onClick={() =>
-                                void openVaultFile(parsedReference.path)
+                                void openChatNoteByReference(
+                                    parsedReference.path,
+                                )
+                            }
+                            onContextMenu={(event) =>
+                                onNoteContextMenu(event, parsedReference.path)
                             }
                             title={decoded}
                         />,
@@ -261,9 +236,17 @@ function renderInlineMarkdown(
                     label={fileName}
                     metrics={pillMetrics}
                     interactive
-                    variant="file"
+                    variant="accent"
                     onClick={() =>
-                        void openVaultFile(parsedReference?.path ?? filePath)
+                        void openChatNoteByReference(
+                            parsedReference?.path ?? filePath,
+                        )
+                    }
+                    onContextMenu={(event) =>
+                        onNoteContextMenu(
+                            event,
+                            parsedReference?.path ?? filePath,
+                        )
                     }
                     title={filePath}
                 />,
@@ -287,10 +270,25 @@ function TextBlock({
     content: string;
     pillMetrics: ChatPillMetrics;
 }) {
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<MarkdownPillContextMenuPayload> | null>(null);
     const lines = content.split("\n");
     const elements: ReactNode[] = [];
     let listItems: { ordered: boolean; text: string }[] = [];
     let listOrdered = false;
+
+    const handleNoteContextMenu = (
+        event: MouseEvent<HTMLElement>,
+        reference: string,
+    ) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: { reference },
+        });
+    };
 
     function flushList() {
         if (listItems.length === 0) return;
@@ -313,7 +311,11 @@ function TextBlock({
                             wordBreak: "break-word",
                         }}
                     >
-                        {renderInlineMarkdown(item.text, pillMetrics)}
+                        {renderInlineMarkdown(
+                            item.text,
+                            pillMetrics,
+                            handleNoteContextMenu,
+                        )}
                     </li>
                 ))}
             </Tag>,
@@ -345,7 +347,11 @@ function TextBlock({
                         wordBreak: "break-word",
                     }}
                 >
-                    {renderInlineMarkdown(headerMatch[2], pillMetrics)}
+                    {renderInlineMarkdown(
+                        headerMatch[2],
+                        pillMetrics,
+                        handleNoteContextMenu,
+                    )}
                 </div>,
             );
             continue;
@@ -396,7 +402,11 @@ function TextBlock({
                         wordBreak: "break-word",
                     }}
                 >
-                    {renderInlineMarkdown(line.slice(2), pillMetrics)}
+                    {renderInlineMarkdown(
+                        line.slice(2),
+                        pillMetrics,
+                        handleNoteContextMenu,
+                    )}
                 </blockquote>,
             );
             continue;
@@ -418,13 +428,34 @@ function TextBlock({
                     wordBreak: "break-word",
                 }}
             >
-                {renderInlineMarkdown(line, pillMetrics)}
+                {renderInlineMarkdown(line, pillMetrics, handleNoteContextMenu)}
             </div>,
         );
     }
 
     flushList();
-    return <>{elements}</>;
+    return (
+        <>
+            {elements}
+            {contextMenu ? (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open in New Tab",
+                            action: () => {
+                                void openChatNoteByReference(
+                                    contextMenu.payload.reference,
+                                    { newTab: true },
+                                );
+                            },
+                        },
+                    ]}
+                />
+            ) : null}
+        </>
+    );
 }
 
 function CodeBlock({
@@ -437,6 +468,13 @@ function CodeBlock({
     const [copied, setCopied] = useState(false);
     const languageLabel =
         language?.toLowerCase() === "md" ? "Markdown" : language;
+    const isUnifiedDiff =
+        language?.toLowerCase() === "diff" ||
+        language?.toLowerCase() === "patch";
+    const diffLines = useMemo(
+        () => (isUnifiedDiff ? computeUnifiedDiffLines(content) : []),
+        [content, isUnifiedDiff],
+    );
 
     const handleCopy = () => {
         void navigator.clipboard.writeText(content).then(() => {
@@ -502,26 +540,40 @@ function CodeBlock({
                     {languageLabel}
                 </div>
             ) : null}
-            <pre
-                className="max-w-full overflow-y-auto p-3 text-[0.8em] leading-relaxed"
-                style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    overflowWrap: "anywhere",
-                    wordBreak: "break-word",
-                }}
-            >
-                <code
+            {diffLines.length > 0 ? (
+                <div
+                    className="max-w-full overflow-auto text-[0.8em] leading-relaxed"
                     style={{
-                        color: "var(--text-primary)",
-                        whiteSpace: "inherit",
-                        overflowWrap: "inherit",
-                        wordBreak: "inherit",
+                        maxHeight: DIFF_PANEL_MAX_HEIGHT,
+                        fontFamily: "var(--font-mono, monospace)",
                     }}
                 >
-                    {content}
-                </code>
-            </pre>
+                    {diffLines.map((line, index) => (
+                        <DiffLineView key={index} line={line} />
+                    ))}
+                </div>
+            ) : (
+                <pre
+                    className="max-w-full overflow-y-auto p-3 text-[0.8em] leading-relaxed"
+                    style={{
+                        margin: 0,
+                        whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    <code
+                        style={{
+                            color: "var(--text-primary)",
+                            whiteSpace: "inherit",
+                            overflowWrap: "inherit",
+                            wordBreak: "inherit",
+                        }}
+                    >
+                        {content}
+                    </code>
+                </pre>
+            )}
         </div>
     );
 }
