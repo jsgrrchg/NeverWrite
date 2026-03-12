@@ -7,6 +7,10 @@ members = [
     "crates/diff",
     "crates/ai",
     "crates/state",
+    "crates/whisper",
     "apps/desktop/src-tauri",
 ]
 exclude = ["vendor/codex-acp"]
+
+[profile.dev]
+opt-level = 1
