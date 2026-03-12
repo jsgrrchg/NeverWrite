@@ -1,6 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use notify::{
     event::{ModifyKind, RenameMode},
@@ -13,24 +15,109 @@ use crate::vault::path_is_ignored;
 /// Rastrea archivos escritos por la app para distinguirlos de cambios externos.
 #[derive(Debug, Clone)]
 pub struct WriteTracker {
-    written: Arc<Mutex<HashSet<PathBuf>>>,
+    written: Arc<Mutex<HashMap<PathBuf, TrackedWrite>>>,
+}
+
+#[derive(Debug, Clone)]
+struct TrackedWrite {
+    kind: TrackedWriteKind,
+    tracked_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum TrackedWriteKind {
+    Content { hash: u64 },
+    Any,
 }
 
 impl WriteTracker {
     pub fn new() -> Self {
         WriteTracker {
-            written: Arc::new(Mutex::new(HashSet::new())),
+            written: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Registra un path como escrito por la app.
-    pub fn track(&self, path: PathBuf) {
-        self.written.lock().unwrap().insert(path);
+    /// Registra un archivo escrito por la app, junto con la firma del contenido esperado.
+    pub fn track_content(&self, path: PathBuf, content: &str) {
+        self.track_entry(
+            path,
+            TrackedWriteKind::Content {
+                hash: hash_bytes(content.as_bytes()),
+            },
+        );
     }
 
-    /// Verifica si un cambio es propio (y lo remueve del set). Retorna true si era propio.
-    pub fn consume(&self, path: &PathBuf) -> bool {
-        self.written.lock().unwrap().remove(path)
+    /// Registra un path que puede producir eventos propios sin contenido legible
+    /// (delete/rename). Se ignoran por una ventana corta.
+    pub fn track_any(&self, path: PathBuf) {
+        self.track_entry(path, TrackedWriteKind::Any);
+    }
+
+    fn track_entry(&self, path: PathBuf, kind: TrackedWriteKind) {
+        let mut written = self.written.lock().unwrap();
+        prune_expired(&mut written);
+        written.insert(
+            path,
+            TrackedWrite {
+                kind,
+                tracked_at: Instant::now(),
+            },
+        );
+    }
+
+    pub fn has_recent_match(&self, path: &PathBuf, current_hash: Option<u64>) -> bool {
+        let mut written = self.written.lock().unwrap();
+        prune_expired(&mut written);
+
+        let Some(entry) = written.get(path) else {
+            return false;
+        };
+
+        match (&entry.kind, current_hash) {
+            (TrackedWriteKind::Any, _) => true,
+            (TrackedWriteKind::Content { hash }, Some(current_hash)) => *hash == current_hash,
+            (TrackedWriteKind::Content { .. }, None) => false,
+        }
+    }
+}
+
+const SELF_WRITE_WINDOW: Duration = Duration::from_secs(2);
+
+fn prune_expired(written: &mut HashMap<PathBuf, TrackedWrite>) {
+    written.retain(|_, entry| entry.tracked_at.elapsed() <= SELF_WRITE_WINDOW);
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hash_bytes, WriteTracker};
+    use std::path::PathBuf;
+
+    #[test]
+    fn content_tracking_matches_only_same_content() {
+        let tracker = WriteTracker::new();
+        let path = PathBuf::from("note.md");
+
+        tracker.track_content(path.clone(), "alpha");
+
+        assert!(tracker.has_recent_match(&path, Some(hash_bytes(b"alpha"))));
+        assert!(!tracker.has_recent_match(&path, Some(hash_bytes(b"beta"))));
+    }
+
+    #[test]
+    fn any_tracking_matches_delete_and_rename_events() {
+        let tracker = WriteTracker::new();
+        let path = PathBuf::from("note.md");
+
+        tracker.track_any(path.clone());
+
+        assert!(tracker.has_recent_match(&path, None));
+        assert!(tracker.has_recent_match(&path, Some(hash_bytes(b"anything"))));
     }
 }
 
@@ -69,9 +156,11 @@ pub fn start_watcher(
         match event.kind {
             EventKind::Create(_) => {
                 for path in paths {
-                    if !write_tracker.consume(path) {
-                        on_event(VaultEvent::FileCreated(path.clone()));
+                    let current_hash = std::fs::read(path).ok().map(|content| hash_bytes(&content));
+                    if write_tracker.has_recent_match(path, current_hash) {
+                        continue;
                     }
+                    on_event(VaultEvent::FileCreated(path.clone()));
                 }
             }
             // Rename events: on macOS (FSEvents) these fire as Modify(Name)
@@ -79,19 +168,27 @@ pub fn start_watcher(
             // to distinguish source (delete) from destination (create).
             EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
                 if paths.len() >= 2 {
-                    let from_consumed = write_tracker.consume(paths[0]);
-                    let to_consumed = write_tracker.consume(paths[1]);
-                    if !from_consumed && !to_consumed {
-                        on_event(VaultEvent::FileRenamed {
-                            from: paths[0].clone(),
-                            to: paths[1].clone(),
-                        });
+                    let from_ignored = write_tracker.has_recent_match(paths[0], None);
+                    let to_ignored = write_tracker.has_recent_match(paths[1], None);
+                    if from_ignored || to_ignored {
+                        return;
                     }
+                    on_event(VaultEvent::FileRenamed {
+                        from: paths[0].clone(),
+                        to: paths[1].clone(),
+                    });
                 }
             }
             EventKind::Modify(ModifyKind::Name(_)) => {
                 for path in paths {
-                    if write_tracker.consume(path) {
+                    let should_ignore = if path.exists() {
+                        let current_hash =
+                            std::fs::read(path).ok().map(|content| hash_bytes(&content));
+                        write_tracker.has_recent_match(path, current_hash)
+                    } else {
+                        write_tracker.has_recent_match(path, None)
+                    };
+                    if should_ignore {
                         continue;
                     }
                     if path.exists() {
@@ -103,16 +200,19 @@ pub fn start_watcher(
             }
             EventKind::Modify(_) => {
                 for path in paths {
-                    if !write_tracker.consume(path) {
-                        on_event(VaultEvent::FileModified(path.clone()));
+                    let current_hash = std::fs::read(path).ok().map(|content| hash_bytes(&content));
+                    if write_tracker.has_recent_match(path, current_hash) {
+                        continue;
                     }
+                    on_event(VaultEvent::FileModified(path.clone()));
                 }
             }
             EventKind::Remove(_) => {
                 for path in paths {
-                    if !write_tracker.consume(path) {
-                        on_event(VaultEvent::FileDeleted(path.clone()));
+                    if write_tracker.has_recent_match(path, None) {
+                        continue;
                     }
+                    on_event(VaultEvent::FileDeleted(path.clone()));
                 }
             }
             _ => {}

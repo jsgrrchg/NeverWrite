@@ -22,6 +22,14 @@ pub struct AiAttachmentInput {
     /// For folder attachments: the relative folder path (e.g. "daily" or "projects/work")
     #[serde(rename = "noteId")]
     pub note_id: Option<String>,
+    /// Absolute path to the source file (audio/file attachments)
+    #[serde(rename = "filePath")]
+    pub file_path: Option<String>,
+    /// MIME type (audio/file attachments)
+    #[serde(rename = "mimeType")]
+    pub mime_type: Option<String>,
+    /// Pre-computed transcription text (audio attachments)
+    pub transcription: Option<String>,
 }
 
 fn build_prompt_with_attachments(
@@ -67,6 +75,35 @@ fn build_prompt_with_attachments(
                         }
                     }
                 }
+            }
+        } else if attachment.attachment_type.as_deref() == Some("audio") {
+            if let Some(transcription) = &attachment.transcription {
+                let duration_hint = attachment.file_path.as_deref().unwrap_or("audio");
+                context_parts.push(format!(
+                    "<attached_audio name=\"{}\" source=\"{}\">\n[Transcription]\n{}\n</attached_audio>",
+                    attachment.label, duration_hint, transcription
+                ));
+            }
+        } else if attachment.attachment_type.as_deref() == Some("file") {
+            let file_path = attachment
+                .file_path
+                .as_deref()
+                .or(attachment.path.as_deref());
+            if let Some(fp) = file_path {
+                let mime = attachment
+                    .mime_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream");
+                let extracted = if mime.starts_with("text/") || mime == "application/json" {
+                    std::fs::read_to_string(fp).unwrap_or_default()
+                } else {
+                    let size = std::fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
+                    format!("[Binary file: {} bytes, type: {}]", size, mime)
+                };
+                context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
+                    attachment.label, mime, extracted
+                ));
             }
         } else if let Some(path) = &attachment.path {
             if let Ok(file_content) = std::fs::read_to_string(path) {
@@ -504,6 +541,23 @@ impl AiManager {
     ) -> Result<AiSession, String> {
         self.codex_handle_from_session(session_id)?
             .respond_permission(request_id, option_id)?;
+        let session = {
+            let managed = self.session_mut(session_id)?;
+            managed.session.status = AiSessionStatus::Streaming;
+            managed.session.clone()
+        };
+        self.touch_session(session_id);
+        Ok(session)
+    }
+
+    pub fn respond_user_input(
+        &mut self,
+        session_id: &str,
+        request_id: &str,
+        answers: HashMap<String, Vec<String>>,
+    ) -> Result<AiSession, String> {
+        self.codex_handle_from_session(session_id)?
+            .respond_user_input(session_id, request_id, answers)?;
         let session = {
             let managed = self.session_mut(session_id)?;
             managed.session.status = AiSessionStatus::Streaming;

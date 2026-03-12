@@ -16,6 +16,10 @@ import {
     type RecentVault,
 } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
+import {
+    useWhisperStore,
+    bindWhisperListeners,
+} from "../ai/store/whisperStore";
 
 // --- Primitives ---
 
@@ -422,6 +426,8 @@ function SliderField({
     onChange: (v: number) => void;
     formatValue?: (value: number) => string;
 }) {
+    const progress = ((value - min) / (max - min)) * 100;
+
     return (
         <div
             style={{
@@ -432,6 +438,7 @@ function SliderField({
             }}
         >
             <input
+                className="settings-range-slider"
                 type="range"
                 min={min}
                 max={max}
@@ -440,8 +447,8 @@ function SliderField({
                 onChange={(event) => onChange(Number(event.target.value))}
                 style={{
                     width: 160,
-                    accentColor: "var(--accent)",
                     cursor: "pointer",
+                    ["--slider-progress" as string]: `${progress}%`,
                 }}
             />
             <span
@@ -636,8 +643,7 @@ function SectionLabel({ children }: { children: string }) {
 // --- Category content ---
 
 function GeneralSettings() {
-    const { openLastVaultOnLaunch, setSetting } =
-        useSettingsStore();
+    const { openLastVaultOnLaunch, setSetting } = useSettingsStore();
 
     return (
         <div>
@@ -1122,29 +1128,6 @@ function AISettings() {
                     />
                 }
             />
-            <SectionLabel>Composer</SectionLabel>
-            <Row
-                label="Require ⌘ Enter to send"
-                description="Press ⌘ Enter to send messages. Enter alone adds a new line, making it easier to write longer messages."
-                control={
-                    <Toggle
-                        value={requireCmdEnterToSend}
-                        onChange={() => toggleRequireCmdEnterToSend()}
-                    />
-                }
-            />
-            <Row
-                label="Composer font size"
-                description="Font size of the message input box, in pixels."
-                control={
-                    <NumberStepper
-                        value={composerFontSize}
-                        min={11}
-                        max={20}
-                        onChange={setComposerFontSize}
-                    />
-                }
-            />
             <SectionLabel>Chat</SectionLabel>
             <Row
                 label="Chat font size"
@@ -1178,7 +1161,287 @@ function AISettings() {
                     />
                 }
             />
+            <SectionLabel>Composer</SectionLabel>
+            <Row
+                label="Require ⌘ Enter to send"
+                description="Press ⌘ Enter to send messages. Enter alone adds a new line, making it easier to write longer messages."
+                control={
+                    <Toggle
+                        value={requireCmdEnterToSend}
+                        onChange={() => toggleRequireCmdEnterToSend()}
+                    />
+                }
+            />
+            <Row
+                label="Composer font size"
+                description="Font size of the message input box, in pixels."
+                control={
+                    <NumberStepper
+                        value={composerFontSize}
+                        min={11}
+                        max={20}
+                        onChange={setComposerFontSize}
+                    />
+                }
+            />
+
+            <WhisperSettingsSection />
         </div>
+    );
+}
+
+function formatBytes(bytes: number): string {
+    const mb = bytes / (1024 * 1024);
+    if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+    return `${Math.round(mb)} MB`;
+}
+
+function WhisperSettingsSection() {
+    const models = useWhisperStore((s) => s.models);
+    const status = useWhisperStore((s) => s.status);
+    const downloadProgress = useWhisperStore((s) => s.downloadProgress);
+    const downloadingModelId = useWhisperStore((s) => s.downloadingModelId);
+    const error = useWhisperStore((s) => s.error);
+    const fetchModels = useWhisperStore((s) => s.fetchModels);
+    const fetchStatus = useWhisperStore((s) => s.fetchStatus);
+    const downloadModel = useWhisperStore((s) => s.downloadModel);
+    const deleteModel = useWhisperStore((s) => s.deleteModel);
+    const setSelectedModel = useWhisperStore((s) => s.setSelectedModel);
+    const setEnabled = useWhisperStore((s) => s.setEnabled);
+
+    useEffect(() => {
+        bindWhisperListeners();
+        void fetchModels();
+        void fetchStatus();
+    }, [fetchModels, fetchStatus]);
+
+    const downloadedModels = models.filter((m) => m.downloaded);
+    const totalSize = downloadedModels.reduce((sum, m) => sum + m.sizeBytes, 0);
+
+    return (
+        <>
+            <SectionLabel>Audio Transcription</SectionLabel>
+
+            {status && (
+                <Row
+                    label="Enable local transcription"
+                    description="Automatically transcribe audio attachments using a local Whisper model."
+                    control={
+                        <Toggle
+                            value={status.enabled}
+                            onChange={(v) => void setEnabled(v)}
+                        />
+                    }
+                />
+            )}
+
+            {status && status.enabled && downloadedModels.length > 0 && (
+                <Row
+                    label="Active model"
+                    description="Model used for transcribing audio attachments."
+                    control={
+                        <SelectField
+                            value={status.selectedModel}
+                            options={downloadedModels.map((m) => ({
+                                value: m.id,
+                                label: m.label,
+                            }))}
+                            onChange={(v) => void setSelectedModel(v)}
+                        />
+                    }
+                />
+            )}
+
+            {status?.enabled && (
+                <div style={{ padding: "12px 0" }}>
+                    <div
+                        style={{
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: "var(--text-primary)",
+                            marginBottom: 8,
+                        }}
+                    >
+                        Models
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        {models.map((model) => {
+                            const isDownloading =
+                                downloadingModelId === model.id;
+                            const progress = downloadProgress[model.id] ?? 0;
+
+                            return (
+                                <div
+                                    key={model.id}
+                                    style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 10,
+                                        padding: "8px 10px",
+                                        borderRadius: 8,
+                                        border: "1px solid var(--border)",
+                                        backgroundColor: "var(--bg-primary)",
+                                    }}
+                                >
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div
+                                            style={{
+                                                fontSize: 13,
+                                                fontWeight: 500,
+                                                color: "var(--text-primary)",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 6,
+                                            }}
+                                        >
+                                            {model.label}
+                                            {model.recommended && (
+                                                <span
+                                                    style={{
+                                                        fontSize: 10,
+                                                        color: "var(--accent)",
+                                                        fontWeight: 500,
+                                                    }}
+                                                >
+                                                    Recommended
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div
+                                            style={{
+                                                fontSize: 11,
+                                                color: "var(--text-secondary)",
+                                                marginTop: 1,
+                                            }}
+                                        >
+                                            {formatBytes(model.sizeBytes)}
+                                            {model.downloaded &&
+                                                " — Downloaded"}
+                                        </div>
+                                        {isDownloading && (
+                                            <div
+                                                style={{
+                                                    marginTop: 6,
+                                                    height: 4,
+                                                    borderRadius: 2,
+                                                    backgroundColor:
+                                                        "color-mix(in srgb, var(--text-secondary) 15%, transparent)",
+                                                    overflow: "hidden",
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        height: "100%",
+                                                        width: `${Math.round(progress * 100)}%`,
+                                                        borderRadius: 2,
+                                                        backgroundColor:
+                                                            "var(--accent)",
+                                                        transition:
+                                                            "width 200ms",
+                                                    }}
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div style={{ flexShrink: 0 }}>
+                                        {model.downloaded ? (
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    void deleteModel(model.id)
+                                                }
+                                                style={{
+                                                    fontSize: 12,
+                                                    padding: "3px 10px",
+                                                    borderRadius: 6,
+                                                    border: "1px solid var(--border)",
+                                                    backgroundColor:
+                                                        "transparent",
+                                                    color: "var(--text-secondary)",
+                                                    cursor: "pointer",
+                                                    fontFamily: "inherit",
+                                                }}
+                                            >
+                                                Delete
+                                            </button>
+                                        ) : isDownloading ? (
+                                            <span
+                                                style={{
+                                                    fontSize: 12,
+                                                    color: "var(--text-secondary)",
+                                                }}
+                                            >
+                                                {Math.round(progress * 100)}%
+                                            </span>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    void downloadModel(model.id)
+                                                }
+                                                disabled={
+                                                    downloadingModelId !== null
+                                                }
+                                                style={{
+                                                    fontSize: 12,
+                                                    padding: "3px 10px",
+                                                    borderRadius: 6,
+                                                    border: "none",
+                                                    backgroundColor:
+                                                        "var(--accent)",
+                                                    color: "#fff",
+                                                    cursor:
+                                                        downloadingModelId !==
+                                                        null
+                                                            ? "not-allowed"
+                                                            : "pointer",
+                                                    fontFamily: "inherit",
+                                                    opacity:
+                                                        downloadingModelId !==
+                                                        null
+                                                            ? 0.5
+                                                            : 1,
+                                                }}
+                                            >
+                                                Download
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {totalSize > 0 && (
+                        <div
+                            style={{
+                                fontSize: 11,
+                                color: "var(--text-secondary)",
+                                marginTop: 8,
+                            }}
+                        >
+                            Total disk usage: {formatBytes(totalSize)}
+                        </div>
+                    )}
+                    {error && (
+                        <div
+                            style={{
+                                fontSize: 11,
+                                color: "#ef4444",
+                                marginTop: 6,
+                            }}
+                        >
+                            {error}
+                        </div>
+                    )}
+                </div>
+            )}
+        </>
     );
 }
 

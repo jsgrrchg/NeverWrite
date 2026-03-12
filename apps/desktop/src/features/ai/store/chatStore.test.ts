@@ -3,11 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
-import {
-    resetChatTabsStore,
-    useChatTabsStore,
-} from "./chatTabsStore";
-import { resetChatStore, useChatStore } from "./chatStore";
+import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
+import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -210,6 +207,13 @@ describe("chatStore", () => {
                 return {
                     ...sessionPayload,
                     status: "idle",
+                };
+            }
+
+            if (command === "ai_respond_user_input") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
                 };
             }
 
@@ -522,6 +526,7 @@ describe("chatStore", () => {
             message_id: "assistant-1",
             delta: "response for session 1",
         });
+        flushDeltasSync();
 
         const state = useChatStore.getState();
 
@@ -663,6 +668,171 @@ describe("chatStore", () => {
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.status,
         ).toBe("idle");
+    });
+
+    it("upserts status events as system messages and updates them by event id", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "vaultai:status:item:plan-1",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Updating plan",
+            detail: "Drafting next steps",
+            emphasis: "neutral",
+        });
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "vaultai:status:item:plan-1",
+            kind: "item_activity",
+            status: "completed",
+            title: "Updating plan",
+            detail: "Plan ready",
+            emphasis: "neutral",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const statusMessages = session.messages.filter(
+            (message) => message.kind === "status",
+        );
+
+        expect(statusMessages).toHaveLength(1);
+        expect(statusMessages[0]).toMatchObject({
+            id: "status:vaultai:status:item:plan-1",
+            role: "system",
+            kind: "status",
+            title: "Updating plan",
+            content: "Plan ready",
+            meta: {
+                status_event: "item_activity",
+                status: "completed",
+                emphasis: "neutral",
+            },
+        });
+    });
+
+    it("upserts plan updates into a single live plan message", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+
+        useChatStore.getState().applyPlanUpdate({
+            session_id: activeSessionId,
+            plan_id: "plan-1",
+            title: "Plan de ejecución",
+            detail: "Resumen breve del trabajo pendiente.",
+            entries: [
+                {
+                    content: "Inspect current chat state",
+                    priority: "medium",
+                    status: "in_progress",
+                },
+                {
+                    content: "Render the plan UI",
+                    priority: "medium",
+                    status: "pending",
+                },
+            ],
+        });
+
+        useChatStore.getState().applyPlanUpdate({
+            session_id: activeSessionId,
+            plan_id: "plan-1",
+            title: "Plan de ejecución",
+            detail: "Resumen breve del trabajo pendiente.",
+            entries: [
+                {
+                    content: "Inspect current chat state",
+                    priority: "medium",
+                    status: "completed",
+                },
+                {
+                    content: "Render the plan UI",
+                    priority: "medium",
+                    status: "in_progress",
+                },
+            ],
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const planMessages = session.messages.filter(
+            (message) => message.kind === "plan",
+        );
+
+        expect(planMessages).toHaveLength(1);
+        expect(planMessages[0]).toMatchObject({
+            id: "plan:plan-1",
+            kind: "plan",
+            title: "Plan de ejecución",
+            planDetail: "Resumen breve del trabajo pendiente.",
+            meta: {
+                status: "in_progress",
+                completed_count: 1,
+                total_count: 2,
+            },
+        });
+        expect(planMessages[0].planEntries).toEqual([
+            {
+                content: "Inspect current chat state",
+                priority: "medium",
+                status: "completed",
+            },
+            {
+                content: "Render the plan UI",
+                priority: "medium",
+                status: "in_progress",
+            },
+        ]);
+    });
+
+    it("tracks user input requests and resumes streaming after responding", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "input-1",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        let session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-1)).toMatchObject({
+            id: "user-input:input-1",
+            kind: "user_input_request",
+            userInputRequestId: "input-1",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-1", { scope: ["Safe"] });
+
+        session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "resolved",
+            answered: true,
+        });
     });
 
     it("resumes the active persisted history into a live ACP session", async () => {
@@ -876,9 +1046,144 @@ describe("chatStore", () => {
             {
                 id: "tab-history-1",
                 sessionId: "codex-session-1",
+                historySessionId: "history-1",
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-history-1");
+    });
+
+    it("persists empty sessions so blank chats can be restored after reopening", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        let firstBoot = true;
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_save_session_history") return undefined;
+            if (command === "ai_load_session_histories") {
+                if (firstBoot) {
+                    return [];
+                }
+                return [
+                    {
+                        version: 1,
+                        session_id: "codex-session-1",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [],
+                    },
+                ];
+            }
+            if (command === "ai_set_session_mode") return sessionPayload;
+            if (command === "ai_set_session_model") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        await vi.waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    session_id: "codex-session-1",
+                    messages: [],
+                }),
+            });
+        });
+        firstBoot = false;
+
+        resetChatStore();
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "tab-empty",
+                    sessionId: "codex-session-1",
+                    historySessionId: "codex-session-1",
+                },
+            ],
+            activeTabId: "tab-empty",
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "codex-session-1",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [],
+                    },
+                ];
+            }
+            if (command === "ai_create_session") return sessionPayload;
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        expect(
+            useChatStore.getState().sessionsById["codex-session-1"],
+        ).toMatchObject({
+            historySessionId: "codex-session-1",
+            isPersistedSession: false,
+            messages: [],
+        });
+    });
+
+    it("waits for the initial empty-session persistence before initialize resolves", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        let resolveSave: (() => void) | null = null;
+        const savePromise = new Promise<void>((resolve) => {
+            resolveSave = resolve;
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_load_session_histories") return [];
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_save_session_history") return savePromise;
+            return sessionPayload;
+        });
+
+        let resolved = false;
+        const initializePromise = useChatStore
+            .getState()
+            .initialize()
+            .then(() => {
+                resolved = true;
+            });
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(resolved).toBe(false);
+
+        const resolvePendingSave = resolveSave as (() => void) | null;
+        if (!resolvePendingSave) {
+            throw new Error("Missing save resolver");
+        }
+        resolvePendingSave();
+        await initializePromise;
+
+        expect(resolved).toBe(true);
     });
 
     it("removes chat tabs when deleting a session", async () => {

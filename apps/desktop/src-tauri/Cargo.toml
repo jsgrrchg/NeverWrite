@@ -27,6 +27,7 @@ vault-ai-index = { path = "../../../crates/index" }
 vault-ai-diff = { path = "../../../crates/diff" }
 vault-ai-ai = { path = "../../../crates/ai" }
 vault-ai-state = { path = "../../../crates/state" }
+vault-ai-whisper = { path = "../../../crates/whisper" }
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-opener = "2"
 notify = "7"

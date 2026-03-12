@@ -159,6 +159,14 @@ body.dragging-tab * {
     background: transparent;
 }
 
+*::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+*::-webkit-resizer {
+    background: transparent;
+}
+
 *::-webkit-scrollbar-thumb {
     background: var(--app-scrollbar-thumb);
     border: 2px solid transparent;
@@ -193,6 +201,101 @@ body.dragging-tab * {
 .editor-shell[data-scrollbar-active="true"]
     .cm-scroller::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover);
+}
+
+.file-tree-row {
+    transition:
+        background-color 120ms ease,
+        color 120ms ease,
+        box-shadow 120ms ease;
+}
+
+.file-tree-row:hover[data-drag-over="false"] {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-secondary) 82%,
+        var(--accent) 8%
+    );
+}
+
+.file-tree-row:hover[data-selected="true"],
+.file-tree-row:hover[data-active="true"],
+.file-tree-row:hover[data-drag-over="true"] {
+    background-color: inherit;
+}
+
+.settings-range-slider {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 22px;
+    background: transparent;
+    outline: none;
+}
+
+.settings-range-slider::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(
+        to right,
+        var(--accent) 0,
+        var(--accent) var(--slider-progress, 50%),
+        color-mix(in srgb, var(--border) 82%, transparent)
+            var(--slider-progress, 50%),
+        color-mix(in srgb, var(--border) 82%, transparent) 100%
+    );
+}
+
+.settings-range-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -6px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+    background: var(--bg-elevated);
+    box-shadow:
+        0 1px 2px rgb(0 0 0 / 0.12),
+        0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+    transition:
+        transform 120ms ease,
+        box-shadow 120ms ease,
+        border-color 120ms ease;
+}
+
+.settings-range-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.04);
+    box-shadow:
+        0 2px 6px rgb(0 0 0 / 0.16),
+        0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.settings-range-slider:focus-visible::-webkit-slider-thumb {
+    box-shadow:
+        0 2px 6px rgb(0 0 0 / 0.16),
+        0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.settings-range-slider::-moz-range-track {
+    height: 6px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--border) 82%, transparent);
+}
+
+.settings-range-slider::-moz-range-progress {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--accent);
+}
+
+.settings-range-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
 }
 
 @keyframes ai-bounce {

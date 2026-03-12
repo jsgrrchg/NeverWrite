@@ -1,4 +1,5 @@
 pub mod frontmatter;
+pub mod headings;
 pub mod tags;
 pub mod wikilinks;
 

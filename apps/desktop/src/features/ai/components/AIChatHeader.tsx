@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import { AIChatSessionList } from "./AIChatSessionList";
 import { AIChatTabs } from "./AIChatTabs";
+import { getSessionTitle } from "../sessionPresentation";
 import type { AIChatSession, AIRuntimeOption } from "../types";
 import type { ChatWorkspaceTab } from "../store/chatTabsStore";
 
@@ -111,6 +112,16 @@ export function AIChatHeader({
     const sessionMenuContentRef = useRef<HTMLDivElement>(null);
     const isCompact = headerWidth !== null && headerWidth < 420;
     const isTight = headerWidth !== null && headerWidth < 330;
+    const activeTabSessionId =
+        tabs.find((tab) => tab.id === activeTabId)?.sessionId ?? null;
+    const currentSession =
+        (activeTabSessionId
+            ? sessionsById[activeTabSessionId]
+            : activeSessionId
+              ? sessionsById[activeSessionId]
+              : null) ?? null;
+    const showTabs = tabs.length > 1;
+    const headerTitle = currentSession ? getSessionTitle(currentSession) : "New chat";
 
     useEffect(() => {
         const node = headerRef.current;
@@ -167,18 +178,33 @@ export function AIChatHeader({
             }`}
             style={{ borderBottom: "1px solid var(--border)" }}
         >
-            <AIChatTabs
-                tabs={tabs}
-                activeTabId={activeTabId}
-                sessionsById={sessionsById}
-                runtimes={runtimes}
-                density={
-                    isTight ? "tight" : isCompact ? "compact" : "comfortable"
-                }
-                onSelectTab={onSelectTab}
-                onCloseTab={onCloseTab}
-                onExportSession={onExportSession}
-            />
+            {showTabs ? (
+                <AIChatTabs
+                    tabs={tabs}
+                    activeTabId={activeTabId}
+                    sessionsById={sessionsById}
+                    runtimes={runtimes}
+                    density={
+                        isTight ? "tight" : isCompact ? "compact" : "comfortable"
+                    }
+                    onSelectTab={onSelectTab}
+                    onCloseTab={onCloseTab}
+                    onExportSession={onExportSession}
+                />
+            ) : (
+                <div
+                    className="flex min-w-0 flex-1 items-center px-1"
+                    style={{ color: "var(--text-primary)" }}
+                >
+                    <span
+                        className={`truncate font-medium ${
+                            isCompact ? "text-[11px]" : "text-xs"
+                        }`}
+                    >
+                        {headerTitle}
+                    </span>
+                </div>
+            )}
 
             <div
                 className={`flex shrink-0 items-center ${

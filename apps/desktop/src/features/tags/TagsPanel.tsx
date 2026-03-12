@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import {
@@ -50,24 +50,33 @@ function ChevronIcon({ open }: { open: boolean }) {
 export function TagsPanel() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const notes = useVaultStore((s) => s.notes);
-    const vaultRevision = useVaultStore((s) => s.vaultRevision);
+    const tagsRevision = useVaultStore((s) => s.tagsRevision);
     const openNote = useEditorStore((s) => s.openNote);
     const [tags, setTags] = useState<TagEntry[]>([]);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const [showFilter, setShowFilter] = useState(false);
+    const [filterText, setFilterText] = useState("");
+    const filterInputRef = useRef<HTMLInputElement>(null);
     const [tagContextMenu, setTagContextMenu] =
         useState<ContextMenuState<TagEntry> | null>(null);
-    const [noteContextMenu, setNoteContextMenu] = useState<
-        ContextMenuState<{ noteId: string }>
-    | null>(null);
+    const [noteContextMenu, setNoteContextMenu] = useState<ContextMenuState<{
+        noteId: string;
+    }> | null>(null);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const listRef = useRef<HTMLDivElement>(null);
     const noteMap = useMemo(
         () => new Map(notes.map((note) => [note.id, note])),
         [notes],
     );
+    const filteredTags = useMemo(() => {
+        if (!filterText.trim()) return tags;
+        const q = filterText.toLowerCase();
+        return tags.filter(({ tag }) => tag.toLowerCase().includes(q));
+    }, [tags, filterText]);
+
     const rows = useMemo<TagRow[]>(
         () =>
-            tags.flatMap(({ tag, note_ids }) => [
+            filteredTags.flatMap(({ tag, note_ids }) => [
                 { kind: "tag", tag, note_ids } as const,
                 ...(expanded.has(tag)
                     ? note_ids.map((noteId) => ({
@@ -77,7 +86,7 @@ export function TagsPanel() {
                       }))
                     : []),
             ]),
-        [expanded, tags],
+        [expanded, filteredTags],
     );
     const virtual = useVirtualList(listRef, rows.length, TAG_ROW_HEIGHT, 10);
     const visibleRows = rows.slice(virtual.startIndex, virtual.endIndex);
@@ -85,8 +94,23 @@ export function TagsPanel() {
     // Refetch when the persisted vault contents may have changed.
     useEffect(() => {
         if (!vaultPath) return;
-        void invoke<TagEntry[]>("get_tags").then(setTags).catch(console.error);
-    }, [vaultPath, vaultRevision]);
+        void vaultInvoke<TagEntry[]>("get_tags")
+            .then(setTags)
+            .catch(console.error);
+    }, [vaultPath, tagsRevision]);
+
+    const toggleFilter = useCallback(() => {
+        setShowFilter((v) => {
+            if (v) setFilterText("");
+            return !v;
+        });
+    }, []);
+
+    useEffect(() => {
+        if (showFilter) {
+            requestAnimationFrame(() => filterInputRef.current?.focus());
+        }
+    }, [showFilter]);
 
     const toggleTag = (tag: string) => {
         setExpanded((prev) => {
@@ -107,7 +131,7 @@ export function TagsPanel() {
             return;
         }
         try {
-            const detail = await invoke<{ content: string }>("read_note", {
+            const detail = await vaultInvoke<{ content: string }>("read_note", {
                 noteId,
             });
             openNote(note.id, note.title, detail.content);
@@ -125,7 +149,7 @@ export function TagsPanel() {
             const content =
                 existing?.content ??
                 (
-                    await invoke<{ content: string }>("read_note", {
+                    await vaultInvoke<{ content: string }>("read_note", {
                         noteId,
                     })
                 ).content;
@@ -145,13 +169,114 @@ export function TagsPanel() {
         <div className="h-full flex flex-col overflow-hidden">
             {/* Header */}
             <div
-                className="px-3 py-2 text-xs font-semibold uppercase tracking-wider shrink-0"
-                style={{
-                    color: "var(--text-secondary)",
-                    borderBottom: "1px solid var(--border)",
-                }}
+                className="shrink-0"
+                style={{ borderBottom: "1px solid var(--border)" }}
             >
-                Tags
+                <div className="flex items-center justify-between px-3 py-2">
+                    <span
+                        className="text-xs font-semibold uppercase tracking-wider"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        Tags
+                    </span>
+                    <button
+                        onClick={toggleFilter}
+                        title={showFilter ? "Hide filter" : "Filter tags"}
+                        className="flex items-center justify-center rounded transition-opacity"
+                        style={{
+                            width: 18,
+                            height: 18,
+                            color: showFilter
+                                ? "var(--accent)"
+                                : "var(--text-secondary)",
+                            opacity: showFilter ? 1 : 0.5,
+                        }}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.opacity = "1")
+                        }
+                        onMouseLeave={(e) =>
+                            (e.currentTarget.style.opacity = showFilter
+                                ? "1"
+                                : "0.5")
+                        }
+                    >
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <circle cx="7" cy="7" r="4" />
+                            <path d="M10 10L13.5 13.5" />
+                        </svg>
+                    </button>
+                </div>
+                {showFilter && (
+                    <div className="px-2 pb-2">
+                        <div
+                            className="flex items-center gap-1.5 px-2 rounded"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--border)",
+                                height: 24,
+                            }}
+                        >
+                            <svg
+                                width="10"
+                                height="10"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    opacity: 0.5,
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <circle cx="7" cy="7" r="4" />
+                                <path d="M10 10L13.5 13.5" />
+                            </svg>
+                            <input
+                                ref={filterInputRef}
+                                type="text"
+                                value={filterText}
+                                onChange={(e) => setFilterText(e.target.value)}
+                                placeholder="Filter tags..."
+                                className="flex-1 bg-transparent text-[11px] outline-none"
+                                style={{ color: "var(--text-primary)" }}
+                                spellCheck={false}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Escape") toggleFilter();
+                                }}
+                            />
+                            {filterText && (
+                                <button
+                                    onClick={() => setFilterText("")}
+                                    className="opacity-40 hover:opacity-100 transition-opacity"
+                                    style={{ color: "var(--text-secondary)" }}
+                                >
+                                    <svg
+                                        width="10"
+                                        height="10"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="1.8"
+                                    >
+                                        <path d="M4 4l8 8M4 12l8-8" />
+                                    </svg>
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Content */}
@@ -170,8 +295,20 @@ export function TagsPanel() {
                     >
                         No tags found
                     </p>
+                ) : filteredTags.length === 0 ? (
+                    <p
+                        className="text-xs px-3 py-2"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        No tags match &ldquo;{filterText}&rdquo;
+                    </p>
                 ) : (
-                    <div style={{ position: "relative", height: virtual.totalHeight }}>
+                    <div
+                        style={{
+                            position: "relative",
+                            height: virtual.totalHeight,
+                        }}
+                    >
                         <div
                             style={{
                                 position: "absolute",
@@ -207,7 +344,9 @@ export function TagsPanel() {
                                             <ChevronIcon open={isExpanded} />
                                             <span
                                                 className="flex-1 truncate"
-                                                style={{ color: "var(--accent)" }}
+                                                style={{
+                                                    color: "var(--accent)",
+                                                }}
                                             >
                                                 #{row.tag}
                                             </span>
@@ -230,7 +369,9 @@ export function TagsPanel() {
                                 return (
                                     <button
                                         key={`note:${row.tag}:${row.noteId}`}
-                                        onClick={() => void handleNoteClick(row.noteId)}
+                                        onClick={() =>
+                                            void handleNoteClick(row.noteId)
+                                        }
                                         onContextMenu={(event) => {
                                             event.preventDefault();
                                             setNoteContextMenu({
@@ -260,7 +401,10 @@ export function TagsPanel() {
                                             height="11"
                                             viewBox="0 0 16 16"
                                             fill="none"
-                                            style={{ flexShrink: 0, opacity: 0.4 }}
+                                            style={{
+                                                flexShrink: 0,
+                                                opacity: 0.4,
+                                            }}
                                         >
                                             <path
                                                 d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
@@ -268,7 +412,9 @@ export function TagsPanel() {
                                                 strokeWidth="1"
                                             />
                                         </svg>
-                                        <span className="truncate">{note.title}</span>
+                                        <span className="truncate">
+                                            {note.title}
+                                        </span>
                                     </button>
                                 );
                             })}
@@ -305,7 +451,9 @@ export function TagsPanel() {
                         {
                             label: "Open",
                             action: () =>
-                                void handleNoteClick(noteContextMenu.payload.noteId),
+                                void handleNoteClick(
+                                    noteContextMenu.payload.noteId,
+                                ),
                         },
                         {
                             label: "Open in New Tab",
@@ -318,7 +466,9 @@ export function TagsPanel() {
                         {
                             label: "Reveal in File Tree",
                             action: () =>
-                                revealNoteInTree(noteContextMenu.payload.noteId),
+                                revealNoteInTree(
+                                    noteContextMenu.payload.noteId,
+                                ),
                         },
                         {
                             label: "Copy Note Path",

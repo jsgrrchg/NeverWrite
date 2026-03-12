@@ -222,8 +222,73 @@ fn resolve_normalizes_typographic_quotes() {
         make_note("nota1", "Primera Nota", vec![], vec![]),
     ]);
 
-    let resolved = index.resolve_wikilink("Donald Trump’s Greenland plan", &NoteId("nota1".into()));
+    let resolved = index.resolve_wikilink("Donald Trump's Greenland plan", &NoteId("nota1".into()));
     assert_eq!(resolved, Some(NoteId("news/trumps-greenland".into())));
+}
+
+#[test]
+fn suggest_wikilinks_by_prefix_without_full_scan() {
+    let index = VaultIndex::build(vec![
+        make_note("refs/rust-book", "Rust Book", vec![], vec![]),
+        make_note("refs/rust-belt", "Rust Belt", vec![], vec![]),
+        make_note("refs/python", "Python Notes", vec![], vec![]),
+        make_note("nota1", "Primera Nota", vec![], vec![]),
+    ]);
+
+    let suggestions = index.suggest_wikilinks("rus", &NoteId("nota1".into()), 5);
+    let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
+
+    assert!(ids.contains(&"refs/rust-book"));
+    assert!(ids.contains(&"refs/rust-belt"));
+    assert!(!ids.contains(&"refs/python"));
+}
+
+#[test]
+fn suggest_wikilinks_prefers_closest_path_on_ties() {
+    let index = VaultIndex::build(vec![
+        make_note("work/alpha", "Alpha Note", vec![], vec![]),
+        make_note("archive/alpha", "Alpha Note", vec![], vec![]),
+        make_note("work/project/current", "Current", vec![], vec![]),
+    ]);
+
+    let suggestions = index.suggest_wikilinks("alpha", &NoteId("work/project/current".into()), 2);
+    let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
+
+    assert_eq!(ids.first().copied(), Some("work/alpha"));
+}
+
+#[test]
+fn suggest_wikilinks_empty_query_uses_sorted_order() {
+    let index = VaultIndex::build(vec![
+        make_note("refs/zulu", "Zulu Note", vec![], vec![]),
+        make_note("refs/alpha", "Alpha Note", vec![], vec![]),
+        make_note("refs/bravo", "Bravo Note", vec![], vec![]),
+        make_note("refs/current", "Current", vec![], vec![]),
+    ]);
+
+    let suggestions = index.suggest_wikilinks("", &NoteId("refs/current".into()), 4);
+    let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
+
+    assert_eq!(
+        ids,
+        vec!["refs/alpha", "refs/bravo", "refs/current", "refs/zulu"]
+    );
+}
+
+#[test]
+fn reindex_updates_empty_query_suggestion_order() {
+    let mut index = VaultIndex::build(vec![
+        make_note("refs/zulu", "Zulu Note", vec![], vec![]),
+        make_note("refs/alpha", "Alpha Note", vec![], vec![]),
+        make_note("refs/current", "Current", vec![], vec![]),
+    ]);
+
+    index.reindex_note(make_note("refs/zulu", "Able Note", vec![], vec![]));
+
+    let suggestions = index.suggest_wikilinks("", &NoteId("refs/current".into()), 3);
+    let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
+
+    assert_eq!(ids, vec!["refs/zulu", "refs/alpha", "refs/current"]);
 }
 
 #[test]

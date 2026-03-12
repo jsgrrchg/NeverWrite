@@ -10,6 +10,7 @@ pub enum AiSessionStatus {
     Idle,
     Streaming,
     WaitingPermission,
+    WaitingUserInput,
     ReviewRequired,
     Error,
 }

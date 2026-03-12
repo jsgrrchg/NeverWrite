@@ -221,4 +221,4 @@ VaultAI/
 - **`crates/`** — Lógica de dominio pura en Rust: tipos, vault (CRUD archivos), índice de búsqueda, estado global, AI
 - **`src-tauri/`** — Bridge Tauri: expone los crates como comandos al frontend + gestión del proceso AI (Codex sidecar)
 - **`src/`** — Frontend React: stores (Zustand), editor (CodeMirror 6), chat AI, file tree, paneles de navegación
-- **`vendor/codex-acp/`** — Fork del agente Codex de OpenAI, corre como proceso sidecar
+- **`vendor/codex-acp/`** — Fork del agente Codex de OpenAI, corre como proceso sidecar. 

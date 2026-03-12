@@ -158,8 +158,18 @@ export async function findWindowTabDropTarget(
     return match?.label ?? null;
 }
 
-export async function openSettingsWindow() {
-    const label = "settings";
+function settingsWindowLabel(vaultPath: string | null): string {
+    if (!vaultPath) return "settings";
+    // Deterministic, Tauri-safe label derived from the vault path
+    let hash = 5381;
+    for (let i = 0; i < vaultPath.length; i++) {
+        hash = (((hash << 5) + hash) ^ vaultPath.charCodeAt(i)) >>> 0;
+    }
+    return `settings-${hash.toString(36)}`;
+}
+
+export async function openSettingsWindow(vaultPath: string | null = null) {
+    const label = settingsWindowLabel(vaultPath);
     const existing = await getAllWebviewWindows();
     const settingsWin = existing.find((w) => w.label === label);
     if (settingsWin) {
@@ -167,8 +177,11 @@ export async function openSettingsWindow() {
         await settingsWin.setFocus();
         return;
     }
+    const url = vaultPath
+        ? `/?window=settings&vault=${encodeURIComponent(vaultPath)}`
+        : "/?window=settings";
     const win = new WebviewWindow(label, {
-        url: "/?window=settings",
+        url,
         title: "Settings — VaultAI",
         width: 820,
         height: 560,

@@ -1,11 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import type { NoteDto } from "../../app/store/vaultStore";
 import { getSessionRuntimeName, getSessionTitle } from "./sessionPresentation";
-import type {
-    AIChatMessage,
-    AIChatSession,
-    AIRuntimeOption,
-} from "./types";
+import type { AIChatMessage, AIChatSession, AIRuntimeOption } from "./types";
 
 interface SavedNoteDetail {
     title: string;
@@ -18,11 +14,7 @@ interface ExportChatSessionInput {
     runtimes: AIRuntimeOption[];
     notes: NoteDto[];
     createNote: (name: string) => Promise<NoteDto | null>;
-    openNote: (
-        noteId: string,
-        title: string,
-        content: string,
-    ) => void;
+    openNote: (noteId: string, title: string, content: string) => void;
 }
 
 function sanitizeNoteNameSegment(value: string) {
@@ -60,12 +52,14 @@ function getMessageKindLabel(message: AIChatMessage) {
             return "Pensamiento";
         case "tool":
             return "Herramienta";
+        case "plan":
+            return "Plan";
+        case "status":
+            return "Estado";
         case "permission":
             return "Permiso";
-        case "proposed_edit":
-            return "Edición propuesta";
-        case "proposed_new_note":
-            return "Nota propuesta";
+        case "user_input_request":
+            return "Solicitud de datos";
         case "error":
             return "Error";
         default:
@@ -90,7 +84,9 @@ function formatMessageContent(message: AIChatMessage) {
     return content;
 }
 
-function formatAttachmentLine(sessionAttachment: AIChatSession["attachments"][number]) {
+function formatAttachmentLine(
+    sessionAttachment: AIChatSession["attachments"][number],
+) {
     const typeLabel =
         sessionAttachment.type === "folder"
             ? "Carpeta"
@@ -185,7 +181,7 @@ export async function exportChatSessionToVaultNote({
         return null;
     }
 
-    const detail = await invoke<SavedNoteDetail>("save_note", {
+    const detail = await vaultInvoke<SavedNoteDetail>("save_note", {
         noteId: created.id,
         content,
     });

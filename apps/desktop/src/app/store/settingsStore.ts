@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { useVaultStore } from "./vaultStore";
 
 export interface Settings {
     // General
@@ -24,8 +24,9 @@ interface SettingsStore extends Settings {
     reset: () => void;
 }
 
-const SETTINGS_STORAGE_KEY = "vaultai:settings";
-const SETTINGS_BROADCAST_CHANNEL = "vaultai:settings-sync";
+const SETTINGS_KEY_PREFIX = "vaultai:settings:";
+const SETTINGS_KEY_FALLBACK = "vaultai:settings";
+const LAST_VAULT_KEY = "vaultai:lastVaultPath";
 
 export type EditorFontFamily =
     | "system"
@@ -165,55 +166,80 @@ function pickSettings(state: SettingsStore): Settings {
     };
 }
 
-export const useSettingsStore = create<SettingsStore>()(
-    persist(
-        (set) => ({
-            ...defaults,
-            setSetting: (key, value) =>
-                set({ [key]: value } as Partial<Settings>),
-            reset: () => set(defaults),
-        }),
-        { name: SETTINGS_STORAGE_KEY },
-    ),
-);
+function getStorageKey(vaultPath: string | null): string {
+    return vaultPath
+        ? `${SETTINGS_KEY_PREFIX}${vaultPath}`
+        : SETTINGS_KEY_FALLBACK;
+}
 
-let isApplyingRemoteSettings = false;
+function migrateGlobalSettings(vaultPath: string) {
+    const vaultKey = getStorageKey(vaultPath);
+    if (localStorage.getItem(vaultKey)) return; // already migrated
+    const global = extractSettingsFromStorage(localStorage.getItem(SETTINGS_KEY_FALLBACK));
+    if (!global) return;
+    localStorage.setItem(vaultKey, JSON.stringify({ state: global }));
+}
 
+function loadSettings(vaultPath: string | null): Settings {
+    if (vaultPath) migrateGlobalSettings(vaultPath);
+    const raw = localStorage.getItem(getStorageKey(vaultPath));
+    return extractSettingsFromStorage(raw) ?? defaults;
+}
+
+function saveSettings(vaultPath: string | null, settings: Settings) {
+    localStorage.setItem(
+        getStorageKey(vaultPath),
+        JSON.stringify({ state: settings }),
+    );
+}
+
+// Read vault path synchronously at module load to avoid a flash of defaults.
+// In a settings window the vault is passed as a URL param; otherwise fall back to localStorage.
+function readInitialVaultPath(): string | null {
+    try {
+        const urlVault = new URLSearchParams(window.location.search).get("vault");
+        if (urlVault) return decodeURIComponent(urlVault);
+        return localStorage.getItem(LAST_VAULT_KEY);
+    } catch {
+        return null;
+    }
+}
+
+const initialVaultPath = readInitialVaultPath();
+
+export const useSettingsStore = create<SettingsStore>()((set) => ({
+    ...loadSettings(initialVaultPath),
+    setSetting: (key, value) => set({ [key]: value } as Partial<Settings>),
+    reset: () => set(defaults),
+}));
+
+// Track the current vault path so the save subscriber always writes to the right key
+let _currentVaultPath: string | null = initialVaultPath;
+let _isApplyingExternal = false;
+
+// Persist on every settings change
+useSettingsStore.subscribe((state) => {
+    if (!_isApplyingExternal) {
+        saveSettings(_currentVaultPath, pickSettings(state));
+    }
+});
+
+// React to changes made by other windows (e.g. settings window) via localStorage
 if (typeof window !== "undefined") {
-    const syncId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-            ? crypto.randomUUID()
-            : String(Date.now());
-    const channel =
-        "BroadcastChannel" in window
-            ? new BroadcastChannel(SETTINGS_BROADCAST_CHANNEL)
-            : null;
-
-    const applyRemoteSettings = (settings: Settings | null) => {
-        if (!settings) return;
-        isApplyingRemoteSettings = true;
-        useSettingsStore.setState(settings);
-        isApplyingRemoteSettings = false;
-    };
-
-    channel?.addEventListener("message", (event) => {
-        const payload = event.data as
-            | { source?: string; settings?: Settings }
-            | undefined;
-        if (!payload?.settings || payload.source === syncId) return;
-        applyRemoteSettings(payload.settings);
-    });
-
     window.addEventListener("storage", (event) => {
-        if (event.key !== SETTINGS_STORAGE_KEY) return;
-        applyRemoteSettings(extractSettingsFromStorage(event.newValue));
-    });
-
-    useSettingsStore.subscribe((state) => {
-        if (isApplyingRemoteSettings) return;
-        channel?.postMessage({
-            source: syncId,
-            settings: pickSettings(state),
-        });
+        if (event.key !== getStorageKey(_currentVaultPath)) return;
+        const settings = extractSettingsFromStorage(event.newValue);
+        if (!settings) return;
+        _isApplyingExternal = true;
+        useSettingsStore.setState(settings);
+        _isApplyingExternal = false;
     });
 }
+
+// Reload settings when the active vault changes
+useVaultStore.subscribe((state) => {
+    const newVaultPath = state.vaultPath;
+    if (newVaultPath === _currentVaultPath) return;
+    _currentVaultPath = newVaultPath;
+    useSettingsStore.setState(loadSettings(newVaultPath));
+});

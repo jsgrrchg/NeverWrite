@@ -115,6 +115,7 @@ describe("chatTabsStore", () => {
             {
                 id: originalTabId,
                 sessionId: "codex-session-1",
+                historySessionId: "history-1",
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe(originalTabId);
@@ -130,7 +131,7 @@ describe("chatTabsStore", () => {
                 ],
                 activeTabId: "tab-b",
             },
-            ["session-b", "session-c"],
+            [{ sessionId: "session-b" }, { sessionId: "session-c" }],
             "session-c",
         );
 
@@ -150,7 +151,7 @@ describe("chatTabsStore", () => {
                 tabs: [{ id: "tab-a", sessionId: "session-a" }],
                 activeTabId: "tab-a",
             },
-            ["session-b"],
+            [{ sessionId: "session-b" }],
             "session-b",
         );
 
@@ -161,5 +162,83 @@ describe("chatTabsStore", () => {
         expect(useChatTabsStore.getState().activeTabId).toBe(
             useChatTabsStore.getState().tabs[0]?.id,
         );
+    });
+
+    it("restores a tab against a resumed live session via historySessionId", () => {
+        useChatTabsStore.getState().restoreWorkspace(
+            {
+                version: 1,
+                tabs: [
+                    {
+                        id: "tab-a",
+                        sessionId: "codex-session-1",
+                        historySessionId: "history-1",
+                    },
+                ],
+                activeTabId: "tab-a",
+            },
+            [
+                {
+                    sessionId: "codex-session-9",
+                    historySessionId: "history-1",
+                },
+            ],
+        );
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            {
+                id: "tab-a",
+                sessionId: "codex-session-9",
+                historySessionId: "history-1",
+            },
+        ]);
+        expect(useChatTabsStore.getState().activeTabId).toBe("tab-a");
+    });
+
+    it("restores a persisted tab against a resumed live session via persisted id", () => {
+        useChatTabsStore.getState().restoreWorkspace(
+            {
+                version: 1,
+                tabs: [
+                    {
+                        id: "tab-a",
+                        sessionId: "persisted:history-1",
+                    },
+                ],
+                activeTabId: "tab-a",
+            },
+            [
+                {
+                    sessionId: "codex-session-9",
+                    historySessionId: "history-1",
+                },
+            ],
+        );
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            {
+                id: "tab-a",
+                sessionId: "codex-session-9",
+                historySessionId: "history-1",
+            },
+        ]);
+        expect(useChatTabsStore.getState().activeTabId).toBe("tab-a");
+    });
+
+    it("flushes pending persistence on reset", () => {
+        vi.useFakeTimers();
+        markChatTabsReady();
+        useVaultStore.setState({ vaultPath: "/vaults/work" });
+
+        useChatTabsStore
+            .getState()
+            .openSessionTab("session-a", { historySessionId: "history-a" });
+
+        resetChatTabsStore();
+
+        const persisted = readPersistedChatWorkspace("/vaults/work");
+        expect(persisted).toMatchObject({
+            tabs: [{ sessionId: "session-a", historySessionId: "history-a" }],
+        });
     });
 });

@@ -7,7 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { EditorView, drawSelection, keymap } from "@codemirror/view";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState, type Text } from "@codemirror/state";
 import {
     history,
     defaultKeymap,
@@ -24,9 +24,9 @@ import {
 } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit } from "@codemirror/language";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useShallow } from "zustand/react/shallow";
 import {
     ContextMenu,
@@ -59,7 +59,10 @@ import {
     syncSelectionLayerVisibility,
     EDITOR_INTERACTIVE_PREVIEW_SELECTOR,
 } from "./editorSelectionHelpers";
-import { resolveWikilink, matchesRevealTarget } from "./wikilinkResolution";
+import {
+    matchesRevealTarget,
+    resolveWikilinksBatch,
+} from "./wikilinkResolution";
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
 import { MetaBadge, EditableNoteTitle } from "./EditorHeader";
 import { LinkContextMenu } from "./LinkContextMenu";
@@ -124,7 +127,7 @@ export function Editor({
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const scheduleSaveRef = useRef<(tabId: string, content: string) => void>(
+    const scheduleSaveRef = useRef<(tabId: string, doc: Text | string) => void>(
         () => {},
     );
     const contentUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -135,6 +138,7 @@ export function Editor({
     const activeTabRef = useRef<Tab | null>(null);
     const wikilinkSuggesterArmedRef = useRef(false);
     const wikilinkSuggesterRef = useRef<WikilinkSuggesterState | null>(null);
+    const wikilinkSuggestionRequestIdRef = useRef(0);
     const isInternalRef = useRef(false);
     // Save/restore full EditorState per note (preserves undo history + selection)
     // Keyed by noteId so each note's state is preserved independently, even within the same tab.
@@ -205,7 +209,7 @@ export function Editor({
     const tabSize = useSettingsStore((s) => s.tabSize);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
-    const touchVault = useVaultStore((s) => s.touchVault);
+    const touchContent = useVaultStore((s) => s.touchContent);
     const openVault = useVaultStore((s) => s.openVault);
 
     // Only re-renders when the active tab identity changes, not on content updates
@@ -290,17 +294,27 @@ export function Editor({
     );
 
     const saveNow = useCallback(
-        async (tab: Pick<Tab, "id" | "noteId" | "title" | "content">, content: string) => {
+        async (
+            tab: Pick<Tab, "id" | "noteId" | "title" | "content">,
+            content: string,
+        ) => {
             if (saveTimerRef.current) {
                 clearTimeout(saveTimerRef.current);
                 saveTimerRef.current = null;
             }
-            const serializedContent = serializePersistedContent(tab.noteId, content);
-            if (lastSavedContentByTabId.current.get(tab.noteId) === serializedContent) {
+            if (!tab.noteId) return;
+            const serializedContent = serializePersistedContent(
+                tab.noteId,
+                content,
+            );
+            if (
+                lastSavedContentByTabId.current.get(tab.noteId) ===
+                serializedContent
+            ) {
                 return;
             }
             try {
-                const detail = await invoke<SavedNoteDetail>("save_note", {
+                const detail = await vaultInvoke<SavedNoteDetail>("save_note", {
                     noteId: tab.noteId,
                     content: serializedContent,
                 });
@@ -318,7 +332,7 @@ export function Editor({
                     );
                     setEditableTitle(detail.title);
                 }
-                touchVault();
+                touchContent();
             } catch (e) {
                 console.error("Error al guardar nota:", e);
             }
@@ -327,20 +341,24 @@ export function Editor({
             markTabSaved,
             serializePersistedContent,
             stripFrontmatter,
-            touchVault,
+            touchContent,
             updateNoteMetadata,
             updateTabTitle,
         ],
     );
 
     const scheduleSave = useCallback(
-        (tabId: string, content: string) => {
+        (tabId: string, doc: Text | string) => {
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             saveTimerRef.current = setTimeout(() => {
                 const freshTab = useEditorStore
                     .getState()
                     .tabs.find((t) => t.id === tabId);
-                if (freshTab) saveNow(freshTab, content);
+                if (freshTab)
+                    saveNow(
+                        freshTab,
+                        typeof doc === "string" ? doc : doc.toString(),
+                    );
             }, 300);
         },
         [saveNow],
@@ -523,47 +541,43 @@ export function Editor({
     );
 
     const updateSelectionToolbar = useCallback((view: EditorView | null) => {
-        if (!view || !activeTabRef.current || !view.hasFocus) {
-            useEditorStore.getState().clearCurrentSelection();
-            clearEditorDomSelection(view);
-            syncSelectionLayerVisibility(view);
-            setSelectionToolbar(null);
-            return;
-        }
+        const hasActiveSelection =
+            view &&
+            activeTabRef.current &&
+            view.hasFocus &&
+            view.state.selection.ranges.length === 1 &&
+            !view.state.selection.main.empty;
 
-        if (view.state.selection.ranges.length !== 1) {
-            useEditorStore.getState().clearCurrentSelection();
+        if (!hasActiveSelection) {
+            // Only update if there was a previous selection
+            if (useEditorStore.getState().currentSelection !== null) {
+                useEditorStore.getState().clearCurrentSelection();
+            }
             clearEditorDomSelection(view);
             syncSelectionLayerVisibility(view);
-            setSelectionToolbar(null);
+            setSelectionToolbar((prev) => (prev === null ? prev : null));
             return;
         }
 
         const selection = view.state.selection.main;
-        if (selection.empty) {
-            useEditorStore.getState().clearCurrentSelection();
-            clearEditorDomSelection(view);
-            syncSelectionLayerVisibility(view);
-            setSelectionToolbar(null);
-            return;
-        }
-
         const selectionStart = view.coordsAtPos(selection.from, 1);
         const selectionEnd = view.coordsAtPos(
             Math.max(selection.from, selection.to - 1),
             -1,
         );
         if (!selectionStart || !selectionEnd) {
-            useEditorStore.getState().clearCurrentSelection();
+            if (useEditorStore.getState().currentSelection !== null) {
+                useEditorStore.getState().clearCurrentSelection();
+            }
             clearEditorDomSelection(view);
             syncSelectionLayerVisibility(view);
-            setSelectionToolbar(null);
+            setSelectionToolbar((prev) => (prev === null ? prev : null));
             return;
         }
 
         syncSelectionLayerVisibility(view);
         useEditorStore.getState().setCurrentSelection({
-            noteId: activeTabRef.current.noteId,
+            noteId: activeTabRef.current!.noteId,
             text: view.state.sliceDoc(selection.from, selection.to),
             from: selection.from,
             to: selection.to,
@@ -607,48 +621,71 @@ export function Editor({
 
     const updateWikilinkSuggester = useCallback((view: EditorView | null) => {
         if (!view || !activeTabRef.current || !view.hasFocus) {
+            wikilinkSuggestionRequestIdRef.current += 1;
             wikilinkSuggesterArmedRef.current = false;
-            setWikilinkSuggester(null);
+            setWikilinkSuggester((prev) => (prev === null ? prev : null));
             return;
         }
 
         const context = getWikilinkContext(view.state);
         if (!context) {
+            wikilinkSuggestionRequestIdRef.current += 1;
             wikilinkSuggesterArmedRef.current = false;
-            setWikilinkSuggester(null);
+            setWikilinkSuggester((prev) => (prev === null ? prev : null));
             return;
         }
 
         if (!wikilinkSuggesterArmedRef.current) {
-            setWikilinkSuggester(null);
+            wikilinkSuggestionRequestIdRef.current += 1;
+            setWikilinkSuggester((prev) => (prev === null ? prev : null));
             return;
         }
 
         const caret = view.coordsAtPos(view.state.selection.main.head);
         if (!caret) {
+            wikilinkSuggestionRequestIdRef.current += 1;
             setWikilinkSuggester(null);
             return;
         }
 
-        const items = getWikilinkSuggestions(
-            useVaultStore.getState().notes,
-            context.query,
-        );
+        const requestId = ++wikilinkSuggestionRequestIdRef.current;
+        const activeNoteId = activeTabRef.current.noteId;
+        const { left, top } = caret;
 
-        setWikilinkSuggester((previous) => ({
-            x: caret.left,
-            y: caret.top,
-            query: context.query,
-            selectedIndex: previous
-                ? Math.min(
-                      previous.selectedIndex,
-                      Math.max(items.length - 1, 0),
-                  )
-                : 0,
-            items,
-            wholeFrom: context.wholeFrom,
-            wholeTo: context.wholeTo,
-        }));
+        void getWikilinkSuggestions(activeNoteId, context.query)
+            .then((items) => {
+                if (requestId !== wikilinkSuggestionRequestIdRef.current)
+                    return;
+                setWikilinkSuggester((previous) => ({
+                    x: left,
+                    y: top,
+                    query: context.query,
+                    selectedIndex: previous
+                        ? Math.min(
+                              previous.selectedIndex,
+                              Math.max(items.length - 1, 0),
+                          )
+                        : 0,
+                    items,
+                    wholeFrom: context.wholeFrom,
+                    wholeTo: context.wholeTo,
+                }));
+            })
+            .catch((error) => {
+                if (requestId !== wikilinkSuggestionRequestIdRef.current)
+                    return;
+                console.error("Error loading wikilink suggestions:", error);
+                setWikilinkSuggester((previous) => ({
+                    x: left,
+                    y: top,
+                    query: context.query,
+                    selectedIndex: 0,
+                    items:
+                        previous?.query === context.query ? previous.items : [],
+                    wholeFrom: context.wholeFrom,
+                    wholeTo: context.wholeTo,
+                }));
+            });
     }, []);
 
     const moveWikilinkSuggesterSelection = useCallback((direction: 1 | -1) => {
@@ -692,6 +729,7 @@ export function Editor({
             });
             view.focus();
             wikilinkSuggesterArmedRef.current = false;
+            wikilinkSuggestionRequestIdRef.current += 1;
             setWikilinkSuggester(null);
             return true;
         },
@@ -701,6 +739,7 @@ export function Editor({
     const closeWikilinkSuggester = useCallback(() => {
         if (!wikilinkSuggesterRef.current) return false;
         wikilinkSuggesterArmedRef.current = false;
+        wikilinkSuggestionRequestIdRef.current += 1;
         setWikilinkSuggester(null);
         return true;
     }, []);
@@ -967,21 +1006,26 @@ export function Editor({
                         ...historyKeymap,
                         ...searchKeymap,
                     ]),
-                    wikilinkExtension(resolveWikilink, navigateWikilink),
+                    wikilinkExtension(
+                        resolveWikilinksBatch,
+                        () => activeTabRef.current?.noteId ?? null,
+                        navigateWikilink,
+                    ),
                     urlLinksExtension,
                     EditorView.updateListener.of((update) => {
                         if (!update.docChanged || isInternalRef.current) return;
                         const tab = activeTabRef.current;
                         if (!tab) return;
-                        const content = update.state.doc.toString();
-                        // Debounce content propagation to Zustand to avoid
-                        // expensive re-renders in LinksPanel on every keystroke
+                        // Capture the immutable doc reference — defer toString()
+                        // to the debounce callbacks instead of on every keystroke.
+                        const doc = update.state.doc;
                         if (contentUpdateTimerRef.current)
                             clearTimeout(contentUpdateTimerRef.current);
                         contentUpdateTimerRef.current = setTimeout(() => {
+                            const content = doc.toString();
                             updateTabContent(tab.id, content);
                         }, 300);
-                        scheduleSaveRef.current(tab.id, content);
+                        scheduleSaveRef.current(tab.id, doc);
                     }),
                     EditorView.updateListener.of((update) => {
                         if (
@@ -994,15 +1038,21 @@ export function Editor({
                             wikilinkSuggesterArmedRef.current = true;
                         }
 
+                        // Skip toolbar/suggester updates for effect-only
+                        // transactions (e.g. async wikilink resolution
+                        // callbacks) — they don't change the document,
+                        // selection, or viewport.
                         if (
-                            update.docChanged ||
-                            update.selectionSet ||
-                            update.viewportChanged ||
-                            update.focusChanged
+                            !update.docChanged &&
+                            !update.selectionSet &&
+                            !update.viewportChanged &&
+                            !update.focusChanged
                         ) {
-                            updateSelectionToolbar(update.view);
-                            updateWikilinkSuggester(update.view);
+                            return;
                         }
+
+                        updateSelectionToolbar(update.view);
+                        updateWikilinkSuggester(update.view);
                     }),
                 ],
             });
@@ -1223,7 +1273,9 @@ export function Editor({
         const savedState = tabStatesRef.current.get(activeNoteId);
         const nextState =
             savedState ??
-            createEditorState(stripFrontmatter(activeNoteId, activeTab.content));
+            createEditorState(
+                stripFrontmatter(activeNoteId, activeTab.content),
+            );
         // Swap state in-place — avoids destroying/recreating the entire DOM.
         // Falls back to replaceEditorView if setState throws.
         let view: EditorView | null = currentView;
@@ -1345,11 +1397,7 @@ export function Editor({
                 ),
             ),
         });
-    }, [
-        handleOpenLinkContextMenu,
-        vaultPath,
-        livePreviewEnabled,
-    ]);
+    }, [handleOpenLinkContextMenu, vaultPath, livePreviewEnabled]);
 
     // Reload editor content when an external process (e.g. AI agent) writes to the file
     useEffect(() => {
@@ -1363,6 +1411,9 @@ export function Editor({
             const prevTab = prev.tabs.find((t) => t.id === tabId);
             if (!tab || !prevTab) return;
 
+            // Skip when noteId changed — the tab-switch useEffect handles navigation
+            if (tab.noteId !== prevTab.noteId) return;
+
             if (
                 tab.content === prevTab.content &&
                 tab.title === prevTab.title
@@ -1371,6 +1422,14 @@ export function Editor({
             }
 
             const currentDoc = view.state.doc.toString();
+            const currentSerialized = serializePersistedContent(
+                tab.noteId,
+                currentDoc,
+            );
+            const lastSaved =
+                lastSavedContentByTabId.current.get(tab.noteId) ?? null;
+            const hasLocalUnsavedChanges =
+                lastSaved !== null && currentSerialized !== lastSaved;
             const incoming = stripFrontmatter(tab.noteId, tab.content);
             const nextFrontmatter =
                 frontmatterByTabId.current.get(tab.noteId) ?? null;
@@ -1379,6 +1438,10 @@ export function Editor({
                 incoming,
                 tab.title,
             );
+
+            if (hasLocalUnsavedChanges) {
+                return;
+            }
 
             if (activeTabRef.current?.id === tabId) {
                 setActiveFrontmatter(nextFrontmatter);
@@ -1389,6 +1452,11 @@ export function Editor({
             }
             if (incoming === currentDoc) return;
 
+            const selection = view.state.selection.main;
+            const scrollTop = view.scrollDOM.scrollTop;
+            const scrollLeft = view.scrollDOM.scrollLeft;
+            const nextDocLength = incoming.length;
+
             isInternalRef.current = true;
             view.dispatch({
                 changes: {
@@ -1396,12 +1464,20 @@ export function Editor({
                     to: currentDoc.length,
                     insert: incoming,
                 },
+                selection: {
+                    anchor: Math.min(selection.anchor, nextDocLength),
+                    head: Math.min(selection.head, nextDocLength),
+                },
             });
             isInternalRef.current = false;
+            requestAnimationFrame(() => {
+                if (viewRef.current !== view) return;
+                view.scrollDOM.scrollTop = scrollTop;
+                view.scrollDOM.scrollLeft = scrollLeft;
+            });
         });
         return unsub;
-    }, [markTabSaved, stripFrontmatter]);
-
+    }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
 
     useEffect(() => {
         viewRef.current?.dispatch({

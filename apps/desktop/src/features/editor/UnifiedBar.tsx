@@ -83,28 +83,30 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const navigateToHistoryIndex = useEditorStore(
         (s) => s.navigateToHistoryIndex,
     );
-    const activeTab = useEditorStore((s) =>
-        s.tabs.find((t) => t.id === s.activeTabId),
-    );
-    const canGoBack = activeTab ? activeTab.historyIndex > 0 : false;
-    const canGoForward = activeTab
-        ? activeTab.historyIndex < activeTab.history.length - 1
-        : false;
+    // Primitive selectors — stable when values don't change
+    const canGoBack = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return tab ? tab.historyIndex > 0 : false;
+    });
+    const canGoForward = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return tab ? tab.historyIndex < tab.history.length - 1 : false;
+    });
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
-    const [tabContextMenu, setTabContextMenu] = useState<
-        ContextMenuState<{ tabId: string }>
-    | null>(null);
-    const [historyContextMenu, setHistoryContextMenu] = useState<
-        ContextMenuState<void>
-    | null>(null);
+    const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
+        tabId: string;
+    }> | null>(null);
+    const [historyContextMenu, setHistoryContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
 
     const handleDetachTab = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
-            const tab = tabs.find((item) => item.id === tabId);
+            const currentTabs = useEditorStore.getState().tabs;
+            const tab = currentTabs.find((item) => item.id === tabId);
             if (!tab) return;
 
             const targetWindowLabel = await findWindowTabDropTarget(
@@ -120,7 +122,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     { tab } satisfies AttachExternalTabPayload,
                 );
 
-                if (windowMode === "note" && tabs.length === 1) {
+                if (windowMode === "note" && currentTabs.length === 1) {
                     await appWindow.close();
                     return;
                 }
@@ -137,14 +139,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 ),
             });
 
-            if (windowMode === "note" && tabs.length === 1) {
+            if (windowMode === "note" && currentTabs.length === 1) {
                 await appWindow.close();
                 return;
             }
 
             closeTab(tabId);
         },
-        [closeTab, tabs, windowMode],
+        [closeTab, windowMode],
     );
 
     const {
@@ -176,7 +178,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
     const handleCloseTab = useCallback(
         async (tabId: string) => {
-            if (windowMode === "note" && tabs.length === 1) {
+            if (
+                windowMode === "note" &&
+                useEditorStore.getState().tabs.length === 1
+            ) {
                 await appWindow.close().catch((error) => {
                     console.error("No se pudo cerrar la ventana:", error);
                 });
@@ -185,21 +190,18 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             closeTab(tabId);
         },
-        [closeTab, tabs.length, windowMode],
+        [closeTab, windowMode],
     );
 
-    const closeOtherTabs = useCallback(
-        (tabId: string) => {
-            useEditorStore.setState((state) => {
-                const kept = state.tabs.filter((tab) => tab.id === tabId);
-                return {
-                    tabs: kept,
-                    activeTabId: kept[0]?.id ?? null,
-                };
-            });
-        },
-        [],
-    );
+    const closeOtherTabs = useCallback((tabId: string) => {
+        useEditorStore.setState((state) => {
+            const kept = state.tabs.filter((tab) => tab.id === tabId);
+            return {
+                tabs: kept,
+                activeTabId: kept[0]?.id ?? null,
+            };
+        });
+    }, []);
 
     const closeTabsToTheRight = useCallback((tabId: string) => {
         useEditorStore.setState((state) => {
@@ -301,7 +303,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         <button
                             onClick={toggleSidebar}
                             title={
-                                sidebarCollapsed ? "Show sidebar" : "Hide sidebar"
+                                sidebarCollapsed
+                                    ? "Show sidebar"
+                                    : "Hide sidebar"
                             }
                             className="no-drag flex items-center justify-center flex-shrink-0"
                             style={{
@@ -311,10 +315,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 width: 30,
                                 height: 30,
                                 borderRadius: 9,
-                                border: "1px solid transparent",
-                                background: "transparent",
+                                border: "1px solid var(--border)",
+                                background: "var(--bg-secondary)",
+                                boxShadow:
+                                    "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
                                 color: "var(--text-secondary)",
-                                opacity: sidebarCollapsed ? 0.45 : 0.7,
+                                opacity: sidebarCollapsed ? 0.55 : 0.85,
                                 cursor: "pointer",
                                 transition: "opacity 140ms ease",
                             }}
@@ -366,10 +372,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             onContextMenu={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                if (!activeTab || activeTab.historyIndex <= 0) return;
+                                if (!canGoBack) return;
+                                const rect =
+                                    e.currentTarget.getBoundingClientRect();
                                 setHistoryContextMenu({
-                                    x: e.clientX,
-                                    y: e.clientY,
+                                    x: rect.left,
+                                    y: rect.bottom + 4,
                                     payload: undefined,
                                 });
                             }}
@@ -378,12 +386,19 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             className="no-drag flex items-center justify-center flex-shrink-0"
                             style={{
                                 alignSelf: "center",
-                                marginRight: 4,
-                                ...getChromeButtonStyle(false),
-                                border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
-                                backgroundColor: "color-mix(in srgb, var(--bg-secondary) 55%, transparent)",
+                                marginRight: 0,
+                                width: 30,
+                                height: 30,
+                                borderRadius: "9px 0 0 9px",
+                                border: "1px solid var(--border)",
+                                borderRight: "none",
+                                backgroundColor: "var(--bg-secondary)",
+                                boxShadow:
+                                    "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+                                color: "var(--text-secondary)",
                                 opacity: canGoBack ? 0.85 : 0.35,
                                 cursor: canGoBack ? "pointer" : "default",
+                                transition: "opacity 140ms ease",
                             }}
                         >
                             <svg
@@ -408,11 +423,17 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{
                                 alignSelf: "center",
                                 marginRight: 4,
-                                ...getChromeButtonStyle(false),
-                                border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
-                                backgroundColor: "color-mix(in srgb, var(--bg-secondary) 55%, transparent)",
+                                width: 30,
+                                height: 30,
+                                borderRadius: "0 9px 9px 0",
+                                border: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-secondary)",
+                                boxShadow:
+                                    "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+                                color: "var(--text-secondary)",
                                 opacity: canGoForward ? 0.85 : 0.35,
                                 cursor: canGoForward ? "pointer" : "default",
+                                transition: "opacity 140ms ease",
                             }}
                         >
                             <svg
@@ -490,7 +511,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                     setTabContextMenu({
                                                         x: event.clientX,
                                                         y: event.clientY,
-                                                        payload: { tabId: tab.id },
+                                                        payload: {
+                                                            tabId: tab.id,
+                                                        },
                                                     });
                                                 }}
                                                 onPointerDown={(event) =>
@@ -527,8 +550,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         : ""
                                                 }`}
                                                 style={{
-                                                    minWidth: "112px",
-                                                    maxWidth: "210px",
+                                                    width: 160,
                                                     height: 30,
                                                     borderRadius: 9,
                                                     flexShrink: 0,
@@ -597,39 +619,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     <button
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={() => {
-                                            const {
-                                                vaultPath,
-                                                notes,
-                                                createNote,
-                                            } = useVaultStore.getState();
-                                            if (!vaultPath) return;
-                                            let name = "Untitled";
-                                            let i = 1;
-                                            while (
-                                                notes.some(
-                                                    (n) =>
-                                                        n.id === name ||
-                                                        n.id.endsWith(
-                                                            `/${name}`,
-                                                        ),
-                                                )
-                                            ) {
-                                                name = `Untitled ${i++}`;
-                                            }
-                                            void createNote(name).then(
-                                                (note) => {
-                                                    if (note)
-                                                        useEditorStore
-                                                            .getState()
-                                                            .openNote(
-                                                                note.id,
-                                                                note.title,
-                                                                "",
-                                                            );
-                                                },
-                                            );
+                                            if (
+                                                !useVaultStore.getState()
+                                                    .vaultPath
+                                            )
+                                                return;
+                                            useEditorStore
+                                                .getState()
+                                                .insertExternalTab({
+                                                    id: crypto.randomUUID(),
+                                                    noteId: "",
+                                                    title: "New Tab",
+                                                    content: "",
+                                                });
                                         }}
-                                        title="New note"
+                                        title="New tab"
                                         className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
                                         style={{
                                             fontSize: 18,
@@ -697,7 +701,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 flex-shrink-0"
                                             style={getChromeButtonStyle(
                                                 !rightPanelCollapsed &&
-                                                    rightPanelView === "outline",
+                                                    rightPanelView ===
+                                                        "outline",
                                             )}
                                         >
                                             <svg
@@ -898,21 +903,30 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     </>
                 )}
             </div>
-            {historyContextMenu && activeTab && (
-                <ContextMenu
-                    menu={historyContextMenu}
-                    onClose={() => setHistoryContextMenu(null)}
-                    minWidth={160}
-                    maxHeight={290}
-                    entries={activeTab.history
-                        .slice(0, activeTab.historyIndex)
-                        .map((entry, idx) => ({
-                            label: entry.title || entry.noteId,
-                            action: () => navigateToHistoryIndex(idx),
-                        }))
-                        .reverse()}
-                />
-            )}
+            {historyContextMenu &&
+                (() => {
+                    const { tabs: currentTabs, activeTabId: currentActiveId } =
+                        useEditorStore.getState();
+                    const currentActiveTab = currentTabs.find(
+                        (t) => t.id === currentActiveId,
+                    );
+                    if (!currentActiveTab) return null;
+                    return (
+                        <ContextMenu
+                            menu={historyContextMenu}
+                            onClose={() => setHistoryContextMenu(null)}
+                            minWidth={160}
+                            maxHeight={290}
+                            entries={currentActiveTab.history
+                                .slice(0, currentActiveTab.historyIndex)
+                                .map((entry, idx) => ({
+                                    label: entry.title || entry.noteId,
+                                    action: () => navigateToHistoryIndex(idx),
+                                }))
+                                .reverse()}
+                        />
+                    );
+                })()}
             {tabContextMenu && (
                 <ContextMenu
                     menu={tabContextMenu}
@@ -920,14 +934,15 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     minWidth={132}
                     entries={(() => {
                         const tab = tabs.find(
-                            (entry) => entry.id === tabContextMenu.payload.tabId,
+                            (entry) =>
+                                entry.id === tabContextMenu.payload.tabId,
                         );
                         if (!tab) return [];
                         const notePath =
                             useVaultStore
                                 .getState()
-                                .notes.find((note) => note.id === tab.noteId)?.path ??
-                            null;
+                                .notes.find((note) => note.id === tab.noteId)
+                                ?.path ?? null;
 
                         const tabIndex = tabs.findIndex(
                             (entry) => entry.id === tab.id,
@@ -946,7 +961,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             {
                                 label: "Close Right",
                                 action: () => closeTabsToTheRight(tab.id),
-                                disabled: tabIndex === -1 || tabIndex >= tabs.length - 1,
+                                disabled:
+                                    tabIndex === -1 ||
+                                    tabIndex >= tabs.length - 1,
                             },
                             {
                                 label: "Close Left",
@@ -969,7 +986,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             {
                                 label: "Copy Path",
                                 action: () =>
-                                    void navigator.clipboard.writeText(tab.noteId),
+                                    void navigator.clipboard.writeText(
+                                        tab.noteId,
+                                    ),
                             },
                         ];
                     })()}

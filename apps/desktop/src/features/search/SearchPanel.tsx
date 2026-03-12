@@ -5,7 +5,7 @@ import {
     useCallback,
     useDeferredValue,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useEditorStore } from "../../app/store/editorStore";
 import {
     ContextMenu,
@@ -44,7 +44,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
         const requestId = ++searchRequestIdRef.current;
         if (!trimmed) return;
         try {
-            const res = await invoke<SearchResultDto[]>("search_notes", {
+            const res = await vaultInvoke<SearchResultDto[]>("search_notes", {
                 query: trimmed,
             });
             if (requestId !== searchRequestIdRef.current) return;
@@ -93,7 +93,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
             return;
         }
         try {
-            const detail = await invoke<{ content: string }>("read_note", {
+            const detail = await vaultInvoke<{ content: string }>("read_note", {
                 noteId: id,
             });
             openNote(id, title, detail.content);
@@ -109,7 +109,7 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
             const content =
                 existing?.content ??
                 (
-                    await invoke<{ content: string }>("read_note", {
+                    await vaultInvoke<{ content: string }>("read_note", {
                         noteId: result.id,
                     })
                 ).content;
@@ -136,9 +136,9 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
     return (
         <div className="h-full flex flex-col overflow-hidden">
             {/* Search input */}
-            <div className="px-3 pt-3 pb-2">
+            <div className="px-3 pt-3 pb-2 flex items-center gap-1.5">
                 <div
-                    className="flex items-center gap-2 px-2 rounded-md"
+                    className="flex-1 flex items-center gap-2 px-2 rounded-md"
                     style={{
                         backgroundColor: "var(--bg-primary)",
                         border: "1px solid var(--border)",
@@ -187,10 +187,50 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                         </button>
                     )}
                 </div>
+                <button
+                    onClick={() => {
+                        const { tabs, insertExternalTab, openNote } = useEditorStore.getState();
+                        const existing = tabs.find((t) => t.noteId === "__search__");
+                        if (existing) {
+                            openNote("__search__", "Search", "");
+                        } else {
+                            insertExternalTab({
+                                id: crypto.randomUUID(),
+                                noteId: "__search__",
+                                title: "Search",
+                                content: "",
+                            });
+                        }
+                    }}
+                    title="Open advanced search"
+                    className="shrink-0 flex items-center justify-center rounded-md hover:brightness-110"
+                    style={{
+                        backgroundColor: "var(--bg-primary)",
+                        border: "1px solid var(--border)",
+                        width: 30,
+                        height: 30,
+                        color: "var(--text-secondary)",
+                    }}
+                >
+                    <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <path d="M14 14l-3-3" />
+                        <circle cx="7" cy="7" r="5" />
+                        <path d="M5 7h4M7 5v4" />
+                    </svg>
+                </button>
             </div>
 
             {/* Results */}
-            <div ref={resultsRef} className="flex-1 overflow-y-auto px-1">
+            <div ref={resultsRef} className="flex-1 overflow-y-auto overflow-x-hidden px-1">
                 {!query.trim() && (
                     <div
                         className="px-3 py-4 text-xs text-center"

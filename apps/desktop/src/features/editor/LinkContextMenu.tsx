@@ -14,6 +14,13 @@ export function LinkContextMenu({
 }) {
     const ref = useRef<HTMLDivElement>(null);
     const [position, setPosition] = useState({ x: menu.x, y: menu.y });
+    const [resolvedLinkState, setResolvedLinkState] = useState<{
+        target: string | null;
+        noteId: string | null;
+    }>({
+        target: null,
+        noteId: null,
+    });
 
     useLayoutEffect(() => {
         const el = ref.current;
@@ -51,9 +58,29 @@ export function LinkContextMenu({
         };
     }, [onClose]);
 
-    const linkedNote = menu.noteTarget
-        ? findNoteByWikilink(menu.noteTarget)
-        : null;
+    useEffect(() => {
+        let cancelled = false;
+
+        if (!menu.noteTarget) return;
+
+        void findNoteByWikilink(menu.noteTarget).then((linkedNote) => {
+            if (!cancelled) {
+                setResolvedLinkState({
+                    target: menu.noteTarget ?? null,
+                    noteId: linkedNote?.id ?? null,
+                });
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [menu.noteTarget]);
+
+    const linkedNoteId =
+        resolvedLinkState.target === menu.noteTarget
+            ? resolvedLinkState.noteId
+            : null;
 
     const menuItem = (label: string, action: () => void) => (
         <button
@@ -98,14 +125,14 @@ export function LinkContextMenu({
         >
             {menu.noteTarget
                 ? menuItem("Open note", () => {
-                      navigateWikilink(menu.noteTarget ?? menu.href);
+                      void navigateWikilink(menu.noteTarget ?? menu.href);
                   })
                 : menuItem("Open link", () => {
                       void openUrl(menu.href);
                   })}
-            {linkedNote &&
+            {linkedNoteId &&
                 menuItem("Open in new tab", () => {
-                    openWikilinkInNewTab(linkedNote.id);
+                    void openWikilinkInNewTab(menu.noteTarget ?? linkedNoteId);
                 })}
             {menuItem("Copy link", () => {
                 void navigator.clipboard.writeText(menu.href);

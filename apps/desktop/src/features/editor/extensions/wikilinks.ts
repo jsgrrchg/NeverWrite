@@ -5,15 +5,35 @@ import {
     ViewPlugin,
     type ViewUpdate,
 } from "@codemirror/view";
-import { RangeSetBuilder } from "@codemirror/state";
-import { selectionTouchesRange } from "./selectionActivity";
+import { RangeSetBuilder, StateEffect } from "@codemirror/state";
+import {
+    perfCount,
+    perfMeasure,
+    perfNow,
+} from "../../../app/utils/perfInstrumentation";
+import { selectionTouchesLine } from "./selectionActivity";
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+// Characters that can affect wikilink structure: brackets, pipe, newlines.
+const WIKILINK_SIGNIFICANT = /[\[\]\n\r|]/;
+
+const DENSE_VISIBLE_WIKILINK_THRESHOLD = 50;
+const DENSE_IMMEDIATE_TARGET_LIMIT = 48;
+const DENSE_DEFERRED_BATCH_LIMIT = 64;
+
+type IdleDeadlineLike = {
+    didTimeout: boolean;
+    timeRemaining(): number;
+};
+
+type IdleCallbackHandle = number;
 
 interface WikilinkMatch {
     from: number;
     to: number;
     target: string;
+    /** The text between [[ and ]], cached to avoid re-slicing. */
+    inner: string;
 }
 
 function findWikilinksInText(doc: string, offset = 0): WikilinkMatch[] {
@@ -29,6 +49,7 @@ function findWikilinksInText(doc: string, offset = 0): WikilinkMatch[] {
             from: offset + match.index,
             to: offset + match.index + match[0].length,
             target,
+            inner,
         });
     }
     return results;
@@ -55,47 +76,347 @@ function findWikilinkAtPosition(
     );
 }
 
-export type WikilinkResolver = (target: string) => boolean;
+export type WikilinkBatchResolver = (
+    noteId: string | null,
+    targets: readonly string[],
+    onResolved?: () => void,
+) => ReadonlyMap<string, "valid" | "broken" | "pending">;
 export type WikilinkNavigator = (target: string) => void;
+export type WikilinkNoteContext = () => string | null;
+
+const refreshWikilinksEffect = StateEffect.define<null>();
+
+// Cache Decoration.mark objects keyed by "target\0state" to avoid
+// allocating new Decoration + attributes objects for every link on
+// every rebuild. The cache is small (one entry per unique target×state)
+// and grows/shrinks naturally as the viewport changes.
+const wikilinkMarkCache = new Map<string, Decoration>();
+
+function wikilinkMark(
+    target: string,
+    resolution: "valid" | "broken" | "pending",
+): Decoration {
+    const key = `${target}\0${resolution}`;
+    let mark = wikilinkMarkCache.get(key);
+    if (mark) return mark;
+
+    const className =
+        resolution === "valid"
+            ? "cm-wikilink cm-wikilink-valid"
+            : resolution === "broken"
+              ? "cm-wikilink cm-wikilink-broken"
+              : "cm-wikilink cm-wikilink-pending";
+    mark = Decoration.mark({
+        class: className,
+        attributes: {
+            "data-wikilink-target": target,
+            "data-wikilink-state": resolution,
+        },
+    });
+    wikilinkMarkCache.set(key, mark);
+    return mark;
+}
+
+function requestIdleWork(
+    callback: (deadline: IdleDeadlineLike) => void,
+): IdleCallbackHandle {
+    if ("requestIdleCallback" in globalThis) {
+        return globalThis.requestIdleCallback(callback, {
+            timeout: 150,
+        });
+    }
+
+    return window.setTimeout(() => {
+        callback({
+            didTimeout: false,
+            timeRemaining: () => 0,
+        });
+    }, 16);
+}
+
+function cancelIdleWork(handle: IdleCallbackHandle | null) {
+    if (handle === null) return;
+    if ("cancelIdleCallback" in globalThis) {
+        globalThis.cancelIdleCallback(handle);
+        return;
+    }
+    window.clearTimeout(handle);
+}
+
+function rankVisibleTargetsByCaretDistance(
+    visibleLinks: readonly WikilinkMatch[],
+    caretPos: number,
+) {
+    const distances = new Map<string, number>();
+
+    for (const link of visibleLinks) {
+        const midpoint = link.from + (link.to - link.from) / 2;
+        const distance = Math.abs(midpoint - caretPos);
+        const previous = distances.get(link.target);
+        if (previous === undefined || distance < previous) {
+            distances.set(link.target, distance);
+        }
+    }
+
+    return [...distances.entries()]
+        .sort(
+            (left, right) =>
+                left[1] - right[1] || left[0].localeCompare(right[0]),
+        )
+        .map(([target]) => target);
+}
+
+function isWikilinkSafeEdit(update: ViewUpdate): boolean {
+    let safe = true;
+    update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        if (!safe) return;
+        if (toA > fromA) {
+            if (
+                WIKILINK_SIGNIFICANT.test(
+                    update.startState.doc.sliceString(fromA, toA),
+                )
+            ) {
+                safe = false;
+                return;
+            }
+        }
+        if (toB > fromB) {
+            if (
+                WIKILINK_SIGNIFICANT.test(
+                    update.state.doc.sliceString(fromB, toB),
+                )
+            ) {
+                safe = false;
+            }
+        }
+    });
+    return safe;
+}
 
 export function wikilinkExtension(
-    resolveLink: WikilinkResolver,
+    resolveLinkBatch: WikilinkBatchResolver,
+    getNoteId: WikilinkNoteContext,
     navigateToLink: WikilinkNavigator,
 ) {
     const plugin = ViewPlugin.fromClass(
         class {
             decorations: DecorationSet;
+            deferredDenseResolutionHandle: IdleCallbackHandle | null = null;
+            deferredDenseResolutionVersion = 0;
 
             constructor(view: EditorView) {
-                this.decorations = this.build(view);
+                this.decorations = this.build(view, "initial");
+            }
+
+            destroy() {
+                this.cancelDeferredDenseResolution();
             }
 
             update(update: ViewUpdate) {
-                if (
-                    update.docChanged ||
-                    update.viewportChanged ||
-                    update.selectionSet
-                ) {
-                    this.decorations = this.build(update.view);
+                if (update.docChanged) {
+                    // Fast path: edits without bracket/pipe/newline chars
+                    // can't create or destroy wikilinks — just remap positions.
+                    if (isWikilinkSafeEdit(update)) {
+                        this.decorations = this.decorations.map(update.changes);
+                        return;
+                    }
+                    this.decorations = this.build(update.view, "docChanged");
+                    return;
                 }
+
+                // Check for refresh effects (async resolution callbacks)
+                if (
+                    update.transactions.some((transaction) =>
+                        transaction.effects.some((effect) =>
+                            effect.is(refreshWikilinksEffect),
+                        ),
+                    )
+                ) {
+                    this.decorations = this.build(
+                        update.view,
+                        "viewportChanged",
+                    );
+                    return;
+                }
+
+                if (update.viewportChanged) {
+                    this.decorations = this.build(
+                        update.view,
+                        "viewportChanged",
+                    );
+                    return;
+                }
+
+                if (!update.selectionSet) return;
+
+                // With line-level hide/show, decorations only change when
+                // the selection moves to a different line range.
+                const prev = update.startState.selection.main;
+                const curr = update.state.selection.main;
+                if (
+                    update.startState.doc.lineAt(prev.from).number ===
+                        update.state.doc.lineAt(curr.from).number &&
+                    update.startState.doc.lineAt(prev.to).number ===
+                        update.state.doc.lineAt(curr.to).number
+                ) {
+                    perfCount("editor.wikilinks.selectionSet.sameLine");
+                    return;
+                }
+
+                this.decorations = this.build(update.view, "selectionSet");
             }
 
-            build(view: EditorView): DecorationSet {
+            cancelDeferredDenseResolution() {
+                this.deferredDenseResolutionVersion += 1;
+                cancelIdleWork(this.deferredDenseResolutionHandle);
+                this.deferredDenseResolutionHandle = null;
+            }
+
+            scheduleDeferredDenseResolution(
+                view: EditorView,
+                noteId: string | null,
+                targets: readonly string[],
+            ) {
+                this.cancelDeferredDenseResolution();
+                if (!noteId || targets.length === 0) {
+                    return;
+                }
+
+                const version = this.deferredDenseResolutionVersion;
+                let index = 0;
+
+                const scheduleNext = () => {
+                    this.deferredDenseResolutionHandle = requestIdleWork(
+                        (deadline) => {
+                            if (
+                                view.destroyed ||
+                                version !== this.deferredDenseResolutionVersion
+                            ) {
+                                return;
+                            }
+
+                            const batch: string[] = [];
+                            while (
+                                index < targets.length &&
+                                batch.length < DENSE_DEFERRED_BATCH_LIMIT &&
+                                (batch.length === 0 ||
+                                    deadline.didTimeout ||
+                                    deadline.timeRemaining() > 3)
+                            ) {
+                                batch.push(targets[index]);
+                                index += 1;
+                            }
+
+                            if (batch.length > 0) {
+                                perfCount(
+                                    "editor.wikilinks.dense.deferred.batch",
+                                );
+                                resolveLinkBatch(noteId, batch, () => {
+                                    if (
+                                        view.destroyed ||
+                                        version !==
+                                            this.deferredDenseResolutionVersion
+                                    ) {
+                                        return;
+                                    }
+                                    view.dispatch({
+                                        effects:
+                                            refreshWikilinksEffect.of(null),
+                                    });
+                                });
+                            }
+
+                            if (index < targets.length) {
+                                scheduleNext();
+                                return;
+                            }
+
+                            this.deferredDenseResolutionHandle = null;
+                        },
+                    );
+                };
+
+                scheduleNext();
+            }
+
+            build(
+                view: EditorView,
+                reason:
+                    | "initial"
+                    | "docChanged"
+                    | "viewportChanged"
+                    | "selectionSet",
+            ): DecorationSet {
+                const startMs = perfNow();
                 const builder = new RangeSetBuilder<Decoration>();
-                const resolved = new Map<string, boolean>();
-                for (const link of findVisibleWikilinks(view)) {
-                    if (selectionTouchesRange(view.state, link.from, link.to)) {
+                const visibleLinks = findVisibleWikilinks(view);
+                const rankedTargets = rankVisibleTargetsByCaretDistance(
+                    visibleLinks,
+                    view.state.selection.main.head,
+                );
+                const denseMode =
+                    visibleLinks.length > DENSE_VISIBLE_WIKILINK_THRESHOLD;
+                const immediateTargets = denseMode
+                    ? rankedTargets.slice(0, DENSE_IMMEDIATE_TARGET_LIMIT)
+                    : rankedTargets;
+                const deferredTargets = denseMode
+                    ? rankedTargets.slice(DENSE_IMMEDIATE_TARGET_LIMIT)
+                    : [];
+                const noteId = getNoteId();
+                const onResolved = () => {
+                    if (view.destroyed) return;
+                    view.dispatch({
+                        effects: refreshWikilinksEffect.of(null),
+                    });
+                };
+                const resolvedImmediate = resolveLinkBatch(
+                    noteId,
+                    immediateTargets,
+                    onResolved,
+                );
+
+                if (denseMode) {
+                    perfCount("editor.wikilinks.dense.mode");
+                    this.scheduleDeferredDenseResolution(
+                        view,
+                        noteId,
+                        deferredTargets,
+                    );
+                } else {
+                    this.cancelDeferredDenseResolution();
+                }
+
+                let decoratedLinks = 0;
+                let pendingLinks = 0;
+
+                // Pre-compute the cursor line range once to avoid
+                // N × doc.lineAt() calls inside selectionTouchesLine.
+                const sel = view.state.selection;
+                const cursorLineFrom = view.state.doc.lineAt(
+                    sel.main.from,
+                ).number;
+                const cursorLineTo = view.state.doc.lineAt(sel.main.to).number;
+
+                for (const link of visibleLinks) {
+                    // Inline line-range check (avoids function call + redundant
+                    // lineAt for single-selection common case).
+                    const linkLine = view.state.doc.lineAt(link.from).number;
+                    if (
+                        sel.ranges.length === 1
+                            ? linkLine >= cursorLineFrom &&
+                              linkLine <= cursorLineTo
+                            : selectionTouchesLine(
+                                  view.state,
+                                  link.from,
+                                  link.to,
+                              )
+                    ) {
                         continue;
                     }
 
                     // Only decorate the visible text (exclude [[ ]] markers).
-                    // This prevents the mousedown handler from intercepting
-                    // clicks on hidden markers at the end of a line.
-                    const inner = view.state.sliceDoc(
-                        link.from + 2,
-                        link.to - 2,
-                    );
-                    const pipeIdx = inner.indexOf("|");
+                    // Use cached inner text to avoid per-link sliceDoc calls.
+                    const pipeIdx = link.inner.indexOf("|");
                     const visibleFrom =
                         pipeIdx >= 0
                             ? link.from + 2 + pipeIdx + 1
@@ -103,23 +424,34 @@ export function wikilinkExtension(
                     const visibleTo = link.to - 2;
                     if (visibleFrom >= visibleTo) continue;
 
-                    let exists = resolved.get(link.target);
-                    if (exists === undefined) {
-                        exists = resolveLink(link.target);
-                        resolved.set(link.target, exists);
-                    }
+                    const resolution =
+                        resolvedImmediate.get(link.target) ?? "pending";
                     builder.add(
                         visibleFrom,
                         visibleTo,
-                        Decoration.mark({
-                            class: exists
-                                ? "cm-wikilink cm-wikilink-valid"
-                                : "cm-wikilink cm-wikilink-broken",
-                            attributes: {
-                                "data-wikilink-target": link.target,
-                            },
-                        }),
+                        wikilinkMark(link.target, resolution),
                     );
+                    decoratedLinks += 1;
+                    if (resolution === "pending") {
+                        pendingLinks += 1;
+                    }
+                }
+                perfMeasure(`editor.wikilinks.build.${reason}`, startMs, {
+                    visibleLinks: visibleLinks.length,
+                    decoratedLinks,
+                    pendingLinks,
+                    denseMode,
+                    uniqueTargets: rankedTargets.length,
+                    batchTargetCount: immediateTargets.length,
+                    deferredTargetCount: deferredTargets.length,
+                    visibleRanges: view.visibleRanges.length,
+                    viewportChars: view.visibleRanges.reduce(
+                        (total, range) => total + (range.to - range.from),
+                        0,
+                    ),
+                });
+                if (reason === "docChanged") {
+                    perfCount("editor.wikilinks.docChanged");
                 }
                 return builder.finish();
             }
@@ -163,6 +495,11 @@ export function wikilinkExtension(
         ".cm-wikilink-broken": {
             color: "#ef4444",
             textDecorationColor: "#ef4444",
+        },
+        ".cm-wikilink-pending": {
+            color: "var(--text-secondary)",
+            textDecorationColor:
+                "color-mix(in srgb, var(--text-secondary) 60%, transparent)",
         },
     });
 
