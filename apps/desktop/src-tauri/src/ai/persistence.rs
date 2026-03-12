@@ -24,6 +24,8 @@ pub struct PersistedMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_options: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub diffs: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input_request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input_questions: Option<serde_json::Value>,

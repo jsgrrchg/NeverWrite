@@ -362,39 +362,7 @@ impl Client for VaultAiAcpClient {
             .map(|location| location.path.display().to_string());
 
         // Extract diffs from tool call content (for patch approval requests).
-        let diffs: Vec<AiFileDiffPayload> = args
-            .tool_call
-            .fields
-            .content
-            .as_ref()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| match item {
-                        ToolCallContent::Diff(diff) => {
-                            let kind = if diff.old_text.is_none() {
-                                "add"
-                            } else if diff.new_text.is_empty() {
-                                "delete"
-                            } else {
-                                "update"
-                            };
-                            Some(AiFileDiffPayload {
-                                path: diff.path.display().to_string(),
-                                kind: kind.to_string(),
-                                old_text: diff.old_text.clone(),
-                                new_text: if diff.new_text.is_empty() {
-                                    None
-                                } else {
-                                    Some(diff.new_text.clone())
-                                },
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let diffs = collect_tool_call_update_diffs(&args.tool_call);
 
         // Register the tool call so subsequent ToolCallUpdates can find it.
         let pending_tool_call = ToolCall::try_from(args.tool_call.clone())
@@ -1287,6 +1255,8 @@ fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload 
 }
 
 fn map_tool_call(session_id: &str, tool_call: &ToolCall) -> AiToolActivityPayload {
+    let diffs = collect_tool_call_diffs(tool_call);
+
     AiToolActivityPayload {
         session_id: session_id.to_string(),
         tool_call_id: tool_call.tool_call_id.0.to_string(),
@@ -1316,6 +1286,7 @@ fn map_tool_call(session_id: &str, tool_call: &ToolCall) -> AiToolActivityPayloa
             .first()
             .map(|location| location.path.display().to_string()),
         summary: summarize_tool_content(tool_call),
+        diffs: (!diffs.is_empty()).then_some(diffs),
     }
 }
 
@@ -1453,4 +1424,114 @@ fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
         ToolCallContent::Terminal(_) => Some("Terminal output available.".to_string()),
         _ => None,
     })
+}
+
+fn map_diff_payload(path: &std::path::Path, old_text: Option<&String>, new_text: &str) -> AiFileDiffPayload {
+    let kind = if old_text.is_none() {
+        "add"
+    } else if new_text.is_empty() {
+        "delete"
+    } else {
+        "update"
+    };
+
+    AiFileDiffPayload {
+        path: path.display().to_string(),
+        kind: kind.to_string(),
+        old_text: old_text.cloned(),
+        new_text: if new_text.is_empty() {
+            None
+        } else {
+            Some(new_text.to_string())
+        },
+    }
+}
+
+fn collect_tool_call_diffs(tool_call: &ToolCall) -> Vec<AiFileDiffPayload> {
+    tool_call
+        .content
+        .iter()
+        .filter_map(|item| match item {
+            ToolCallContent::Diff(diff) => {
+                Some(map_diff_payload(&diff.path, diff.old_text.as_ref(), &diff.new_text))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_tool_call_update_diffs(
+    tool_call: &agent_client_protocol::ToolCallUpdate,
+) -> Vec<AiFileDiffPayload> {
+    tool_call
+        .fields
+        .content
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    ToolCallContent::Diff(diff) => Some(map_diff_payload(
+                        &diff.path,
+                        diff.old_text.as_ref(),
+                        &diff.new_text,
+                    )),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_client_protocol::{Diff, ToolCallId, ToolKind};
+
+    use super::*;
+
+    #[test]
+    fn map_tool_call_extracts_structured_diffs() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-1"), "Edit watcher")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![
+                ToolCallContent::Diff(
+                    Diff::new("/tmp/new.rs", "new line").old_text("old line"),
+                ),
+                ToolCallContent::Diff(Diff::new("/tmp/added.rs", "added line")),
+                ToolCallContent::Diff(Diff::new("/tmp/deleted.rs", "").old_text("gone")),
+            ]);
+
+        let payload = map_tool_call("session-1", &tool_call);
+
+        assert_eq!(payload.kind, "edit");
+        assert_eq!(payload.diffs.as_ref().map(Vec::len), Some(3));
+        assert_eq!(
+            payload.diffs.as_ref().and_then(|diffs| diffs.first()).map(|diff| diff.kind.as_str()),
+            Some("update")
+        );
+        assert_eq!(
+            payload.diffs.as_ref().and_then(|diffs| diffs.get(1)).map(|diff| diff.kind.as_str()),
+            Some("add")
+        );
+        assert_eq!(
+            payload.diffs.as_ref().and_then(|diffs| diffs.get(2)).map(|diff| diff.kind.as_str()),
+            Some("delete")
+        );
+    }
+
+    #[test]
+    fn map_tool_call_keeps_summary_without_diffs() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-2"), "Read file")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Content(agent_client_protocol::Content::new(
+                "README.md",
+            ))]);
+
+        let payload = map_tool_call("session-1", &tool_call);
+
+        assert_eq!(payload.summary.as_deref(), Some("README.md"));
+        assert!(payload.diffs.is_none());
+    }
 }

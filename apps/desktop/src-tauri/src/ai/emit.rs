@@ -51,6 +51,8 @@ pub struct AiToolActivityPayload {
     pub status: String,
     pub target: Option<String>,
     pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diffs: Option<Vec<AiFileDiffPayload>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -101,6 +101,22 @@ export interface AIChatAttachment {
     errorMessage?: string;
 }
 
+export type QueuedChatMessageStatus = "queued" | "sending" | "failed";
+
+export interface QueuedChatMessage {
+    id: string;
+    content: string;
+    prompt: string;
+    composerParts: AIComposerPart[];
+    attachments: AIChatAttachment[];
+    createdAt: number;
+    status: QueuedChatMessageStatus;
+    modelId: string | null;
+    modeId: string | null;
+    optionsSnapshot: Record<string, string>;
+    optimisticMessageId?: string;
+}
+
 export type AIChatRole = "user" | "assistant" | "system";
 
 export type AIChatMessageKind =
@@ -280,6 +296,7 @@ export interface AIToolActivityPayload {
     status: string;
     target?: string | null;
     summary?: string | null;
+    diffs?: AIFileDiff[];
 }
 
 export interface AIStatusEventPayload {
@@ -365,6 +382,7 @@ export interface PersistedMessage {
     meta?: Record<string, string | number | boolean | null>;
     permission_request_id?: string;
     permission_options?: AIPermissionOption[];
+    diffs?: AIFileDiff[];
     user_input_request_id?: string;
     user_input_questions?: AIUserInputQuestion[];
     plan_entries?: AIPlanEntry[];

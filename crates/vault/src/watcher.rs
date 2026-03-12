@@ -141,12 +141,15 @@ pub fn start_watcher(
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         let Ok(event) = res else { return };
 
-        // Solo nos interesan archivos .md
+        // Solo nos interesan archivos .md y .pdf
         let paths: Vec<&PathBuf> = event
             .paths
             .iter()
             .filter(|path| !path_is_ignored(&watch_root, path))
-            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext == "md" || ext == "pdf")
+            })
             .collect();
 
         if paths.is_empty() {

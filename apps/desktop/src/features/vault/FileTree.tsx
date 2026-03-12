@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
-import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
+import {
+    useVaultStore,
+    type NoteDto,
+    type VaultEntryDto,
+} from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import {
     buildFolderMoveOperations,
@@ -71,11 +75,13 @@ interface TreeNode {
     name: string;
     children?: Record<string, TreeNode>;
     note?: NoteDto;
+    pdfEntry?: VaultEntryDto;
 }
 
 type FlatTreeRow =
     | { kind: "folder"; name: string; path: string; depth: number }
     | { kind: "note"; note: NoteDto; path: string; depth: number }
+    | { kind: "pdf"; entry: VaultEntryDto; path: string; depth: number }
     | {
           kind: "create";
           mode: "note" | "folder";
@@ -84,9 +90,13 @@ type FlatTreeRow =
           depth: number;
       };
 
-function buildTree(notes: NoteDto[]): Record<string, TreeNode> {
+function buildTree(
+    notes: NoteDto[],
+    pdfEntries: VaultEntryDto[],
+): Record<string, TreeNode> {
     const startMs = perfNow();
     const root: Record<string, TreeNode> = {};
+
     for (const note of notes) {
         const parts = note.id.split("/");
         let current = root;
@@ -101,8 +111,25 @@ function buildTree(notes: NoteDto[]): Record<string, TreeNode> {
             }
         }
     }
+
+    for (const entry of pdfEntries) {
+        const parts = entry.id.split("/");
+        let current = root;
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            if (!current[part]) current[part] = { name: part };
+            if (i === parts.length - 1) {
+                current[part].pdfEntry = entry;
+            } else {
+                if (!current[part].children) current[part].children = {};
+                current = current[part].children!;
+            }
+        }
+    }
+
     perfMeasure("vault.fileTree.buildTree", startMs, {
         noteCount: notes.length,
+        pdfCount: pdfEntries.length,
         rootNodeCount: Object.keys(root).length,
     });
     return root;
@@ -180,6 +207,8 @@ function flattenTreeRows(
 
         if (node.note) {
             rows.push({ kind: "note", note: node.note, path, depth });
+        } else if (node.pdfEntry) {
+            rows.push({ kind: "pdf", entry: node.pdfEntry, path, depth });
         }
     }
 
@@ -209,13 +238,25 @@ function sortedEntries(
             case "name_desc":
                 return b.name.localeCompare(a.name);
             case "modified_desc":
-                return (b.note?.modified_at ?? 0) - (a.note?.modified_at ?? 0);
+                return (
+                    (b.note?.modified_at ?? b.pdfEntry?.modified_at ?? 0) -
+                    (a.note?.modified_at ?? a.pdfEntry?.modified_at ?? 0)
+                );
             case "modified_asc":
-                return (a.note?.modified_at ?? 0) - (b.note?.modified_at ?? 0);
+                return (
+                    (a.note?.modified_at ?? a.pdfEntry?.modified_at ?? 0) -
+                    (b.note?.modified_at ?? b.pdfEntry?.modified_at ?? 0)
+                );
             case "created_desc":
-                return (b.note?.created_at ?? 0) - (a.note?.created_at ?? 0);
+                return (
+                    (b.note?.created_at ?? b.pdfEntry?.created_at ?? 0) -
+                    (a.note?.created_at ?? a.pdfEntry?.created_at ?? 0)
+                );
             case "created_asc":
-                return (a.note?.created_at ?? 0) - (b.note?.created_at ?? 0);
+                return (
+                    (a.note?.created_at ?? a.pdfEntry?.created_at ?? 0) -
+                    (b.note?.created_at ?? b.pdfEntry?.created_at ?? 0)
+                );
         }
     });
 }
@@ -308,6 +349,41 @@ function NoteIcon({ size = 13 }: { size?: number }) {
                 strokeWidth="0.8"
                 strokeLinecap="round"
             />
+        </svg>
+    );
+}
+
+function PdfIcon({ size = 13 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            style={{ flexShrink: 0, opacity: 0.6 }}
+        >
+            <path
+                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
+                stroke="#e24b3b"
+                strokeWidth="1"
+            />
+            <path
+                d="M9.5 1.5V5H13"
+                stroke="#e24b3b"
+                strokeWidth="0.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+            <text
+                x="5"
+                y="12"
+                fontSize="4.5"
+                fontWeight="700"
+                fill="#e24b3b"
+                fontFamily="sans-serif"
+            >
+                PDF
+            </text>
         </svg>
     );
 }
@@ -446,7 +522,8 @@ type FileTreeContextPayload =
     | { kind: "blank" }
     | { kind: "folder"; path: string; expanded: boolean }
     | { kind: "note"; note: NoteDto }
-    | { kind: "move-note"; note: NoteDto };
+    | { kind: "move-note"; note: NoteDto }
+    | { kind: "pdf"; entry: VaultEntryDto };
 
 // --- Tree node ---
 
@@ -469,6 +546,9 @@ interface FlatTreeRowViewProps {
     onNoteAuxClick: (note: NoteDto, e: React.MouseEvent) => void;
     onNoteMouseDown: (note: NoteDto, e: React.MouseEvent) => void;
     onNoteContextMenu: (e: React.MouseEvent, note: NoteDto) => void;
+    onPdfClick: (entry: VaultEntryDto) => void;
+    onPdfMouseDown: (entry: VaultEntryDto, e: React.MouseEvent) => void;
+    onPdfContextMenu: (e: React.MouseEvent, entry: VaultEntryDto) => void;
     renamingNoteId: string | null;
     creatingMode: "note" | "folder" | null;
     newItemName: string;
@@ -497,6 +577,9 @@ const FlatTreeRowView = memo(
         onNoteAuxClick,
         onNoteMouseDown,
         onNoteContextMenu,
+        onPdfClick,
+        onPdfMouseDown,
+        onPdfContextMenu,
         renamingNoteId,
         creatingMode,
         newItemName,
@@ -623,6 +706,42 @@ const FlatTreeRowView = memo(
                             fontSize: metrics.inputFontSize,
                         }}
                     />
+                </div>
+            );
+        }
+
+        if (row.kind === "pdf") {
+            const entry = row.entry;
+            return (
+                <div
+                    role="button"
+                    tabIndex={0}
+                    data-note-id={entry.id}
+                    onMouseDown={(e) => onPdfMouseDown(entry, e)}
+                    onClick={() => onPdfClick(entry)}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onPdfClick(entry);
+                        }
+                    }}
+                    onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onPdfContextMenu(event, entry);
+                    }}
+                    className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded mx-1 cursor-pointer whitespace-nowrap"
+                    style={{
+                        paddingLeft: paddingLeft + noteOffset,
+                        minWidth: "calc(100% - 8px)",
+                        color: "var(--text-primary)",
+                        minHeight: metrics.rowHeight,
+                        fontSize: metrics.fontSize,
+                        boxSizing: "border-box",
+                    }}
+                >
+                    <PdfIcon size={metrics.smallIcon} />
+                    <span className="whitespace-nowrap">{entry.title}</span>
                 </div>
             );
         }
@@ -754,6 +873,10 @@ const FlatTreeRowView = memo(
             return true;
         }
 
+        if (prev.row.kind === "pdf") {
+            return true;
+        }
+
         const noteId = prev.row.note.id;
         if ((prev.activeNoteId === noteId) !== (next.activeNoteId === noteId))
             return false;
@@ -854,7 +977,8 @@ function OpenVaultForm() {
 interface DragState {
     item:
         | { kind: "notes"; notes: NoteDto[] }
-        | { kind: "folder"; path: string };
+        | { kind: "folder"; path: string }
+        | { kind: "pdf"; entry: VaultEntryDto };
     startX: number;
     startY: number;
     active: boolean;
@@ -865,6 +989,7 @@ interface DragState {
 export function FileTree() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const notes = useVaultStore((s) => s.notes);
+    const entries = useVaultStore((s) => s.entries);
     const structureRevision = useVaultStore((s) => s.structureRevision);
     const contentRevision = useVaultStore((s) => s.contentRevision);
     const createNote = useVaultStore((s) => s.createNote);
@@ -939,10 +1064,19 @@ export function FileTree() {
         sortMode === "modified_desc" || sortMode === "modified_asc"
             ? `${structureRevision}:${contentRevision}`
             : structureRevision;
+    const pdfEntries = useMemo(
+        () => entries.filter((e) => e.kind === "pdf"),
+        [entries],
+    );
     // Intentionally keyed by revisions instead of the full notes array to avoid
     // rebuilding the folder tree for content-only updates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    const tree = useMemo(() => buildTree(notes), [treeRevision]);
+    const tree = useMemo(
+        () => buildTree(notes, pdfEntries),
+        // pdfEntries changes only when entries change (infrequent)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [treeRevision, pdfEntries],
+    );
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {
         if (!revealActive || !activeNoteId) return [];
@@ -1334,6 +1468,8 @@ export function FileTree() {
                     : null;
             }
 
+            if (item.kind === "pdf") return null;
+
             return buildNoteMoveOperations(item.notes, hoveredFolder).length > 0
                 ? hoveredFolder
                 : null;
@@ -1378,6 +1514,19 @@ export function FileTree() {
                             name: getBaseName(s.item.path),
                         },
                     });
+                } else if (s.item.kind === "pdf") {
+                    setDragLabel(s.item.entry.title);
+                    emitFileTreeNoteDrag({
+                        phase: "start",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: [],
+                        files: [{
+                            filePath: s.item.entry.path,
+                            fileName: s.item.entry.title,
+                            mimeType: "application/pdf",
+                        }],
+                    });
                 } else {
                     setDraggingNoteIds(
                         new Set(s.item.notes.map((note) => note.id)),
@@ -1413,7 +1562,7 @@ export function FileTree() {
                             path: note.path,
                         })),
                     });
-                } else {
+                } else if (s.item.kind === "folder") {
                     emitFileTreeNoteDrag({
                         phase: "move",
                         x: e.clientX,
@@ -1423,6 +1572,18 @@ export function FileTree() {
                             path: s.item.path,
                             name: getBaseName(s.item.path),
                         },
+                    });
+                } else if (s.item.kind === "pdf") {
+                    emitFileTreeNoteDrag({
+                        phase: "move",
+                        x: e.clientX,
+                        y: e.clientY,
+                        notes: [],
+                        files: [{
+                            filePath: s.item.entry.path,
+                            fileName: s.item.entry.title,
+                            mimeType: "application/pdf",
+                        }],
                     });
                 }
             }
@@ -1456,7 +1617,7 @@ export function FileTree() {
                             path: note.path,
                         })),
                     });
-                } else {
+                } else if (s.item.kind === "folder") {
                     emitFileTreeNoteDrag({
                         phase: "end",
                         x: dragPos.x,
@@ -1466,6 +1627,18 @@ export function FileTree() {
                             path: s.item.path,
                             name: getBaseName(s.item.path),
                         },
+                    });
+                } else if (s.item.kind === "pdf") {
+                    emitFileTreeNoteDrag({
+                        phase: "end",
+                        x: dragPos.x,
+                        y: dragPos.y,
+                        notes: [],
+                        files: [{
+                            filePath: s.item.entry.path,
+                            fileName: s.item.entry.title,
+                            mimeType: "application/pdf",
+                        }],
                     });
                 }
             }
@@ -1517,9 +1690,12 @@ export function FileTree() {
                 return;
             }
 
-            await applyMoveOperations(
-                buildNoteMoveOperations(s.item.notes, folder),
-            );
+            if (s.item.kind === "notes") {
+                await applyMoveOperations(
+                    buildNoteMoveOperations(s.item.notes, folder),
+                );
+            }
+            // pdf: no folder move in Phase 2
         };
 
         window.addEventListener("mousemove", onMove);
@@ -1600,6 +1776,53 @@ export function FileTree() {
         },
         [],
     );
+
+    const openPdf = useEditorStore((s) => s.openPdf);
+
+    const handlePdfClick = useCallback((entry: VaultEntryDto) => {
+        if (wasJustDraggingRef.current) return;
+        openPdf(entry.id, entry.title, entry.path);
+    }, [openPdf]);
+
+    const handlePdfMouseDown = useCallback(
+        (entry: VaultEntryDto, e: React.MouseEvent) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            dragStateRef.current = {
+                item: { kind: "pdf", entry },
+                startX: e.clientX,
+                startY: e.clientY,
+                active: false,
+            };
+        },
+        [],
+    );
+
+    const handlePdfContextMenu = useCallback(
+        (e: React.MouseEvent, entry: VaultEntryDto) => {
+            e.preventDefault();
+            setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                payload: { kind: "pdf", entry },
+            });
+        },
+        [],
+    );
+
+    const handleAddPdfToChat = useCallback((entry: VaultEntryDto) => {
+        emitFileTreeNoteDrag({
+            phase: "attach",
+            x: 0,
+            y: 0,
+            notes: [],
+            files: [{
+                filePath: entry.path,
+                fileName: entry.title,
+                mimeType: "application/pdf",
+            }],
+        });
+    }, []);
 
     const readNoteContent = useCallback(
         (noteId: string) =>
@@ -2274,6 +2497,29 @@ export function FileTree() {
                     },
                 ];
             }
+            case "pdf": {
+                const { entry } = contextMenu.payload;
+                return [
+                    {
+                        label: "Open Externally",
+                        action: () => void openPath(entry.path),
+                    },
+                    {
+                        label: "Reveal in Finder",
+                        action: () => void revealItemInDir(entry.path),
+                    },
+                    {
+                        label: "Copy Path",
+                        action: () =>
+                            void navigator.clipboard.writeText(entry.path),
+                    },
+                    { type: "separator" },
+                    {
+                        label: "Add to Chat",
+                        action: () => handleAddPdfToChat(entry),
+                    },
+                ];
+            }
             case "move-note": {
                 const { note } = contextMenu.payload;
                 const moveTargets = getContextTargetNotes(note);
@@ -2330,6 +2576,7 @@ export function FileTree() {
         handleCopyNotes,
         handleDelete,
         handleDuplicateNote,
+        handleAddPdfToChat,
         handleOpenNoteInNewTab,
         handlePasteIntoFolder,
         handleRevealFolderInFinder,
@@ -2378,6 +2625,29 @@ export function FileTree() {
     const stableRenameConfirm = useCallback(
         (note: NoteDto, newName: string) =>
             renameConfirmRef.current(note, newName),
+        [],
+    );
+
+    const pdfClickRef = useRef(handlePdfClick);
+    pdfClickRef.current = handlePdfClick;
+    const stablePdfClick = useCallback(
+        (entry: VaultEntryDto) => pdfClickRef.current(entry),
+        [],
+    );
+
+    const pdfMouseDownRef = useRef(handlePdfMouseDown);
+    pdfMouseDownRef.current = handlePdfMouseDown;
+    const stablePdfMouseDown = useCallback(
+        (entry: VaultEntryDto, e: React.MouseEvent) =>
+            pdfMouseDownRef.current(entry, e),
+        [],
+    );
+
+    const pdfContextMenuRef = useRef(handlePdfContextMenu);
+    pdfContextMenuRef.current = handlePdfContextMenu;
+    const stablePdfContextMenu = useCallback(
+        (e: React.MouseEvent, entry: VaultEntryDto) =>
+            pdfContextMenuRef.current(e, entry),
         [],
     );
 
@@ -2623,6 +2893,11 @@ export function FileTree() {
                                             onNoteContextMenu={
                                                 stableNoteContextMenu
                                             }
+                                            onPdfClick={stablePdfClick}
+                                            onPdfMouseDown={stablePdfMouseDown}
+                                            onPdfContextMenu={
+                                                stablePdfContextMenu
+                                            }
                                             renamingNoteId={renamingNoteId}
                                             creatingMode={creatingMode}
                                             newItemName={newItemName}
@@ -2708,6 +2983,11 @@ export function FileTree() {
                                             }
                                             onNoteContextMenu={
                                                 stableNoteContextMenu
+                                            }
+                                            onPdfClick={stablePdfClick}
+                                            onPdfMouseDown={stablePdfMouseDown}
+                                            onPdfContextMenu={
+                                                stablePdfContextMenu
                                             }
                                             renamingNoteId={renamingNoteId}
                                             creatingMode={creatingMode}

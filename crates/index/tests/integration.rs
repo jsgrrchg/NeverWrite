@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use vault_ai_index::VaultIndex;
-use vault_ai_types::{NoteDocument, NoteId, NotePath, TextRange, WikiLink};
+use vault_ai_types::{NoteDocument, NoteId, NotePath, PdfDocument, TextRange, WikiLink};
 
 fn make_note(
     id: &str,
@@ -478,4 +478,75 @@ fn reindex_updates_exact_title_and_filename_maps() {
 
     let resolved_filename = index.resolve_wikilink("new-name", &NoteId("note".into()));
     assert_eq!(resolved_filename, Some(NoteId("folder/new-name".into())));
+}
+
+// --- PDF index tests ---
+
+fn make_pdf(id: &str, title: &str, pages: Vec<&str>) -> PdfDocument {
+    PdfDocument {
+        id: NoteId(id.to_string()),
+        path: NotePath(PathBuf::from(format!("{id}.pdf"))),
+        title: title.to_string(),
+        page_count: pages.len(),
+        extracted_pages: pages.into_iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+#[test]
+fn register_pdf_adds_to_index() {
+    let mut index = build_sample_index();
+    let doc = make_pdf("papers/quantum", "Quantum Computing", vec!["Page one text"]);
+    index.register_pdf(&doc, 1000, 900, 5000);
+
+    assert!(index
+        .pdf_metadata
+        .contains_key(&NoteId("papers/quantum".into())));
+    assert!(index
+        .pdf_search_index
+        .contains_key(&NoteId("papers/quantum".into())));
+
+    let meta = &index.pdf_metadata[&NoteId("papers/quantum".into())];
+    assert_eq!(meta.title, "Quantum Computing");
+    assert_eq!(meta.page_count, 1);
+    assert_eq!(meta.modified_at, 1000);
+    assert_eq!(meta.size, 5000);
+}
+
+#[test]
+fn remove_pdf_cleans_index() {
+    let mut index = build_sample_index();
+    let doc = make_pdf("papers/quantum", "Quantum Computing", vec!["text"]);
+    index.register_pdf(&doc, 1000, 900, 5000);
+
+    index.remove_pdf(&NoteId("papers/quantum".into()));
+
+    assert!(!index
+        .pdf_metadata
+        .contains_key(&NoteId("papers/quantum".into())));
+    assert!(!index
+        .pdf_search_index
+        .contains_key(&NoteId("papers/quantum".into())));
+}
+
+#[test]
+fn reindex_pdf_updates_metadata() {
+    let mut index = build_sample_index();
+    let doc = make_pdf("report", "Old Title", vec!["old text"]);
+    index.register_pdf(&doc, 1000, 900, 5000);
+
+    let updated = make_pdf("report", "New Title", vec!["new text", "page two"]);
+    index.reindex_pdf(&updated, 2000, 900, 8000);
+
+    let meta = &index.pdf_metadata[&NoteId("report".into())];
+    assert_eq!(meta.title, "New Title");
+    assert_eq!(meta.page_count, 2);
+    assert_eq!(meta.modified_at, 2000);
+    assert_eq!(meta.size, 8000);
+}
+
+#[test]
+fn pdf_metadata_empty_by_default() {
+    let index = build_sample_index();
+    assert!(index.pdf_metadata.is_empty());
+    assert!(index.pdf_search_index.is_empty());
 }

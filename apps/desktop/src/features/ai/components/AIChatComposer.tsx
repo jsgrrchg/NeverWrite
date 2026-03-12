@@ -7,8 +7,8 @@ import {
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
 } from "../dragEvents";
-import { getWikilinkSuggestions } from "../../editor/extensions/wikilinkSuggester";
 import {
+    appendFolderMentionPart,
     appendMentionParts,
     normalizeComposerParts,
     serializeComposerParts,
@@ -47,6 +47,7 @@ interface AIChatComposerProps {
     onToggleExpanded?: () => void;
     onAttachAudio?: () => void;
     onAttachFile?: () => void;
+    onFileAttach?: (filePath: string, fileName: string, mimeType: string) => void;
     onSubmit: () => void;
     onStop: () => void;
 }
@@ -194,8 +195,8 @@ function createMentionNode(
     element.contentEditable = "false";
     element.textContent = part.label;
     applyComposerPillStyles(element, metrics, {
-        background: "color-mix(in srgb, var(--accent) 15%, transparent)",
-        color: "var(--accent)",
+        background: "color-mix(in srgb, #f97316 15%, transparent)",
+        color: "#f97316",
     });
     return element;
 }
@@ -444,8 +445,123 @@ function normalizeForSearch(value: string): string {
         .trim();
 }
 
+function getTextPositionForOffset(root: HTMLElement, charOffset: number) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let traversed = 0;
+    let lastTextNode: Text | null = null;
+
+    while (true) {
+        const currentNode = walker.nextNode();
+        if (!(currentNode instanceof Text)) break;
+
+        const nextTraversed = traversed + currentNode.data.length;
+        if (charOffset <= nextTraversed) {
+            return {
+                node: currentNode,
+                offset: charOffset - traversed,
+            };
+        }
+
+        traversed = nextTraversed;
+        lastTextNode = currentNode;
+    }
+
+    if (lastTextNode && charOffset === traversed) {
+        return {
+            node: lastTextNode,
+            offset: lastTextNode.data.length,
+        };
+    }
+
+    return null;
+}
+
+function getInlineTriggerMatch(
+    root: HTMLElement,
+    marker: "@" | "/",
+    pattern: RegExp,
+) {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.isCollapsed) {
+        return null;
+    }
+
+    const caretRange = selection.getRangeAt(0);
+    if (!root.contains(caretRange.startContainer)) {
+        return null;
+    }
+
+    const prefixRange = document.createRange();
+    prefixRange.selectNodeContents(root);
+    prefixRange.setEnd(caretRange.startContainer, caretRange.startOffset);
+
+    const prefixText = prefixRange.toString();
+    const match = prefixText.match(pattern);
+    if (!match) {
+        return null;
+    }
+
+    const query = match[2] ?? "";
+    const triggerLength = query.length + 1;
+    const triggerStart = prefixText.length - triggerLength;
+    const start = getTextPositionForOffset(root, triggerStart);
+    const end = getTextPositionForOffset(root, prefixText.length);
+
+    if (!start || !end) {
+        return null;
+    }
+
+    const triggerRange = document.createRange();
+    triggerRange.setStart(start.node, start.offset);
+    triggerRange.setEnd(end.node, end.offset);
+
+    return {
+        query,
+        range: triggerRange,
+    };
+}
+
 const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
 const PLAN_KEYWORDS = ["plan", "planning", "steps", "roadmap"];
+
+function getNoteMentionSuggestions(
+    notes: AIChatNoteSummary[],
+    query: string,
+    limit: number,
+) {
+    const normalizedQuery = normalizeForSearch(query);
+
+    return [...notes]
+        .map((note) => {
+            const normalizedTitle = normalizeForSearch(note.title);
+            const normalizedPath = normalizeForSearch(note.path);
+            const titleStartsWith =
+                normalizedQuery.length > 0 &&
+                normalizedTitle.startsWith(normalizedQuery);
+            const pathStartsWith =
+                normalizedQuery.length > 0 &&
+                normalizedPath.startsWith(normalizedQuery);
+            const matches =
+                !normalizedQuery ||
+                normalizedTitle.includes(normalizedQuery) ||
+                normalizedPath.includes(normalizedQuery);
+
+            return {
+                note,
+                matches,
+                rank: titleStartsWith ? 0 : pathStartsWith ? 1 : 2,
+            };
+        })
+        .filter((item) => item.matches)
+        .sort((left, right) => {
+            if (left.rank !== right.rank) {
+                return left.rank - right.rank;
+            }
+            return left.note.title.localeCompare(right.note.title);
+        })
+        .slice(0, limit)
+        .map((item) => item.note);
+}
 
 function getMentionSuggestions(
     notes: AIChatNoteSummary[],
@@ -486,10 +602,9 @@ function getMentionSuggestions(
     }
 
     // Match notes
-    const noteSuggestions = getWikilinkSuggestions(notes, query, limit);
-    for (const item of noteSuggestions) {
-        const note = notes.find((n) => n.id === item.id);
-        if (note) results.push({ kind: "note", note });
+    const noteSuggestions = getNoteMentionSuggestions(notes, query, limit);
+    for (const note of noteSuggestions) {
+        results.push({ kind: "note", note });
     }
 
     // Folders first, then notes, limited
@@ -516,6 +631,7 @@ export function AIChatComposer({
     onToggleExpanded,
     onAttachAudio,
     onAttachFile,
+    onFileAttach,
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
@@ -566,6 +682,7 @@ export function AIChatComposer({
 
     const isStreaming = status === "streaming";
     const isEmpty = serializedValue.length === 0;
+    const canSubmit = !disabled && !isEmpty;
 
     const closeMentionPicker = () => setMentionState(EMPTY_MENTION_STATE);
     const closeSlashPicker = () => setSlashState(EMPTY_SLASH_STATE);
@@ -576,114 +693,80 @@ export function AIChatComposer({
         onChange(readPartsFromDom(composer));
     };
 
+    const focusComposerAtEnd = () => {
+        window.setTimeout(() => {
+            const composer = composerRef.current;
+            if (!composer) return;
+            composer.focus();
+            const last = composer.lastChild;
+            if (last) setCaretAfterNode(last);
+        }, 0);
+    };
+
     const updateMentionPicker = () => {
         const composer = composerRef.current;
-        const selection = window.getSelection();
-        if (
-            !composer ||
-            !selection ||
-            !selection.rangeCount ||
-            !selection.isCollapsed
-        ) {
+        if (!composer) {
             closeMentionPicker();
             return;
         }
 
-        const range = selection.getRangeAt(0);
-        const anchorNode = range.startContainer;
-
-        if (!composer.contains(anchorNode)) {
+        const trigger = getInlineTriggerMatch(
+            composer,
+            "@",
+            /(^|\s)@([^\s@]*)$/,
+        );
+        if (!trigger) {
             closeMentionPicker();
             return;
         }
 
-        if (anchorNode.nodeType !== Node.TEXT_NODE) {
-            closeMentionPicker();
-            return;
-        }
-
-        const textNode = anchorNode as Text;
-        const textBeforeCaret = textNode.data.slice(0, range.startOffset);
-        const match = textBeforeCaret.match(/(^|\s)@([^\s@]*)$/);
-        if (!match) {
-            closeMentionPicker();
-            return;
-        }
-
-        const query = match[2] ?? "";
         const suggestions = getMentionSuggestions(
             notes,
             folderPaths,
-            query,
+            trigger.query,
             10,
         );
-
-        const mentionRange = document.createRange();
-        mentionRange.setStart(textNode, range.startOffset - query.length - 1);
-        mentionRange.setEnd(textNode, range.startOffset);
-
-        const rect = mentionRange.getBoundingClientRect();
+        const rect = trigger.range.getBoundingClientRect();
         setMentionState({
             open: true,
-            query,
+            query: trigger.query,
             selectedIndex: 0,
             items: suggestions,
             x: rect.left,
             y: rect.top,
-            range: mentionRange.cloneRange(),
+            range: trigger.range.cloneRange(),
         });
     };
 
     const updateSlashPicker = () => {
         const composer = composerRef.current;
-        const selection = window.getSelection();
-        if (
-            !composer ||
-            !selection ||
-            !selection.rangeCount ||
-            !selection.isCollapsed
-        ) {
+        if (!composer) {
             closeSlashPicker();
             return;
         }
 
-        const range = selection.getRangeAt(0);
-        const anchorNode = range.startContainer;
-
-        if (
-            !composer.contains(anchorNode) ||
-            anchorNode.nodeType !== Node.TEXT_NODE
-        ) {
-            closeSlashPicker();
-            return;
-        }
-
-        const textNode = anchorNode as Text;
-        const textBeforeCaret = textNode.data.slice(0, range.startOffset);
-        const match = textBeforeCaret.match(/(^|\s)\/([^\s/]*)$/);
-        if (!match) {
-            closeSlashPicker();
-            return;
-        }
-
-        const query = match[2] ?? "";
-        const items = SLASH_COMMANDS.filter((command) =>
-            command.id.toLowerCase().includes(query.toLowerCase()),
+        const trigger = getInlineTriggerMatch(
+            composer,
+            "/",
+            /(^|\s)\/([^\s/]*)$/,
         );
+        if (!trigger) {
+            closeSlashPicker();
+            return;
+        }
 
-        const slashRange = document.createRange();
-        slashRange.setStart(textNode, range.startOffset - query.length - 1);
-        slashRange.setEnd(textNode, range.startOffset);
-
-        const rect = slashRange.getBoundingClientRect();
+        const items = SLASH_COMMANDS.filter((command) =>
+            command.id.toLowerCase().includes(trigger.query.toLowerCase()),
+        );
+        const rect = trigger.range.getBoundingClientRect();
         setSlashState({
             open: true,
-            query,
+            query: trigger.query,
             selectedIndex: 0,
             items,
             x: rect.left,
             y: rect.top,
-            range: slashRange.cloneRange(),
+            range: trigger.range.cloneRange(),
         });
         closeMentionPicker();
     };
@@ -822,16 +905,30 @@ export function AIChatComposer({
                 return;
             }
 
-            if (detail.phase === "end") {
+            if (detail.phase === "end" || detail.phase === "attach") {
                 setExternalDragActive(false);
-                if (!isOver) return;
+                if (detail.phase === "end" && !isOver) return;
 
                 // Folder drop
                 if (detail.folder) {
+                    onChange(
+                        appendFolderMentionPart(
+                            parts,
+                            detail.folder.path,
+                            detail.folder.name,
+                        ),
+                    );
                     onFolderAttach(detail.folder.path, detail.folder.name);
-                    window.setTimeout(() => {
-                        composerRef.current?.focus();
-                    }, 0);
+                    focusComposerAtEnd();
+                    return;
+                }
+
+                // File drop (PDFs, etc.)
+                if (detail.files && detail.files.length > 0) {
+                    detail.files.forEach((file) =>
+                        onFileAttach?.(file.filePath, file.fileName, file.mimeType),
+                    );
+                    focusComposerAtEnd();
                     return;
                 }
 
@@ -848,16 +945,14 @@ export function AIChatComposer({
                     ),
                 );
                 detail.notes.forEach((note) => onMentionAttach(note));
-                window.setTimeout(() => {
-                    composerRef.current?.focus();
-                }, 0);
+                focusComposerAtEnd();
             }
         };
 
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
         return () =>
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
-    }, [onChange, onMentionAttach, parts]);
+    }, [onChange, onFileAttach, onMentionAttach, parts]);
 
     const MIN_COMPOSER_HEIGHT = 64;
     const MAX_COMPOSER_HEIGHT = 480;
@@ -1058,6 +1153,7 @@ export function AIChatComposer({
                                 text,
                             );
                             syncFromDom();
+                            updateInlinePickers();
                         }
                     }}
                     onInput={() => {
@@ -1178,8 +1274,11 @@ export function AIChatComposer({
                             : event.key === "Enter" && !event.shiftKey;
                         if (shouldSend) {
                             event.preventDefault();
-                            if (isStreaming) onStop();
-                            else onSubmit();
+                            if (canSubmit) {
+                                onSubmit();
+                            } else if (isStreaming) {
+                                onStop();
+                            }
                         }
                     }}
                     onBlur={() => {
@@ -1449,32 +1548,24 @@ export function AIChatComposer({
                             )}
                         </button>
                     )}
-                    <button
-                        type="button"
-                        onClick={isStreaming ? onStop : onSubmit}
-                        disabled={disabled || (isEmpty && !isStreaming)}
-                        className="flex shrink-0 items-center justify-center rounded-full"
-                        style={{
-                            width: 28,
-                            height: 28,
-                            color: isStreaming
-                                ? "#fff"
-                                : isEmpty
-                                  ? "var(--text-secondary)"
-                                  : "#fff",
-                            backgroundColor: isStreaming
-                                ? "#b91c1c"
-                                : isEmpty
-                                  ? "transparent"
-                                  : "var(--accent)",
-                            border: "none",
-                            opacity:
-                                disabled || (isEmpty && !isStreaming) ? 0.4 : 1,
-                            transition: "all 0.15s ease",
-                        }}
-                        aria-label={isStreaming ? "Stop" : "Send"}
-                    >
-                        {isStreaming ? (
+                    {isStreaming && (
+                        <button
+                            type="button"
+                            onClick={onStop}
+                            disabled={disabled}
+                            className="flex shrink-0 items-center justify-center rounded-full"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: "#fff",
+                                backgroundColor: "#b91c1c",
+                                border: "none",
+                                opacity: disabled ? 0.4 : 1,
+                                transition: "all 0.15s ease",
+                            }}
+                            aria-label="Stop"
+                            title="Stop"
+                        >
                             <svg
                                 width="14"
                                 height="14"
@@ -1489,20 +1580,39 @@ export function AIChatComposer({
                                     rx="2"
                                 />
                             </svg>
-                        ) : (
-                            <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            >
-                                <path d="M8 12V4M4 7l4-3 4 3" />
-                            </svg>
-                        )}
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={onSubmit}
+                        disabled={!canSubmit}
+                        className="flex shrink-0 items-center justify-center rounded-full"
+                        style={{
+                            width: 28,
+                            height: 28,
+                            color: isEmpty ? "var(--text-secondary)" : "#fff",
+                            backgroundColor: isEmpty
+                                ? "transparent"
+                                : "var(--accent)",
+                            border: "none",
+                            opacity: canSubmit ? 1 : 0.4,
+                            transition: "all 0.15s ease",
+                        }}
+                        aria-label={isStreaming ? "Queue" : "Send"}
+                        title={isStreaming ? "Queue" : "Send"}
+                    >
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M8 12V4M4 7l4-3 4 3" />
+                        </svg>
                     </button>
                 </div>
                 <AIChatMentionPicker

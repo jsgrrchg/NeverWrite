@@ -431,6 +431,10 @@ function ToolMessage({ message }: { message: AIChatMessage }) {
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
 
+    if (message.diffs && message.diffs.length > 0) {
+        return <ChangeReviewPanel message={message} />;
+    }
+
     // File-mutating tools get card treatment
     if (toolKind === "edit" || toolKind === "delete" || toolKind === "move") {
         return <FileToolMessage message={message} />;
@@ -521,36 +525,64 @@ function PlanMessage({
     message: AIChatMessage;
     pillMetrics: ChatPillMetrics;
 }) {
+    const [expanded, setExpanded] = useState(true);
     const entries = message.planEntries ?? [];
     const detail = message.planDetail?.trim() || null;
     const completedCount = entries.filter(
         (entry) => entry.status === "completed",
     ).length;
     const inProgress = entries.some((entry) => entry.status === "in_progress");
+    const allDone = entries.length > 0 && completedCount === entries.length;
+    const statusLabel = allDone
+        ? "All Done"
+        : inProgress
+          ? "In Progress"
+          : entries.length > 0
+            ? "Planned"
+            : "Draft";
+    const canExpand = entries.length > 0 || !!detail;
 
     return (
         <div
-            className="min-w-0 max-w-full rounded-lg px-3 py-2"
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
             style={{
-                border: "1px solid color-mix(in srgb, #0f766e 22%, var(--border))",
+                border: "1px solid var(--border)",
                 backgroundColor:
-                    "color-mix(in srgb, #0f766e 5%, var(--bg-secondary))",
+                    "color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-tertiary))",
             }}
         >
-            <div className="flex items-center gap-2">
+            <button
+                type="button"
+                onClick={() => {
+                    if (canExpand) setExpanded((value) => !value);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left"
+                aria-expanded={expanded}
+                style={{
+                    backgroundColor: "transparent",
+                    border: "none",
+                    cursor: canExpand ? "pointer" : "default",
+                }}
+            >
                 <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 14 14"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
                     fill="none"
-                    stroke="#0f766e"
+                    stroke="currentColor"
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="shrink-0"
+                    style={{
+                        color: "var(--text-secondary)",
+                        flexShrink: 0,
+                        opacity: 0.78,
+                        transform:
+                            canExpand && expanded ? "rotate(90deg)" : "none",
+                        transition: "transform 0.14s ease",
+                    }}
                 >
-                    <path d="M3 3.25h8M3 7h8M3 10.75h5" />
-                    <path d="M1.75 3.25h.5M1.75 7h.5M1.75 10.75h.5" />
+                    <path d="M4 2.5L7.5 6L4 9.5" />
                 </svg>
                 <span
                     className="min-w-0 flex-1 font-medium"
@@ -563,22 +595,21 @@ function PlanMessage({
                 </span>
                 <span
                     style={{
-                        color: "#0f766e",
+                        color: "var(--text-secondary)",
                         fontSize: "0.76em",
-                        opacity: 0.85,
+                        opacity: 0.78,
                     }}
                 >
-                    {completedCount}/{entries.length}
+                    {statusLabel}
                 </span>
-            </div>
+            </button>
 
-            {detail ? (
+            {expanded && detail ? (
                 <div
-                    className="mt-2 rounded-md px-2.5 py-2"
+                    className="mx-3 mb-2 rounded-md px-2.5 py-2"
                     style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--bg-primary) 70%, transparent)",
-                        border: "1px solid color-mix(in srgb, #0f766e 12%, var(--border))",
+                        backgroundColor: "var(--bg-primary)",
+                        border: "1px solid var(--border)",
                     }}
                 >
                     <div
@@ -596,32 +627,39 @@ function PlanMessage({
                 </div>
             ) : null}
 
-            {entries.length > 0 ? (
-                <div className="mt-2 flex flex-col gap-1.5">
+            {expanded && entries.length > 0 ? (
+                <div
+                    className="flex flex-col"
+                    style={{
+                        borderTop: "1px solid var(--border)",
+                    }}
+                >
                     {entries.map((entry, index) => {
                         const isCompleted = entry.status === "completed";
                         const isActive = entry.status === "in_progress";
                         return (
                             <div
                                 key={`${entry.content}:${index}`}
-                                className="flex min-w-0 items-start gap-2"
+                                className="flex min-w-0 items-start gap-2 px-3 py-2"
                                 style={{
+                                    borderTop:
+                                        index === 0 ? "none" : "1px solid var(--border)",
                                     color: isCompleted
                                         ? "var(--text-secondary)"
                                         : "var(--text-primary)",
-                                    opacity: isCompleted ? 0.72 : 1,
+                                    opacity: isCompleted ? 0.74 : 1,
                                 }}
                             >
                                 <span
-                                    className="mt-[3px] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
+                                    className="mt-[2px] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full"
                                     style={{
                                         backgroundColor: isCompleted
-                                            ? "color-mix(in srgb, #0f766e 18%, transparent)"
+                                            ? "color-mix(in srgb, #84cc16 18%, transparent)"
                                             : isActive
-                                              ? "color-mix(in srgb, var(--accent) 16%, transparent)"
-                                              : "color-mix(in srgb, var(--text-secondary) 12%, transparent)",
+                                              ? "color-mix(in srgb, var(--accent) 18%, transparent)"
+                                              : "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
                                         color: isCompleted
-                                            ? "#0f766e"
+                                            ? "#84cc16"
                                             : isActive
                                               ? "var(--accent)"
                                               : "var(--text-secondary)",
@@ -632,9 +670,9 @@ function PlanMessage({
                                         ? "✓"
                                         : isActive
                                           ? "•"
-                                          : String(index + 1)}
+                                          : ""}
                                 </span>
-                                <div className="min-w-0">
+                                <div className="min-w-0 flex-1">
                                     <div
                                         style={{
                                             fontSize: "0.8em",
@@ -652,9 +690,9 @@ function PlanMessage({
                         );
                     })}
                 </div>
-            ) : !detail ? (
+            ) : expanded && !detail ? (
                 <div
-                    className="mt-2"
+                    className="px-3 pb-2"
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: "0.8em",
@@ -664,16 +702,18 @@ function PlanMessage({
                 </div>
             ) : null}
 
-            <div
-                className="mt-2"
-                style={{
-                    color: "var(--text-secondary)",
-                    fontSize: "0.76em",
-                    opacity: 0.72,
-                }}
-            >
-                {inProgress ? "Plan updating..." : "Plan updated"}
-            </div>
+            {expanded && entries.length > 0 ? (
+                <div
+                    className="px-3 pb-2 pt-1"
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: "0.74em",
+                        opacity: 0.68,
+                    }}
+                >
+                    {completedCount}/{entries.length}
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -1026,7 +1066,13 @@ function DiffLineView({ line }: { line: DiffLine }) {
     );
 }
 
-function ChangeReviewFileList({ diffs }: { diffs: AIFileDiff[] }) {
+function ChangeReviewFileList({
+    diffs,
+    accent,
+}: {
+    diffs: AIFileDiff[];
+    accent: string;
+}) {
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
     return (
@@ -1052,7 +1098,7 @@ function ChangeReviewFileList({ diffs }: { diffs: AIFileDiff[] }) {
                                 background: "transparent",
                                 border: "none",
                                 borderBottom:
-                                    "1px solid color-mix(in srgb, #d97706 8%, var(--border))",
+                                    `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
                                 cursor: "pointer",
                                 fontSize: "0.78em",
                                 color: "var(--text-secondary)",
@@ -1131,7 +1177,7 @@ function ChangeReviewFileList({ diffs }: { diffs: AIFileDiff[] }) {
                                     fontFamily: "var(--font-mono, monospace)",
                                     lineHeight: 1.5,
                                     borderBottom:
-                                        "1px solid color-mix(in srgb, #d97706 8%, var(--border))",
+                                        `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
                                 }}
                             >
                                 {lines.map((line, idx) => (
@@ -1146,6 +1192,19 @@ function ChangeReviewFileList({ diffs }: { diffs: AIFileDiff[] }) {
     );
 }
 
+function getDiffPanelToolLabel(toolKind: string) {
+    switch (toolKind) {
+        case "edit":
+            return "Edit";
+        case "delete":
+            return "Delete";
+        case "move":
+            return "Move";
+        default:
+            return "Change";
+    }
+}
+
 function ChangeReviewPanel({
     message,
     onPermissionResponse,
@@ -1154,6 +1213,13 @@ function ChangeReviewPanel({
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
     const diffs = message.diffs ?? [];
+    const toolKind = String(message.meta?.tool ?? "");
+    const isToolMessage = message.kind === "tool";
+    const accent = isToolMessage
+        ? toolKind === "delete"
+            ? "#ef4444"
+            : "#6b7280"
+        : "#d97706";
     const status = String(message.meta?.status ?? "pending");
     const resolvedOptionId =
         message.meta?.resolved_option !== undefined &&
@@ -1170,14 +1236,22 @@ function ChangeReviewPanel({
     const stats = computeDiffStats(diffs);
     const fileCount = diffs.length;
     const fileWord = fileCount === 1 ? "file" : "files";
+    const target = message.meta?.target ? String(message.meta.target) : null;
+    const openFilePath =
+        isToolMessage && toolKind !== "delete"
+            ? (target ?? (diffs.length === 1 ? diffs[0]?.path : null))
+            : null;
+    const actionLabel = isToolMessage
+        ? getDiffPanelToolLabel(toolKind)
+        : "Edit";
 
     return (
         <div
             className="min-w-0 max-w-full overflow-hidden rounded-lg"
             style={{
-                border: "1px solid color-mix(in srgb, #d97706 25%, var(--border))",
+                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--border))`,
                 backgroundColor:
-                    "color-mix(in srgb, #d97706 4%, var(--bg-secondary))",
+                    `color-mix(in srgb, ${accent} 4%, var(--bg-secondary))`,
             }}
         >
             {/* Summary bar */}
@@ -1185,24 +1259,30 @@ function ChangeReviewPanel({
                 className="flex items-center gap-2 px-3 py-2"
                 style={{
                     borderBottom:
-                        "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                        `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
                 }}
             >
-                <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    stroke="#d97706"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="shrink-0"
-                >
-                    <path d="M7 1L2 12h10L7 1z" />
-                    <path d="M7 5.5v2.5" />
-                    <circle cx="7" cy="10" r="0.5" fill="#d97706" />
-                </svg>
+                {isToolMessage ? (
+                    <span className="shrink-0" style={{ color: accent }}>
+                        <ToolIcon kind={toolKind} />
+                    </span>
+                ) : (
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <path d="M7 1L2 12h10L7 1z" />
+                        <path d="M7 5.5v2.5" />
+                        <circle cx="7" cy="10" r="0.5" fill={accent} />
+                    </svg>
+                )}
                 <span
                     style={{
                         color: "var(--text-primary)",
@@ -1210,7 +1290,7 @@ function ChangeReviewPanel({
                         fontSize: "0.83em",
                     }}
                 >
-                    Edit {fileCount} {fileWord}
+                    {actionLabel} {fileCount} {fileWord}
                 </span>
                 <span
                     style={{
@@ -1233,10 +1313,27 @@ function ChangeReviewPanel({
                         </span>
                     )}
                 </span>
+                {openFilePath ? (
+                    <button
+                        type="button"
+                        onClick={() => openNoteByAbsolutePath(openFilePath)}
+                        className="ml-auto rounded-md px-2 py-1"
+                        style={{
+                            fontSize: "0.76em",
+                            color: accent,
+                            backgroundColor:
+                                "color-mix(in srgb, var(--bg-primary) 55%, transparent)",
+                            border: `1px solid color-mix(in srgb, ${accent} 22%, var(--border))`,
+                            cursor: "pointer",
+                        }}
+                    >
+                        Open File
+                    </button>
+                ) : null}
             </div>
 
             {/* File list with expandable diffs */}
-            <ChangeReviewFileList diffs={diffs} />
+            <ChangeReviewFileList diffs={diffs} accent={accent} />
 
             {/* Actions */}
             {message.permissionRequestId &&
@@ -1245,7 +1342,7 @@ function ChangeReviewPanel({
                     className="flex items-center gap-2 px-3 py-2"
                     style={{
                         borderTop:
-                            "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                            `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
                     }}
                 >
                     {message.permissionOptions.map((option) => {
@@ -1294,7 +1391,7 @@ function ChangeReviewPanel({
                     style={{
                         color: "var(--text-secondary)",
                         borderTop:
-                            "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
+                            `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
                         opacity: 0.7,
                         fontSize: "0.79em",
                     }}

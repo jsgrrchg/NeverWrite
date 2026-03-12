@@ -35,7 +35,7 @@ pub struct AiAttachmentInput {
 fn build_prompt_with_attachments(
     content: &str,
     attachments: &[AiAttachmentInput],
-    vault_root: Option<&std::path::Path>,
+    _vault_root: Option<&std::path::Path>,
 ) -> String {
     let mut context_parts: Vec<String> = Vec::new();
     for attachment in attachments {
@@ -53,28 +53,12 @@ fn build_prompt_with_attachments(
         }
 
         if attachment.attachment_type.as_deref() == Some("folder") {
-            // Resolve folder: read all .md files in the folder
-            if let (Some(folder_rel), Some(root)) = (&attachment.note_id, vault_root) {
-                let folder_abs = root.join(folder_rel);
-                if let Ok(entries) = std::fs::read_dir(&folder_abs) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().is_some_and(|ext| ext == "md") {
-                            if let Ok(file_content) = std::fs::read_to_string(&path) {
-                                let name = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown");
-                                context_parts.push(format!(
-                                    "<attached_note name=\"{}/{}\">\n{}\n</attached_note>",
-                                    attachment.label.trim_start_matches("📁 "),
-                                    name,
-                                    file_content
-                                ));
-                            }
-                        }
-                    }
-                }
+            if let Some(folder_rel) = attachment.note_id.as_deref() {
+                context_parts.push(format!(
+                    "<attached_folder name=\"{}\" path=\"{}\" />",
+                    attachment.label.trim_start_matches("📁 "),
+                    folder_rel
+                ));
             }
         } else if attachment.attachment_type.as_deref() == Some("audio") {
             if let Some(transcription) = &attachment.transcription {
@@ -96,6 +80,19 @@ fn build_prompt_with_attachments(
                     .unwrap_or("application/octet-stream");
                 let extracted = if mime.starts_with("text/") || mime == "application/json" {
                     std::fs::read_to_string(fp).unwrap_or_default()
+                } else if mime == "application/pdf" {
+                    match std::fs::read(fp) {
+                        Ok(bytes) => match pdf_extract::extract_text_from_mem_by_pages(&bytes) {
+                            Ok(pages) if !pages.is_empty() => pages
+                                .iter()
+                                .enumerate()
+                                .map(|(i, text)| format!("--- Page {} ---\n{}", i + 1, text.trim()))
+                                .collect::<Vec<_>>()
+                                .join("\n\n"),
+                            _ => format!("[PDF: could not extract text, {} bytes]", bytes.len()),
+                        },
+                        Err(_) => "[PDF: could not read file]".to_string(),
+                    }
                 } else {
                     let size = std::fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
                     format!("[Binary file: {} bytes, type: {}]", size, mime)
@@ -613,6 +610,10 @@ fn is_authentication_error(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn config_option(id: &str, category: AiConfigOptionCategory) -> AiConfigOption {
         AiConfigOption {
@@ -710,5 +711,44 @@ mod tests {
         assert!(filtered
             .iter()
             .all(|option| option.id != "reasoning_effort"));
+    }
+
+    #[test]
+    fn folder_attachments_only_include_relative_path() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "vaultai-folder-attachment-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        let folder_dir = temp_dir.join("YOUTUBE");
+        fs::create_dir_all(&folder_dir).expect("create folder attachment dir");
+        fs::write(
+            folder_dir.join("huge.md"),
+            "this note content should not be expanded",
+        )
+        .expect("write attachment note");
+
+        let prompt = build_prompt_with_attachments(
+            "implementa un indice",
+            &[AiAttachmentInput {
+                label: "YOUTUBE".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("folder".to_string()),
+                note_id: Some("YOUTUBE".to_string()),
+                file_path: None,
+                mime_type: None,
+                transcription: None,
+            }],
+            Some(temp_dir.as_path()),
+        );
+
+        assert!(prompt.contains("<attached_folder name=\"YOUTUBE\" path=\"YOUTUBE\" />"));
+        assert!(!prompt.contains("this note content should not be expanded"));
+        assert!(prompt.ends_with("implementa un indice"));
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

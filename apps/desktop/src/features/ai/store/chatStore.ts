@@ -25,6 +25,7 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import {
     createEmptyComposerParts,
     serializeComposerParts,
+    serializeComposerPartsForAI,
 } from "../composerParts";
 import { useChatTabsStore } from "./chatTabsStore";
 import type {
@@ -45,6 +46,8 @@ import type {
     AIRuntimeSetupStatus,
     AISessionErrorPayload,
     PersistedSessionHistory,
+    QueuedChatMessage,
+    QueuedChatMessageStatus,
 } from "../types";
 
 const AI_PREFS_KEY = "vaultai.ai.preferences";
@@ -65,6 +68,15 @@ interface AIRuntimeCatalogSnapshot {
     models: AIRuntimeDescriptor["models"];
     modes: AIRuntimeDescriptor["modes"];
     configOptions: AIRuntimeDescriptor["configOptions"];
+}
+
+interface QueuedMessageEditState {
+    item: QueuedChatMessage;
+    originalIndex: number;
+    previousItemId: string | null;
+    nextItemId: string | null;
+    previousComposerParts: AIComposerPart[];
+    previousAttachments: AIChatAttachment[];
 }
 
 function loadAiPreferences(): AiPreferences {
@@ -230,6 +242,8 @@ interface ChatStore {
     chatFontSize: number;
     historyRetentionDays: number;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
+    queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
+    queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
     initialize: () => Promise<void>;
     refreshSetupStatus: () => Promise<void>;
     saveSetup: (input: {
@@ -284,6 +298,19 @@ interface ChatStore {
     setConfigOption: (optionId: string, value: string) => Promise<void>;
     setComposerParts: (parts: AIComposerPart[]) => void;
     sendMessage: () => Promise<void>;
+    enqueueMessage: (sessionId: string, item: QueuedChatMessage) => void;
+    removeQueuedMessage: (sessionId: string, messageId: string) => void;
+    markQueuedMessageStatus: (
+        sessionId: string,
+        messageId: string,
+        status: QueuedChatMessageStatus,
+    ) => void;
+    clearSessionQueue: (sessionId: string) => void;
+    editQueuedMessage: (sessionId: string, messageId: string) => void;
+    cancelQueuedMessageEdit: (sessionId: string) => void;
+    retryQueuedMessage: (sessionId: string, messageId: string) => Promise<void>;
+    sendQueuedMessageNow: (sessionId: string, messageId: string) => Promise<void>;
+    tryDrainQueue: (sessionId: string) => Promise<void>;
     stopStreaming: () => Promise<void>;
     respondPermission: (requestId: string, optionId?: string) => Promise<void>;
     respondUserInput: (
@@ -327,9 +354,25 @@ function isAuthenticationErrorMessage(message: string) {
     );
 }
 
+function isContextTooLargeErrorMessage(message: string) {
+    const normalized = message.trim().toLowerCase();
+    return (
+        normalized.includes("string_above_max_length") ||
+        normalized.includes("largestringparam") ||
+        (normalized.includes("invalid_request_error") &&
+            normalized.includes("too long")) ||
+        (normalized.includes("remote compact task") &&
+            normalized.includes("too long"))
+    );
+}
+
 function normalizeAiErrorMessage(message: string) {
     if (message.includes("No hay vault abierto")) {
         return "Open a vault before starting a chat.";
+    }
+
+    if (isContextTooLargeErrorMessage(message)) {
+        return "This chat context grew too large to continue. Start a new chat and resend your last message.";
     }
 
     if (isAuthenticationErrorMessage(message)) {
@@ -565,6 +608,172 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     ].join("\n");
 }
 
+function cloneAttachment(attachment: AIChatAttachment): AIChatAttachment {
+    return { ...attachment };
+}
+
+function cloneComposerPart(part: AIComposerPart): AIComposerPart {
+    return { ...part };
+}
+
+function cloneComposerParts(parts: AIComposerPart[]): AIComposerPart[] {
+    return parts.map(cloneComposerPart);
+}
+
+function buildQueuedMessage(
+    session: AIChatSession,
+    composerParts: AIComposerPart[],
+): QueuedChatMessage | null {
+    const composerPartsSnapshot = cloneComposerParts(composerParts);
+    const content = serializeComposerParts(composerParts).trim();
+    const prompt = serializeComposerPartsForAI(composerPartsSnapshot).trim();
+    if (!content || !prompt) {
+        return null;
+    }
+
+    const attachments = [
+        ...session.attachments,
+        ...getAutoContextAttachments(session.attachments),
+    ].map(cloneAttachment);
+
+    return {
+        id: crypto.randomUUID(),
+        content,
+        prompt: buildPromptWithResumeContext(session, prompt),
+        composerParts: composerPartsSnapshot,
+        attachments,
+        createdAt: Date.now(),
+        status: "queued",
+        modelId: session.modelId ?? null,
+        modeId: session.modeId ?? null,
+        optionsSnapshot: Object.fromEntries(
+            session.configOptions.map((option) => [option.id, option.value]),
+        ),
+    };
+}
+
+function insertQueuedMessageAtIndex(
+    queue: QueuedChatMessage[],
+    index: number,
+    item: QueuedChatMessage,
+) {
+    const nextQueue = queue.slice();
+    const safeIndex = Math.max(0, Math.min(index, nextQueue.length));
+    nextQueue.splice(safeIndex, 0, item);
+    return nextQueue;
+}
+
+function restoreQueuedMessagePosition(
+    queue: QueuedChatMessage[],
+    editState: Pick<
+        QueuedMessageEditState,
+        "originalIndex" | "previousItemId" | "nextItemId"
+    >,
+    item: QueuedChatMessage,
+) {
+    if (editState.nextItemId) {
+        const nextIndex = queue.findIndex(
+            (queuedItem) => queuedItem.id === editState.nextItemId,
+        );
+        if (nextIndex >= 0) {
+            return insertQueuedMessageAtIndex(queue, nextIndex, item);
+        }
+    }
+
+    if (editState.previousItemId) {
+        const previousIndex = queue.findIndex(
+            (queuedItem) => queuedItem.id === editState.previousItemId,
+        );
+        if (previousIndex >= 0) {
+            return insertQueuedMessageAtIndex(queue, previousIndex + 1, item);
+        }
+    }
+
+    return insertQueuedMessageAtIndex(queue, editState.originalIndex, item);
+}
+
+function prioritizeQueuedMessage(
+    queue: QueuedChatMessage[],
+    messageId: string,
+) {
+    const currentIndex = queue.findIndex((item) => item.id === messageId);
+    if (currentIndex <= 0) {
+        return queue;
+    }
+
+    const item = queue[currentIndex];
+    if (!item || item.status === "sending") {
+        return queue;
+    }
+
+    const nextQueue = queue.filter((queuedItem) => queuedItem.id !== messageId);
+    const insertionIndex = nextQueue.findIndex(
+        (queuedItem) => queuedItem.status !== "sending",
+    );
+    if (insertionIndex === -1) {
+        nextQueue.push(item);
+        return nextQueue;
+    }
+
+    nextQueue.splice(insertionIndex, 0, {
+        ...item,
+        status: "queued",
+    });
+    return nextQueue;
+}
+
+function isSessionBusy(session: AIChatSession) {
+    return (
+        session.status === "streaming" ||
+        session.status === "waiting_permission" ||
+        session.status === "waiting_user_input"
+    );
+}
+
+function cleanupQueuedMessagesBySessionId(
+    queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>,
+    sessionId: string,
+    nextQueue: QueuedChatMessage[],
+) {
+    if (nextQueue.length > 0) {
+        return {
+            ...queuedMessagesBySessionId,
+            [sessionId]: nextQueue,
+        };
+    }
+
+    const nextQueuedMessagesBySessionId = { ...queuedMessagesBySessionId };
+    delete nextQueuedMessagesBySessionId[sessionId];
+    return nextQueuedMessagesBySessionId;
+}
+
+function updateQueuedMessage(
+    queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>,
+    sessionId: string,
+    messageId: string,
+    updater: (item: QueuedChatMessage) => QueuedChatMessage,
+) {
+    const queue = queuedMessagesBySessionId[sessionId];
+    if (!queue) return queuedMessagesBySessionId;
+
+    let changed = false;
+    const nextQueue = queue.map((item) => {
+        if (item.id !== messageId) {
+            return item;
+        }
+
+        changed = true;
+        return updater(item);
+    });
+
+    return changed
+        ? {
+              ...queuedMessagesBySessionId,
+              [sessionId]: nextQueue,
+          }
+        : queuedMessagesBySessionId;
+}
+
 function updatePermissionMessageState(
     session: AIChatSession,
     requestId: string,
@@ -768,6 +977,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             meta: m.meta,
             permission_request_id: m.permissionRequestId,
             permission_options: m.permissionOptions,
+            diffs: m.diffs,
             user_input_request_id: m.userInputRequestId,
             user_input_questions: m.userInputQuestions,
             plan_entries: m.planEntries,
@@ -808,6 +1018,7 @@ function hasPersistedHistoryContent(history: PersistedSessionHistory) {
 // force idle after a long silence so the UI doesn't stay stuck forever.
 const STALE_STREAMING_MS = 120_000;
 const _staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const _queueDrainLocks = new Set<string>();
 
 function scheduleStaleStreamingCheck(sessionId: string) {
     clearStaleStreamingCheck(sessionId);
@@ -834,6 +1045,7 @@ function scheduleStaleStreamingCheck(sessionId: string) {
 
             const updated = useChatStore.getState().sessionsById[sessionId];
             if (updated) persistSession(updated);
+            void useChatStore.getState().tryDrainQueue(sessionId);
         }, STALE_STREAMING_MS),
     );
 }
@@ -1039,6 +1251,7 @@ function restoreMessagesFromHistory(
         meta: m.meta,
         permissionRequestId: m.permission_request_id,
         permissionOptions: m.permission_options,
+        diffs: m.diffs,
         userInputRequestId: m.user_input_request_id,
         userInputQuestions: m.user_input_questions,
         planEntries: m.plan_entries,
@@ -1046,20 +1259,270 @@ function restoreMessagesFromHistory(
     }));
 }
 
-export const useChatStore = create<ChatStore>((set, get) => ({
-    runtimeConnection: INITIAL_RUNTIME_CONNECTION,
-    setupStatus: null,
-    runtimes: [],
-    sessionsById: {},
-    sessionOrder: [],
-    activeSessionId: null,
-    notePickerOpen: false,
-    autoContextEnabled: loadAiPreferences().autoContextEnabled !== false,
-    requireCmdEnterToSend: loadAiPreferences().requireCmdEnterToSend === true,
-    composerFontSize: loadAiPreferences().composerFontSize ?? 14,
-    chatFontSize: loadAiPreferences().chatFontSize ?? 20,
-    historyRetentionDays: loadAiPreferences().historyRetentionDays ?? 0,
-    composerPartsBySessionId: {},
+export const useChatStore = create<ChatStore>((set, get) => {
+    function patchQueuedMessage(
+        sessionId: string,
+        messageId: string,
+        patch: Partial<QueuedChatMessage>,
+    ) {
+        set((state) => {
+            const nextQueuedMessagesBySessionId = updateQueuedMessage(
+                state.queuedMessagesBySessionId,
+                sessionId,
+                messageId,
+                (item) => ({ ...item, ...patch }),
+            );
+            return nextQueuedMessagesBySessionId ===
+                state.queuedMessagesBySessionId
+                ? state
+                : {
+                      queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
+                  };
+        });
+    }
+
+    async function syncQueuedMessageConfig(
+        sessionId: string,
+        queuedItem: QueuedChatMessage,
+    ) {
+        let session = get().sessionsById[sessionId];
+        if (!session) return null;
+
+        const selectedModelId =
+            getModelConfigOption(session)?.value ?? session.modelId;
+        if (
+            queuedItem.modelId &&
+            queuedItem.modelId !== selectedModelId &&
+            supportsModelSelection(session, queuedItem.modelId)
+        ) {
+            const modelConfig = getModelConfigOption(session);
+            session =
+                modelConfig &&
+                modelConfig.options.some(
+                    (option) => option.value === queuedItem.modelId,
+                )
+                    ? await aiSetConfigOption(
+                          sessionId,
+                          modelConfig.id,
+                          queuedItem.modelId,
+                      )
+                    : await aiSetModel(sessionId, queuedItem.modelId);
+            get().upsertSession(session);
+        }
+
+        session = get().sessionsById[sessionId] ?? session;
+        if (!session) return null;
+
+        if (
+            queuedItem.modeId &&
+            queuedItem.modeId !== session.modeId &&
+            session.modes.some(
+                (mode) => mode.id === queuedItem.modeId && !mode.disabled,
+            )
+        ) {
+            session = await aiSetMode(sessionId, queuedItem.modeId);
+            get().upsertSession(session);
+        }
+
+        session = get().sessionsById[sessionId] ?? session;
+        if (!session) return null;
+
+        const modelOptionId = getModelConfigOption(session)?.id ?? null;
+        for (const option of session.configOptions) {
+            if (
+                option.category === "mode" ||
+                option.id === modelOptionId ||
+                !(option.id in queuedItem.optionsSnapshot)
+            ) {
+                continue;
+            }
+
+            const nextValue = queuedItem.optionsSnapshot[option.id];
+            if (
+                nextValue === option.value ||
+                !option.options.some((candidate) => candidate.value === nextValue)
+            ) {
+                continue;
+            }
+
+            session = await aiSetConfigOption(sessionId, option.id, nextValue);
+            get().upsertSession(session);
+            session = get().sessionsById[sessionId] ?? session;
+            if (!session) return null;
+        }
+
+        return session;
+    }
+
+    async function dispatchMessage(
+        sessionId: string,
+        queuedItem: QueuedChatMessage,
+        source: "immediate" | "queue",
+    ) {
+        let activeSessionId = sessionId;
+        let currentItem = queuedItem;
+        let session = get().sessionsById[activeSessionId];
+        if (!session || session.isResumingSession) {
+            return;
+        }
+
+        if (session.isPersistedSession) {
+            const resumedSessionId = await get().resumeSession(activeSessionId);
+            if (!resumedSessionId) {
+                if (source === "queue") {
+                    patchQueuedMessage(activeSessionId, currentItem.id, {
+                        status: "failed",
+                    });
+                }
+                return;
+            }
+
+            activeSessionId = resumedSessionId;
+            session = get().sessionsById[activeSessionId];
+            if (!session) {
+                return;
+            }
+        }
+
+        if (source === "queue") {
+            const queuedStateItem = get().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.find((item) => item.id === currentItem.id);
+            if (!queuedStateItem) {
+                return;
+            }
+
+            currentItem = queuedStateItem;
+            patchQueuedMessage(activeSessionId, currentItem.id, {
+                status: "sending",
+            });
+            currentItem =
+                get().queuedMessagesBySessionId[activeSessionId]?.find(
+                    (item) => item.id === currentItem.id,
+                ) ?? { ...currentItem, status: "sending" };
+        }
+
+        if (!session || isSessionBusy(session)) {
+            if (source === "queue") {
+                patchQueuedMessage(activeSessionId, currentItem.id, {
+                    status: "queued",
+                });
+            }
+            return;
+        }
+
+        try {
+            session =
+                (await syncQueuedMessageConfig(activeSessionId, currentItem)) ??
+                session;
+            if (!session) return;
+
+            const userMessageId =
+                currentItem.optimisticMessageId ?? crypto.randomUUID();
+            if (source === "queue" && currentItem.optimisticMessageId !== userMessageId) {
+                patchQueuedMessage(activeSessionId, currentItem.id, {
+                    optimisticMessageId: userMessageId,
+                });
+            }
+
+            const userMessage: AIChatMessage = {
+                ...createTextMessage("user", currentItem.content),
+                id: userMessageId,
+            };
+
+            set((state) => {
+                const targetSession = state.sessionsById[activeSessionId];
+                if (!targetSession) return state;
+
+                const hasUserMessage = targetSession.messages.some(
+                    (message) => message.id === userMessageId,
+                );
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [activeSessionId]: {
+                            ...targetSession,
+                            status: "streaming",
+                            attachments:
+                                source === "immediate"
+                                    ? []
+                                    : targetSession.attachments,
+                            messages: hasUserMessage
+                                ? targetSession.messages
+                                : [...targetSession.messages, userMessage],
+                        },
+                    },
+                    sessionOrder: touchSessionOrder(
+                        state.sessionOrder,
+                        activeSessionId,
+                    ),
+                    ...(source === "immediate"
+                        ? {
+                              composerPartsBySessionId: {
+                                  ...state.composerPartsBySessionId,
+                                  [activeSessionId]: createEmptyComposerParts(),
+                              },
+                          }
+                        : {}),
+                };
+            });
+
+            const afterSend = get().sessionsById[activeSessionId];
+            if (afterSend) {
+                void persistSession(afterSend);
+            }
+
+            const nextSession = await aiSendMessage(
+                activeSessionId,
+                currentItem.prompt,
+                currentItem.attachments,
+            );
+            get().upsertSession({
+                ...nextSession,
+                historySessionId: session.historySessionId,
+                resumeContextPending: false,
+            });
+
+            if (source === "queue") {
+                get().removeQueuedMessage(activeSessionId, currentItem.id);
+            }
+        } catch (error) {
+            const message = getAiErrorMessage(
+                error,
+                "Failed to send the message.",
+            );
+            get().applySessionError({
+                session_id: activeSessionId,
+                message,
+            });
+            if (source === "queue") {
+                patchQueuedMessage(activeSessionId, currentItem.id, {
+                    status: "failed",
+                });
+            }
+            if (isAuthenticationErrorMessage(message)) {
+                await get().refreshSetupStatus();
+            }
+        }
+    }
+
+    return {
+        runtimeConnection: INITIAL_RUNTIME_CONNECTION,
+        setupStatus: null,
+        runtimes: [],
+        sessionsById: {},
+        sessionOrder: [],
+        activeSessionId: null,
+        notePickerOpen: false,
+        autoContextEnabled: loadAiPreferences().autoContextEnabled !== false,
+        requireCmdEnterToSend: loadAiPreferences().requireCmdEnterToSend === true,
+        composerFontSize: loadAiPreferences().composerFontSize ?? 14,
+        chatFontSize: loadAiPreferences().chatFontSize ?? 20,
+        historyRetentionDays: loadAiPreferences().historyRetentionDays ?? 0,
+        composerPartsBySessionId: {},
+        queuedMessagesBySessionId: {},
+        queuedMessageEditBySessionId: {},
 
     initialize: async () => {
         const current = get().runtimeConnection.status;
@@ -1307,7 +1770,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
     },
 
-    upsertSession: (session, activate = false) =>
+    upsertSession: (session, activate = false) => {
+        let shouldDrainQueue = false;
         set((state) => {
             const existing = state.sessionsById[session.sessionId];
             const isKnown = state.sessionOrder.includes(session.sessionId);
@@ -1320,6 +1784,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 ? state.runtimes
                 : hydrateRuntimesFromSessions(state.runtimes, [session]);
             const nextSession = mergeSession(existing, session);
+            shouldDrainQueue =
+                nextSession.status === "idle" &&
+                existing?.status !== "idle" &&
+                !nextSession.isResumingSession;
 
             return {
                 runtimes: nextRuntimes,
@@ -1343,7 +1811,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                           [session.sessionId]: createEmptyComposerParts(),
                       },
             };
-        }),
+        });
+
+        if (shouldDrainQueue) {
+            void get().tryDrainQueue(session.sessionId);
+        }
+    },
 
     applySessionError: ({ session_id, message }) => {
         if (session_id) clearStaleStreamingCheck(session_id);
@@ -1473,6 +1946,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
         const updatedSession = get().sessionsById[session_id];
         if (updatedSession) persistSession(updatedSession);
+        void get().tryDrainQueue(session_id);
     },
 
     applyThinkingStarted: ({ session_id, message_id }) => {
@@ -1558,6 +2032,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 title: payload.title,
                 content: payload.summary ?? payload.title,
                 timestamp: Date.now(),
+                diffs: payload.diffs,
                 meta: {
                     tool: payload.kind,
                     status: payload.status,
@@ -1577,7 +2052,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                         messages: exists
                             ? session.messages.map((message) =>
                                   message.id === messageId
-                                      ? nextMessage
+                                      ? {
+                                            ...nextMessage,
+                                            timestamp: message.timestamp,
+                                        }
                                       : message,
                               )
                             : [...session.messages, nextMessage],
@@ -1867,6 +2345,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 const previousParts =
                     currentState.composerPartsBySessionId[sessionId] ??
                     createEmptyComposerParts();
+                const previousQueue =
+                    currentState.queuedMessagesBySessionId[sessionId] ?? [];
+                const previousQueuedMessageEdit =
+                    currentState.queuedMessageEditBySessionId[sessionId];
                 const nextSessionsById = { ...currentState.sessionsById };
                 delete nextSessionsById[sessionId];
 
@@ -1875,6 +2357,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 };
                 delete nextComposerParts[sessionId];
                 nextComposerParts[migratedSession.sessionId] = previousParts;
+
+                const nextQueuedMessagesBySessionId = {
+                    ...currentState.queuedMessagesBySessionId,
+                };
+                delete nextQueuedMessagesBySessionId[sessionId];
+                if (previousQueue.length > 0) {
+                    nextQueuedMessagesBySessionId[migratedSession.sessionId] =
+                        previousQueue;
+                }
+
+                const nextQueuedMessageEditBySessionId = {
+                    ...currentState.queuedMessageEditBySessionId,
+                };
+                delete nextQueuedMessageEditBySessionId[sessionId];
+                if (previousQueuedMessageEdit) {
+                    nextQueuedMessageEditBySessionId[migratedSession.sessionId] =
+                        previousQueuedMessageEdit;
+                }
 
                 return {
                     runtimes: hydrateRuntimesFromSessions(
@@ -1896,8 +2396,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                             ? migratedSession.sessionId
                             : currentState.activeSessionId,
                     composerPartsBySessionId: nextComposerParts,
+                    queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
+                    queuedMessageEditBySessionId:
+                        nextQueuedMessageEditBySessionId,
                 };
             });
+            _queueDrainLocks.delete(sessionId);
             useChatTabsStore
                 .getState()
                 .replaceSessionId(
@@ -2112,103 +2616,443 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             const activeSessionId = state.activeSessionId;
             if (!activeSessionId) return state;
 
+            const session = state.sessionsById[activeSessionId];
+            const mentionIds = new Set(
+                parts
+                    .filter((p): p is Extract<AIComposerPart, { type: "mention" }> => p.type === "mention")
+                    .map((p) => p.noteId),
+            );
+            const folderPaths = new Set(
+                parts
+                    .filter((p): p is Extract<AIComposerPart, { type: "folder_mention" }> => p.type === "folder_mention")
+                    .map((p) => p.folderPath),
+            );
+
+            const prunedAttachments = session
+                ? session.attachments.filter((a) => {
+                      if (a.type === "note") return mentionIds.has(a.noteId!);
+                      if (a.type === "folder") return folderPaths.has(a.noteId!);
+                      return true;
+                  })
+                : [];
+
             return {
                 composerPartsBySessionId: {
                     ...state.composerPartsBySessionId,
                     [activeSessionId]: parts,
                 },
+                ...(session && prunedAttachments.length !== session.attachments.length
+                    ? {
+                          sessionsById: {
+                              ...state.sessionsById,
+                              [activeSessionId]: { ...session, attachments: prunedAttachments },
+                          },
+                      }
+                    : {}),
             };
         }),
+
+    enqueueMessage: (sessionId, item) =>
+        set((state) => ({
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [sessionId]: [
+                    ...(state.queuedMessagesBySessionId[sessionId] ?? []),
+                    item,
+                ],
+            },
+            sessionOrder: touchSessionOrder(state.sessionOrder, sessionId),
+        })),
+
+    removeQueuedMessage: (sessionId, messageId) => {
+        let removed = false;
+        set((state) => {
+            const queue = state.queuedMessagesBySessionId[sessionId];
+            if (!queue) return state;
+
+            const nextQueue = queue.filter((item) => item.id !== messageId);
+            if (nextQueue.length === queue.length) {
+                return state;
+            }
+            removed = true;
+
+            return {
+                queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                    state.queuedMessagesBySessionId,
+                    sessionId,
+                    nextQueue,
+                ),
+            };
+        });
+
+        if (
+            removed &&
+            get().sessionsById[sessionId]?.status === "idle" &&
+            !get().queuedMessageEditBySessionId[sessionId]
+        ) {
+            void get().tryDrainQueue(sessionId);
+        }
+    },
+
+    markQueuedMessageStatus: (sessionId, messageId, status) =>
+        set((state) => {
+            const nextQueuedMessagesBySessionId = updateQueuedMessage(
+                state.queuedMessagesBySessionId,
+                sessionId,
+                messageId,
+                (item) => ({ ...item, status }),
+            );
+            return nextQueuedMessagesBySessionId ===
+                state.queuedMessagesBySessionId
+                ? state
+                : {
+                      queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
+                  };
+        }),
+
+    clearSessionQueue: (sessionId) => {
+        _queueDrainLocks.delete(sessionId);
+        set((state) => {
+            if (!(sessionId in state.queuedMessagesBySessionId)) {
+                return state;
+            }
+
+            const nextQueuedMessageEditBySessionId = {
+                ...state.queuedMessageEditBySessionId,
+            };
+            delete nextQueuedMessageEditBySessionId[sessionId];
+
+            return {
+                queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                    state.queuedMessagesBySessionId,
+                    sessionId,
+                    [],
+                ),
+                queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+            };
+        });
+    },
+
+    editQueuedMessage: (sessionId, messageId) =>
+        set((state) => {
+            if (state.queuedMessageEditBySessionId[sessionId]) {
+                return state;
+            }
+
+            const session = state.sessionsById[sessionId];
+            const queue = state.queuedMessagesBySessionId[sessionId];
+            if (!session || !queue) return state;
+
+            const originalIndex = queue.findIndex((item) => item.id === messageId);
+            const queuedItem =
+                originalIndex >= 0 ? queue[originalIndex] : undefined;
+            if (!queuedItem || queuedItem.status === "sending") {
+                return state;
+            }
+
+            const nextQueue = queue.filter((item) => item.id !== messageId);
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [sessionId]: {
+                        ...session,
+                        attachments: queuedItem.attachments.map(cloneAttachment),
+                    },
+                },
+                composerPartsBySessionId: {
+                    ...state.composerPartsBySessionId,
+                    [sessionId]: cloneComposerParts(queuedItem.composerParts),
+                },
+                queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                    state.queuedMessagesBySessionId,
+                    sessionId,
+                    nextQueue,
+                ),
+                queuedMessageEditBySessionId: {
+                    ...state.queuedMessageEditBySessionId,
+                    [sessionId]: {
+                        item: queuedItem,
+                        originalIndex,
+                        previousItemId:
+                            originalIndex > 0
+                                ? (queue[originalIndex - 1]?.id ?? null)
+                                : null,
+                        nextItemId: queue[originalIndex + 1]?.id ?? null,
+                        previousComposerParts: cloneComposerParts(
+                            state.composerPartsBySessionId[sessionId] ??
+                                createEmptyComposerParts(),
+                        ),
+                        previousAttachments: session.attachments.map(
+                            cloneAttachment,
+                        ),
+                    },
+                },
+            };
+        }),
+
+    cancelQueuedMessageEdit: (sessionId) => {
+        let shouldDrainQueue = false;
+        set((state) => {
+            const session = state.sessionsById[sessionId];
+            const editState = state.queuedMessageEditBySessionId[sessionId];
+            if (!session || !editState) {
+                return state;
+            }
+
+            const nextQueue = restoreQueuedMessagePosition(
+                state.queuedMessagesBySessionId[sessionId] ?? [],
+                editState,
+                editState.item,
+            );
+            const nextQueuedMessageEditBySessionId = {
+                ...state.queuedMessageEditBySessionId,
+            };
+            delete nextQueuedMessageEditBySessionId[sessionId];
+            shouldDrainQueue = session.status === "idle";
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [sessionId]: {
+                        ...session,
+                        attachments: editState.previousAttachments.map(
+                            cloneAttachment,
+                        ),
+                    },
+                },
+                composerPartsBySessionId: {
+                    ...state.composerPartsBySessionId,
+                    [sessionId]: cloneComposerParts(
+                        editState.previousComposerParts,
+                    ),
+                },
+                queuedMessagesBySessionId: {
+                    ...state.queuedMessagesBySessionId,
+                    [sessionId]: nextQueue,
+                },
+                queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+            };
+        });
+
+        if (shouldDrainQueue) {
+            void get().tryDrainQueue(sessionId);
+        }
+    },
 
     sendMessage: async () => {
         let { activeSessionId, sessionsById, composerPartsBySessionId } = get();
         if (!activeSessionId) return;
 
         let session = sessionsById[activeSessionId];
-        if (
-            !session ||
-            session.status === "streaming" ||
-            session.status === "waiting_permission" ||
-            session.status === "waiting_user_input"
-        ) {
+        if (!session || session.isResumingSession) {
             return;
-        }
-
-        if (session.isPersistedSession) {
-            const resumedSessionId = await get().resumeSession(activeSessionId);
-            if (!resumedSessionId) return;
-
-            const resumedState = get();
-            activeSessionId = resumedSessionId;
-            sessionsById = resumedState.sessionsById;
-            composerPartsBySessionId = resumedState.composerPartsBySessionId;
-            session = sessionsById[activeSessionId];
-            if (!session) return;
         }
 
         const composerParts =
             composerPartsBySessionId[activeSessionId] ??
             createEmptyComposerParts();
-        const prompt = serializeComposerParts(composerParts);
-        const trimmed = prompt.trim();
-        if (!trimmed) return;
-        const promptToSend = buildPromptWithResumeContext(session, trimmed);
-        const turnAttachments = [
-            ...session.attachments,
-            ...getAutoContextAttachments(session.attachments),
-        ];
+        const queuedItem = buildQueuedMessage(session, composerParts);
+        if (!queuedItem) return;
 
-        const userMessage = createTextMessage("user", trimmed);
+        const queuedMessageEdit =
+            get().queuedMessageEditBySessionId[activeSessionId];
+        if (queuedMessageEdit) {
+            const updatedQueuedItem: QueuedChatMessage = {
+                ...queuedMessageEdit.item,
+                ...queuedItem,
+                id: queuedMessageEdit.item.id,
+                status: "queued",
+                optimisticMessageId: undefined,
+            };
 
-        set((state) => ({
-            sessionsById: {
-                ...state.sessionsById,
-                [activeSessionId]: {
-                    ...state.sessionsById[activeSessionId]!,
-                    status: "streaming",
-                    messages: [
-                        ...state.sessionsById[activeSessionId]!.messages,
-                        userMessage,
-                    ],
-                },
-            },
-            sessionOrder: touchSessionOrder(
-                state.sessionOrder,
-                activeSessionId,
-            ),
-            composerPartsBySessionId: {
-                ...state.composerPartsBySessionId,
-                [activeSessionId]: createEmptyComposerParts(),
-            },
-        }));
+            set((state) => {
+                const targetSession = state.sessionsById[activeSessionId];
+                const currentEdit =
+                    state.queuedMessageEditBySessionId[activeSessionId];
+                if (!targetSession || !currentEdit) {
+                    return state;
+                }
 
-        // Persist user message immediately
-        const afterSend = get().sessionsById[activeSessionId];
-        if (afterSend) persistSession(afterSend);
+                const nextQueuedMessageEditBySessionId = {
+                    ...state.queuedMessageEditBySessionId,
+                };
+                delete nextQueuedMessageEditBySessionId[activeSessionId];
 
-        try {
-            const nextSession = await aiSendMessage(
-                activeSessionId,
-                promptToSend,
-                turnAttachments,
-            );
-            get().upsertSession({
-                ...nextSession,
-                historySessionId: session.historySessionId,
-                resumeContextPending: false,
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [activeSessionId]: {
+                            ...targetSession,
+                            attachments: currentEdit.previousAttachments.map(
+                                cloneAttachment,
+                            ),
+                        },
+                    },
+                    composerPartsBySessionId: {
+                        ...state.composerPartsBySessionId,
+                        [activeSessionId]: cloneComposerParts(
+                            currentEdit.previousComposerParts,
+                        ),
+                    },
+                    queuedMessagesBySessionId: {
+                        ...state.queuedMessagesBySessionId,
+                        [activeSessionId]: restoreQueuedMessagePosition(
+                            state.queuedMessagesBySessionId[activeSessionId] ??
+                                [],
+                            currentEdit,
+                            updatedQueuedItem,
+                        ),
+                    },
+                    queuedMessageEditBySessionId:
+                        nextQueuedMessageEditBySessionId,
+                    sessionOrder: touchSessionOrder(
+                        state.sessionOrder,
+                        activeSessionId,
+                    ),
+                };
             });
-        } catch (error) {
-            const message = getAiErrorMessage(
-                error,
-                "Failed to send the message.",
-            );
-            get().applySessionError({
-                session_id: activeSessionId,
-                message,
-            });
-            if (isAuthenticationErrorMessage(message)) {
-                await get().refreshSetupStatus();
+
+            if (get().sessionsById[activeSessionId]?.status === "idle") {
+                void get().tryDrainQueue(activeSessionId);
             }
+            return;
+        }
+
+        if (isSessionBusy(session)) {
+            get().enqueueMessage(activeSessionId, queuedItem);
+            set((state) => {
+                const targetSession = state.sessionsById[activeSessionId];
+                if (!targetSession) return state;
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [activeSessionId]: {
+                            ...targetSession,
+                            attachments: [],
+                        },
+                    },
+                    composerPartsBySessionId: {
+                        ...state.composerPartsBySessionId,
+                        [activeSessionId]: createEmptyComposerParts(),
+                    },
+                };
+            });
+            return;
+        }
+
+        await dispatchMessage(activeSessionId, queuedItem, "immediate");
+    },
+
+    retryQueuedMessage: async (sessionId, messageId) => {
+        if (get().queuedMessageEditBySessionId[sessionId]) {
+            return;
+        }
+
+        get().markQueuedMessageStatus(sessionId, messageId, "queued");
+
+        const session = get().sessionsById[sessionId];
+        if (!session || session.isResumingSession || isSessionBusy(session)) {
+            return;
+        }
+
+        const nextItem = get().queuedMessagesBySessionId[sessionId]?.find(
+            (item) => item.status === "queued",
+        );
+        if (!nextItem || nextItem.id !== messageId) {
+            return;
+        }
+
+        if (session.status === "idle") {
+            await get().tryDrainQueue(sessionId);
+            return;
+        }
+
+        if (_queueDrainLocks.has(sessionId)) {
+            return;
+        }
+
+        _queueDrainLocks.add(sessionId);
+        try {
+            await dispatchMessage(sessionId, nextItem, "queue");
+        } finally {
+            _queueDrainLocks.delete(sessionId);
+        }
+    },
+
+    sendQueuedMessageNow: async (sessionId, messageId) => {
+        if (get().queuedMessageEditBySessionId[sessionId]) {
+            return;
+        }
+
+        let shouldDrain = false;
+        set((state) => {
+            const queue = state.queuedMessagesBySessionId[sessionId];
+            const session = state.sessionsById[sessionId];
+            if (!queue || !session) {
+                return state;
+            }
+
+            const currentItem = queue.find((item) => item.id === messageId);
+            if (!currentItem || currentItem.status === "sending") {
+                return state;
+            }
+
+            const nextQueue = prioritizeQueuedMessage(queue, messageId);
+            shouldDrain =
+                session.status === "idle" &&
+                nextQueue[0]?.id === messageId &&
+                !_queueDrainLocks.has(sessionId);
+
+            return nextQueue === queue
+                ? {
+                      queuedMessagesBySessionId: updateQueuedMessage(
+                          state.queuedMessagesBySessionId,
+                          sessionId,
+                          messageId,
+                          (item) => ({ ...item, status: "queued" }),
+                      ),
+                  }
+                : {
+                      queuedMessagesBySessionId: {
+                          ...state.queuedMessagesBySessionId,
+                          [sessionId]: nextQueue,
+                      },
+                  };
+        });
+
+        if (shouldDrain) {
+            await get().tryDrainQueue(sessionId);
+        }
+    },
+
+    tryDrainQueue: async (sessionId) => {
+        const session = get().sessionsById[sessionId];
+        if (
+            !session ||
+            session.status !== "idle" ||
+            session.isResumingSession ||
+            Boolean(get().queuedMessageEditBySessionId[sessionId])
+        ) {
+            return;
+        }
+
+        if (_queueDrainLocks.has(sessionId)) {
+            return;
+        }
+
+        const nextItem = get().queuedMessagesBySessionId[sessionId]?.find(
+            (item) => item.status === "queued",
+        );
+        if (!nextItem) {
+            return;
+        }
+
+        _queueDrainLocks.add(sessionId);
+        try {
+            await dispatchMessage(sessionId, nextItem, "queue");
+        } finally {
+            _queueDrainLocks.delete(sessionId);
         }
     },
 
@@ -2248,6 +3092,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 },
             };
         });
+        void get().tryDrainQueue(activeSessionId);
     },
 
     respondPermission: async (requestId, optionId) => {
@@ -2452,15 +3297,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             );
         }
         useChatTabsStore.getState().removeTabsForSession(sessionId);
+        _queueDrainLocks.delete(sessionId);
         const state = get();
         const nextSessionsById = { ...state.sessionsById };
         delete nextSessionsById[sessionId];
+        const nextComposerPartsBySessionId = {
+            ...state.composerPartsBySessionId,
+        };
+        delete nextComposerPartsBySessionId[sessionId];
+        const nextQueuedMessageEditBySessionId = {
+            ...state.queuedMessageEditBySessionId,
+        };
+        delete nextQueuedMessageEditBySessionId[sessionId];
         const remainingIds = sortSessionIdsByRecency(nextSessionsById);
         const nextActiveId =
             state.activeSessionId === sessionId
                 ? (remainingIds[0] ?? null)
                 : state.activeSessionId;
-        set({ sessionsById: nextSessionsById, activeSessionId: nextActiveId });
+        set({
+            sessionsById: nextSessionsById,
+            sessionOrder: remainingIds,
+            activeSessionId: nextActiveId,
+            composerPartsBySessionId: nextComposerPartsBySessionId,
+            queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                state.queuedMessagesBySessionId,
+                sessionId,
+                [],
+            ),
+            queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+        });
         if (nextActiveId && !nextSessionsById[nextActiveId]) {
             await get().newSession();
         } else if (Object.keys(nextSessionsById).length === 0) {
@@ -2474,7 +3339,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
         }
         useChatTabsStore.getState().reset();
-        set({ sessionsById: {}, activeSessionId: null });
+        _queueDrainLocks.clear();
+        set({
+            sessionsById: {},
+            sessionOrder: [],
+            activeSessionId: null,
+            composerPartsBySessionId: {},
+            queuedMessagesBySessionId: {},
+            queuedMessageEditBySessionId: {},
+        });
         await get().newSession();
     },
 
@@ -2648,7 +3521,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     openNotePicker: () => set({ notePickerOpen: true }),
 
     closeNotePicker: () => set({ notePickerOpen: false }),
-}));
+    };
+});
 
 // Sync AI preferences when another window (e.g. standalone Settings) updates localStorage
 if (typeof window !== "undefined") {
@@ -2675,6 +3549,7 @@ export function resetChatStore() {
     } catch {
         // ignore
     }
+    _queueDrainLocks.clear();
     useChatStore.setState({
         runtimeConnection: INITIAL_RUNTIME_CONNECTION,
         setupStatus: null,
@@ -2684,5 +3559,7 @@ export function resetChatStore() {
         activeSessionId: null,
         notePickerOpen: false,
         composerPartsBySessionId: {},
+        queuedMessagesBySessionId: {},
+        queuedMessageEditBySessionId: {},
     });
 }

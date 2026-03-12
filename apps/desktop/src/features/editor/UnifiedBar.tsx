@@ -32,6 +32,7 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { revealNoteInTree } from "../../app/utils/navigation";
+import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripScrollTarget } from "./tabStrip";
 
@@ -93,11 +94,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     // Primitive selectors — stable when values don't change
     const canGoBack = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return tab ? tab.historyIndex > 0 : false;
+        return tab && tab.kind !== "pdf" ? tab.historyIndex > 0 : false;
     });
     const canGoForward = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return tab ? tab.historyIndex < tab.history.length - 1 : false;
+        return tab && tab.kind !== "pdf"
+            ? tab.historyIndex < tab.history.length - 1
+            : false;
     });
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
@@ -680,7 +683,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         node,
                                                     )
                                                 }
-                                                title={tab.noteId}
+                                                title={tab.kind === "pdf" ? tab.title : tab.noteId}
                                                 onClick={() =>
                                                     handleTabClick(tab.id)
                                                 }
@@ -773,6 +776,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         : undefined,
                                                 }}
                                             >
+                                                {tab.kind === "pdf" && (
+                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 opacity-60">
+                                                        <path d="M4 2h5l4 4v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" />
+                                                        <path d="M9 2v4h4" />
+                                                    </svg>
+                                                )}
                                                 <span className="flex-1 truncate text-[12.5px] font-medium">
                                                     {tab.title}
                                                 </span>
@@ -818,6 +827,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 .getState()
                                                 .insertExternalTab({
                                                     id: crypto.randomUUID(),
+                                                    kind: "note",
                                                     noteId: "",
                                                     title: "New Tab",
                                                     content: "",
@@ -1128,11 +1138,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 entry.id === tabContextMenu.payload.tabId,
                         );
                         if (!tab) return [];
-                        const notePath =
-                            useVaultStore
-                                .getState()
-                                .notes.find((note) => note.id === tab.noteId)
-                                ?.path ?? null;
+                        const isPdf = tab.kind === "pdf";
+                        const filePath = isPdf
+                            ? tab.path
+                            : (useVaultStore
+                                  .getState()
+                                  .notes.find((note) => note.id === tab.noteId)
+                                  ?.path ?? null);
 
                         const tabIndex = tabs.findIndex(
                             (entry) => entry.id === tab.id,
@@ -1161,25 +1173,50 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 disabled: tabIndex <= 0,
                             },
                             { type: "separator" as const },
-                            {
-                                label: "Reveal in Tree",
-                                action: () => revealNoteInTree(tab.noteId),
-                            },
+                            ...(!isPdf
+                                ? [
+                                      {
+                                          label: "Reveal in Tree",
+                                          action: () =>
+                                              revealNoteInTree(tab.noteId),
+                                      },
+                                  ]
+                                : []),
                             {
                                 label: "Reveal in Finder",
                                 action: () => {
-                                    if (!notePath) return;
-                                    void revealItemInDir(notePath);
+                                    if (!filePath) return;
+                                    void revealItemInDir(filePath);
                                 },
-                                disabled: !notePath,
+                                disabled: !filePath,
                             },
                             {
                                 label: "Copy Path",
                                 action: () =>
                                     void navigator.clipboard.writeText(
-                                        tab.noteId,
+                                        isPdf ? tab.path : tab.noteId,
                                     ),
                             },
+                            ...(isPdf
+                                ? [
+                                      { type: "separator" as const },
+                                      {
+                                          label: "Add to Chat",
+                                          action: () =>
+                                              emitFileTreeNoteDrag({
+                                                  phase: "attach",
+                                                  x: 0,
+                                                  y: 0,
+                                                  notes: [],
+                                                  files: [{
+                                                      filePath: tab.path,
+                                                      fileName: tab.title,
+                                                      mimeType: "application/pdf",
+                                                  }],
+                                              }),
+                                      },
+                                  ]
+                                : []),
                         ];
                     })()}
                 />

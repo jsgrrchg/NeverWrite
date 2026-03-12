@@ -12,6 +12,7 @@ regex = "1"
 notify = "7"
 thiserror = "2"
 walkdir = "2"
+pdf-extract = "0.10"
 
 [dev-dependencies]
 tempfile = "3"

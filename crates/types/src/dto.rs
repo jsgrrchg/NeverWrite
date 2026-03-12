@@ -48,6 +48,18 @@ pub struct ProposedNewNoteDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultEntryDto {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub kind: String, // "note" | "pdf"
+    pub modified_at: u64,
+    pub created_at: u64,
+    pub size: u64,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteDto {
     pub id: String,
     pub path: String,
@@ -204,6 +216,8 @@ pub struct ContentMatchDto {
     pub line_content: String,
     pub match_start: usize,
     pub match_end: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,8 +225,14 @@ pub struct AdvancedSearchResultDto {
     pub id: String,
     pub path: String,
     pub title: String,
+    #[serde(default = "default_note_kind")]
+    pub kind: String,
     pub score: f64,
     pub tags: Vec<String>,
     pub modified_at: u64,
     pub matches: Vec<ContentMatchDto>,
+}
+
+fn default_note_kind() -> String {
+    "note".to_string()
 }
