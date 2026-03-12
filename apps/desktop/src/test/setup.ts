@@ -68,6 +68,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
     openUrl: vi.fn(),
+    openPath: vi.fn(),
+    revealItemInDir: vi.fn(),
 }));
 
 function createStorageMock(): Storage {

@@ -28,6 +28,7 @@ import { AIChatContextBar } from "./components/AIChatContextBar";
 import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
 import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
+import { QueuedMessagesPanel } from "./components/QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
 import { WhisperSetupModal } from "./components/WhisperSetupModal";
 import { exportChatSessionToVaultNote } from "./chatExport";
@@ -48,6 +49,12 @@ export function AIChatPanel() {
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const composerPartsBySessionId = useChatStore(
         (s) => s.composerPartsBySessionId,
+    );
+    const queuedMessagesBySessionId = useChatStore(
+        (s) => s.queuedMessagesBySessionId,
+    );
+    const queuedMessageEditBySessionId = useChatStore(
+        (s) => s.queuedMessageEditBySessionId,
     );
     const rightPanelExpanded = useLayoutStore((s) => s.rightPanelExpanded);
     const toggleRightPanelExpanded = useLayoutStore(
@@ -321,6 +328,12 @@ export function AIChatPanel() {
     const composerParts = composerSessionId
         ? (composerPartsBySessionId[composerSessionId] ?? [])
         : [];
+    const queuedMessages = composerSessionId
+        ? (queuedMessagesBySessionId[composerSessionId] ?? [])
+        : [];
+    const queuedMessageEdit = composerSessionId
+        ? (queuedMessageEditBySessionId[composerSessionId] ?? null)
+        : null;
 
     const noteOptions = notes.map((note) => ({
         id: note.id,
@@ -655,6 +668,39 @@ export function AIChatPanel() {
                         : "px-3 pb-3 pt-2"
                 }
             >
+                <QueuedMessagesPanel
+                    items={queuedMessages}
+                    editingItem={queuedMessageEdit?.item ?? null}
+                    onCancel={(messageId) => {
+                        if (!composerSessionId) return;
+                        chatActions.removeQueuedMessage(
+                            composerSessionId,
+                            messageId,
+                        );
+                    }}
+                    onClearAll={() => {
+                        if (!composerSessionId) return;
+                        chatActions.clearSessionQueue(composerSessionId);
+                    }}
+                    onEdit={(messageId) => {
+                        if (!composerSessionId) return;
+                        chatActions.editQueuedMessage(
+                            composerSessionId,
+                            messageId,
+                        );
+                    }}
+                    onSendNow={(messageId) => {
+                        if (!composerSessionId) return;
+                        void chatActions.sendQueuedMessageNow(
+                            composerSessionId,
+                            messageId,
+                        );
+                    }}
+                    onCancelEdit={() => {
+                        if (!composerSessionId) return;
+                        chatActions.cancelQueuedMessageEdit(composerSessionId);
+                    }}
+                />
                 <AIChatComposer
                     parts={composerParts}
                     notes={noteOptions}
@@ -671,9 +717,7 @@ export function AIChatPanel() {
                         !currentSession ||
                         runtimeConnection.status === "loading" ||
                         Boolean(currentSession?.isResumingSession) ||
-                        Boolean(setupStatus?.onboardingRequired) ||
-                        currentSession?.status === "waiting_permission" ||
-                        currentSession?.status === "waiting_user_input"
+                        Boolean(setupStatus?.onboardingRequired)
                     }
                     contextBar={
                         <AIChatContextBar
@@ -734,6 +778,7 @@ export function AIChatPanel() {
                     onChange={chatActions.setComposerParts}
                     onAttachAudio={handleAttachAudio}
                     onAttachFile={handleAttachFile}
+                    onFileAttach={chatActions.attachFile}
                     onMentionAttach={chatActions.attachNote}
                     onFolderAttach={chatActions.attachFolder}
                     onSubmit={chatActions.sendMessage}

@@ -13,7 +13,14 @@ interface PersistedSession {
         history?: Array<{ noteId: string; title: string }>;
         historyIndex?: number;
     }>;
+    pdfTabs?: Array<{
+        entryId: string;
+        title: string;
+        path: string;
+        viewMode?: PdfViewMode;
+    }>;
     activeNoteId: string | null;
+    activePdfEntryId?: string | null;
 }
 
 function pushTabToActivation(history: string[], tabId: string) {
@@ -53,8 +60,9 @@ export interface HistoryEntry {
     content: string;
 }
 
-export interface Tab {
+export interface NoteTab {
     id: string;
+    kind?: "note";
     noteId: string;
     title: string;
     content: string;
@@ -62,13 +70,39 @@ export interface Tab {
     historyIndex: number;
 }
 
-/** Tab without required history fields — used when creating tabs externally. */
-export type TabInput = Omit<Tab, "history" | "historyIndex"> &
-    Partial<Pick<Tab, "history" | "historyIndex">>;
+export interface PdfTab {
+    id: string;
+    kind: "pdf";
+    entryId: string;
+    title: string;
+    path: string;
+    page: number;
+    zoom: number;
+    viewMode: PdfViewMode;
+}
 
-function createTab(noteId: string, title: string, content: string): Tab {
+export type PdfViewMode = "single" | "continuous";
+
+export type Tab = NoteTab | PdfTab;
+
+export function isNoteTab(tab: Tab): tab is NoteTab {
+    return tab.kind !== "pdf";
+}
+
+export function isPdfTab(tab: Tab): tab is PdfTab {
+    return tab.kind === "pdf";
+}
+
+/** Tab without required history fields — used when creating tabs externally. */
+export type NoteTabInput = Omit<NoteTab, "history" | "historyIndex"> &
+    Partial<Pick<NoteTab, "history" | "historyIndex">>;
+
+export type TabInput = NoteTabInput | PdfTab;
+
+function createNoteTab(noteId: string, title: string, content: string): NoteTab {
     return {
         id: crypto.randomUUID(),
+        kind: "note",
         noteId,
         title,
         content,
@@ -77,7 +111,27 @@ function createTab(noteId: string, title: string, content: string): Tab {
     };
 }
 
-function ensureTabHistory(tab: TabInput): Tab {
+function createPdfTab(entryId: string, title: string, path: string): PdfTab {
+    return {
+        id: crypto.randomUUID(),
+        kind: "pdf",
+        entryId,
+        title,
+        path,
+        page: 1,
+        zoom: 1,
+        viewMode: "single",
+    };
+}
+
+function ensurePdfTabDefaults(tab: PdfTab): PdfTab {
+    return {
+        ...tab,
+        viewMode: tab.viewMode ?? "single",
+    };
+}
+
+function ensureNoteTabHistory(tab: NoteTabInput): NoteTab {
     if (tab.history && tab.history.length > 0) {
         return {
             ...tab,
@@ -126,6 +180,7 @@ interface EditorStore {
     pendingSelectionReveal: PendingSelectionReveal | null;
     currentSelection: EditorSelectionContext | null;
     openNote: (noteId: string, title: string, content: string) => void;
+    openPdf: (entryId: string, title: string, path: string) => void;
     goBack: () => void;
     goForward: () => void;
     navigateToHistoryIndex: (index: number) => void;
@@ -133,6 +188,9 @@ interface EditorStore {
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
+    updatePdfPage: (tabId: string, page: number) => void;
+    updatePdfZoom: (tabId: string, zoom: number) => void;
+    updatePdfViewMode: (tabId: string, viewMode: PdfViewMode) => void;
     reorderTabs: (fromIndex: number, toIndex: number) => void;
     hydrateTabs: (tabs: TabInput[], activeTabId: string | null) => void;
     insertExternalTab: (tab: TabInput, index?: number) => void;
@@ -159,14 +217,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 (t) => t.id === state.activeTabId,
             );
 
-            // If active tab already shows this note, no-op
-            if (activeTab && activeTab.noteId === noteId) {
+            // If active tab is a note already showing this note, no-op
+            if (activeTab && isNoteTab(activeTab) && activeTab.noteId === noteId) {
                 return state;
             }
 
-            // If there's an active tab, navigate within it
-            if (activeTab) {
-                const tab = ensureTabHistory(activeTab);
+            // If there's an active note tab, navigate within it
+            if (activeTab && isNoteTab(activeTab)) {
+                const tab = ensureNoteTabHistory(activeTab);
                 // Single slice: keep entries up to current, snapshot current, push new
                 const kept = tab.history.slice(0, tab.historyIndex);
                 kept.push(
@@ -200,10 +258,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 };
             }
 
-            // No tabs — create a new one
-            const newTab = createTab(noteId, title, content);
+            // Active tab is a PDF or no tabs — create a new note tab
+            const newTab = createNoteTab(noteId, title, content);
             return {
-                tabs: [newTab],
+                tabs: [...state.tabs, newTab],
                 activeTabId: newTab.id,
                 activationHistory: pushTabToActivation(
                     state.activationHistory,
@@ -213,23 +271,53 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
-    goBack: () =>
-        get().navigateToHistoryIndex(
-            (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ??
-                1) - 1,
-        ),
+    openPdf: (entryId, title, path) => {
+        set((state) => {
+            // If there's already a tab for this PDF, switch to it
+            const existing = state.tabs.find(
+                (t) => isPdfTab(t) && t.entryId === entryId,
+            );
+            if (existing) {
+                return {
+                    activeTabId: existing.id,
+                    activationHistory: pushTabToActivation(
+                        state.activationHistory,
+                        existing.id,
+                    ),
+                };
+            }
 
-    goForward: () =>
-        get().navigateToHistoryIndex(
-            (get().tabs.find((t) => t.id === get().activeTabId)?.historyIndex ??
-                -1) + 1,
-        ),
+            const newTab = createPdfTab(entryId, title, path);
+            return {
+                tabs: [...state.tabs, newTab],
+                activeTabId: newTab.id,
+                activationHistory: pushTabToActivation(
+                    state.activationHistory,
+                    newTab.id,
+                ),
+            };
+        });
+    },
+
+    goBack: () => {
+        const tab = get().tabs.find((t) => t.id === get().activeTabId);
+        if (!tab || !isNoteTab(tab)) return;
+        get().navigateToHistoryIndex(tab.historyIndex - 1);
+    },
+
+    goForward: () => {
+        const tab = get().tabs.find((t) => t.id === get().activeTabId);
+        if (!tab || !isNoteTab(tab)) return;
+        get().navigateToHistoryIndex(tab.historyIndex + 1);
+    },
 
     navigateToHistoryIndex: (targetIndex) => {
         const state = get();
         const tabIdx = state.tabs.findIndex((t) => t.id === state.activeTabId);
         if (tabIdx === -1) return;
-        const tab = ensureTabHistory(state.tabs[tabIdx]);
+        const raw = state.tabs[tabIdx];
+        if (!isNoteTab(raw)) return;
+        const tab = ensureNoteTabHistory(raw);
         if (targetIndex < 0 || targetIndex >= tab.history.length) return;
         if (targetIndex === tab.historyIndex) return;
 
@@ -296,7 +384,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     updateTabContent: (tabId, content) => {
         set((state) => ({
             tabs: state.tabs.map((t) =>
-                t.id !== tabId ? t : { ...t, content },
+                t.id !== tabId || !isNoteTab(t) ? t : { ...t, content },
             ),
         }));
     },
@@ -305,6 +393,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             tabs: state.tabs.map((t) => {
                 if (t.id !== tabId) return t;
+                if (!isNoteTab(t)) return { ...t, title };
                 if (!t.history?.length) return { ...t, title };
                 const history = [...t.history];
                 if (history[t.historyIndex]) {
@@ -318,6 +407,30 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 
+    updatePdfPage: (tabId, page) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) =>
+                t.id !== tabId || !isPdfTab(t) ? t : { ...t, page },
+            ),
+        }));
+    },
+
+    updatePdfZoom: (tabId, zoom) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) =>
+                t.id !== tabId || !isPdfTab(t) ? t : { ...t, zoom },
+            ),
+        }));
+    },
+
+    updatePdfViewMode: (tabId, viewMode) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) =>
+                t.id !== tabId || !isPdfTab(t) ? t : { ...t, viewMode },
+            ),
+        }));
+    },
+
     reorderTabs: (fromIndex, toIndex) => {
         set((state) => {
             const tabs = [...state.tabs];
@@ -328,7 +441,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     hydrateTabs: (tabs, activeTabId) => {
-        const hydratedTabs = tabs.map(ensureTabHistory);
+        const hydratedTabs: Tab[] = tabs.map((tab) =>
+            tab.kind === "pdf" ? ensurePdfTabDefaults(tab) : ensureNoteTabHistory(tab),
+        );
         const nextActiveTabId =
             activeTabId && hydratedTabs.some((tab) => tab.id === activeTabId)
                 ? activeTabId
@@ -342,7 +457,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     insertExternalTab: (tab, index) => {
         set((state) => {
-            const incoming = ensureTabHistory(tab);
+            const incoming: Tab =
+                tab.kind === "pdf" ? ensurePdfTabDefaults(tab) : ensureNoteTabHistory(tab);
             const tabs = state.tabs.filter(
                 (existing) => existing.id !== incoming.id,
             );
@@ -379,7 +495,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     reloadNoteContent: (noteId, detail) => {
         set((state) => ({
             tabs: state.tabs.map((t) => {
-                if (t.noteId !== noteId) return t;
+                if (!isNoteTab(t) || t.noteId !== noteId) return t;
                 if (t.content === detail.content && t.title === detail.title) {
                     return t;
                 }
@@ -401,7 +517,7 @@ async function loadHistoryEntryContent(
         });
         useEditorStore.setState((state) => ({
             tabs: state.tabs.map((t) => {
-                if (t.id !== tabId) return t;
+                if (t.id !== tabId || !isNoteTab(t)) return t;
                 const history = [...t.history];
                 if (history[historyIndex]?.noteId === noteId) {
                     history[historyIndex] = {
@@ -435,13 +551,19 @@ useEditorStore.subscribe((state) => {
     // Cheap fingerprint: skip expensive serialization on content-only edits
     let sig = state.activeTabId ?? "";
     for (const t of state.tabs) {
-        sig += `|${t.noteId}|${t.title}|${t.historyIndex}|${t.history.length}`;
+        if (isNoteTab(t)) {
+            sig += `|note|${t.noteId}|${t.title}|${t.historyIndex}|${t.history.length}`;
+        } else {
+            sig += `|pdf|${t.entryId}|${t.title}|${t.viewMode}`;
+        }
     }
     if (sig === _lastSessionSig) return;
     _lastSessionSig = sig;
 
+    const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
     const session: PersistedSession = {
         noteIds: state.tabs
+            .filter(isNoteTab)
             .filter((t) => t.noteId)
             .map((t) => ({
                 noteId: t.noteId,
@@ -452,8 +574,16 @@ useEditorStore.subscribe((state) => {
                 })),
                 historyIndex: t.historyIndex,
             })),
+        pdfTabs: state.tabs.filter(isPdfTab).map((t) => ({
+            entryId: t.entryId,
+            title: t.title,
+            path: t.path,
+            viewMode: t.viewMode,
+        })),
         activeNoteId:
-            state.tabs.find((t) => t.id === state.activeTabId)?.noteId ?? null,
+            activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+        activePdfEntryId:
+            activeTab && isPdfTab(activeTab) ? activeTab.entryId : null,
     };
     const json = JSON.stringify(session);
     if (json === _lastSessionJson) return;

@@ -59,6 +59,36 @@ describe("editorStore session persistence", () => {
         expect(session!.activeNoteId).toBe("notes/uk");
     });
 
+    it("persists pdf view mode per vault path", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/pdfs-2026" });
+
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "pdf-tab-1",
+                    kind: "pdf",
+                    entryId: "reports/q1",
+                    title: "Quarterly Report",
+                    path: "/vaults/pdfs-2026/reports/q1.pdf",
+                    page: 2,
+                    zoom: 1,
+                    viewMode: "continuous",
+                },
+            ],
+            activeTabId: "pdf-tab-1",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const session = readPersistedSession("/vaults/pdfs-2026");
+        expect(session?.pdfTabs?.[0]).toMatchObject({
+            entryId: "reports/q1",
+            viewMode: "continuous",
+        });
+        expect(session?.activePdfEntryId).toBe("reports/q1");
+    });
+
     it("falls back to the legacy global session key when needed", () => {
         localStorage.setItem(
             "vaultai.session.tabs",

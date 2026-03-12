@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
+import type { AIChatAttachment, AIComposerPart, QueuedChatMessage } from "../types";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
 import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
 
@@ -108,6 +109,40 @@ const readySetupStatus = {
     onboarding_required: false,
     message: null,
 };
+
+function createTextParts(text: string): AIComposerPart[] {
+    return [
+        {
+            id: `part:${text}`,
+            type: "text",
+            text,
+        },
+    ];
+}
+
+function createQueuedMessage(
+    id: string,
+    text: string,
+    overrides: Partial<QueuedChatMessage> = {},
+): QueuedChatMessage {
+    return {
+        id,
+        content: overrides.content ?? text,
+        prompt: overrides.prompt ?? text,
+        composerParts: overrides.composerParts ?? createTextParts(text),
+        attachments: overrides.attachments ?? [],
+        createdAt: overrides.createdAt ?? 1,
+        status: overrides.status ?? "queued",
+        modelId: overrides.modelId ?? "test-model",
+        modeId: overrides.modeId ?? "default",
+        optionsSnapshot:
+            overrides.optionsSnapshot ?? {
+                model: "test-model",
+                reasoning_effort: "medium",
+            },
+        optimisticMessageId: overrides.optimisticMessageId,
+    };
+}
 
 describe("chatStore", () => {
     beforeEach(() => {
@@ -634,7 +669,7 @@ describe("chatStore", () => {
             true,
         );
 
-        invokeMock.mockImplementation(async (command, args) => {
+        invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") return runtimePayload;
             if (command === "ai_list_sessions") return [];
             if (command === "ai_load_session") {
@@ -671,6 +706,537 @@ describe("chatStore", () => {
         expect(session.status).toBe("error");
         expect(session.messages[0]?.role).toBe("user");
         expect(session.messages.at(-1)?.kind).toBe("error");
+    });
+
+    it("normalizes oversized context errors into a start-new-chat message", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                throw new Error(
+                    'Internal error: {"codex_error_info":"other","message":"{\n  \\"type\\": \\"error\\",\n  \\"error\\": {\n    \\"type\\": \\"invalid_request_error\\",\n    \\"message\\": \\"[LargeStringParam] [input[2].content[0].text] [string_above_max_length] Invalid \'input[2].content[0].text\': string too long. Expected a string with maximum length 10485760, but got a string with length 14274669 instead.\\"\n  },\n  \\"status\\": 400\n}"}',
+                );
+            }
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                };
+            }
+            if (command === "ai_respond_user_input") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        useChatStore.getState().setComposerParts(createTextParts("hola"));
+        await useChatStore.getState().sendMessage();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+
+        expect(session.messages.at(-1)?.kind).toBe("error");
+        expect(session.messages.at(-1)?.content).toBe(
+            "This chat context grew too large to continue. Start a new chat and resend your last message.",
+        );
+    });
+
+    it("queues a new turn while the session is waiting for permission", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        useChatStore.setState({
+            sessionsById: {
+                ...useChatStore.getState().sessionsById,
+                [activeSessionId]: {
+                    ...useChatStore.getState().sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [
+                        {
+                            id: "file-1",
+                            type: "file",
+                            noteId: null,
+                            label: "Scope.md",
+                            path: null,
+                            filePath: "/tmp/Scope.md",
+                            mimeType: "text/markdown",
+                            status: "ready",
+                        },
+                    ],
+                },
+            },
+        });
+        useChatStore.getState().setComposerParts([
+            {
+                id: "text-1",
+                type: "text",
+                text: "Queue this next",
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const state = useChatStore.getState();
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toHaveLength(0);
+        expect(state.queuedMessagesBySessionId[activeSessionId]).toEqual([
+            expect.objectContaining({
+                content: "Queue this next",
+                status: "queued",
+                modelId: "test-model",
+                modeId: "default",
+                attachments: [
+                    expect.objectContaining({
+                        id: "file-1",
+                        label: "Scope.md",
+                    }),
+                ],
+            }),
+        ]);
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId[activeSessionId] ?? [],
+            ),
+        ).toBe("");
+        expect(state.sessionsById[activeSessionId]?.attachments).toEqual([]);
+    });
+
+    it("clears the composer after sending immediately", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        useChatStore.getState().setComposerParts(createTextParts("Send right away"));
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("");
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) =>
+                        message.role === "user" &&
+                        message.content === "Send right away",
+                ),
+        ).toBe(true);
+    });
+
+    it("drains the next queued message when the session returns to idle", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                };
+            }
+            if (command === "ai_respond_user_input") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        useChatStore.setState({
+            sessionsById: {
+                ...useChatStore.getState().sessionsById,
+                [activeSessionId]: {
+                    ...useChatStore.getState().sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        });
+        useChatStore.getState().setComposerParts([
+            {
+                id: "text-1",
+                type: "text",
+                text: "Send after this turn",
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        expect(useChatStore.getState().queuedMessagesBySessionId[activeSessionId])
+            .toHaveLength(1);
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-1",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Send after this turn",
+            ),
+        ).toBe(true);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) =>
+                        message.role === "user" &&
+                        message.content === "Send after this turn",
+                ),
+        ).toBe(true);
+    });
+
+    it("retries a failed queued message without duplicating the user turn", async () => {
+        let sendAttempts = 0;
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                sendAttempts += 1;
+                if (sendAttempts === 1) {
+                    throw new Error("Temporary send failure.");
+                }
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                };
+            }
+            if (command === "ai_respond_user_input") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        useChatStore.setState({
+            sessionsById: {
+                ...useChatStore.getState().sessionsById,
+                [activeSessionId]: {
+                    ...useChatStore.getState().sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        });
+        useChatStore.getState().setComposerParts([
+            {
+                id: "text-1",
+                type: "text",
+                text: "Retry me once",
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-1",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const failedItem =
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.[0];
+        expect(failedItem?.status).toBe("failed");
+
+        await useChatStore
+            .getState()
+            .retryQueuedMessage(activeSessionId, failedItem!.id);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(
+            session.messages.filter(
+                (message) =>
+                    message.role === "user" &&
+                    message.content === "Retry me once",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(sendAttempts).toBe(2);
+    });
+
+    it("prioritizes a queued message when sending it now", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        useChatStore.setState({
+            sessionsById: {
+                ...useChatStore.getState().sessionsById,
+                [activeSessionId]: {
+                    ...useChatStore.getState().sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        });
+
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-1", "First"));
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-2", "Second"));
+        await useChatStore
+            .getState()
+            .sendQueuedMessageNow(activeSessionId, "queued-2");
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.map(
+                (item) => item.id,
+            ),
+        ).toEqual(["queued-2", "queued-1"]);
+    });
+
+    it("moves a queued message into the composer and restores the previous draft on cancel", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const currentDraft = createTextParts("Current draft");
+        const currentAttachment: AIChatAttachment = {
+            id: "current-file",
+            type: "file",
+            noteId: null,
+            label: "Current.txt",
+            path: null,
+            filePath: "/tmp/current.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+        const queuedAttachment: AIChatAttachment = {
+            id: "queued-file",
+            type: "file",
+            noteId: null,
+            label: "Queued.txt",
+            path: null,
+            filePath: "/tmp/queued.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [activeSessionId]: currentDraft,
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    attachments: [currentAttachment],
+                },
+            },
+        }));
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedMessage("queued-1", "Queued draft", {
+                    attachments: [queuedAttachment],
+                }),
+            );
+
+        useChatStore
+            .getState()
+            .editQueuedMessage(activeSessionId, "queued-1");
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("Queued draft");
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toEqual([queuedAttachment]);
+
+        useChatStore.getState().cancelQueuedMessageEdit(activeSessionId);
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.map(
+                (item) => item.id,
+            ),
+        ).toEqual(["queued-1"]);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("Current draft");
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toEqual([currentAttachment]);
+    });
+
+    it("keeps an edited message ahead of later items when canceling after the queue changes", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-1", "First"));
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-2", "Second"));
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-3", "Third"));
+
+        useChatStore
+            .getState()
+            .editQueuedMessage(activeSessionId, "queued-2");
+        useChatStore.getState().removeQueuedMessage(activeSessionId, "queued-1");
+        useChatStore.getState().cancelQueuedMessageEdit(activeSessionId);
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.map(
+                (item) => item.id,
+            ),
+        ).toEqual(["queued-2", "queued-3"]);
+    });
+
+    it("requeues an edited message ahead of later items when saving from the composer", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const previousDraft = createTextParts("Side draft");
+        const previousAttachment: AIChatAttachment = {
+            id: "side-file",
+            type: "file",
+            noteId: null,
+            label: "Side.txt",
+            path: null,
+            filePath: "/tmp/side.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [activeSessionId]: previousDraft,
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [previousAttachment],
+                },
+            },
+        }));
+
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-1", "First"));
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-2", "Second"));
+        useChatStore
+            .getState()
+            .enqueueMessage(activeSessionId, createQueuedMessage("queued-3", "Third"));
+
+        useChatStore
+            .getState()
+            .editQueuedMessage(activeSessionId, "queued-2");
+        useChatStore.getState().removeQueuedMessage(activeSessionId, "queued-1");
+        useChatStore.getState().setComposerParts(createTextParts("Second updated"));
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.map(
+                (item) => item.id,
+            ),
+        ).toEqual(["queued-2", "queued-3"]);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.[0]
+                ?.content,
+        ).toBe("Second updated");
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("Side draft");
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toEqual([previousAttachment]);
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[activeSessionId],
+        ).toBeUndefined();
     });
 
     it("returns the session to idle after a completed tool event with no active work left", async () => {
@@ -712,6 +1278,77 @@ describe("chatStore", () => {
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.status,
         ).toBe("idle");
+    });
+
+    it("upserts tool diffs into a single tool message and preserves its timestamp", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-1",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "in_progress",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const firstMessage =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages[0];
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-1",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const toolMessages = session.messages.filter(
+            (message) => message.kind === "tool",
+        );
+
+        expect(toolMessages).toHaveLength(1);
+        expect(toolMessages[0]).toMatchObject({
+            id: "tool:tool-1",
+            kind: "tool",
+            content: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/src/watcher.rs",
+            },
+        });
+        expect(toolMessages[0].timestamp).toBe(firstMessage?.timestamp);
     });
 
     it("upserts status events as system messages and updates them by event id", async () => {
@@ -992,6 +1629,141 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
             runtimeId: "codex-acp",
             vaultPath: "/vault",
+        });
+    });
+
+    it("restores persisted tool diffs from session history", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [
+                            {
+                                id: "tool-1",
+                                role: "assistant",
+                                kind: "tool",
+                                content: "Updated watcher.rs",
+                                timestamp: 20,
+                                title: "Edit watcher",
+                                meta: {
+                                    tool: "edit",
+                                    status: "completed",
+                                    target: "/vault/src/watcher.rs",
+                                },
+                                diffs: [
+                                    {
+                                        path: "/vault/src/watcher.rs",
+                                        kind: "update",
+                                        old_text: "old line",
+                                        new_text: "new line",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ];
+            }
+            if (command === "ai_create_session") return sessionPayload;
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const restored = useChatStore.getState().sessionsById["codex-session-1"];
+        expect(restored?.messages[0]).toMatchObject({
+            kind: "tool",
+            content: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+    });
+
+    it("persists tool diffs when saving session history", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.setState({
+            sessionsById: {
+                ...useChatStore.getState().sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "tool:tool-1",
+                            role: "assistant",
+                            kind: "tool",
+                            title: "Edit watcher",
+                            content: "Updated watcher.rs",
+                            timestamp: 10,
+                            diffs: [
+                                {
+                                    path: "/vault/src/watcher.rs",
+                                    kind: "update",
+                                    old_text: "old line",
+                                    new_text: "new line",
+                                },
+                            ],
+                            meta: {
+                                tool: "edit",
+                                status: "completed",
+                                target: "/vault/src/watcher.rs",
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "Trigger persistence",
+        });
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                messages: expect.arrayContaining([
+                    expect.objectContaining({
+                        kind: "tool",
+                        diffs: [
+                            {
+                                path: "/vault/src/watcher.rs",
+                                kind: "update",
+                                old_text: "old line",
+                                new_text: "new line",
+                            },
+                        ],
+                    }),
+                ]),
+            }),
         });
     });
 
@@ -1350,32 +2122,4 @@ describe("chatStore", () => {
         ).toEqual(["low", "medium", "high", "xhigh"]);
     });
 
-    it("does not send a new turn while the session is waiting for permission", async () => {
-        await useChatStore.getState().initialize();
-
-        const activeSessionId = useChatStore.getState().activeSessionId!;
-        useChatStore.setState({
-            sessionsById: {
-                ...useChatStore.getState().sessionsById,
-                [activeSessionId]: {
-                    ...useChatStore.getState().sessionsById[activeSessionId]!,
-                    status: "waiting_permission",
-                },
-            },
-        });
-        useChatStore.getState().setComposerParts([
-            {
-                id: "text-1",
-                type: "text",
-                text: "Should not send",
-            },
-        ]);
-
-        await useChatStore.getState().sendMessage();
-
-        expect(invokeMock).not.toHaveBeenCalledWith(
-            "ai_send_message",
-            expect.anything(),
-        );
-    });
 });

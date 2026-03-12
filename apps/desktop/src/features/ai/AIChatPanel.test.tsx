@@ -458,7 +458,232 @@ describe("AIChatPanel tabs lifecycle", () => {
             expect(textbox.textContent).toContain("Draft B");
             expect(screen.queryByText("Doc A")).toBeNull();
             expect(screen.getByText("Doc B")).toBeTruthy();
-            expect(screen.getByLabelText("Send")).toBeDisabled();
+            expect(screen.getByLabelText("Send")).not.toBeDisabled();
+        });
+    });
+
+    it("renders the session queue and lets the user edit, clear or send queued items now", async () => {
+        const session = createSession("session-a", "Queued conversation", "streaming");
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+            queuedMessagesBySessionId: {
+                [session.sessionId]: [
+                    {
+                        id: "queued-1",
+                        content: "First queued item",
+                        prompt: "First queued item",
+                        composerParts: createDraft("First queued item"),
+                        attachments: [],
+                        createdAt: 1,
+                        status: "queued",
+                        modelId: "test-model",
+                        modeId: "default",
+                        optionsSnapshot: {},
+                    },
+                    {
+                        id: "queued-2",
+                        content: "Failed queued item",
+                        prompt: "Failed queued item",
+                        composerParts: createDraft("Failed queued item"),
+                        attachments: [],
+                        createdAt: 2,
+                        status: "failed",
+                        modelId: "test-model",
+                        modeId: "default",
+                        optionsSnapshot: {},
+                    },
+                ],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: session.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(screen.getByText("2 Queued Messages")).toBeTruthy();
+        expect(screen.getAllByText("First queued item").length).toBeGreaterThan(
+            0,
+        );
+        expect(
+            screen.getAllByRole("button", { name: /Edit / }).length,
+        ).toBeGreaterThan(0);
+        expect(
+            screen.getAllByRole("button", { name: "Send Now" }).length,
+        ).toBeGreaterThan(0);
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Edit First queued item" }),
+        );
+
+        await waitFor(() => {
+            expect(
+                screen.getByText("Editing queued message"),
+            ).toBeTruthy();
+            expect(
+                screen.getByRole("textbox", { name: "Message VaultAI" })
+                    .textContent,
+            ).toContain("First queued item");
+            expect(
+                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+            ).toHaveLength(1);
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Cancel Edit" }));
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+            ).toHaveLength(2);
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Clear All" }));
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+            ).toBeUndefined();
+        });
+    });
+
+    it("prioritizes a queued item when clicking send now", async () => {
+        const session = createSession("session-a", "Queued conversation", "streaming");
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+            queuedMessagesBySessionId: {
+                [session.sessionId]: [
+                    {
+                        id: "queued-1",
+                        content: "First queued item",
+                        prompt: "First queued item",
+                        composerParts: createDraft("First queued item"),
+                        attachments: [],
+                        createdAt: 1,
+                        status: "queued",
+                        modelId: "test-model",
+                        modeId: "default",
+                        optionsSnapshot: {},
+                    },
+                    {
+                        id: "queued-2",
+                        content: "Second queued item",
+                        prompt: "Second queued item",
+                        composerParts: createDraft("Second queued item"),
+                        attachments: [],
+                        createdAt: 2,
+                        status: "queued",
+                        modelId: "test-model",
+                        modeId: "default",
+                        optionsSnapshot: {},
+                    },
+                ],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: session.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        fireEvent.click(screen.getAllByRole("button", { name: "Send Now" })[1]);
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().queuedMessagesBySessionId[session.sessionId]?.map(
+                    (item) => item.id,
+                ),
+            ).toEqual(["queued-2", "queued-1"]);
+        });
+    });
+
+    it("queues a new message from the composer while the agent is streaming", async () => {
+        const session = createSession("session-a", "Queued conversation", "streaming");
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: session.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        const textbox = screen.getByRole("textbox", {
+            name: "Message VaultAI",
+        });
+        textbox.textContent = "Queued while streaming";
+        fireEvent.input(textbox);
+
+        fireEvent.click(screen.getByRole("button", { name: "Queue" }));
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().queuedMessagesBySessionId[session.sessionId],
+            ).toHaveLength(1);
+            expect(
+                useChatStore.getState().queuedMessagesBySessionId[
+                    session.sessionId
+                ]?.[0]?.content,
+            ).toBe("Queued while streaming");
         });
     });
 

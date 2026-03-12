@@ -26,6 +26,7 @@
         "@tauri-apps/plugin-dialog": "^2.6.0",
         "@tauri-apps/plugin-opener": "^2.5.3",
         "katex": "^0.16.38",
+        "pdfjs-dist": "5.5.207",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
         "tailwindcss": "^4.2.1",

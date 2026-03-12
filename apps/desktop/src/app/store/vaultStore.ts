@@ -10,6 +10,17 @@ export interface NoteDto {
     created_at: number;
 }
 
+export interface VaultEntryDto {
+    id: string;
+    path: string;
+    title: string;
+    kind: "note" | "pdf";
+    modified_at: number;
+    created_at: number;
+    size: number;
+    mime_type: string | null;
+}
+
 export interface RecentVault {
     path: string;
     name: string;
@@ -223,6 +234,7 @@ function updateNotesWithChange(notes: NoteDto[], change: VaultNoteChange) {
 interface VaultStore {
     vaultPath: string | null;
     notes: NoteDto[];
+    entries: VaultEntryDto[];
     vaultRevision: number;
     contentRevision: number;
     structureRevision: number;
@@ -250,6 +262,7 @@ interface VaultStore {
 export const useVaultStore = create<VaultStore>((set, get) => ({
     vaultPath: null,
     notes: [],
+    entries: [],
     vaultRevision: 0,
     contentRevision: 0,
     structureRevision: 0,
@@ -293,9 +306,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 });
 
                 if (openState.stage === "ready") {
-                    const notes = await invoke<NoteDto[]>("list_notes", {
-                        vaultPath: path,
-                    });
+                    const [notes, entries] = await Promise.all([
+                        invoke<NoteDto[]>("list_notes", { vaultPath: path }),
+                        invoke<VaultEntryDto[]>("list_vault_entries", { vaultPath: path }),
+                    ]);
                     if (sequence !== openVaultSequence) return;
 
                     localStorage.setItem(LAST_VAULT_KEY, path);
@@ -304,6 +318,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                     set((state) => ({
                         vaultPath: path,
                         notes,
+                        entries,
                         isLoading: false,
                         error: null,
                         vaultOpenState: openState,

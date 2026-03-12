@@ -21,11 +21,11 @@ export function setEditorTabs(
     tabs: TabInput[],
     activeTabId: string | null = tabs[0]?.id ?? null,
 ) {
-    const fullTabs = tabs.map((t) => ({
-        ...t,
-        history: t.history ?? [],
-        historyIndex: t.historyIndex ?? 0,
-    }));
+    const fullTabs = tabs.map((t) =>
+        t.kind === "pdf"
+            ? t
+            : { ...t, history: t.history ?? [], historyIndex: t.historyIndex ?? 0 },
+    );
     useEditorStore.setState({ tabs: fullTabs, activeTabId });
 }
 

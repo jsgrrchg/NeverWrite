@@ -32,7 +32,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { findWikilinks } from "../../app/utils/wikilinks";
-import { useEditorStore, type Tab } from "../../app/store/editorStore";
+import { useEditorStore, type NoteTab, type Tab } from "../../app/store/editorStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -131,7 +131,7 @@ export function Editor({
     );
     const restoreScrollFrameRef = useRef<number | null>(null);
     const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
-    const activeTabRef = useRef<Tab | null>(null);
+    const activeTabRef = useRef<NoteTab | null>(null);
     const wikilinkSuggesterArmedRef = useRef(false);
     const wikilinkSuggesterRef = useRef<WikilinkSuggesterState | null>(null);
     const wikilinkSuggestionRequestIdRef = useRef(0);
@@ -212,21 +212,19 @@ export function Editor({
     const activeTabInfo = useEditorStore(
         useShallow((s) => {
             const tab = s.tabs.find((t) => t.id === s.activeTabId) ?? null;
-            return tab
-                ? {
-                      id: tab.id,
-                      title: tab.title,
-                      noteId: tab.noteId,
-                  }
-                : null;
+            if (!tab || tab.kind === "pdf") return null;
+            return {
+                id: tab.id,
+                title: tab.title,
+                noteId: tab.noteId,
+            };
         }),
     );
-    const activeTab =
-        activeTabId === null
-            ? null
-            : (useEditorStore
-                  .getState()
-                  .tabs.find((t) => t.id === activeTabId) ?? null);
+    const activeTab = ((): NoteTab | null => {
+        if (activeTabId === null) return null;
+        const t = useEditorStore.getState().tabs.find((t) => t.id === activeTabId);
+        return t && t.kind !== "pdf" ? t : null;
+    })();
     activeTabRef.current = activeTab;
 
     const getCurrentBody = useCallback(() => {
@@ -291,7 +289,7 @@ export function Editor({
 
     const saveNow = useCallback(
         async (
-            tab: Pick<Tab, "id" | "noteId" | "title" | "content">,
+            tab: Pick<NoteTab, "id" | "noteId" | "title" | "content">,
             content: string,
         ) => {
             if (saveTimerRef.current) {
@@ -1406,6 +1404,7 @@ export function Editor({
             const tab = state.tabs.find((t) => t.id === tabId);
             const prevTab = prev.tabs.find((t) => t.id === tabId);
             if (!tab || !prevTab) return;
+            if (tab.kind === "pdf" || prevTab.kind === "pdf") return;
 
             // Skip when noteId changed — the tab-switch useEffect handles navigation
             if (tab.noteId !== prevTab.noteId) return;
@@ -1553,19 +1552,17 @@ export function Editor({
                 e.preventDefault();
                 if (activeTabId) {
                     const tab = tabs.find((t) => t.id === activeTabId);
-                    if (tab) {
+                    if (tab && tab.kind !== "pdf") {
                         const content =
                             viewRef.current?.state.doc.toString() ??
                             tab.content;
                         saveNow(tab, content);
-                    }
-                    // Clean up saved EditorState for all notes in this tab's history
-                    if (tab) {
+                        // Clean up saved EditorState for all notes in this tab's history
                         for (const entry of tab.history ?? []) {
                             tabStatesRef.current.delete(entry.noteId);
                         }
+                        tabStatesRef.current.delete(tab.noteId);
                     }
-                    tabStatesRef.current.delete(tab?.noteId ?? activeTabId);
                     closeTab(activeTabId);
                 }
             }
@@ -1573,7 +1570,7 @@ export function Editor({
             // Cmd+Shift+S / Ctrl+Shift+S: save active tab immediately
             if ((e.metaKey || e.ctrlKey) && e.key === "s" && e.shiftKey) {
                 const tab = tabs.find((item) => item.id === activeTabId);
-                if (!tab) return;
+                if (!tab || tab.kind === "pdf") return;
                 e.preventDefault();
                 const content =
                     viewRef.current?.state.doc.toString() ?? tab.content;

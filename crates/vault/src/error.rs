@@ -17,6 +17,9 @@ pub enum VaultError {
 
     #[error("Error del watcher: {0}")]
     Watcher(#[from] notify::Error),
+
+    #[error("Error de extracción PDF: {0}")]
+    PdfExtraction(String),
 }
 
 // Permite convertir VaultError a String para Tauri commands

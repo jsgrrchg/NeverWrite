@@ -16,6 +16,7 @@ import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { Editor } from "./features/editor/Editor";
 import { NewTabView } from "./features/editor/NewTabView";
 import { SearchView } from "./features/search/SearchView";
+import { PdfTabView } from "./features/pdf/PdfTabView";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
 import { SettingsPanel } from "./features/settings";
@@ -39,7 +40,8 @@ import {
 } from "./app/windowSession";
 import {
     useEditorStore,
-    type Tab,
+    type TabInput,
+    isNoteTab,
     readPersistedSession,
     markSessionReady,
 } from "./app/store/editorStore";
@@ -692,13 +694,23 @@ function useDynamicScrollbars() {
     }, []);
 }
 
+type EditorPanelView = "pdf" | "new" | "search" | "editor";
+
 function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
-    const activeNoteId = useEditorStore(
-        (s) => s.tabs.find((t) => t.id === s.activeTabId)?.noteId ?? null,
-    );
-    if (activeNoteId === "") return <NewTabView />;
-    if (activeNoteId === "__search__") return <SearchView />;
-    return <Editor emptyStateMessage={emptyStateMessage} />;
+    const view = useEditorStore((s): EditorPanelView => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        if (!tab) return "editor";
+        if (tab.kind === "pdf") return "pdf";
+        if (tab.noteId === "") return "new";
+        if (tab.noteId === "__search__") return "search";
+        return "editor";
+    });
+    switch (view) {
+        case "pdf": return <PdfTabView />;
+        case "new": return <NewTabView />;
+        case "search": return <SearchView />;
+        default: return <Editor emptyStateMessage={emptyStateMessage} />;
+    }
 }
 
 export default function App() {
@@ -743,10 +755,10 @@ export default function App() {
     const restoreSessionForCurrentVault = useCallback(async () => {
         const vaultPath = useVaultStore.getState().vaultPath;
         const session = readPersistedSession(vaultPath);
-        if (!session?.noteIds.length) return;
+        if (!session?.noteIds.length && !session?.pdfTabs?.length) return;
 
-        const restoredTabs: Tab[] = [];
-        for (const entry of session.noteIds) {
+        const restoredTabs: TabInput[] = [];
+        for (const entry of session?.noteIds ?? []) {
             try {
                 const detail = await vaultInvoke<{ content: string }>(
                     "read_note",
@@ -785,11 +797,34 @@ export default function App() {
             }
         }
 
+        // Restore PDF tabs
+        for (const pdfEntry of session?.pdfTabs ?? []) {
+            restoredTabs.push({
+                id: crypto.randomUUID(),
+                kind: "pdf",
+                entryId: pdfEntry.entryId,
+                title: pdfEntry.title,
+                path: pdfEntry.path,
+                page: 1,
+                zoom: 1,
+                viewMode: pdfEntry.viewMode ?? "single",
+            });
+        }
+
         if (!restoredTabs.length) return;
 
-        const activeTab = restoredTabs.find(
-            (tab) => tab.noteId === session.activeNoteId,
-        );
+        // Find active tab: check PDF first, then note
+        let activeTab: TabInput | undefined;
+        if (session?.activePdfEntryId) {
+            activeTab = restoredTabs.find(
+                (tab) => tab.kind === "pdf" && tab.entryId === session.activePdfEntryId,
+            );
+        }
+        if (!activeTab && session?.activeNoteId) {
+            activeTab = restoredTabs.find(
+                (tab) => isNoteTab(tab) && tab.noteId === session.activeNoteId,
+            );
+        }
         hydrateTabs(restoredTabs, activeTab?.id ?? null);
     }, [hydrateTabs]);
 
@@ -885,7 +920,7 @@ export default function App() {
             markSessionReady();
             setWindowSessionReady(true);
         })();
-    }, [hydrateTabs, restoreSessionForCurrentVault, restoreVault, windowMode]);
+    }, [hydrateTabs, restoreSessionForCurrentVault, restoreVault, vaultParam, windowMode]);
 
     useEffect(() => {
         if (windowMode !== "main") return;

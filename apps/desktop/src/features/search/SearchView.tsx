@@ -16,12 +16,14 @@ interface ContentMatchDto {
     line_content: string;
     match_start: number;
     match_end: number;
+    page?: number;
 }
 
 interface AdvancedSearchResultDto {
     id: string;
     path: string;
     title: string;
+    kind?: string;
     score: number;
     tags: string[];
     modified_at: number;
@@ -66,6 +68,7 @@ export function SearchView() {
     const searchRequestIdRef = useRef(0);
 
     const openNote = useEditorStore((s) => s.openNote);
+    const openPdf = useEditorStore((s) => s.openPdf);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
     const parsed = useMemo(() => parseQuery(query), [query]);
@@ -131,24 +134,32 @@ export function SearchView() {
         setQuery(next);
     };
 
-    const handleOpen = async (id: string, title: string) => {
+    const handleOpen = async (result: AdvancedSearchResultDto) => {
+        if (result.kind === "pdf") {
+            openPdf(result.id, result.title, result.path);
+            return;
+        }
         const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find((t) => t.noteId === id);
+        const existing = tabs.find((t) => t.noteId === result.id);
         if (existing) {
-            openNote(id, title, existing.content);
+            openNote(result.id, result.title, existing.content);
             return;
         }
         try {
             const detail = await vaultInvoke<{ content: string }>("read_note", {
-                noteId: id,
+                noteId: result.id,
             });
-            openNote(id, title, detail.content);
+            openNote(result.id, result.title, detail.content);
         } catch (e) {
             console.error("Error opening note:", e);
         }
     };
 
     const handleOpenInNewTab = async (result: AdvancedSearchResultDto) => {
+        if (result.kind === "pdf") {
+            openPdf(result.id, result.title, result.path);
+            return;
+        }
         try {
             const tabs = useEditorStore.getState().tabs;
             const existing = tabs.find((t) => t.noteId === result.id);
@@ -546,11 +557,28 @@ export function SearchView() {
                                 >
                                     <button
                                         onClick={() =>
-                                            void handleOpen(r.id, r.title)
+                                            void handleOpen(r)
                                         }
                                         className="flex-1 text-left px-3 py-2 min-w-0"
                                     >
                                         <div className="flex items-center gap-2">
+                                            {r.kind === "pdf" && (
+                                                <svg
+                                                    width="14"
+                                                    height="14"
+                                                    viewBox="0 0 16 16"
+                                                    fill="none"
+                                                    stroke="var(--accent)"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    className="shrink-0"
+                                                >
+                                                    <path d="M4 1h6l4 4v9a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1z" />
+                                                    <path d="M10 1v4h4" />
+                                                    <text x="4.5" y="12.5" fontSize="5" fill="var(--accent)" stroke="none" fontWeight="bold">PDF</text>
+                                                </svg>
+                                            )}
                                             <span
                                                 className="text-[13px] font-medium truncate"
                                                 style={{
@@ -668,7 +696,7 @@ export function SearchView() {
                                                         textAlign: "right",
                                                     }}
                                                 >
-                                                    L{m.line_number}
+                                                    {m.page ? `P${m.page}:` : ""}L{m.line_number}
                                                 </span>
                                                 <span
                                                     className="text-[11px] break-all"

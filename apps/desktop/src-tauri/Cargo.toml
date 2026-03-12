@@ -31,6 +31,7 @@ vault-ai-whisper = { path = "../../../crates/whisper" }
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-opener = "2"
 notify = "7"
+pdf-extract = "0.10"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

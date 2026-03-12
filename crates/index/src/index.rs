@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::thread;
 
-use vault_ai_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata};
+use vault_ai_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata, PdfDocument, PdfMetadata};
 
 const PROGRESS_REPORT_EVERY: usize = 256;
 const MAX_SUGGESTION_PREFIX_CHARS: usize = 64;
@@ -38,6 +38,10 @@ pub struct VaultIndex {
     pub search_index: HashMap<NoteId, SearchEntry>,
     pub suggestion_prefixes: HashMap<String, Vec<NoteId>>,
     pub suggestion_order: Vec<NoteId>,
+    #[serde(default)]
+    pub pdf_metadata: HashMap<NoteId, PdfMetadata>,
+    #[serde(default)]
+    pub pdf_search_index: HashMap<NoteId, SearchEntry>,
 }
 
 impl VaultIndex {
@@ -68,6 +72,8 @@ impl VaultIndex {
             search_index: HashMap::with_capacity(note_count),
             suggestion_prefixes: HashMap::new(),
             suggestion_order: Vec::with_capacity(note_count),
+            pdf_metadata: HashMap::new(),
+            pdf_search_index: HashMap::new(),
         };
 
         let total_notes = prepared_notes.len();
@@ -129,6 +135,45 @@ impl VaultIndex {
         self.suggestion_order.retain(|id| id != note_id);
         self.metadata.remove(note_id);
         self.notes.remove(note_id);
+    }
+
+    pub fn register_pdf(
+        &mut self,
+        doc: &PdfDocument,
+        modified_at: u64,
+        created_at: u64,
+        size: u64,
+    ) {
+        let id = doc.id.clone();
+        self.pdf_search_index.insert(
+            id.clone(),
+            SearchEntry {
+                title_lower: doc.title.to_lowercase(),
+                path_lower: id.0.to_lowercase(),
+            },
+        );
+        self.pdf_metadata.insert(
+            id,
+            PdfMetadata {
+                id: doc.id.clone(),
+                path: doc.path.clone(),
+                title: doc.title.clone(),
+                page_count: doc.page_count,
+                modified_at,
+                created_at,
+                size,
+            },
+        );
+    }
+
+    pub fn remove_pdf(&mut self, pdf_id: &NoteId) {
+        self.pdf_metadata.remove(pdf_id);
+        self.pdf_search_index.remove(pdf_id);
+    }
+
+    pub fn reindex_pdf(&mut self, doc: &PdfDocument, modified_at: u64, created_at: u64, size: u64) {
+        self.remove_pdf(&doc.id);
+        self.register_pdf(doc, modified_at, created_at, size);
     }
 
     pub fn get_note_metadata(&self, note_id: &NoteId) -> Option<&NoteMetadata> {

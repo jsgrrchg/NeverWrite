@@ -17,7 +17,7 @@ use vault_ai_index::{IndexBuildPhase, VaultIndex};
 use vault_ai_types::{
     AdvancedSearchParams, AdvancedSearchResultDto, BacklinkDto, NoteDetailDto, NoteDocument,
     NoteDto, NoteId, NoteMetadata, OutlineHeadingDto, ResolvedLinkDto, ResolvedWikilinkDto,
-    SearchResultDto, VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto,
+    SearchResultDto, VaultEntryDto, VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto,
     WikilinkSuggestionDto,
 };
 use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
@@ -483,6 +483,98 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
         dbg_log!("{event_label} mutex wait: {lock_wait:.2?}");
 
         match event {
+            VaultEvent::FileCreated(ref path) | VaultEvent::FileModified(ref path)
+                if path.extension().is_some_and(|ext| ext == "pdf") =>
+            {
+                let pdf_id = vault.path_to_entry_id(path);
+                match vault_ai_vault::pdf::extract_pdf_text(&vault.root, path, &pdf_id) {
+                    Ok(doc) => {
+                        let meta = std::fs::metadata(path).ok();
+                        let modified_at = meta
+                            .as_ref()
+                            .and_then(|m| m.modified().ok())
+                            .map(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs()
+                            })
+                            .unwrap_or(0);
+                        let created_at = meta
+                            .as_ref()
+                            .and_then(|m| m.created().ok())
+                            .map(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs()
+                            })
+                            .unwrap_or(modified_at);
+                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        index.reindex_pdf(&doc, modified_at, created_at, size);
+                    }
+                    Err(e) => {
+                        eprintln!("[pdf-watcher] Failed to extract {}: {e}", path.display());
+                    }
+                }
+                // Emit a vault entry change so the frontend can refresh its entries list
+                Some(VaultNoteChangeDto {
+                    vault_path: vault_path.to_string(),
+                    kind: "upsert".to_string(),
+                    note: None,
+                    note_id: None,
+                })
+            }
+            VaultEvent::FileDeleted(ref path)
+                if path.extension().is_some_and(|ext| ext == "pdf") =>
+            {
+                let pdf_id = vault.path_to_entry_id(path);
+                index.remove_pdf(&NoteId(pdf_id));
+                Some(VaultNoteChangeDto {
+                    vault_path: vault_path.to_string(),
+                    kind: "delete".to_string(),
+                    note: None,
+                    note_id: None,
+                })
+            }
+            VaultEvent::FileRenamed { ref from, ref to }
+                if from.extension().is_some_and(|ext| ext == "pdf")
+                    || to.extension().is_some_and(|ext| ext == "pdf") =>
+            {
+                let old_id = vault.path_to_entry_id(from);
+                index.remove_pdf(&NoteId(old_id));
+                if to.extension().is_some_and(|ext| ext == "pdf") {
+                    let new_id = vault.path_to_entry_id(to);
+                    if let Ok(doc) = vault_ai_vault::pdf::extract_pdf_text(&vault.root, to, &new_id)
+                    {
+                        let meta = std::fs::metadata(to).ok();
+                        let modified_at = meta
+                            .as_ref()
+                            .and_then(|m| m.modified().ok())
+                            .map(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs()
+                            })
+                            .unwrap_or(0);
+                        let created_at = meta
+                            .as_ref()
+                            .and_then(|m| m.created().ok())
+                            .map(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs()
+                            })
+                            .unwrap_or(modified_at);
+                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        index.register_pdf(&doc, modified_at, created_at, size);
+                    }
+                }
+                Some(VaultNoteChangeDto {
+                    vault_path: vault_path.to_string(),
+                    kind: "upsert".to_string(),
+                    note: None,
+                    note_id: None,
+                })
+            }
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
                 match vault.read_note_from_path(&path) {
                     Ok(note) => {
@@ -589,7 +681,7 @@ fn run_open_vault_job(
 
     let root_path = vault.root.to_string_lossy().to_string();
 
-    let (index, snapshot_used) = match snapshot {
+    let (mut index, snapshot_used) = match snapshot {
         Some(loaded)
             if loaded.metadata.version == SNAPSHOT_SCHEMA_VERSION
                 && loaded.metadata.root_path == root_path
@@ -742,6 +834,82 @@ fn run_open_vault_job(
             (index, false)
         }
     };
+
+    // PDF extraction — discover PDFs and extract only those missing from the index
+    let pdf_files = vault.discover_pdf_files().unwrap_or_default();
+    if !pdf_files.is_empty() {
+        let missing_pdfs: Vec<_> = pdf_files
+            .iter()
+            .filter(|f| {
+                let id = vault_ai_types::NoteId(f.id.clone());
+                match index.pdf_metadata.get(&id) {
+                    Some(existing) => {
+                        existing.modified_at != f.modified_at || existing.size != f.size
+                    }
+                    None => true,
+                }
+            })
+            .collect();
+
+        if !missing_pdfs.is_empty() {
+            update_open_state_for_job(app, vault_path, job_id, |open_state| {
+                open_state.update_stage(
+                    "extracting_pdfs",
+                    "Extracting PDFs...",
+                    0,
+                    missing_pdfs.len(),
+                );
+            })?;
+
+            let mut pdf_failures = 0usize;
+            for (i, pdf_file) in missing_pdfs.iter().enumerate() {
+                ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
+                match vault_ai_vault::pdf::extract_pdf_text(
+                    &vault.root,
+                    &pdf_file.path,
+                    &pdf_file.id,
+                ) {
+                    Ok(doc) => {
+                        index.register_pdf(
+                            &doc,
+                            pdf_file.modified_at,
+                            pdf_file.created_at,
+                            pdf_file.size,
+                        );
+                    }
+                    Err(e) => {
+                        pdf_failures += 1;
+                        eprintln!("[pdf] Failed to extract {}: {e}", pdf_file.id);
+                    }
+                }
+                let msg = if pdf_failures > 0 {
+                    format!("Extracting PDFs... ({} failed)", pdf_failures)
+                } else {
+                    "Extracting PDFs...".to_string()
+                };
+                let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
+                    open_state.update_stage("extracting_pdfs", &msg, i + 1, missing_pdfs.len());
+                });
+            }
+        }
+
+        // Remove PDFs that no longer exist on disk
+        let current_pdf_ids: std::collections::HashSet<String> =
+            pdf_files.iter().map(|f| f.id.clone()).collect();
+        let stale_pdf_ids: Vec<vault_ai_types::NoteId> = index
+            .pdf_metadata
+            .keys()
+            .filter(|id| !current_pdf_ids.contains(&id.0))
+            .cloned()
+            .collect();
+        for id in stale_pdf_ids {
+            index.remove_pdf(&id);
+        }
+    } else {
+        // No PDFs on disk — clear any stale entries from snapshot
+        index.pdf_metadata.clear();
+        index.pdf_search_index.clear();
+    }
 
     update_open_state_for_job(app, vault_path, job_id, |open_state| {
         open_state.metrics.index_ms = metrics.index_ms;
@@ -954,6 +1122,20 @@ fn list_notes(
     let mut notes: Vec<NoteDto> = index.metadata.values().map(note_to_dto).collect();
     notes.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(notes)
+}
+
+#[tauri::command]
+fn list_vault_entries(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<Vec<VaultEntryDto>, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    vault.discover_vault_entries().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1404,6 +1586,7 @@ pub fn run() {
             get_vault_open_state,
             cancel_open_vault,
             list_notes,
+            list_vault_entries,
             read_note,
             save_note,
             create_note,

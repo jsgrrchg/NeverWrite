@@ -88,6 +88,28 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+// --- PDF ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfDocument {
+    pub id: NoteId,
+    pub path: NotePath,
+    pub title: String,
+    pub page_count: usize,
+    pub extracted_pages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfMetadata {
+    pub id: NoteId,
+    pub path: NotePath,
+    pub title: String,
+    pub page_count: usize,
+    pub modified_at: u64,
+    pub created_at: u64,
+    pub size: u64,
+}
+
 // --- Providers ---
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
