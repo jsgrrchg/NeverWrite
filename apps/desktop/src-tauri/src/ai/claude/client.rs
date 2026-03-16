@@ -185,7 +185,7 @@ struct ToolState {
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
     session_cwds: Arc<Mutex<HashMap<String, PathBuf>>>,
-    write_diffs: Arc<Mutex<HashMap<String, AiFileDiffPayload>>>,
+    write_diffs: Arc<Mutex<HashMap<String, Vec<AiFileDiffPayload>>>>,
 }
 
 impl ToolState {
@@ -205,6 +205,7 @@ impl ToolState {
             &tool_call.tool_call_id.0,
             tool_call.raw_input.as_ref(),
         );
+        self.cache_content_diffs(session_id, &tool_call);
         self.record_terminal_meta(
             session_id,
             &tool_call.tool_call_id.0,
@@ -290,8 +291,10 @@ impl ToolState {
         let actual = collect_tool_call_diffs(tool_call, cwd.as_deref());
 
         if tool_call.status != ToolCallStatus::Failed {
-            if let Some(diff) = self.write_diff(session_id, &tool_call.tool_call_id.0) {
-                return vec![diff];
+            if let Some(cached) = self.cached_diffs(session_id, &tool_call.tool_call_id.0) {
+                if !cached.is_empty() {
+                    return cached;
+                }
             }
         }
 
@@ -305,7 +308,7 @@ impl ToolState {
             .and_then(|guard| guard.get(session_id).cloned())
     }
 
-    fn write_diff(&self, session_id: &str, tool_call_id: &str) -> Option<AiFileDiffPayload> {
+    fn cached_diffs(&self, session_id: &str, tool_call_id: &str) -> Option<Vec<AiFileDiffPayload>> {
         let key = format!("{session_id}::{tool_call_id}");
         self.write_diffs
             .lock()
@@ -323,12 +326,26 @@ impl ToolState {
             return;
         };
         let cwd = self.session_cwd(session_id);
-        let Some(diff) = reconstruct_write_diff_payload(raw_input, cwd.as_deref()) else {
+        let diff = reconstruct_write_diff_payload(raw_input, cwd.as_deref())
+            .or_else(|| reconstruct_edit_diff_payload(raw_input, cwd.as_deref()));
+        let Some(diff) = diff else {
             return;
         };
         let key = format!("{session_id}::{tool_call_id}");
         if let Ok(mut guard) = self.write_diffs.lock() {
-            guard.insert(key, diff);
+            guard.insert(key, vec![diff]);
+        }
+    }
+
+    fn cache_content_diffs(&self, session_id: &str, tool_call: &ToolCall) {
+        let cwd = self.session_cwd(session_id);
+        let diffs = collect_tool_call_diffs(tool_call, cwd.as_deref());
+        if diffs.is_empty() {
+            return;
+        }
+        let key = format!("{session_id}::{}", tool_call.tool_call_id.0);
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            guard.entry(key).or_insert(diffs);
         }
     }
 }
@@ -343,6 +360,13 @@ struct TerminalExitMeta {
 struct WriteToolInput {
     file_path: String,
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditToolInput {
+    file_path: String,
+    old_string: String,
+    new_string: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1854,6 +1878,10 @@ fn write_tool_input(raw_input: Option<&serde_json::Value>) -> Option<WriteToolIn
     serde_json::from_value(raw_input?.clone()).ok()
 }
 
+fn edit_tool_input(raw_input: Option<&serde_json::Value>) -> Option<EditToolInput> {
+    serde_json::from_value(raw_input?.clone()).ok()
+}
+
 fn is_edit_tool_input(raw_input: Option<&serde_json::Value>) -> bool {
     let Some(raw_input) = raw_input else {
         return false;
@@ -1953,6 +1981,39 @@ fn reconstruct_write_diff_payload(
     };
 
     Some(diff)
+}
+
+fn reconstruct_edit_diff_payload(
+    raw_input: &serde_json::Value,
+    cwd: Option<&Path>,
+) -> Option<AiFileDiffPayload> {
+    let input = edit_tool_input(Some(raw_input))?;
+    if input.file_path.trim().is_empty() {
+        return None;
+    }
+
+    let resolved_path = resolve_tool_path(&input.file_path, cwd);
+    let display_path = to_display_path(&resolved_path, cwd);
+
+    // Read the current file from disk (post-edit, already written by Claude)
+    let current_text = match read_existing_text_snapshot(&resolved_path) {
+        ExistingTextSnapshot::Text(text) => text,
+        _ => return None,
+    };
+
+    // Reconstruct old_text by reversing the edit
+    let old_text = current_text.replacen(&input.new_string, &input.old_string, 1);
+
+    Some(AiFileDiffPayload {
+        path: display_path,
+        kind: "update".to_string(),
+        previous_path: None,
+        reversible: true,
+        is_text: true,
+        old_text: Some(old_text),
+        new_text: Some(current_text),
+        hunks: None,
+    })
 }
 
 fn diff_previous_path(diff: &agent_client_protocol::Diff, cwd: Option<&Path>) -> Option<String> {
@@ -2337,6 +2398,134 @@ mod tests {
         assert!(diff.reversible);
         assert_eq!(diff.old_text, None);
         assert_eq!(diff.new_text.as_deref(), Some(""));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn edit_tool_diffs_cached_from_content_survive_completion() {
+        let tool_state = ToolState::default();
+        let file_path = "/tmp/vaultai-test-edit-cache.rs";
+
+        // Initial ToolCall arrives with Diff content + Edit raw_input (status=in_progress)
+        let initial = ToolCall::new(ToolCallId::from("tool-edit"), "Edit file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(serde_json::json!({
+                "file_path": file_path,
+                "old_string": "old code",
+                "new_string": "new code",
+            }))
+            .content(vec![ToolCallContent::Diff(
+                Diff::new(file_path, "full file with new code").old_text("full file with old code"),
+            )]);
+        let _ = tool_state.upsert_tool_call("session-1", initial);
+
+        // Completion arrives — content replaced with text summary (no Diffs)
+        let updated = tool_state
+            .apply_tool_update(
+                "session-1",
+                agent_client_protocol::ToolCallUpdate::new(
+                    "tool-edit",
+                    ToolCallUpdateFields::new()
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![ToolCallContent::Content(Content::new(
+                            "The file was updated successfully.",
+                        ))]),
+                ),
+            )
+            .unwrap();
+
+        // Diffs should still be available from cache
+        let payload = map_with_tool_state(&tool_state, "session-1", &updated);
+        let diffs = payload.diffs.as_ref().expect("diffs should be present");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some("full file with old code")
+        );
+        assert_eq!(
+            diffs[0].new_text.as_deref(),
+            Some("full file with new code")
+        );
+    }
+
+    #[test]
+    fn reconstruct_edit_diff_from_raw_input() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("module.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+        // File already contains the post-edit content (Claude wrote it)
+        fs::write(&file_path, "fn main() {\n    new_code();\n}\n").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // ToolCall with Edit raw_input but NO Diff content items
+        let initial = ToolCall::new(ToolCallId::from("tool-edit-raw"), "Edit module.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "old_string": "old_code()",
+                "new_string": "new_code()",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", initial);
+
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should be present");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].kind, "update");
+        assert!(diffs[0].reversible);
+        // old_text should have old_string restored
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some("fn main() {\n    old_code();\n}\n")
+        );
+        assert_eq!(
+            diffs[0].new_text.as_deref(),
+            Some("fn main() {\n    new_code();\n}\n")
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn write_tool_diff_still_works_with_vec_cache() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("readme.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "old content").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        let initial = ToolCall::new(ToolCallId::from("tool-write-v"), "Write readme.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Pending)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content",
+            }));
+        let _ = tool_state.upsert_tool_call("session-1", initial);
+
+        let updated = tool_state
+            .apply_tool_update(
+                "session-1",
+                agent_client_protocol::ToolCallUpdate::new(
+                    "tool-write-v",
+                    ToolCallUpdateFields::new()
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![ToolCallContent::Content(Content::new("Done"))]),
+                ),
+            )
+            .unwrap();
+
+        let payload = map_with_tool_state(&tool_state, "session-1", &updated);
+        let diffs = payload.diffs.as_ref().expect("diffs should be present");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].kind, "update");
+        assert_eq!(diffs[0].old_text.as_deref(), Some("old content"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new content"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }

@@ -1,0 +1,397 @@
+/**
+ * Inline diff decorations for CodeMirror — shows agent changes directly
+ * in the editor with colored backgrounds, left border stripes, deleted-text
+ * blocks, and per-hunk Keep/Reject controls.
+ *
+ * Data flows in via StateEffect (dispatched by Editor.tsx when the
+ * chatStore's TrackedFile.version changes).
+ *
+ * Architecture:
+ *  - ViewPlugin  → line decorations (added/modified) + inline hunk controls
+ *  - StateField  → block widget decorations (deleted text blocks)
+ *    (ViewPlugins cannot provide block decorations — CM6 restriction)
+ */
+
+import {
+    type EditorState,
+    type Extension,
+    StateEffect,
+    StateField,
+    RangeSetBuilder,
+} from "@codemirror/state";
+import {
+    Decoration,
+    type DecorationSet,
+    EditorView,
+    ViewPlugin,
+    WidgetType,
+    type ViewUpdate,
+} from "@codemirror/view";
+import type { LineEdit } from "../../ai/diff/actionLogTypes";
+import { inlineDiffTheme } from "./inlineDiffTheme";
+
+// ---------------------------------------------------------------------------
+// Public state management
+// ---------------------------------------------------------------------------
+
+export interface InlineDiffState {
+    edits: LineEdit[];
+    /** Parallel to edits — deleted lines text for each edit (empty for non-deletions). */
+    deletedTexts: string[][];
+    sessionId: string | null;
+    identityKey: string | null;
+    version: number;
+}
+
+const emptyState: InlineDiffState = {
+    edits: [],
+    deletedTexts: [],
+    sessionId: null,
+    identityKey: null,
+    version: 0,
+};
+
+export const setInlineDiff = StateEffect.define<InlineDiffState>();
+export const clearInlineDiff = StateEffect.define<null>();
+
+export const inlineDiffField = StateField.define<InlineDiffState>({
+    create: () => emptyState,
+    update(value, tr) {
+        for (const effect of tr.effects) {
+            if (effect.is(setInlineDiff)) return effect.value;
+            if (effect.is(clearInlineDiff)) return emptyState;
+        }
+        return value;
+    },
+});
+
+// ---------------------------------------------------------------------------
+// Decoration classes (reused across rebuilds)
+// ---------------------------------------------------------------------------
+
+const addedLineDeco = Decoration.line({ class: "cm-diff-added" });
+const modifiedLineDeco = Decoration.line({ class: "cm-diff-modified" });
+
+// ---------------------------------------------------------------------------
+// Widgets
+// ---------------------------------------------------------------------------
+
+class HunkControlsWidget extends WidgetType {
+    constructor(
+        private sessionId: string,
+        private identityKey: string,
+        private newStart: number,
+        private newEnd: number,
+    ) {
+        super();
+    }
+
+    toDOM() {
+        const container = document.createElement("span");
+        container.className = "cm-diff-hunk-controls";
+
+        container.appendChild(
+            this.makeButton("Keep", "cm-diff-hunk-btn-keep", "accepted"),
+        );
+        container.appendChild(
+            this.makeButton("Reject", "cm-diff-hunk-btn-reject", "rejected"),
+        );
+        return container;
+    }
+
+    private makeButton(
+        label: string,
+        cssClass: string,
+        decision: "accepted" | "rejected",
+    ) {
+        const btn = document.createElement("button");
+        btn.className = `cm-diff-hunk-btn ${cssClass}`;
+        btn.textContent = label;
+        btn.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        btn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            import("../../ai/store/chatStore").then(({ useChatStore }) => {
+                void useChatStore
+                    .getState()
+                    .resolveHunkEdits(
+                        this.sessionId,
+                        this.identityKey,
+                        decision,
+                        this.newStart,
+                        this.newEnd,
+                    );
+            });
+        });
+        return btn;
+    }
+
+    eq(other: HunkControlsWidget) {
+        return (
+            this.sessionId === other.sessionId &&
+            this.identityKey === other.identityKey &&
+            this.newStart === other.newStart &&
+            this.newEnd === other.newEnd
+        );
+    }
+
+    get estimatedHeight() {
+        return 0;
+    }
+    ignoreEvent() {
+        return true;
+    }
+}
+
+class DeletedBlockWidget extends WidgetType {
+    constructor(
+        private deletedLines: string[],
+        private sessionId: string,
+        private identityKey: string,
+        private newStart: number,
+        private newEnd: number,
+    ) {
+        super();
+    }
+
+    toDOM() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cm-diff-deleted-block";
+
+        for (const line of this.deletedLines) {
+            const lineEl = document.createElement("div");
+            lineEl.className = "cm-diff-deleted-line";
+            lineEl.textContent = line || "\u00a0"; // nbsp for empty lines
+            wrapper.appendChild(lineEl);
+        }
+
+        // Keep/Reject controls
+        const controls = document.createElement("div");
+        controls.className = "cm-diff-deleted-controls";
+
+        controls.appendChild(
+            this.makeButton("Keep", "cm-diff-hunk-btn-keep", "accepted"),
+        );
+        controls.appendChild(
+            this.makeButton("Reject", "cm-diff-hunk-btn-reject", "rejected"),
+        );
+        wrapper.appendChild(controls);
+
+        return wrapper;
+    }
+
+    private makeButton(
+        label: string,
+        cssClass: string,
+        decision: "accepted" | "rejected",
+    ) {
+        const btn = document.createElement("button");
+        btn.className = `cm-diff-hunk-btn ${cssClass}`;
+        btn.textContent = label;
+        btn.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        btn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            import("../../ai/store/chatStore").then(({ useChatStore }) => {
+                void useChatStore
+                    .getState()
+                    .resolveHunkEdits(
+                        this.sessionId,
+                        this.identityKey,
+                        decision,
+                        this.newStart,
+                        this.newEnd,
+                    );
+            });
+        });
+        return btn;
+    }
+
+    eq(other: DeletedBlockWidget) {
+        return (
+            this.sessionId === other.sessionId &&
+            this.identityKey === other.identityKey &&
+            this.newStart === other.newStart &&
+            this.newEnd === other.newEnd &&
+            this.deletedLines.length === other.deletedLines.length &&
+            this.deletedLines.every((l, i) => l === other.deletedLines[i])
+        );
+    }
+
+    get estimatedHeight() {
+        return this.deletedLines.length * 22 + 30;
+    }
+    ignoreEvent() {
+        return true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ViewPlugin — line decorations for added/modified lines + inline controls
+// ---------------------------------------------------------------------------
+
+function buildLineDecorations(view: EditorView): DecorationSet {
+    const diffState = view.state.field(inlineDiffField);
+    if (diffState.edits.length === 0) return Decoration.none;
+
+    const builder = new RangeSetBuilder<Decoration>();
+    const doc = view.state.doc;
+    const totalLines = doc.lines;
+
+    const decos: Array<{ from: number; to: number; deco: Decoration }> = [];
+
+    for (const edit of diffState.edits) {
+        const isAdded = edit.oldStart === edit.oldEnd;
+        const isDeleted = edit.newStart === edit.newEnd;
+
+        // Deletions are handled by the block-widget StateField below
+        if (isDeleted) continue;
+
+        // Added or modified lines — line background + controls on first line
+        const lineDeco = isAdded ? addedLineDeco : modifiedLineDeco;
+
+        for (let lineIdx = edit.newStart; lineIdx < edit.newEnd; lineIdx++) {
+            if (lineIdx >= totalLines) break;
+            const lineFrom = doc.line(lineIdx + 1).from;
+            decos.push({ from: lineFrom, to: lineFrom, deco: lineDeco });
+        }
+
+        // Hunk controls on first line (inline widget, floated right via CSS)
+        if (
+            diffState.sessionId &&
+            diffState.identityKey &&
+            edit.newStart < totalLines
+        ) {
+            const firstLineFrom = doc.line(edit.newStart + 1).from;
+            decos.push({
+                from: firstLineFrom,
+                to: firstLineFrom,
+                deco: Decoration.widget({
+                    widget: new HunkControlsWidget(
+                        diffState.sessionId,
+                        diffState.identityKey,
+                        edit.newStart,
+                        edit.newEnd,
+                    ),
+                    side: 1,
+                }),
+            });
+        }
+    }
+
+    decos.sort((a, b) => a.from - b.from || a.to - b.to);
+
+    for (const { from, to, deco } of decos) {
+        builder.add(from, to, deco);
+    }
+
+    return builder.finish();
+}
+
+const inlineDiffPlugin = ViewPlugin.fromClass(
+    class {
+        decorations: DecorationSet;
+
+        constructor(view: EditorView) {
+            this.decorations = buildLineDecorations(view);
+        }
+
+        update(update: ViewUpdate) {
+            const oldState = update.startState.field(inlineDiffField);
+            const newState = update.state.field(inlineDiffField);
+            if (oldState !== newState || update.docChanged) {
+                this.decorations = buildLineDecorations(update.view);
+            }
+        }
+    },
+    { decorations: (p) => p.decorations },
+);
+
+// ---------------------------------------------------------------------------
+// StateField — block widget decorations for deleted text blocks
+// (ViewPlugins cannot provide block decorations — CM6 restriction)
+// ---------------------------------------------------------------------------
+
+function buildDeletedBlockDecorations(state: EditorState): DecorationSet {
+    const diffState = state.field(inlineDiffField);
+    if (diffState.edits.length === 0) return Decoration.none;
+
+    const doc = state.doc;
+    const totalLines = doc.lines;
+    const builder = new RangeSetBuilder<Decoration>();
+    const decos: Array<{ from: number; deco: Decoration }> = [];
+
+    for (let i = 0; i < diffState.edits.length; i++) {
+        const edit = diffState.edits[i];
+        if (edit.newStart !== edit.newEnd) continue; // not a pure deletion
+
+        const deletedLines = diffState.deletedTexts[i];
+        if (!deletedLines || deletedLines.length === 0) continue;
+        if (!diffState.sessionId || !diffState.identityKey) continue;
+
+        // Place the block widget before the line at newStart
+        let pos: number;
+        if (edit.newStart < totalLines) {
+            pos = doc.line(edit.newStart + 1).from;
+        } else {
+            pos = doc.length;
+        }
+
+        decos.push({
+            from: pos,
+            deco: Decoration.widget({
+                widget: new DeletedBlockWidget(
+                    deletedLines,
+                    diffState.sessionId,
+                    diffState.identityKey,
+                    edit.newStart,
+                    edit.newEnd,
+                ),
+                block: true,
+                side: -1, // before the line
+            }),
+        });
+    }
+
+    decos.sort((a, b) => a.from - b.from);
+
+    for (const { from, deco } of decos) {
+        builder.add(from, from, deco);
+    }
+
+    return builder.finish();
+}
+
+const deletedBlockField = StateField.define<DecorationSet>({
+    create(state) {
+        return buildDeletedBlockDecorations(state);
+    },
+    update(value, tr) {
+        const oldDiff = tr.startState.field(inlineDiffField);
+        const newDiff = tr.state.field(inlineDiffField);
+        if (oldDiff !== newDiff || tr.docChanged) {
+            return buildDeletedBlockDecorations(tr.state);
+        }
+        return value;
+    },
+    provide: (field) => EditorView.decorations.from(field),
+});
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export function getInlineDiffExtension(): Extension {
+    return [
+        inlineDiffField,
+        inlineDiffPlugin,
+        deletedBlockField,
+        inlineDiffTheme,
+    ];
+}

@@ -212,61 +212,58 @@ export function ActivityBar({
                         </button>
                     );
                 })}
-            </div>
-
-            {/* Graph view button */}
-            <button
-                onClick={openGraph}
-                title="Graph View"
-                className="flex items-center justify-center rounded"
-                style={{
-                    ...baseButtonStyle,
-                    marginTop: 8,
-                    color: "var(--text-secondary)",
-                    backgroundColor: "transparent",
-                    opacity: 0.7,
-                }}
-                onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor =
-                        "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
-                    e.currentTarget.style.borderColor =
-                        "color-mix(in srgb, var(--border) 88%, transparent)";
-                    e.currentTarget.style.color = "var(--text-primary)";
-                }}
-                onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "transparent";
-                    e.currentTarget.style.borderColor = "transparent";
-                    e.currentTarget.style.color = "var(--text-secondary)";
-                }}
-            >
-                <svg
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                <button
+                    onClick={openGraph}
+                    title="Graph View"
+                    className="flex items-center justify-center rounded"
+                    style={{
+                        ...baseButtonStyle,
+                        color: "var(--text-secondary)",
+                        backgroundColor: "transparent",
+                        opacity: 0.7,
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor =
+                            "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
+                        e.currentTarget.style.borderColor =
+                            "color-mix(in srgb, var(--border) 88%, transparent)";
+                        e.currentTarget.style.color = "var(--text-primary)";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.borderColor = "transparent";
+                        e.currentTarget.style.color = "var(--text-secondary)";
+                    }}
                 >
-                    <circle cx="12" cy="12" r="2.5" />
-                    <ellipse cx="12" cy="12" rx="9" ry="3.5" />
-                    <ellipse
-                        cx="12"
-                        cy="12"
-                        rx="9"
-                        ry="3.5"
-                        transform="rotate(60 12 12)"
-                    />
-                    <ellipse
-                        cx="12"
-                        cy="12"
-                        rx="9"
-                        ry="3.5"
-                        transform="rotate(120 12 12)"
-                    />
-                </svg>
-            </button>
+                    <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <circle cx="12" cy="12" r="2.5" />
+                        <ellipse cx="12" cy="12" rx="9" ry="3.5" />
+                        <ellipse
+                            cx="12"
+                            cy="12"
+                            rx="9"
+                            ry="3.5"
+                            transform="rotate(60 12 12)"
+                        />
+                        <ellipse
+                            cx="12"
+                            cy="12"
+                            rx="9"
+                            ry="3.5"
+                            transform="rotate(120 12 12)"
+                        />
+                    </svg>
+                </button>
+            </div>
 
             <div className="flex-1" />
 
