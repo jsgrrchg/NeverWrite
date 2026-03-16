@@ -1,6 +1,8 @@
 import {
     memo,
+    useCallback,
     useMemo,
+    useRef,
     useState,
     type MouseEvent,
     type ReactElement,
@@ -1095,6 +1097,93 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
     );
 }
 
+const DIFF_DEFAULT_HEIGHT = 200;
+const DIFF_MIN_HEIGHT = 80;
+
+function ResizableDiffContainer({
+    accent,
+    children,
+}: {
+    accent: string;
+    children: ReactElement;
+}) {
+    const [height, setHeight] = useState(DIFF_DEFAULT_HEIGHT);
+    const dragging = useRef(false);
+    const startY = useRef(0);
+    const startH = useRef(0);
+
+    const onPointerDown = useCallback(
+        (e: React.PointerEvent) => {
+            e.preventDefault();
+            dragging.current = true;
+            startY.current = e.clientY;
+            startH.current = height;
+            (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        },
+        [height],
+    );
+
+    const onPointerMove = useCallback((e: React.PointerEvent) => {
+        if (!dragging.current) return;
+        const delta = e.clientY - startY.current;
+        setHeight(Math.max(DIFF_MIN_HEIGHT, startH.current + delta));
+    }, []);
+
+    const onPointerUp = useCallback(() => {
+        dragging.current = false;
+    }, []);
+
+    return (
+        <div
+            style={{
+                borderBottom: `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
+            }}
+        >
+            <div
+                style={{
+                    maxHeight: height,
+                    overflowY: "auto",
+                }}
+            >
+                {children}
+            </div>
+            {/* Resize handle */}
+            <div
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                style={{
+                    height: 6,
+                    cursor: "ns-resize",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "transparent",
+                    transition: "background-color 0.15s ease",
+                }}
+                onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                        "color-mix(in srgb, var(--text-secondary) 10%, transparent)";
+                }}
+                onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                        "transparent";
+                }}
+            >
+                <div
+                    style={{
+                        width: 32,
+                        height: 2,
+                        borderRadius: 1,
+                        backgroundColor: "var(--text-secondary)",
+                        opacity: 0.3,
+                    }}
+                />
+            </div>
+        </div>
+    );
+}
+
 function ChangeReviewFileRow({
     diff,
     accent,
@@ -1219,21 +1308,17 @@ function ChangeReviewFileRow({
                 </span>
             </button>
 
-            <div
-                style={{
-                    borderBottom: expanded
-                        ? `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`
-                        : "none",
-                }}
-            >
-                <EditedFileDiffPreview
-                    diff={diff}
-                    expanded={expanded}
-                    diffZoom={diffZoom}
-                    testId={`diff-content:${diff.path}`}
-                    showWhenEmpty={false}
-                />
-            </div>
+            {expanded && (
+                <ResizableDiffContainer accent={accent}>
+                    <EditedFileDiffPreview
+                        diff={diff}
+                        expanded={expanded}
+                        diffZoom={diffZoom}
+                        testId={`diff-content:${diff.path}`}
+                        showWhenEmpty={false}
+                    />
+                </ResizableDiffContainer>
+            )}
         </div>
     );
 }

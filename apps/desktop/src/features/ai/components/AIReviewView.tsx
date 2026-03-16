@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
     useEditorStore,
     isReviewTab,
@@ -227,6 +227,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = items.filter((item) => item.canReject).length;
     const expansion = useEditedFilesReviewExpansion(items);
+    const [wideMode, setWideMode] = useState(false);
 
     if (items.length === 0) {
         return (
@@ -251,7 +252,9 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                         "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
                 }}
             >
-                <div className="mx-auto w-full max-w-3xl">
+                <div
+                    className={`mx-auto w-full ${wideMode ? "" : "max-w-3xl"}`}
+                >
                     <div className="flex items-center justify-between gap-4">
                         <div className="flex items-center gap-3 min-w-0">
                             <h1
@@ -298,6 +301,22 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                             </button>
                             <button
                                 type="button"
+                                onClick={() => setWideMode((prev) => !prev)}
+                                className="rounded-md px-2 py-1 text-xs"
+                                style={{
+                                    fontWeight: 500,
+                                    ...getNeutralButtonStyle(),
+                                }}
+                                title={
+                                    wideMode
+                                        ? "Center cards"
+                                        : "Expand cards to full width"
+                                }
+                            >
+                                {wideMode ? "Center" : "Wide"}
+                            </button>
+                            <button
+                                type="button"
                                 onClick={() =>
                                     void rejectAllEditedFiles(tab.sessionId)
                                 }
@@ -332,7 +351,9 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
 
             {/* ---- Scrollable file list ---- */}
             <div className="flex-1 overflow-auto px-6 py-4">
-                <div className="mx-auto flex w-full max-w-3xl flex-col gap-2.5">
+                <div
+                    className={`mx-auto flex w-full flex-col gap-2.5 ${wideMode ? "" : "max-w-3xl"}`}
+                >
                     <EditedFilesReviewList
                         items={items}
                         variant="full"
