@@ -16,7 +16,11 @@ import {
 } from "../diff/reviewDiff";
 import { ChatInlinePill } from "./ChatInlinePill";
 import type { ChatPillMetrics } from "./chatPillMetrics";
-import { openChatNoteByReference } from "./chatNoteNavigation";
+import {
+    openChatNoteByReference,
+    openChatMapByReference,
+} from "./chatNoteNavigation";
+import { openChatPdfByReference } from "./chatFileNavigation";
 import { DiffLineView } from "./editedFilesPresentation";
 
 interface MarkdownContentProps {
@@ -33,7 +37,30 @@ function parseVaultReference(value: string) {
     return {
         path: match[1],
         line: match[2] ?? match[3] ?? null,
+        kind: "note" as const,
     };
+}
+
+function parseExcalidrawReference(value: string) {
+    const trimmed = value.trim();
+    if (!/\.excalidraw$/i.test(trimmed)) return null;
+    const fileName =
+        trimmed
+            .split("/")
+            .pop()
+            ?.replace(/\.excalidraw$/i, "") ?? trimmed;
+    return { path: trimmed, fileName };
+}
+
+function parsePdfReference(value: string) {
+    const trimmed = value.trim();
+    if (!/\.pdf$/i.test(trimmed)) return null;
+    const fileName =
+        trimmed
+            .split("/")
+            .pop()
+            ?.replace(/\.pdf$/i, "") ?? trimmed;
+    return { path: trimmed, fileName };
 }
 
 interface Block {
@@ -72,20 +99,25 @@ function parseBlocks(text: string): Block[] {
 
 interface MarkdownPillContextMenuPayload {
     reference: string;
+    kind: "note" | "excalidraw" | "pdf";
 }
+
+type InlineContextMenuHandler = (
+    event: MouseEvent<HTMLElement>,
+    reference: string,
+) => void;
 
 function renderInlineMarkdown(
     text: string,
     pillMetrics: ChatPillMetrics,
-    onNoteContextMenu: (
-        event: MouseEvent<HTMLElement>,
-        reference: string,
-    ) => void,
+    onNoteContextMenu: InlineContextMenuHandler,
+    onMapContextMenu?: InlineContextMenuHandler,
+    onPdfContextMenu?: InlineContextMenuHandler,
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
-    // Process: wikilinks, inline code, bold, italic, links, vault file paths (.md[:line])
+    // Process: wikilinks, inline code, bold, italic, links, vault file paths (.md[:line], .excalidraw, .pdf)
     const inlineRegex =
-        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|((?:\/|[\w\u00C0-\u024F-])[\w\u00C0-\u024F\s/~.()/-]*\.md(?::\d+|#L\d+)?)/g;
+        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|((?:\/|[\w\u00C0-\u024F-])[\w\u00C0-\u024F\s/~.()/-]*\.(?:md(?::\d+|#L\d+)?|excalidraw|pdf))/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let keyIndex = 0;
@@ -117,9 +149,12 @@ function renderInlineMarkdown(
                 />,
             );
         } else if (match[2]) {
-            // inline code — render .md files as vault pills
+            // inline code — render vault files as pills
             const codeText = full.slice(1, -1);
             const parsedReference = parseVaultReference(codeText);
+            const pdfRef = !parsedReference
+                ? parsePdfReference(codeText)
+                : null;
             if (parsedReference) {
                 const fileName =
                     parsedReference.path
@@ -139,6 +174,24 @@ function renderInlineMarkdown(
                         }
                         onContextMenu={(event) =>
                             onNoteContextMenu(event, parsedReference.path)
+                        }
+                        title={codeText}
+                    />,
+                );
+            } else if (pdfRef) {
+                parts.push(
+                    <ChatInlinePill
+                        key={key}
+                        label={pdfRef.fileName}
+                        metrics={pillMetrics}
+                        interactive
+                        variant="file"
+                        onClick={() => void openChatPdfByReference(pdfRef.path)}
+                        onContextMenu={
+                            onPdfContextMenu
+                                ? (event) =>
+                                      onPdfContextMenu(event, pdfRef.path)
+                                : undefined
                         }
                         title={codeText}
                     />,
@@ -179,7 +232,59 @@ function renderInlineMarkdown(
                     parsedUrlReference && decoded.startsWith("/")
                         ? parsedUrlReference
                         : parsedLabelReference;
-                if (parsedReference) {
+                const excalidrawRef =
+                    parseExcalidrawReference(decoded) ??
+                    parseExcalidrawReference(linkMatch[1]);
+                const pdfLinkRef =
+                    parsePdfReference(decoded) ??
+                    parsePdfReference(linkMatch[1]);
+                if (excalidrawRef) {
+                    parts.push(
+                        <ChatInlinePill
+                            key={key}
+                            label={excalidrawRef.fileName}
+                            metrics={pillMetrics}
+                            interactive
+                            variant="file"
+                            onClick={() =>
+                                void openChatMapByReference(excalidrawRef.path)
+                            }
+                            onContextMenu={
+                                onMapContextMenu
+                                    ? (event) =>
+                                          onMapContextMenu(
+                                              event,
+                                              excalidrawRef.path,
+                                          )
+                                    : undefined
+                            }
+                            title={decoded}
+                        />,
+                    );
+                } else if (pdfLinkRef) {
+                    parts.push(
+                        <ChatInlinePill
+                            key={key}
+                            label={pdfLinkRef.fileName}
+                            metrics={pillMetrics}
+                            interactive
+                            variant="file"
+                            onClick={() =>
+                                void openChatPdfByReference(pdfLinkRef.path)
+                            }
+                            onContextMenu={
+                                onPdfContextMenu
+                                    ? (event) =>
+                                          onPdfContextMenu(
+                                              event,
+                                              pdfLinkRef.path,
+                                          )
+                                    : undefined
+                            }
+                            title={decoded}
+                        />,
+                    );
+                } else if (parsedReference) {
                     const fileName =
                         parsedReference.path
                             .split("/")
@@ -224,33 +329,82 @@ function renderInlineMarkdown(
                 }
             }
         } else if (match[6]) {
-            // vault file path — clickable vault link
+            // vault file path — clickable vault link (.md, .excalidraw, .pdf)
             const filePath = decodeURIComponent(full);
-            const parsedReference = parseVaultReference(filePath);
-            const fileName =
-                parsedReference?.path.split("/").pop()?.replace(/\.md$/, "") ??
-                filePath;
-            parts.push(
-                <ChatInlinePill
-                    key={key}
-                    label={fileName}
-                    metrics={pillMetrics}
-                    interactive
-                    variant="accent"
-                    onClick={() =>
-                        void openChatNoteByReference(
-                            parsedReference?.path ?? filePath,
-                        )
-                    }
-                    onContextMenu={(event) =>
-                        onNoteContextMenu(
-                            event,
-                            parsedReference?.path ?? filePath,
-                        )
-                    }
-                    title={filePath}
-                />,
-            );
+            const excalidrawRef = parseExcalidrawReference(filePath);
+            const pdfPathRef = parsePdfReference(filePath);
+            if (excalidrawRef) {
+                parts.push(
+                    <ChatInlinePill
+                        key={key}
+                        label={excalidrawRef.fileName}
+                        metrics={pillMetrics}
+                        interactive
+                        variant="file"
+                        onClick={() =>
+                            void openChatMapByReference(excalidrawRef.path)
+                        }
+                        onContextMenu={
+                            onMapContextMenu
+                                ? (event) =>
+                                      onMapContextMenu(
+                                          event,
+                                          excalidrawRef.path,
+                                      )
+                                : undefined
+                        }
+                        title={filePath}
+                    />,
+                );
+            } else if (pdfPathRef) {
+                parts.push(
+                    <ChatInlinePill
+                        key={key}
+                        label={pdfPathRef.fileName}
+                        metrics={pillMetrics}
+                        interactive
+                        variant="file"
+                        onClick={() =>
+                            void openChatPdfByReference(pdfPathRef.path)
+                        }
+                        onContextMenu={
+                            onPdfContextMenu
+                                ? (event) =>
+                                      onPdfContextMenu(event, pdfPathRef.path)
+                                : undefined
+                        }
+                        title={filePath}
+                    />,
+                );
+            } else {
+                const parsedReference = parseVaultReference(filePath);
+                const fileName =
+                    parsedReference?.path
+                        .split("/")
+                        .pop()
+                        ?.replace(/\.md$/, "") ?? filePath;
+                parts.push(
+                    <ChatInlinePill
+                        key={key}
+                        label={fileName}
+                        metrics={pillMetrics}
+                        interactive
+                        variant="accent"
+                        onClick={() =>
+                            void openChatNoteByReference(
+                                parsedReference?.path ?? filePath,
+                            )
+                        }
+                        onContextMenu={(event) =>
+                            onNoteContextMenu(
+                                event,
+                                parsedReference?.path ?? filePath,
+                            )
+                        }
+                        title={filePath}
+                    />,
+                );
+            }
         }
 
         lastIndex = match.index + full.length;
@@ -286,7 +440,33 @@ function TextBlock({
         setContextMenu({
             x: event.clientX,
             y: event.clientY,
-            payload: { reference },
+            payload: { reference, kind: "note" },
+        });
+    };
+
+    const handleMapContextMenu = (
+        event: MouseEvent<HTMLElement>,
+        reference: string,
+    ) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: { reference, kind: "excalidraw" },
+        });
+    };
+
+    const handlePdfContextMenu = (
+        event: MouseEvent<HTMLElement>,
+        reference: string,
+    ) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: { reference, kind: "pdf" },
         });
     };
 
@@ -315,6 +495,8 @@ function TextBlock({
                             item.text,
                             pillMetrics,
                             handleNoteContextMenu,
+                            handleMapContextMenu,
+                            handlePdfContextMenu,
                         )}
                     </li>
                 ))}
@@ -351,6 +533,7 @@ function TextBlock({
                         headerMatch[2],
                         pillMetrics,
                         handleNoteContextMenu,
+                        handleMapContextMenu,
                     )}
                 </div>,
             );
@@ -406,6 +589,7 @@ function TextBlock({
                         line.slice(2),
                         pillMetrics,
                         handleNoteContextMenu,
+                        handleMapContextMenu,
                     )}
                 </blockquote>,
             );
@@ -428,7 +612,12 @@ function TextBlock({
                     wordBreak: "break-word",
                 }}
             >
-                {renderInlineMarkdown(line, pillMetrics, handleNoteContextMenu)}
+                {renderInlineMarkdown(
+                    line,
+                    pillMetrics,
+                    handleNoteContextMenu,
+                    handleMapContextMenu,
+                )}
             </div>,
         );
     }
@@ -441,17 +630,50 @@ function TextBlock({
                 <ContextMenu
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
-                    entries={[
-                        {
-                            label: "Open in New Tab",
-                            action: () => {
-                                void openChatNoteByReference(
-                                    contextMenu.payload.reference,
-                                    { newTab: true },
-                                );
-                            },
-                        },
-                    ]}
+                    entries={
+                        contextMenu.payload.kind === "excalidraw"
+                            ? [
+                                  {
+                                      label: "Open Map",
+                                      action: () => {
+                                          void openChatMapByReference(
+                                              contextMenu.payload.reference,
+                                          );
+                                      },
+                                  },
+                              ]
+                            : contextMenu.payload.kind === "pdf"
+                              ? [
+                                    {
+                                        label: "Open PDF",
+                                        action: () => {
+                                            openChatPdfByReference(
+                                                contextMenu.payload.reference,
+                                            );
+                                        },
+                                    },
+                                    {
+                                        label: "Open in New Tab",
+                                        action: () => {
+                                            openChatPdfByReference(
+                                                contextMenu.payload.reference,
+                                                { newTab: true },
+                                            );
+                                        },
+                                    },
+                                ]
+                              : [
+                                    {
+                                        label: "Open in New Tab",
+                                        action: () => {
+                                            void openChatNoteByReference(
+                                                contextMenu.payload.reference,
+                                                { newTab: true },
+                                            );
+                                        },
+                                    },
+                                ]
+                    }
                 />
             ) : null}
         </>

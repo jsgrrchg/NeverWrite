@@ -254,6 +254,47 @@ impl Vault {
         self.read_vault_entry_from_path(&new_path)
     }
 
+    /// Saves arbitrary binary data to the vault, creating parent dirs as needed.
+    /// Returns the resulting VaultEntryDto.  Does NOT overwrite — appends a
+    /// short random suffix when the target path already exists.
+    pub fn save_binary_file(
+        &self,
+        relative_dir: &str,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<(PathBuf, VaultEntryDto), VaultError> {
+        let dir_path = self.resolve_relative_path(relative_dir)?;
+        if path_is_ignored(&self.root, &dir_path) {
+            return Err(VaultError::InvalidVaultPath(relative_dir.to_string()));
+        }
+        if !dir_path.exists() {
+            std::fs::create_dir_all(&dir_path)?;
+        }
+
+        let mut target = dir_path.join(file_name);
+        if target.exists() {
+            // Deduplicate: stem-XXXX.ext
+            let stem = target
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let ext = target
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            target = dir_path.join(format!("{stem}-{ts}{ext}"));
+        }
+
+        std::fs::write(&target, bytes)?;
+        let entry = self.read_vault_entry_from_path(&target)?;
+        Ok((target, entry))
+    }
+
     pub fn create_folder(&self, relative_path: &str) -> Result<VaultEntryDto, VaultError> {
         let path = self.resolve_relative_path(relative_path)?;
 
@@ -445,8 +486,15 @@ fn build_vault_entry(
         file_name.clone()
     } else {
         path.file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| id.clone())
+            .and_then(|s| {
+                let value = s.to_string_lossy();
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                }
+            })
+            .unwrap_or_else(|| file_name.clone())
     };
 
     Ok(VaultEntryDto {
@@ -524,12 +572,18 @@ fn system_time_to_secs(value: std::time::SystemTime) -> u64 {
 fn guess_mime_type(path: &Path) -> Option<String> {
     let file_name = path.file_name()?.to_str()?.to_ascii_lowercase();
     let mime = match file_name.as_str() {
-        ".dockerignore" | ".editorconfig" | ".eslintignore" | ".gitattributes" | ".gitmodules"
-        | ".ignore" | ".npmrc" | ".prettierignore" | ".prettierrc" | ".bash_profile"
-        | ".bashrc" | ".profile" | ".zprofile" | ".zshrc" | "brewfile" | "cmakelists.txt"
-        | "containerfile" | "dockerfile" | "gemfile" | "justfile" | "makefile" | "podfile"
+        ".babelrc" | ".dockerignore" | ".editorconfig" | ".eslintignore" | ".eslintrc"
+        | ".gitattributes" | ".gitconfig" | ".gitignore" | ".gitmodules" | ".ignore"
+        | ".node-version" | ".npmignore" | ".npmrc" | ".prettierignore" | ".prettierrc"
+        | ".python-version" | ".ruby-version" | ".stylelintrc" | ".stylelintignore"
+        | ".terraform-version" | ".tool-versions" | ".yarnrc" | ".bash_profile" | ".bashrc"
+        | ".profile" | ".zprofile" | ".zshrc" | "brewfile" | "cmakelists.txt" | "containerfile"
+        | "dockerfile" | "gemfile" | "gnumakefile" | "justfile" | "makefile" | "podfile"
         | "procfile" | "rakefile" => "text/plain",
         value if value == ".env" || value.starts_with(".env.") => "text/plain",
+        value if value.starts_with('.') && (value.ends_with("rc") || value.ends_with("ignore")) => {
+            "text/plain"
+        }
         _ => {
             let ext = path.extension()?.to_str()?.to_ascii_lowercase();
             match ext.as_str() {
@@ -546,8 +600,9 @@ fn guess_mime_type(path: &Path) -> Option<String> {
                 "html" | "htm" => "text/html",
                 "css" => "text/css",
                 "csv" => "text/csv",
-                "bat" | "bash" | "env" | "gradle" | "kt" | "kts" | "lock" | "properties"
-                | "proto" | "ps1" | "sh" | "sql" | "tf" | "tfvars" | "vue" | "zsh" => "text/plain",
+                "bat" | "bash" | "cmake" | "env" | "gradle" | "kt" | "kts" | "lock" | "mk"
+                | "properties" | "proto" | "ps1" | "sh" | "sql" | "tf" | "tfvars" | "vue"
+                | "zsh" => "text/plain",
                 "svg" => "image/svg+xml",
                 "png" => "image/png",
                 "jpg" | "jpeg" | "jpe" | "jfif" => "image/jpeg",
@@ -557,6 +612,7 @@ fn guess_mime_type(path: &Path) -> Option<String> {
                 "bmp" => "image/bmp",
                 "ico" => "image/x-icon",
                 "pdf" => "application/pdf",
+                "excalidraw" => "application/json",
                 _ => return None,
             }
         }

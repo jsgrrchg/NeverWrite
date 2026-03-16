@@ -274,7 +274,7 @@ export type LinkReferenceMap = Map<
 >;
 
 // Characters that can affect link reference definitions: [label]: url
-const LINK_REF_SIGNIFICANT = /[\[\]:]/;
+const LINK_REF_SIGNIFICANT = /(?:[\]:]|\[)/;
 
 function linkRefNeedsRebuild(transaction: Transaction): boolean {
     if (!transaction.docChanged) return false;

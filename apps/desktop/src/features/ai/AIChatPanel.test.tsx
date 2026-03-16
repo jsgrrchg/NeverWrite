@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useEditorStore } from "../../app/store/editorStore";
+import { isNoteTab, useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
 import type {
@@ -57,6 +57,9 @@ function createSession(
         isResumingSession: overrides.isResumingSession,
         resumeContextPending: overrides.resumeContextPending,
         effortsByModel: overrides.effortsByModel,
+        runtimeState:
+            overrides.runtimeState ??
+            (overrides.isPersistedSession ? "persisted_only" : "live"),
     };
 }
 
@@ -96,6 +99,18 @@ const runtimeDescriptor: AIRuntimeDescriptor = {
     configOptions: [],
 };
 
+const claudeRuntimeDescriptor: AIRuntimeDescriptor = {
+    runtime: {
+        id: "claude-acp",
+        name: "Claude ACP",
+        description: "Claude runtime embedded as an ACP sidecar.",
+        capabilities: ["attachments", "permissions", "reasoning"],
+    },
+    models: [],
+    modes: [],
+    configOptions: [],
+};
+
 describe("AIChatPanel tabs lifecycle", () => {
     beforeEach(() => {
         resetChatStore();
@@ -107,6 +122,8 @@ describe("AIChatPanel tabs lifecycle", () => {
             tabs: [],
             activeTabId: null,
             activationHistory: [],
+            tabNavigationHistory: [],
+            tabNavigationIndex: -1,
             pendingReveal: null,
             pendingSelectionReveal: null,
             currentSelection: null,
@@ -243,6 +260,126 @@ describe("AIChatPanel tabs lifecycle", () => {
             ).toBe("session-c");
             expect(useChatStore.getState().activeSessionId).toBe("session-c");
         });
+    });
+
+    it("shows the selected runtime onboarding when it differs from the active session", async () => {
+        const sessionA = createSession("session-a", "First conversation");
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+            },
+            sessionOrder: [sessionA.sessionId],
+            activeSessionId: sessionA.sessionId,
+            selectedRuntimeId: "claude-acp",
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: [],
+            },
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    runtimeId: "codex-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+                "claude-acp": {
+                    runtimeId: "claude-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: false,
+                    authMethods: [
+                        {
+                            id: "claude-login",
+                            name: "Claude login",
+                            description:
+                                "Open a terminal-based Claude login flow.",
+                        },
+                    ],
+                    onboardingRequired: true,
+                },
+            },
+            runtimeConnectionByRuntimeId: {
+                "codex-acp": { status: "ready", message: null },
+                "claude-acp": { status: "ready", message: null },
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: sessionA.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(
+            await screen.findByText("Connect Claude ACP to start chatting"),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Open sign-in terminal" }),
+        ).toBeInTheDocument();
+    });
+
+    it("keeps the selected runtime onboarding focused when a stale tab exists without an active session", async () => {
+        const sessionA = createSession("session-a", "First conversation");
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+            },
+            sessionOrder: [sessionA.sessionId],
+            activeSessionId: null,
+            selectedRuntimeId: "claude-acp",
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: [],
+            },
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    runtimeId: "codex-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: false,
+                    authMethods: [],
+                    onboardingRequired: true,
+                },
+                "claude-acp": {
+                    runtimeId: "claude-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: false,
+                    authMethods: [
+                        {
+                            id: "claude-login",
+                            name: "Claude login",
+                            description:
+                                "Open a terminal-based Claude login flow.",
+                        },
+                    ],
+                    onboardingRequired: true,
+                },
+            },
+            runtimeConnectionByRuntimeId: {
+                "codex-acp": { status: "idle", message: null },
+                "claude-acp": { status: "idle", message: null },
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: sessionA.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(
+            await screen.findByText("Connect Claude ACP to start chatting"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("Connect Codex ACP to start chatting"),
+        ).not.toBeInTheDocument();
     });
 
     it("switches to the nearest remaining session when closing the active tab", async () => {
@@ -798,7 +935,9 @@ describe("AIChatPanel tabs lifecycle", () => {
                 useEditorStore
                     .getState()
                     .tabs.some(
-                        (tab) => tab.noteId === "exports/chat-export.md",
+                        (tab) =>
+                            isNoteTab(tab) &&
+                            tab.noteId === "exports/chat-export.md",
                     ),
             ).toBe(true);
         });

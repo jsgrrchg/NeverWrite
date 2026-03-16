@@ -10,18 +10,18 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { getPathBaseName } from "../../app/utils/path";
 
 export function VaultSwitcher() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [isOpen, setIsOpen] = useState(false);
-    const [contextMenu, setContextMenu] =
-        useState<ContextMenuState<{ path: string | null }> | null>(null);
+    const [contextMenu, setContextMenu] = useState<ContextMenuState<{
+        path: string | null;
+    }> | null>(null);
     const ref = useRef<HTMLDivElement>(null);
     const recents: RecentVault[] = isOpen ? getRecentVaults() : [];
 
-    const vaultName = vaultPath
-        ? (vaultPath.split("/").pop() ?? vaultPath)
-        : "No vault";
+    const vaultName = vaultPath ? getPathBaseName(vaultPath) : "No vault";
 
     // Close on click outside or Escape
     useEffect(() => {

@@ -13,6 +13,7 @@ import type { AIChatMessage, AIFileDiff } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
+import type { ChatPillVariant } from "./chatPillPalette";
 import { useChatStore } from "../store/chatStore";
 import {
     DIFF_ZOOM_MAX,
@@ -46,8 +47,10 @@ function renderUserContent(
     onNoteContextMenu: (event: MouseEvent<HTMLElement>, label: string) => void,
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
-    // Match @fetch, @📁FolderName, @NoteName, or /plan
-    const mentionRegex = /(@(fetch|📁[^\s]+|[^\s@]+)|\/plan\b)/g;
+    // New bracketed format: [@note], [@📁 folder], [Screenshot ...], [📎 file]
+    // Legacy format (backward compat): @fetch, /plan, @📁word, @word
+    const mentionRegex =
+        /(\[@📁 [^\]]+\]|\[@[^\]]+\]|\[Screenshot [^\]]+\]|\[📎 [^\]]+\]|@fetch\b|\/plan\b|@📁[^\s]+|@[^\s@]+)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
@@ -57,7 +60,22 @@ function renderUserContent(
             parts.push(text.slice(lastIndex, match.index));
         }
 
-        const token = match[1];
+        const token = match[0];
+
+        if (token.startsWith("[Screenshot ") || token.startsWith("[📎 ")) {
+            const pillLabel = token.slice(1, -1); // strip [ ]
+            parts.push(
+                <ChatInlinePill
+                    key={key++}
+                    label={pillLabel}
+                    metrics={pillMetrics}
+                    variant="file"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
         if (token === "/plan") {
             parts.push(
                 <ChatInlinePill
@@ -67,33 +85,66 @@ function renderUserContent(
                     variant="neutral"
                 />,
             );
-            lastIndex = match.index + match[0].length;
+            lastIndex = match.index + token.length;
             continue;
         }
 
-        const label = match[2];
-        const isFetch = label === "fetch";
-        const isFolder = label.startsWith("📁");
-        const displayLabel = isFolder ? label.replace(/^📁\s*/u, "") : label;
-        const isNoteMention = !isFetch && !isFolder;
+        if (token === "@fetch") {
+            parts.push(
+                <ChatInlinePill
+                    key={key++}
+                    label="@fetch"
+                    metrics={pillMetrics}
+                    variant="success"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
 
+        if (token.startsWith("[@📁 ")) {
+            const folderLabel = token.slice(4, -1); // strip [@📁 and ]
+            parts.push(
+                <ChatInlinePill
+                    key={key++}
+                    label={folderLabel}
+                    metrics={pillMetrics}
+                    variant="folder"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
+        // [@NoteName] (new) or @NoteName (legacy) — note/folder mention
+        let noteLabel: string;
+        let variant: ChatPillVariant = "accent";
+        if (token.startsWith("[@")) {
+            noteLabel = token.slice(2, -1); // strip [@ and ]
+        } else if (token.startsWith("@📁")) {
+            noteLabel = token.slice(2).replace(/^\s*/u, ""); // strip @📁
+            variant = "folder";
+        } else {
+            noteLabel = token.slice(1); // strip @
+        }
+        const isNote = variant === "accent";
         parts.push(
             <ChatInlinePill
                 key={key++}
-                label={isFetch ? "@fetch" : displayLabel}
+                label={noteLabel}
                 metrics={pillMetrics}
-                interactive={isNoteMention}
-                variant={isFetch ? "success" : isFolder ? "folder" : "accent"}
+                interactive={isNote}
+                variant={variant}
                 onClick={
-                    isNoteMention
+                    isNote
                         ? () => {
-                              void openChatNoteByReference(displayLabel);
+                              void openChatNoteByReference(noteLabel);
                           }
                         : undefined
                 }
                 onContextMenu={
-                    isNoteMention
-                        ? (event) => onNoteContextMenu(event, displayLabel)
+                    isNote
+                        ? (event) => onNoteContextMenu(event, noteLabel)
                         : undefined
                 }
             />,
@@ -654,7 +705,7 @@ function ToolMessage({
     );
 }
 
-function PlanMessage({
+export function PlanMessage({
     message,
     pillMetrics,
 }: {
@@ -1179,7 +1230,6 @@ function ChangeReviewFileRow({
                     diff={diff}
                     expanded={expanded}
                     diffZoom={diffZoom}
-                    accent={accent}
                     testId={`diff-content:${diff.path}`}
                     showWhenEmpty={false}
                 />

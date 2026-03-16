@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getTabStripScrollTarget } from "./tabStrip";
+import { getTabStripInsertIndex, getTabStripScrollTarget } from "./tabStrip";
 
 describe("getTabStripScrollTarget", () => {
     it("does not move when the active tab is already comfortably visible", () => {
@@ -36,5 +36,34 @@ describe("getTabStripScrollTarget", () => {
                 nodeWidth: 120,
             }),
         ).toBe(480);
+    });
+});
+
+describe("getTabStripInsertIndex", () => {
+    it("inserts before the first tab when dropped near its leading half", () => {
+        expect(
+            getTabStripInsertIndex(150, [
+                { left: 100, width: 160 },
+                { left: 264, width: 160 },
+            ]),
+        ).toBe(0);
+    });
+
+    it("inserts between tabs when dropped past the first midpoint", () => {
+        expect(
+            getTabStripInsertIndex(280, [
+                { left: 100, width: 160 },
+                { left: 264, width: 160 },
+            ]),
+        ).toBe(1);
+    });
+
+    it("inserts at the end when dropped after the last midpoint", () => {
+        expect(
+            getTabStripInsertIndex(420, [
+                { left: 100, width: 160 },
+                { left: 264, width: 160 },
+            ]),
+        ).toBe(2);
     });
 });

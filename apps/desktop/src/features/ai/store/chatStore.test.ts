@@ -20,7 +20,13 @@ const runtimePayload = [
             id: "codex-acp",
             name: "Codex ACP",
             description: "Codex runtime embedded as an ACP sidecar.",
-            capabilities: ["attachments", "permissions", "reasoning"],
+            capabilities: [
+                "attachments",
+                "permissions",
+                "reasoning",
+                "create_session",
+                "user_input",
+            ],
         },
         // Models, modes and config come from the ACP session, not the descriptor.
         models: [],
@@ -115,6 +121,24 @@ const readySetupStatus = {
     message: null,
 };
 
+const readySetupStatusState = {
+    runtimeId: readySetupStatus.runtime_id,
+    binaryReady: readySetupStatus.binary_ready,
+    binaryPath: readySetupStatus.binary_path,
+    binarySource: readySetupStatus.binary_source,
+    authReady: readySetupStatus.auth_ready,
+    authMethod: readySetupStatus.auth_method,
+    authMethods: readySetupStatus.auth_methods,
+    onboardingRequired: readySetupStatus.onboarding_required,
+    message: readySetupStatus.message ?? undefined,
+};
+
+function getActiveSessionId(): string {
+    const id = useChatStore.getState().activeSessionId;
+    expect(id, "activeSessionId should not be null").not.toBeNull();
+    return id!;
+}
+
 function createTextParts(text: string): AIComposerPart[] {
     return [
         {
@@ -157,6 +181,9 @@ describe("chatStore", () => {
         useEditorStore.setState({
             tabs: [],
             activeTabId: null,
+            activationHistory: [],
+            tabNavigationHistory: [],
+            tabNavigationIndex: -1,
             currentSelection: null,
         });
 
@@ -340,7 +367,9 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
 
         const state = useChatStore.getState();
-        expect(state.runtimeConnection.status).toBe("ready");
+        expect(state.runtimeConnectionByRuntimeId["codex-acp"]?.status).toBe(
+            "ready",
+        );
         expect(state.runtimes).toHaveLength(1);
         expect(state.activeSessionId).toBe("codex-session-1");
         expect(state.sessionsById["codex-session-1"]?.runtimeId).toBe(
@@ -361,7 +390,7 @@ describe("chatStore", () => {
             return sessionPayload;
         });
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore.getState().setComposerParts(createTextParts("Ship it"));
 
         await useChatStore.getState().sendMessage();
@@ -387,7 +416,7 @@ describe("chatStore", () => {
             return sessionPayload;
         });
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
         useChatStore.setState({
@@ -453,21 +482,36 @@ describe("chatStore", () => {
 
     it("clears the auth error banner when setup status becomes ready again", async () => {
         useChatStore.setState({
-            runtimeConnection: {
-                status: "error",
-                message:
-                    "You were signed out. Reconnect in AI setup to continue chatting.",
+            runtimes: [
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            runtimeConnectionByRuntimeId: {
+                "codex-acp": {
+                    status: "error",
+                    message:
+                        "You were signed out. Reconnect in AI setup to continue chatting.",
+                },
             },
-            setupStatus: {
-                ...readySetupStatus,
-                authReady: false,
-                onboardingRequired: true,
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    ...readySetupStatusState,
+                    authReady: false,
+                    onboardingRequired: true,
+                },
             },
+            selectedRuntimeId: "codex-acp",
         });
 
         await useChatStore.getState().refreshSetupStatus();
 
-        expect(useChatStore.getState().runtimeConnection).toEqual({
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId["codex-acp"],
+        ).toEqual({
             status: "ready",
             message: null,
         });
@@ -475,23 +519,255 @@ describe("chatStore", () => {
 
     it("clears the auth error banner after startAuth succeeds", async () => {
         useChatStore.setState({
-            runtimeConnection: {
-                status: "error",
-                message:
-                    "You were signed out. Reconnect in AI setup to continue chatting.",
+            runtimes: [
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            runtimeConnectionByRuntimeId: {
+                "codex-acp": {
+                    status: "error",
+                    message:
+                        "You were signed out. Reconnect in AI setup to continue chatting.",
+                },
             },
-            setupStatus: {
-                ...readySetupStatus,
-                authReady: false,
-                onboardingRequired: true,
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    ...readySetupStatusState,
+                    authReady: false,
+                    onboardingRequired: true,
+                },
             },
+            selectedRuntimeId: "codex-acp",
         });
 
         await useChatStore.getState().startAuth({ methodId: "openai-api-key" });
 
-        expect(useChatStore.getState().runtimeConnection).toEqual({
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId["codex-acp"],
+        ).toEqual({
             status: "ready",
             message: null,
+        });
+    });
+
+    it("opens the selected runtime after onboarding completes while another runtime is active", async () => {
+        const claudeReadySetupStatus = {
+            ...readySetupStatus,
+            runtime_id: "claude-acp",
+            auth_method: "claude-login",
+        };
+        const codexSession = {
+            sessionId: "codex-session-1",
+            historySessionId: "codex-session-1",
+            runtimeId: "codex-acp",
+            modelId: "test-model",
+            modeId: "default",
+            status: "idle" as const,
+            models: [],
+            modes: [],
+            configOptions: [],
+            messages: [],
+            attachments: [],
+            runtimeState: "live" as const,
+        };
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description:
+                            "Claude runtime embedded as an ACP sidecar.",
+                        capabilities: [
+                            "attachments",
+                            "permissions",
+                            "plans",
+                            "create_session",
+                        ],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [codexSession.sessionId]: codexSession,
+            },
+            sessionOrder: [codexSession.sessionId],
+            activeSessionId: codexSession.sessionId,
+            selectedRuntimeId: "claude-acp",
+            setupStatusByRuntimeId: {
+                "claude-acp": {
+                    runtimeId: "claude-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: false,
+                    authMethods: [
+                        {
+                            id: "claude-login",
+                            name: "Claude login",
+                            description:
+                                "Open a terminal-based Claude login flow.",
+                        },
+                    ],
+                    onboardingRequired: true,
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, payload) => {
+            if (
+                command === "ai_get_setup_status" &&
+                (payload as { runtimeId?: string } | undefined)?.runtimeId ===
+                    "claude-acp"
+            ) {
+                return claudeReadySetupStatus;
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: "claude-session-1",
+                    runtime_id: "claude-acp",
+                };
+            }
+            if (command === "ai_save_session_history") {
+                return null;
+            }
+            throw new Error(`Unexpected command: ${String(command)}`);
+        });
+
+        await useChatStore.getState().refreshSetupStatus("claude-acp");
+
+        expect(useChatStore.getState().activeSessionId).toBe(
+            "claude-session-1",
+        );
+    });
+
+    it("updates setup copy with the active runtime when authentication expires", () => {
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "codex-acp",
+                },
+            },
+            sessionsById: {
+                "codex-session-1": {
+                    sessionId: "codex-session-1",
+                    historySessionId: "codex-session-1",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    status: "streaming",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [
+                        {
+                            id: "assistant-1",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Working",
+                            timestamp: 10,
+                            inProgress: true,
+                        },
+                    ],
+                    attachments: [],
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: "codex-acp",
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "codex-session-1",
+            message: "authentication required",
+        });
+
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["codex-acp"],
+        ).toMatchObject({
+            authReady: false,
+            onboardingRequired: true,
+            message: "You were signed out. Reconnect Codex to continue.",
+        });
+        expect(
+            useChatStore.getState().sessionsById["codex-session-1"]?.messages[0]
+                ?.inProgress,
+        ).toBe(false);
+    });
+
+    it("treats the normalized signed-out message as an authentication error", () => {
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        ...runtimePayload[0].runtime,
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                "claude-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "claude-acp",
+                },
+            },
+            sessionsById: {
+                "claude-session-1": {
+                    sessionId: "claude-session-1",
+                    historySessionId: "claude-session-1",
+                    runtimeId: "claude-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    status: "error",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: "claude-acp",
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "claude-session-1",
+            message:
+                "You were signed out. Reconnect in AI setup to continue chatting.",
+        });
+
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["claude-acp"],
+        ).toMatchObject({
+            authReady: false,
+            onboardingRequired: true,
+            message: "You were signed out. Reconnect Claude to continue.",
         });
     });
 
@@ -563,9 +839,10 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
 
         expect(useChatStore.getState().activeSessionId).toBeNull();
-        expect(useChatStore.getState().setupStatus?.onboardingRequired).toBe(
-            true,
-        );
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["codex-acp"]
+                ?.onboardingRequired,
+        ).toBe(true);
     });
 
     it("prevents duplicate note attachments of the same type", async () => {
@@ -580,7 +857,7 @@ describe("chatStore", () => {
         useChatStore.getState().attachNote(note);
         useChatStore.getState().attachNote(note);
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.attachments,
         ).toHaveLength(1);
@@ -604,12 +881,12 @@ describe("chatStore", () => {
             },
         ]);
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const parts =
             useChatStore.getState().composerPartsBySessionId[activeSessionId] ??
             [];
 
-        expect(serializeComposerParts(parts)).toBe("Use @README.md");
+        expect(serializeComposerParts(parts)).toBe("Use [@README.md]");
     });
 
     it("moves the updated session to the top of the history order", async () => {
@@ -879,7 +1156,7 @@ describe("chatStore", () => {
 
         await useChatStore.getState().sendMessage();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
         expect(session.status).toBe("error");
@@ -925,7 +1202,7 @@ describe("chatStore", () => {
         useChatStore.getState().setComposerParts(createTextParts("hola"));
         await useChatStore.getState().sendMessage();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
         expect(session.messages.at(-1)?.kind).toBe("error");
@@ -937,7 +1214,7 @@ describe("chatStore", () => {
     it("queues a new turn while the session is waiting for permission", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore.setState({
             sessionsById: {
                 ...useChatStore.getState().sessionsById,
@@ -1000,7 +1277,7 @@ describe("chatStore", () => {
     it("clears the composer after sending immediately", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore
             .getState()
             .setComposerParts(createTextParts("Send right away"));
@@ -1059,7 +1336,7 @@ describe("chatStore", () => {
 
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore.setState({
             sessionsById: {
                 ...useChatStore.getState().sessionsById,
@@ -1152,7 +1429,7 @@ describe("chatStore", () => {
 
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore.setState({
             sessionsById: {
                 ...useChatStore.getState().sessionsById,
@@ -1205,7 +1482,7 @@ describe("chatStore", () => {
     it("prioritizes a queued message when sending it now", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore.setState({
             sessionsById: {
                 ...useChatStore.getState().sessionsById,
@@ -1244,7 +1521,7 @@ describe("chatStore", () => {
     it("moves a queued message into the composer and restores the previous draft on cancel", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const currentDraft = createTextParts("Current draft");
         const currentAttachment: AIChatAttachment = {
             id: "current-file",
@@ -1327,7 +1604,7 @@ describe("chatStore", () => {
     it("keeps an edited message ahead of later items when canceling after the queue changes", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore
             .getState()
@@ -1366,7 +1643,7 @@ describe("chatStore", () => {
     it("requeues an edited message ahead of later items when saving from the composer", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const previousDraft = createTextParts("Side draft");
         const previousAttachment: AIChatAttachment = {
             id: "side-file",
@@ -1456,7 +1733,7 @@ describe("chatStore", () => {
         vi.useFakeTimers();
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
         useChatStore.setState({
@@ -1496,7 +1773,7 @@ describe("chatStore", () => {
     it("upserts tool diffs into a single tool message and preserves its timestamp", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1569,7 +1846,7 @@ describe("chatStore", () => {
     it("consolidates edited files only for completed tool diffs", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1632,7 +1909,7 @@ describe("chatStore", () => {
     it("ignores failed tool diffs when consolidating the edited files buffer", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1663,7 +1940,7 @@ describe("chatStore", () => {
     it("consolidates repeated edits for the same file into a single buffer entry", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1720,7 +1997,7 @@ describe("chatStore", () => {
     it("removes the buffer entry when a later diff restores the base snapshot", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1769,7 +2046,7 @@ describe("chatStore", () => {
     it("keeps the edited files buffer after message completion transitions the session to idle", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1816,7 +2093,7 @@ describe("chatStore", () => {
     it("consolidates the edited files buffer when a permission request carries diffs", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         // First, trigger a tool activity so a work cycle is created
         useChatStore.getState().applyToolActivity({
@@ -1877,7 +2154,7 @@ describe("chatStore", () => {
             return sessionPayload;
         });
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const oldEntry = {
             identityKey: "/vault/src/old.rs",
             originPath: "/vault/src/old.rs",
@@ -1979,7 +2256,7 @@ describe("chatStore", () => {
             return sessionPayload;
         });
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         // Cycle A: edit file.md
         useChatStore.getState().applyToolActivity({
@@ -2041,7 +2318,7 @@ describe("chatStore", () => {
             return sessionPayload;
         });
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         // Cycle A: edit file.md
         useChatStore.getState().applyToolActivity({
@@ -2092,7 +2369,7 @@ describe("chatStore", () => {
     it("normalizes move entries to the destination path so later edits merge into one row", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2151,7 +2428,7 @@ describe("chatStore", () => {
     it("keeps only the visible buffer in memory when Keep All is used", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2180,11 +2457,22 @@ describe("chatStore", () => {
         expect(session.editedFilesBufferByWorkCycleId).toEqual({});
     });
 
+    function getEditedBufferEntry(sessionId: string, workCycleId: string) {
+        const entry =
+            useChatStore.getState().sessionsById[sessionId]!
+                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0];
+        expect(entry).toBeDefined();
+        if (!entry) {
+            throw new Error("Expected an edited files buffer entry");
+        }
+        return entry;
+    }
+
     it("rejects a single edited file when the on-disk hash still matches the applied snapshot", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2207,9 +2495,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entry =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0]!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_get_text_file_hash") {
@@ -2250,7 +2536,7 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2273,9 +2559,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entry =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0]!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_get_text_file_hash") {
@@ -2321,7 +2605,7 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2345,9 +2629,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entry =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0]!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
 
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_get_text_file_hash") {
@@ -2399,7 +2681,7 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2422,9 +2704,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entry =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0]!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_get_text_file_hash") {
@@ -2469,7 +2749,7 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2492,9 +2772,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entry =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0]!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_get_text_file_hash") {
@@ -2544,7 +2822,7 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2568,9 +2846,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entry =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0]!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
 
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_get_text_file_hash") {
@@ -2618,7 +2894,7 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2715,7 +2991,7 @@ describe("chatStore", () => {
     it("upserts status events as system messages and updates them by event id", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyStatusEvent({
             session_id: activeSessionId,
@@ -2760,7 +3036,7 @@ describe("chatStore", () => {
     it("upserts plan updates into a single live plan message", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyPlanUpdate({
             session_id: activeSessionId,
@@ -2834,7 +3110,7 @@ describe("chatStore", () => {
     it("tracks user input requests and resumes streaming after responding", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
 
         useChatStore.getState().applyUserInputRequest({
             session_id: activeSessionId,
@@ -2877,6 +3153,73 @@ describe("chatStore", () => {
         });
     });
 
+    it("keeps Claude user input requests deferred instead of calling the backend", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.setState((state) => ({
+            runtimes: [
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description: "Claude runtime",
+                        capabilities: ["attachments", "permissions"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeId: "claude-acp",
+                },
+            },
+        }));
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "input-claude-1",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-claude-1", { scope: ["Safe"] });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content:
+                "This runtime does not support interactive user input requests in this build.",
+        });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_respond_user_input",
+            ),
+        ).toBe(false);
+    });
+
     it("resumes the active persisted history into a live ACP session", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -2892,6 +3235,7 @@ describe("chatStore", () => {
                     {
                         version: 1,
                         session_id: "history-1",
+                        runtime_id: "codex-acp",
                         model_id: "test-model",
                         mode_id: "default",
                         created_at: 10,
@@ -2993,6 +3337,134 @@ describe("chatStore", () => {
         });
     });
 
+    it("rehydrates Claude histories with their runtime and resumes them natively", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const claudeRuntimePayload = [
+            ...runtimePayload,
+            {
+                runtime: {
+                    id: "claude-acp",
+                    name: "Claude ACP",
+                    description: "Claude runtime embedded as an ACP sidecar.",
+                    capabilities: [
+                        "create_session",
+                        "list_sessions",
+                        "resume_session",
+                    ],
+                },
+                models: [],
+                modes: [],
+                config_options: [],
+            },
+        ];
+
+        const claudeSessionPayload = {
+            session_id: "claude-session-1",
+            runtime_id: "claude-acp",
+            model_id: "claude-sonnet",
+            mode_id: "default",
+            status: "idle" as const,
+            models: [
+                {
+                    id: "claude-sonnet",
+                    runtime_id: "claude-acp",
+                    name: "Claude Sonnet",
+                    description: "Claude test model.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtime_id: "claude-acp",
+                    name: "Default",
+                    description: "Claude default mode.",
+                    disabled: false,
+                },
+            ],
+            config_options: [
+                {
+                    id: "model",
+                    runtime_id: "claude-acp",
+                    category: "model",
+                    label: "Model",
+                    type: "select",
+                    value: "claude-sonnet",
+                    options: [
+                        {
+                            value: "claude-sonnet",
+                            label: "Claude Sonnet",
+                        },
+                    ],
+                },
+            ],
+        };
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return claudeRuntimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-claude-1",
+                        runtime_id: "claude-acp",
+                        model_id: "claude-sonnet",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [
+                            {
+                                id: "m1",
+                                role: "user",
+                                kind: "text",
+                                content: "Recovered Claude chat",
+                                timestamp: 20,
+                            },
+                        ],
+                    },
+                ];
+            }
+            if (command === "ai_resume_runtime_session") {
+                return claudeSessionPayload;
+            }
+            if (command === "ai_create_session") {
+                throw new Error("should not create a fallback session");
+            }
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const state = useChatStore.getState();
+        expect(state.activeSessionId).toBe("claude-session-1");
+        expect(
+            state.sessionsById["persisted:history-claude-1"],
+        ).toBeUndefined();
+        expect(state.sessionsById["claude-session-1"]).toMatchObject({
+            historySessionId: "history-claude-1",
+            runtimeId: "claude-acp",
+            isPersistedSession: false,
+            resumeContextPending: false,
+        });
+        expect(invokeMock).toHaveBeenCalledWith("ai_resume_runtime_session", {
+            input: {
+                runtime_id: "claude-acp",
+                session_id: "history-claude-1",
+            },
+            vaultPath: "/vault",
+        });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+    });
+
     it("restores persisted tool diffs from session history", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -3068,7 +3540,7 @@ describe("chatStore", () => {
 
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
         useChatStore.setState({
@@ -3112,6 +3584,7 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
             vaultPath: "/vault",
             history: expect.objectContaining({
+                runtime_id: "codex-acp",
                 messages: expect.arrayContaining([
                     expect.objectContaining({
                         kind: "tool",
@@ -3137,7 +3610,7 @@ describe("chatStore", () => {
 
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const workCycleId = "cycle-pending";
 
         useChatStore.setState((state) => ({
@@ -3301,6 +3774,7 @@ describe("chatStore", () => {
                     {
                         version: 1,
                         session_id: "history-1",
+                        runtime_id: "codex-acp",
                         model_id: "test-model",
                         mode_id: "default",
                         created_at: 10,
@@ -3328,6 +3802,7 @@ describe("chatStore", () => {
                 id: "tab-history-1",
                 sessionId: "codex-session-1",
                 historySessionId: "history-1",
+                runtimeId: "codex-acp",
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-history-1");
@@ -3483,7 +3958,7 @@ describe("chatStore", () => {
     it("ignores agent changes while the session is busy", async () => {
         await useChatStore.getState().initialize();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         useChatStore.setState((state) => ({
             sessionsById: {
                 ...state.sessionsById,
@@ -3598,7 +4073,7 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
         useChatStore.getState().attachSelectionFromEditor();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const parts =
             useChatStore.getState().composerPartsBySessionId[activeSessionId] ??
             [];
@@ -3644,7 +4119,7 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
         useChatStore.getState().attachSelectionFromEditor();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const parts =
             useChatStore.getState().composerPartsBySessionId[activeSessionId] ??
             [];
@@ -3663,7 +4138,7 @@ describe("chatStore", () => {
         useEditorStore.setState({ currentSelection: null });
         useChatStore.getState().attachSelectionFromEditor();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const parts =
             useChatStore.getState().composerPartsBySessionId[activeSessionId] ??
             [];
@@ -3699,7 +4174,7 @@ describe("chatStore", () => {
         useChatStore.getState().attachSelectionFromEditor();
         useChatStore.getState().attachSelectionFromEditor();
 
-        const activeSessionId = useChatStore.getState().activeSessionId!;
+        const activeSessionId = getActiveSessionId();
         const parts =
             useChatStore.getState().composerPartsBySessionId[activeSessionId] ??
             [];

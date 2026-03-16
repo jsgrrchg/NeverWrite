@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+    AIAvailableCommandsPayload,
+    AIAuthTerminalErrorPayload,
+    AIAuthTerminalOutputPayload,
+    AIAuthTerminalSessionSnapshot,
     AIBackendRuntimeDescriptorPayload,
     AIBackendRuntimeSetupStatusPayload,
     AIBackendSessionPayload,
@@ -16,6 +20,7 @@ import type {
     AIToolActivityPayload,
     AIUserInputRequestPayload,
     AIRuntimeDescriptor,
+    AIRuntimeConnectionPayload,
     AIRuntimeSetupStatus,
     AISessionErrorPayload,
     PersistedSessionHistory,
@@ -35,6 +40,13 @@ export const AI_STATUS_EVENT = "ai://status-event";
 export const AI_PERMISSION_REQUEST_EVENT = "ai://permission-request";
 export const AI_USER_INPUT_REQUEST_EVENT = "ai://user-input-request";
 export const AI_PLAN_UPDATED_EVENT = "ai://plan-updated";
+export const AI_AVAILABLE_COMMANDS_UPDATED_EVENT =
+    "ai://available-commands-updated";
+export const AI_RUNTIME_CONNECTION_EVENT = "ai://runtime-connection";
+export const AI_AUTH_TERMINAL_STARTED_EVENT = "ai://auth-terminal-started";
+export const AI_AUTH_TERMINAL_OUTPUT_EVENT = "ai://auth-terminal-output";
+export const AI_AUTH_TERMINAL_EXITED_EVENT = "ai://auth-terminal-exited";
+export const AI_AUTH_TERMINAL_ERROR_EVENT = "ai://auth-terminal-error";
 
 function normalizeConfigOption(
     option: AIBackendSessionPayload["config_options"][number],
@@ -81,10 +93,12 @@ export function normalizeBackendSession(
             disabled: mode.disabled,
         })),
         configOptions: session.config_options.map(normalizeConfigOption),
+        availableCommands: undefined,
         messages: [],
         attachments: [],
         isPersistedSession: false,
         resumeContextPending: false,
+        runtimeState: "live",
     };
 }
 
@@ -123,9 +137,11 @@ function normalizeRuntimeSetupStatus(
         binaryReady: status.binary_ready,
         binaryPath: status.binary_path ?? undefined,
         binarySource: status.binary_source,
+        hasCustomBinaryPath: status.has_custom_binary_path ?? false,
         authReady: status.auth_ready,
         authMethod: status.auth_method ?? undefined,
         authMethods: status.auth_methods,
+        hasGatewayConfig: status.has_gateway_config ?? false,
         onboardingRequired: status.onboarding_required,
         message: status.message ?? undefined,
     };
@@ -147,17 +163,24 @@ export async function aiListSessions(vaultPath: string | null) {
     return sessions.map(normalizeBackendSession);
 }
 
-export async function aiGetSetupStatus() {
+export async function aiGetSetupStatus(runtimeId: string) {
     const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
         "ai_get_setup_status",
+        {
+            runtimeId,
+        },
     );
     return normalizeRuntimeSetupStatus(status);
 }
 
 export async function aiUpdateSetup(input: {
+    runtimeId: string;
     customBinaryPath?: string;
     codexApiKey?: string;
     openaiApiKey?: string;
+    anthropicBaseUrl?: string;
+    anthropicCustomHeaders?: string;
+    anthropicAuthToken?: string;
 }) {
     const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
         "ai_update_setup",
@@ -166,18 +189,29 @@ export async function aiUpdateSetup(input: {
                 custom_binary_path: input.customBinaryPath ?? null,
                 codex_api_key: input.codexApiKey ?? null,
                 openai_api_key: input.openaiApiKey ?? null,
+                anthropic_base_url: input.anthropicBaseUrl ?? null,
+                anthropic_custom_headers: input.anthropicCustomHeaders ?? null,
+                anthropic_auth_token: input.anthropicAuthToken ?? null,
             },
+            runtimeId: input.runtimeId,
         },
     );
     return normalizeRuntimeSetupStatus(status);
 }
 
-export async function aiStartAuth(methodId: string, vaultPath: string | null) {
+export async function aiStartAuth(
+    input: {
+        methodId: string;
+        runtimeId: string;
+    },
+    vaultPath: string | null,
+) {
     const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
         "ai_start_auth",
         {
             input: {
-                method_id: methodId,
+                method_id: input.methodId,
+                runtimeId: input.runtimeId,
             },
             vaultPath: vaultPath ?? null,
         },
@@ -185,10 +219,125 @@ export async function aiStartAuth(methodId: string, vaultPath: string | null) {
     return normalizeRuntimeSetupStatus(status);
 }
 
+export async function aiStartAuthTerminalSession(input: {
+    runtimeId: string;
+    vaultPath: string | null;
+    customBinaryPath?: string;
+    cols?: number;
+    rows?: number;
+}) {
+    return invoke<AIAuthTerminalSessionSnapshot>(
+        "ai_start_auth_terminal_session",
+        {
+            input: {
+                runtimeId: input.runtimeId,
+                vaultPath: input.vaultPath ?? null,
+                customBinaryPath: input.customBinaryPath ?? null,
+                cols: input.cols ?? null,
+                rows: input.rows ?? null,
+            },
+        },
+    );
+}
+
+export async function aiWriteAuthTerminalSession(input: {
+    sessionId: string;
+    data: string;
+}) {
+    await invoke("ai_write_auth_terminal_session", {
+        input: {
+            sessionId: input.sessionId,
+            data: input.data,
+        },
+    });
+}
+
+export async function aiResizeAuthTerminalSession(input: {
+    sessionId: string;
+    cols: number;
+    rows: number;
+}) {
+    return invoke<AIAuthTerminalSessionSnapshot>(
+        "ai_resize_auth_terminal_session",
+        {
+            input: {
+                sessionId: input.sessionId,
+                cols: input.cols,
+                rows: input.rows,
+            },
+        },
+    );
+}
+
+export async function aiCloseAuthTerminalSession(sessionId: string) {
+    await invoke("ai_close_auth_terminal_session", { sessionId });
+}
+
+export async function aiGetAuthTerminalSessionSnapshot(sessionId: string) {
+    return invoke<AIAuthTerminalSessionSnapshot>(
+        "ai_get_auth_terminal_session_snapshot",
+        { sessionId },
+    );
+}
+
 export async function aiLoadSession(sessionId: string) {
     const session = await invoke<AIBackendSessionPayload>("ai_load_session", {
         sessionId,
     });
+    return normalizeBackendSession(session);
+}
+
+export async function aiLoadRuntimeSession(
+    runtimeId: string,
+    sessionId: string,
+    vaultPath: string | null,
+) {
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_load_runtime_session",
+        {
+            input: {
+                runtime_id: runtimeId,
+                session_id: sessionId,
+            },
+            vaultPath: vaultPath ?? null,
+        },
+    );
+    return normalizeBackendSession(session);
+}
+
+export async function aiResumeRuntimeSession(
+    runtimeId: string,
+    sessionId: string,
+    vaultPath: string | null,
+) {
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_resume_runtime_session",
+        {
+            input: {
+                runtime_id: runtimeId,
+                session_id: sessionId,
+            },
+            vaultPath: vaultPath ?? null,
+        },
+    );
+    return normalizeBackendSession(session);
+}
+
+export async function aiForkRuntimeSession(
+    runtimeId: string,
+    sessionId: string,
+    vaultPath: string | null,
+) {
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_fork_runtime_session",
+        {
+            input: {
+                runtime_id: runtimeId,
+                session_id: sessionId,
+            },
+            vaultPath: vaultPath ?? null,
+        },
+    );
     return normalizeBackendSession(session);
 }
 
@@ -451,6 +600,18 @@ export async function aiDeleteAllSessionHistories(
     await invoke("ai_delete_all_session_histories", { vaultPath });
 }
 
+export async function aiDeleteRuntimeSession(sessionId: string): Promise<void> {
+    await invoke("ai_delete_runtime_session", { sessionId });
+}
+
+export async function aiDeleteRuntimeSessionsForVault(
+    vaultPath: string | null,
+): Promise<void> {
+    await invoke("ai_delete_runtime_sessions_for_vault", {
+        vaultPath: vaultPath ?? null,
+    });
+}
+
 export async function aiPruneSessionHistories(
     vaultPath: string,
     maxAgeDays: number,
@@ -489,6 +650,72 @@ export async function listenToAiPlanUpdated(
     return listen<AIPlanUpdatePayload>(AI_PLAN_UPDATED_EVENT, (event) => {
         callback(event.payload);
     });
+}
+
+export async function listenToAiAvailableCommandsUpdated(
+    callback: (payload: AIAvailableCommandsPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIAvailableCommandsPayload>(
+        AI_AVAILABLE_COMMANDS_UPDATED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiRuntimeConnection(
+    callback: (payload: AIRuntimeConnectionPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIRuntimeConnectionPayload>(
+        AI_RUNTIME_CONNECTION_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiAuthTerminalStarted(
+    callback: (payload: AIAuthTerminalSessionSnapshot) => void,
+): Promise<UnlistenFn> {
+    return listen<AIAuthTerminalSessionSnapshot>(
+        AI_AUTH_TERMINAL_STARTED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiAuthTerminalOutput(
+    callback: (payload: AIAuthTerminalOutputPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIAuthTerminalOutputPayload>(
+        AI_AUTH_TERMINAL_OUTPUT_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiAuthTerminalExited(
+    callback: (payload: AIAuthTerminalSessionSnapshot) => void,
+): Promise<UnlistenFn> {
+    return listen<AIAuthTerminalSessionSnapshot>(
+        AI_AUTH_TERMINAL_EXITED_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiAuthTerminalError(
+    callback: (payload: AIAuthTerminalErrorPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIAuthTerminalErrorPayload>(
+        AI_AUTH_TERMINAL_ERROR_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +804,20 @@ export async function whisperTranscribe(
     const result = await invoke<WhisperTranscriptionRaw>("whisper_transcribe", {
         audioPath,
     });
+    return {
+        text: result.text,
+        language: result.language,
+        durationMs: result.duration_ms,
+    };
+}
+
+export async function whisperTranscribeRecording(
+    audioBase64: string,
+): Promise<WhisperTranscriptionDto> {
+    const result = await invoke<WhisperTranscriptionRaw>(
+        "whisper_transcribe_recording",
+        { audioBase64 },
+    );
     return {
         text: result.text,
         language: result.language,

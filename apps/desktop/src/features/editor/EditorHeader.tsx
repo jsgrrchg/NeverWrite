@@ -64,6 +64,7 @@ export function EditableNoteTitle({
 }) {
     const ref = useRef<HTMLTextAreaElement | null>(null);
     const [draft, setDraft] = useState(value);
+    const [isFocused, setIsFocused] = useState(false);
 
     useEffect(() => {
         if (textareaRef) {
@@ -72,22 +73,22 @@ export function EditableNoteTitle({
     }, [textareaRef]);
 
     useEffect(() => {
-        if (document.activeElement !== ref.current) {
-            setDraft(value);
-        }
+        setDraft(value);
     }, [value]);
+
+    const visibleValue = isFocused ? draft : value;
 
     useLayoutEffect(() => {
         const el = ref.current;
         if (!el) return;
         el.style.height = "0px";
         el.style.height = `${el.scrollHeight}px`;
-    }, [draft]);
+    }, [visibleValue]);
 
     return (
         <textarea
             ref={ref}
-            value={draft}
+            value={visibleValue}
             rows={1}
             spellCheck={false}
             onChange={(e) => {
@@ -113,12 +114,15 @@ export function EditableNoteTitle({
                 outline: "none",
             }}
             onFocus={(e) => {
+                setIsFocused(true);
+                setDraft(value);
                 e.currentTarget.style.borderColor =
                     "color-mix(in srgb, var(--accent) 22%, transparent)";
                 e.currentTarget.style.background =
                     "color-mix(in srgb, var(--bg-secondary) 78%, transparent)";
             }}
             onBlur={(e) => {
+                setIsFocused(false);
                 e.currentTarget.style.borderColor = "transparent";
                 e.currentTarget.style.background = "transparent";
             }}

@@ -2,14 +2,12 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::Deserialize;
 use tauri::AppHandle;
-use vault_ai_ai::{
-    AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiRuntimeDescriptor,
-    AiRuntimeSetupStatus, AiSession, AiSessionStatus, CODEX_RUNTIME_ID,
-};
+use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
 
-use super::codex::{
-    clear_authenticated_method, mark_authenticated_method, save_setup_config, CodexRuntime,
-    CodexRuntimeHandle, CodexSetupInput,
+use super::{
+    claude::ClaudeRuntimeAdapter,
+    codex::CodexRuntimeAdapter,
+    runtime::{merge_runtime_capabilities, AiRuntimeAdapter, AiRuntimeSetupInput},
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -88,10 +86,29 @@ fn build_prompt_with_attachments(
                         attachment.label, rel_path
                     ));
                 } else if mime.starts_with("text/") || mime == "application/json" {
-                    let text = std::fs::read_to_string(fp).unwrap_or_default();
+                    match std::fs::read_to_string(fp) {
+                        Ok(text) => {
+                            context_parts.push(format!(
+                                "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
+                                attachment.label, mime, text
+                            ));
+                        }
+                        Err(e) => {
+                            context_parts.push(format!(
+                                "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                                attachment.label, mime, e
+                            ));
+                        }
+                    }
+                } else if mime.starts_with("image/") {
+                    let rel_path = vault_root
+                        .and_then(|root| std::path::Path::new(fp).strip_prefix(root).ok())
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| fp.to_string());
+                    let size = std::fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
                     context_parts.push(format!(
-                        "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
-                        attachment.label, mime, text
+                        "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\" />",
+                        attachment.label, mime, rel_path, size
                     ));
                 } else {
                     let size = std::fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
@@ -102,11 +119,19 @@ fn build_prompt_with_attachments(
                 }
             }
         } else if let Some(path) = &attachment.path {
-            if let Ok(file_content) = std::fs::read_to_string(path) {
-                context_parts.push(format!(
-                    "<attached_note name=\"{}\">\n{}\n</attached_note>",
-                    attachment.label, file_content
-                ));
+            match std::fs::read_to_string(path) {
+                Ok(file_content) => {
+                    context_parts.push(format!(
+                        "<attached_note name=\"{}\">\n{}\n</attached_note>",
+                        attachment.label, file_content
+                    ));
+                }
+                Err(e) => {
+                    context_parts.push(format!(
+                        "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                        attachment.label, e
+                    ));
+                }
             }
         }
     }
@@ -116,189 +141,186 @@ fn build_prompt_with_attachments(
     format!("{}\n\n{}", context_parts.join("\n\n"), content)
 }
 
-/// Filter the reasoning_effort config option so it only shows the effort levels
-/// available for the given model. Adjusts the current value when needed.
-fn filter_effort_options(
-    mut options: Vec<AiConfigOption>,
-    model_id: &str,
-    efforts_by_model: &HashMap<String, Vec<String>>,
-) -> Vec<AiConfigOption> {
-    let Some(available) = efforts_by_model.get(model_id) else {
-        return options;
-    };
-
-    let existing_index = options
-        .iter()
-        .position(|option| option.id == "reasoning_effort");
-    let current_value = options
-        .iter()
-        .find(|option| option.id == "reasoning_effort")
-        .map(|option| option.value.clone())
-        .unwrap_or_default();
-    let runtime_id = options
-        .iter()
-        .find(|option| option.id == "reasoning_effort" || option.id == "model")
-        .map(|option| option.runtime_id.clone())
-        .unwrap_or_else(|| CODEX_RUNTIME_ID.to_string());
-
-    options.retain(|option| option.id != "reasoning_effort");
-
-    let Some(reasoning_option) =
-        build_reasoning_option(&runtime_id, available, current_value.as_str())
-    else {
-        return options;
-    };
-
-    let insert_at = existing_index
-        .or_else(|| {
-            options
-                .iter()
-                .position(|option| option.id == "model")
-                .map(|index| index + 1)
-        })
-        .unwrap_or(options.len())
-        .min(options.len());
-
-    options.insert(insert_at, reasoning_option);
-    options
-}
-
-fn build_reasoning_option(
-    runtime_id: &str,
-    available: &[String],
-    current_value: &str,
-) -> Option<AiConfigOption> {
-    if available.len() <= 1 {
-        return None;
-    }
-
-    let value = if available.iter().any(|effort| effort == current_value) {
-        current_value.to_string()
-    } else {
-        available.first()?.clone()
-    };
-
-    Some(AiConfigOption {
-        id: "reasoning_effort".to_string(),
-        runtime_id: runtime_id.to_string(),
-        category: AiConfigOptionCategory::Reasoning,
-        label: "Reasoning Effort".to_string(),
-        description: Some("Choose how much reasoning effort the model should use".to_string()),
-        kind: "select".to_string(),
-        value,
-        options: available
-            .iter()
-            .map(|effort| AiConfigSelectOption {
-                value: effort.clone(),
-                label: reasoning_effort_label(effort),
-                description: None,
-            })
-            .collect(),
-    })
-}
-
-fn reasoning_effort_label(effort: &str) -> String {
-    match effort {
-        "xhigh" => "Extra High".to_string(),
-        _ => {
-            let mut chars = effort.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                None => String::new(),
-            }
-        }
-    }
-}
-
-fn sync_model_selection(
-    session: &mut AiSession,
-    model_id: &str,
-    efforts_by_model: &HashMap<String, Vec<String>>,
-) {
-    session.model_id = model_id.to_string();
-
-    if let Some(option) = session
-        .config_options
-        .iter_mut()
-        .find(|option| option.id == "model")
-    {
-        option.value = model_id.to_string();
-    }
-
-    session.config_options =
-        filter_effort_options(session.config_options.clone(), model_id, efforts_by_model);
-}
-
 #[derive(Debug, Clone)]
 struct ManagedSession {
-    session: AiSession,
+    runtime_id: String,
     vault_root: Option<PathBuf>,
-    /// Maps display model id → available effort levels.
-    efforts_by_model: HashMap<String, Vec<String>>,
-    /// Maps display model id → canonical ACP base id (e.g. "gpt-5.1-codex" → "gpt-5.1-codex-max").
-    acp_model_ids: HashMap<String, String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct AiManager {
-    codex: CodexRuntime,
-    codex_handle: Option<CodexRuntimeHandle>,
+    runtimes: HashMap<String, Box<dyn AiRuntimeAdapter>>,
+    runtime_order: Vec<String>,
     sessions: HashMap<String, ManagedSession>,
     session_order: Vec<String>,
 }
 
 impl AiManager {
     pub fn new() -> Self {
-        Self::default()
+        let mut manager = Self::default();
+        manager.register_runtime(Box::new(CodexRuntimeAdapter::default()));
+        manager.register_runtime(Box::new(ClaudeRuntimeAdapter::default()));
+        manager
     }
 
     pub fn list_runtimes(&self) -> Vec<AiRuntimeDescriptor> {
-        vec![self.codex.descriptor()]
-    }
-
-    pub fn codex_setup_status(&self, app: &AppHandle) -> Result<AiRuntimeSetupStatus, String> {
-        self.codex.setup_status(app)
-    }
-
-    pub fn save_codex_setup(
-        &self,
-        app: &AppHandle,
-        input: CodexSetupInput,
-    ) -> Result<AiRuntimeSetupStatus, String> {
-        let _ = save_setup_config(app, input)?;
-        self.codex.setup_status(app)
-    }
-
-    pub fn start_codex_auth(
-        &mut self,
-        app: &AppHandle,
-        method_id: &str,
-        vault_root: Option<PathBuf>,
-    ) -> Result<AiRuntimeSetupStatus, String> {
-        let process_spec = self.codex.process_spec(app, vault_root)?;
-        self.codex_handle(app)
-            .authenticate(process_spec, method_id)?;
-        let _ = mark_authenticated_method(app, method_id)?;
-        self.codex.setup_status(app)
-    }
-
-    pub fn list_sessions(&self, vault_root: Option<&PathBuf>) -> Vec<AiSession> {
-        self.session_order
+        self.runtime_order
             .iter()
-            .filter_map(|session_id| self.sessions.get(session_id))
-            .filter(|managed| managed.vault_root.as_ref() == vault_root)
-            .map(|managed| managed.session.clone())
+            .filter_map(|runtime_id| self.runtimes.get(runtime_id))
+            .map(|runtime| {
+                merge_runtime_capabilities(runtime.descriptor(), &runtime.capabilities())
+            })
             .collect()
     }
 
+    pub fn runtime_setup_status(
+        &self,
+        app: &AppHandle,
+        runtime_id: &str,
+    ) -> Result<AiRuntimeSetupStatus, String> {
+        self.runtime_ref(runtime_id)?.setup_status(app)
+    }
+
+    pub fn update_runtime_setup(
+        &mut self,
+        app: &AppHandle,
+        runtime_id: &str,
+        input: AiRuntimeSetupInput,
+    ) -> Result<AiRuntimeSetupStatus, String> {
+        self.runtime_mut(runtime_id)?.update_setup(app, input)
+    }
+
+    pub fn start_runtime_auth(
+        &mut self,
+        app: &AppHandle,
+        runtime_id: &str,
+        method_id: &str,
+        vault_root: Option<PathBuf>,
+    ) -> Result<AiRuntimeSetupStatus, String> {
+        self.runtime_mut(runtime_id)?
+            .start_auth(app, method_id, vault_root)
+    }
+
+    pub fn list_sessions(&mut self, vault_root: Option<&PathBuf>) -> Vec<AiSession> {
+        for runtime_id in self.runtime_order.clone() {
+            if let Some(runtime) = self.runtimes.get_mut(&runtime_id) {
+                let _ = runtime.sync_state();
+            }
+        }
+
+        let mut stale_session_ids = Vec::new();
+        let sessions = self
+            .session_order
+            .iter()
+            .filter_map(|session_id| {
+                self.sessions
+                    .get(session_id)
+                    .map(|managed| (session_id, managed))
+            })
+            .filter(|(_, managed)| managed.vault_root.as_ref() == vault_root)
+            .filter_map(|(session_id, managed)| {
+                let session = self
+                    .runtimes
+                    .get(&managed.runtime_id)
+                    .and_then(|runtime| runtime.get_session(session_id));
+                if session.is_none() {
+                    stale_session_ids.push(session_id.to_string());
+                }
+                session
+            })
+            .collect();
+
+        if !stale_session_ids.is_empty() {
+            for session_id in stale_session_ids {
+                self.sessions.remove(&session_id);
+                self.session_order.retain(|id| id != &session_id);
+            }
+        }
+
+        sessions
+    }
+
     pub fn load_session(&mut self, session_id: &str) -> Result<AiSession, String> {
+        let runtime_id = self.session_runtime_id(session_id)?;
         let session = self
-            .sessions
-            .get(session_id)
-            .map(|managed| managed.session.clone())
+            .runtime_ref(&runtime_id)?
+            .get_session(session_id)
             .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
 
         self.touch_session(session_id);
+        Ok(session)
+    }
+
+    pub fn list_runtime_sessions(
+        &mut self,
+        runtime_id: &str,
+        vault_root: Option<&PathBuf>,
+        app: &AppHandle,
+    ) -> Result<Vec<AiRuntimeSessionSummary>, String> {
+        self.runtime_mut(runtime_id)?
+            .list_runtime_sessions(app, vault_root)
+    }
+
+    pub fn load_runtime_session(
+        &mut self,
+        runtime_id: &str,
+        session_id: &str,
+        vault_root: Option<PathBuf>,
+        app: &AppHandle,
+    ) -> Result<AiSession, String> {
+        let session =
+            self.runtime_mut(runtime_id)?
+                .load_session(app, session_id, vault_root.clone())?;
+        self.sessions.insert(
+            session.session_id.clone(),
+            ManagedSession {
+                runtime_id: session.runtime_id.clone(),
+                vault_root,
+            },
+        );
+        self.touch_session(&session.session_id);
+        Ok(session)
+    }
+
+    pub fn resume_runtime_session(
+        &mut self,
+        runtime_id: &str,
+        session_id: &str,
+        vault_root: Option<PathBuf>,
+        app: &AppHandle,
+    ) -> Result<AiSession, String> {
+        let session =
+            self.runtime_mut(runtime_id)?
+                .resume_session(app, session_id, vault_root.clone())?;
+        self.sessions.insert(
+            session.session_id.clone(),
+            ManagedSession {
+                runtime_id: session.runtime_id.clone(),
+                vault_root,
+            },
+        );
+        self.touch_session(&session.session_id);
+        Ok(session)
+    }
+
+    pub fn fork_runtime_session(
+        &mut self,
+        runtime_id: &str,
+        session_id: &str,
+        vault_root: Option<PathBuf>,
+        app: &AppHandle,
+    ) -> Result<AiSession, String> {
+        let session =
+            self.runtime_mut(runtime_id)?
+                .fork_session(app, session_id, vault_root.clone())?;
+        self.sessions.insert(
+            session.session_id.clone(),
+            ManagedSession {
+                runtime_id: session.runtime_id.clone(),
+                vault_root,
+            },
+        );
+        self.touch_session(&session.session_id);
         Ok(session)
     }
 
@@ -308,42 +330,15 @@ impl AiManager {
         vault_root: Option<PathBuf>,
         app: &AppHandle,
     ) -> Result<AiSession, String> {
-        if runtime_id != CODEX_RUNTIME_ID {
-            return Err(format!("Runtime no soportado: {runtime_id}"));
-        }
-
-        let process_spec = self.codex.process_spec(app, vault_root.clone())?;
-        let session_id = match self.codex_handle(app).create_session(process_spec.clone()) {
-            Ok(session_id) => session_id,
-            Err(error) => {
-                self.invalidate_auth_if_needed(app, &error);
-                return Err(error);
-            }
-        };
-        let config_options = filter_effort_options(
-            session_id.config_options,
-            &session_id.model_id,
-            &session_id.efforts_by_model,
-        );
-        let session = AiSession {
-            session_id: session_id.session_id.clone(),
-            runtime_id: CODEX_RUNTIME_ID.to_string(),
-            model_id: session_id.model_id,
-            mode_id: session_id.mode_id,
-            status: AiSessionStatus::Idle,
-            efforts_by_model: session_id.efforts_by_model.clone(),
-            models: session_id.models,
-            modes: session_id.modes,
-            config_options,
-        };
+        let session = self
+            .runtime_mut(runtime_id)?
+            .create_session(app, vault_root.clone())?;
 
         self.sessions.insert(
             session.session_id.clone(),
             ManagedSession {
-                session: session.clone(),
+                runtime_id: session.runtime_id.clone(),
                 vault_root,
-                efforts_by_model: session_id.efforts_by_model,
-                acp_model_ids: session_id.acp_model_ids,
             },
         );
         self.touch_session(&session.session_id);
@@ -352,69 +347,19 @@ impl AiManager {
     }
 
     pub fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<AiSession, String> {
-        let managed = self
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
-
-        if !managed.session.models.iter().any(|m| m.id == model_id) {
-            return Err(format!("Modelo no soportado por Codex ACP: {model_id}"));
-        }
-
-        // Pick the current reasoning effort, falling back to "medium".
-        let current_effort = managed
-            .session
-            .config_options
-            .iter()
-            .find(|o| o.id == "reasoning_effort")
-            .map(|o| o.value.clone())
-            .unwrap_or_else(|| "medium".to_string());
-
-        // If the new model doesn't support the current effort, pick the first available.
-        let available_efforts = managed.efforts_by_model.get(model_id);
-        let effort = match available_efforts {
-            Some(levels) if levels.contains(&current_effort) => current_effort,
-            Some(levels) => levels.first().cloned().unwrap_or(current_effort),
-            None => current_effort,
-        };
-
-        // Resolve display id → canonical ACP base id (e.g. "gpt-5.1-codex" → "gpt-5.1-codex-max").
-        let acp_base = managed
-            .acp_model_ids
-            .get(model_id)
-            .cloned()
-            .unwrap_or_else(|| model_id.to_string());
-        let acp_model_id = format!("{acp_base}/{effort}");
-
-        self.codex_handle_from_session(session_id)?
-            .set_model(session_id, &acp_model_id)?;
-
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            sync_model_selection(&mut managed.session, model_id, &managed.efforts_by_model);
-            managed.session.clone()
-        };
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self
+            .runtime_mut(&runtime_id)?
+            .set_model(session_id, model_id)?;
         self.touch_session(session_id);
         Ok(session)
     }
 
     pub fn set_mode(&mut self, session_id: &str, mode_id: &str) -> Result<AiSession, String> {
-        let supports_mode = self
-            .sessions
-            .get(session_id)
-            .map(|managed| managed.session.modes.iter().any(|mode| mode.id == mode_id))
-            .unwrap_or(false);
-        if !supports_mode {
-            return Err(format!("Modo no soportado por Codex ACP: {mode_id}"));
-        }
-
-        self.codex_handle_from_session(session_id)?
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self
+            .runtime_mut(&runtime_id)?
             .set_mode(session_id, mode_id)?;
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            managed.session.mode_id = mode_id.to_string();
-            managed.session.clone()
-        };
         self.touch_session(session_id);
         Ok(session)
     }
@@ -425,74 +370,17 @@ impl AiManager {
         option_id: &str,
         value: &str,
     ) -> Result<AiSession, String> {
-        let supports_value = self
-            .sessions
-            .get(session_id)
-            .and_then(|managed| {
-                managed
-                    .session
-                    .config_options
-                    .iter()
-                    .find(|item| item.id == option_id)
-                    .map(|option| option.options.iter().any(|item| item.value == value))
-            })
-            .unwrap_or(false);
-
-        if !supports_value {
-            return Err(format!(
-                "Opcion invalida para Codex ACP: {option_id}={value}"
-            ));
-        }
-
-        self.codex_handle_from_session(session_id)?
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self
+            .runtime_mut(&runtime_id)?
             .set_config_option(session_id, option_id, value)?;
-
-        // The ACP encodes effort in the model ID, so changing reasoning_effort
-        // also requires sending a set_model with the recalculated ACP model ID.
-        if option_id == "reasoning_effort" {
-            let managed = self
-                .sessions
-                .get(session_id)
-                .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
-            let model_id = &managed.session.model_id;
-            let acp_base = managed
-                .acp_model_ids
-                .get(model_id)
-                .cloned()
-                .unwrap_or_else(|| model_id.clone());
-            let acp_model_id = format!("{acp_base}/{value}");
-            self.codex_handle_from_session(session_id)?
-                .set_model(session_id, &acp_model_id)?;
-        }
-
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            if option_id == "model" {
-                sync_model_selection(&mut managed.session, value, &managed.efforts_by_model);
-            } else {
-                let option = managed
-                    .session
-                    .config_options
-                    .iter_mut()
-                    .find(|item| item.id == option_id)
-                    .ok_or_else(|| format!("Opcion no encontrada: {option_id}"))?;
-
-                option.value = value.to_string();
-            }
-            managed.session.clone()
-        };
         self.touch_session(session_id);
         Ok(session)
     }
 
     pub fn cancel_turn(&mut self, session_id: &str) -> Result<AiSession, String> {
-        self.codex_handle_from_session(session_id)?
-            .cancel(session_id)?;
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            managed.session.status = AiSessionStatus::Idle;
-            managed.session.clone()
-        };
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self.runtime_mut(&runtime_id)?.cancel_turn(session_id)?;
         self.touch_session(session_id);
         Ok(session)
     }
@@ -512,19 +400,10 @@ impl AiManager {
             .and_then(|m| m.vault_root.clone());
         let full_prompt =
             build_prompt_with_attachments(content, attachments, vault_root.as_deref());
-        if let Err(error) = self.codex_handle_from_session(session_id)?.prompt_async(
-            session_id,
-            &full_prompt,
-            app.clone(),
-        ) {
-            self.invalidate_auth_if_needed(app, &error);
-            return Err(error);
-        }
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            managed.session.status = AiSessionStatus::Streaming;
-            managed.session.clone()
-        };
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self
+            .runtime_mut(&runtime_id)?
+            .send_message(session_id, &full_prompt, app)?;
         self.touch_session(session_id);
         Ok(session)
     }
@@ -535,13 +414,10 @@ impl AiManager {
         request_id: &str,
         option_id: Option<&str>,
     ) -> Result<AiSession, String> {
-        self.codex_handle_from_session(session_id)?
-            .respond_permission(request_id, option_id)?;
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            managed.session.status = AiSessionStatus::Streaming;
-            managed.session.clone()
-        };
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self
+            .runtime_mut(&runtime_id)?
+            .respond_permission(session_id, request_id, option_id)?;
         self.touch_session(session_id);
         Ok(session)
     }
@@ -552,15 +428,38 @@ impl AiManager {
         request_id: &str,
         answers: HashMap<String, Vec<String>>,
     ) -> Result<AiSession, String> {
-        self.codex_handle_from_session(session_id)?
+        let runtime_id = self.session_runtime_id(session_id)?;
+        let session = self
+            .runtime_mut(&runtime_id)?
             .respond_user_input(session_id, request_id, answers)?;
-        let session = {
-            let managed = self.session_mut(session_id)?;
-            managed.session.status = AiSessionStatus::Streaming;
-            managed.session.clone()
-        };
         self.touch_session(session_id);
         Ok(session)
+    }
+
+    pub fn remove_session(&mut self, session_id: &str) -> Result<(), String> {
+        let runtime_id = self
+            .sessions
+            .get(session_id)
+            .map(|managed| managed.runtime_id.clone())
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
+        if let Ok(runtime) = self.runtime_mut(&runtime_id) {
+            runtime.remove_session(session_id);
+        }
+        self.sessions.remove(session_id);
+        self.session_order.retain(|id| id != session_id);
+        Ok(())
+    }
+
+    pub fn remove_sessions_for_vault(&mut self, vault_root: Option<&PathBuf>) {
+        let session_ids = self
+            .sessions
+            .iter()
+            .filter(|(_, managed)| managed.vault_root.as_ref() == vault_root)
+            .map(|(session_id, _)| session_id.clone())
+            .collect::<Vec<_>>();
+        for session_id in session_ids {
+            let _ = self.remove_session(&session_id);
+        }
     }
 
     fn touch_session(&mut self, session_id: &str) {
@@ -568,42 +467,36 @@ impl AiManager {
         self.session_order.insert(0, session_id.to_string());
     }
 
-    fn codex_handle(&mut self, app: &AppHandle) -> CodexRuntimeHandle {
-        if let Some(handle) = self.codex_handle.as_ref() {
-            return handle.clone();
-        }
-
-        let handle = CodexRuntimeHandle::spawn(app.clone());
-        self.codex_handle = Some(handle.clone());
-        handle
+    fn register_runtime(&mut self, runtime: Box<dyn AiRuntimeAdapter>) {
+        let runtime_id = runtime.runtime_id().to_string();
+        self.runtime_order.retain(|id| id != &runtime_id);
+        self.runtime_order.push(runtime_id.clone());
+        self.runtimes.insert(runtime_id, runtime);
     }
 
-    fn codex_handle_from_session(&self, session_id: &str) -> Result<CodexRuntimeHandle, String> {
-        if !self.sessions.contains_key(session_id) {
-            return Err(format!("Sesion AI no encontrada: {session_id}"));
+    fn runtime_ref(&self, runtime_id: &str) -> Result<&dyn AiRuntimeAdapter, String> {
+        match self.runtimes.get(runtime_id) {
+            Some(runtime) => Ok(runtime.as_ref()),
+            None => Err(format!("Runtime no soportado: {runtime_id}")),
         }
-
-        self.codex_handle
-            .clone()
-            .ok_or_else(|| "ACP runtime is not initialized.".to_string())
     }
 
-    fn session_mut(&mut self, session_id: &str) -> Result<&mut ManagedSession, String> {
+    fn runtime_mut(
+        &mut self,
+        runtime_id: &str,
+    ) -> Result<&mut (dyn AiRuntimeAdapter + '_), String> {
+        match self.runtimes.get_mut(runtime_id) {
+            Some(runtime) => Ok(runtime.as_mut()),
+            None => Err(format!("Runtime no soportado: {runtime_id}")),
+        }
+    }
+
+    fn session_runtime_id(&self, session_id: &str) -> Result<String, String> {
         self.sessions
-            .get_mut(session_id)
+            .get(session_id)
+            .map(|managed| managed.runtime_id.clone())
             .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
-
-    fn invalidate_auth_if_needed(&self, app: &AppHandle, error: &str) {
-        if is_authentication_error(error) {
-            let _ = clear_authenticated_method(app);
-        }
-    }
-}
-
-fn is_authentication_error(message: &str) -> bool {
-    let normalized = message.trim().to_lowercase();
-    normalized.contains("auth_required") || normalized.contains("authentication required")
 }
 
 #[cfg(test)]
@@ -613,103 +506,188 @@ mod tests {
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use vault_ai_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus};
 
-    fn config_option(id: &str, category: AiConfigOptionCategory) -> AiConfigOption {
-        AiConfigOption {
-            id: id.to_string(),
-            runtime_id: CODEX_RUNTIME_ID.to_string(),
-            category,
-            label: id.to_string(),
-            description: None,
-            kind: "select".to_string(),
-            value: String::new(),
-            options: Vec::new(),
+    use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities};
+
+    #[derive(Default)]
+    struct MockRuntime {
+        sessions: HashMap<String, AiSession>,
+    }
+
+    impl AiRuntimeAdapter for MockRuntime {
+        fn runtime_id(&self) -> &'static str {
+            "mock-runtime"
+        }
+
+        fn descriptor(&self) -> AiRuntimeDescriptor {
+            AiRuntimeDescriptor {
+                runtime: AiRuntimeOption {
+                    id: self.runtime_id().to_string(),
+                    name: "Mock Runtime".to_string(),
+                    description: "Test runtime".to_string(),
+                    capabilities: vec![],
+                },
+                models: vec![],
+                modes: vec![],
+                config_options: vec![],
+            }
+        }
+
+        fn capabilities(&self) -> AiRuntimeCapabilities {
+            AiRuntimeCapabilities {
+                user_input: true,
+                ..AiRuntimeCapabilities::default()
+            }
+        }
+
+        fn setup_status(&self, _app: &AppHandle) -> Result<AiRuntimeSetupStatus, String> {
+            Err("not used".to_string())
+        }
+
+        fn update_setup(
+            &mut self,
+            _app: &AppHandle,
+            _input: AiRuntimeSetupInput,
+        ) -> Result<AiRuntimeSetupStatus, String> {
+            Err("not used".to_string())
+        }
+
+        fn start_auth(
+            &mut self,
+            _app: &AppHandle,
+            _method_id: &str,
+            _vault_root: Option<PathBuf>,
+        ) -> Result<AiRuntimeSetupStatus, String> {
+            Err("not used".to_string())
+        }
+
+        fn create_session(
+            &mut self,
+            _app: &AppHandle,
+            _vault_root: Option<PathBuf>,
+        ) -> Result<AiSession, String> {
+            Err("not used".to_string())
+        }
+
+        fn get_session(&self, session_id: &str) -> Option<AiSession> {
+            self.sessions.get(session_id).cloned()
+        }
+
+        fn set_model(&mut self, _session_id: &str, _model_id: &str) -> Result<AiSession, String> {
+            Err("not used".to_string())
+        }
+
+        fn set_mode(&mut self, session_id: &str, mode_id: &str) -> Result<AiSession, String> {
+            let session = self
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| "missing session".to_string())?;
+            session.mode_id = mode_id.to_string();
+            Ok(session.clone())
+        }
+
+        fn set_config_option(
+            &mut self,
+            _session_id: &str,
+            _option_id: &str,
+            _value: &str,
+        ) -> Result<AiSession, String> {
+            Err("not used".to_string())
+        }
+
+        fn cancel_turn(&mut self, _session_id: &str) -> Result<AiSession, String> {
+            Err("not used".to_string())
+        }
+
+        fn send_message(
+            &mut self,
+            _session_id: &str,
+            _prompt: &str,
+            _app: &AppHandle,
+        ) -> Result<AiSession, String> {
+            Err("not used".to_string())
+        }
+
+        fn respond_permission(
+            &mut self,
+            _session_id: &str,
+            _request_id: &str,
+            _option_id: Option<&str>,
+        ) -> Result<AiSession, String> {
+            Err("not used".to_string())
+        }
+
+        fn respond_user_input(
+            &mut self,
+            _session_id: &str,
+            _request_id: &str,
+            _answers: HashMap<String, Vec<String>>,
+        ) -> Result<AiSession, String> {
+            Err("not used".to_string())
         }
     }
 
     #[test]
-    fn filter_effort_options_can_expand_after_switching_models() {
-        let options = vec![
-            AiConfigOption {
-                value: "model-a".to_string(),
-                options: vec![
-                    AiConfigSelectOption {
-                        value: "model-a".to_string(),
-                        label: "Model A".to_string(),
-                        description: None,
-                    },
-                    AiConfigSelectOption {
-                        value: "model-b".to_string(),
-                        label: "Model B".to_string(),
-                        description: None,
-                    },
-                ],
-                ..config_option("model", AiConfigOptionCategory::Model)
+    fn manager_dispatches_session_operations_to_runtime() {
+        let session_id = "session-1".to_string();
+        let mut manager = AiManager::default();
+        let mut runtime = MockRuntime::default();
+        runtime.sessions.insert(
+            session_id.clone(),
+            AiSession {
+                session_id: session_id.clone(),
+                runtime_id: "mock-runtime".to_string(),
+                model_id: "model".to_string(),
+                mode_id: "default".to_string(),
+                status: AiSessionStatus::Idle,
+                efforts_by_model: HashMap::new(),
+                models: vec![],
+                modes: vec![AiModeOption {
+                    id: "plan".to_string(),
+                    runtime_id: "mock-runtime".to_string(),
+                    name: "Plan".to_string(),
+                    description: String::new(),
+                    disabled: false,
+                }],
+                config_options: vec![],
             },
-            AiConfigOption {
-                value: "medium".to_string(),
-                options: vec![
-                    AiConfigSelectOption {
-                        value: "medium".to_string(),
-                        label: "Medium".to_string(),
-                        description: None,
-                    },
-                    AiConfigSelectOption {
-                        value: "high".to_string(),
-                        label: "High".to_string(),
-                        description: None,
-                    },
-                ],
-                ..config_option("reasoning_effort", AiConfigOptionCategory::Reasoning)
-            },
-        ];
-
-        let efforts_by_model = HashMap::from([
-            (
-                "model-a".to_string(),
-                vec!["medium".to_string(), "high".to_string()],
-            ),
-            (
-                "model-b".to_string(),
-                vec![
-                    "low".to_string(),
-                    "medium".to_string(),
-                    "high".to_string(),
-                    "xhigh".to_string(),
-                ],
-            ),
-        ]);
-
-        let filtered = filter_effort_options(options, "model-b", &efforts_by_model);
-        let reasoning = filtered
-            .iter()
-            .find(|option| option.id == "reasoning_effort")
-            .expect("missing reasoning option");
-
-        assert_eq!(
-            reasoning
-                .options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            vec!["low", "medium", "high", "xhigh"]
         );
-        assert_eq!(reasoning.value, "medium");
+
+        manager.register_runtime(Box::new(runtime));
+        manager.sessions.insert(
+            session_id.clone(),
+            ManagedSession {
+                runtime_id: "mock-runtime".to_string(),
+                vault_root: None,
+            },
+        );
+
+        let updated = manager
+            .set_mode(&session_id, "plan")
+            .expect("mock runtime should receive set_mode");
+
+        assert_eq!(updated.mode_id, "plan");
+        assert_eq!(manager.session_order.first(), Some(&session_id));
     }
 
     #[test]
-    fn filter_effort_options_removes_selector_for_single_effort_models() {
-        let options = vec![
-            config_option("model", AiConfigOptionCategory::Model),
-            config_option("reasoning_effort", AiConfigOptionCategory::Reasoning),
-        ];
-        let efforts_by_model = HashMap::from([("model-a".to_string(), vec!["medium".to_string()])]);
+    fn manager_merges_runtime_capabilities_into_descriptor() {
+        let mut manager = AiManager::default();
+        let runtime = MockRuntime::default();
+        manager.register_runtime(Box::new(runtime));
 
-        let filtered = filter_effort_options(options, "model-a", &efforts_by_model);
+        let descriptor = manager
+            .list_runtimes()
+            .into_iter()
+            .find(|item| item.runtime.id == "mock-runtime")
+            .expect("runtime should be listed");
 
-        assert!(filtered
+        assert!(descriptor
+            .runtime
+            .capabilities
             .iter()
-            .all(|option| option.id != "reasoning_effort"));
+            .any(|capability| capability == "user_input"));
     }
 
     #[test]

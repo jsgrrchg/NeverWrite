@@ -3,6 +3,9 @@ import { renderComponent, flushPromises } from "../../test/test-utils";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
 
+const innerPositionMock = vi.fn();
+const scaleFactorMock = vi.fn();
+
 vi.mock("@tauri-apps/api/window", () => ({
     getCurrentWindow: () => ({
         listen: vi.fn(),
@@ -11,6 +14,8 @@ vi.mock("@tauri-apps/api/window", () => ({
         onMoved: vi.fn().mockResolvedValue(vi.fn()),
         onResized: vi.fn().mockResolvedValue(vi.fn()),
         onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+        innerPosition: innerPositionMock,
+        scaleFactor: scaleFactorMock,
         setFocus: vi.fn(),
         startDragging: vi.fn(),
         emitTo: vi.fn(),
@@ -41,12 +46,22 @@ describe("UnifiedBar drop zone publishing", () => {
         }));
 
         Object.defineProperty(window, "screenX", {
-            value: 120,
+            value: 900,
             configurable: true,
         });
         Object.defineProperty(window, "screenY", {
-            value: 40,
+            value: 700,
             configurable: true,
+        });
+
+        scaleFactorMock.mockResolvedValue(2);
+        innerPositionMock.mockResolvedValue({
+            x: 240,
+            y: 80,
+            toLogical: () => ({
+                x: 120,
+                y: 40,
+            }),
         });
 
         const rectSpy = vi

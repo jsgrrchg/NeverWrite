@@ -20,14 +20,46 @@ export interface AIRuntimeConnectionState {
     message: string | null;
 }
 
+export interface AIRuntimeConnectionPayload extends AIRuntimeConnectionState {
+    runtime_id: string;
+}
+
+export type AIAuthTerminalStatus = "starting" | "running" | "exited" | "error";
+
+export interface AIAuthTerminalSessionSnapshot {
+    sessionId: string;
+    runtimeId: string;
+    program: string;
+    displayName: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+    buffer: string;
+    status: AIAuthTerminalStatus;
+    exitCode: number | null;
+    errorMessage: string | null;
+}
+
+export interface AIAuthTerminalOutputPayload {
+    sessionId: string;
+    chunk: string;
+}
+
+export interface AIAuthTerminalErrorPayload {
+    sessionId: string;
+    message: string;
+}
+
 export interface AIRuntimeSetupStatus {
     runtimeId: string;
     binaryReady: boolean;
     binaryPath?: string;
     binarySource: AIRuntimeBinarySource;
+    hasCustomBinaryPath?: boolean;
     authReady: boolean;
     authMethod?: string;
     authMethods: AIAuthMethod[];
+    hasGatewayConfig?: boolean;
     onboardingRequired: boolean;
     message?: string;
 }
@@ -179,6 +211,18 @@ export interface AIPlanUpdatePayload {
     entries: AIPlanEntry[];
 }
 
+export interface AIAvailableCommand {
+    id: string;
+    label: string;
+    description: string;
+    insert_text: string;
+}
+
+export interface AIAvailableCommandsPayload {
+    session_id: string;
+    commands: AIAvailableCommand[];
+}
+
 export interface AIChatMessage {
     id: string;
     role: AIChatRole;
@@ -206,6 +250,8 @@ export interface AIChatSession {
     visibleWorkCycleId?: string | null;
     editedFilesBuffer?: AIEditedFileBufferEntry[];
     editedFilesBufferByWorkCycleId?: Record<string, AIEditedFileBufferEntry[]>;
+    /** ActionLog state — when present, this is the source of truth for tracked files. */
+    actionLog?: import("./diff/actionLogTypes").ActionLogState;
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
     runtimeId: string;
@@ -214,10 +260,12 @@ export interface AIChatSession {
     models: AIModelOption[];
     modes: AIModeOption[];
     configOptions: AIConfigOption[];
+    availableCommands?: AIAvailableCommand[];
     messages: AIChatMessage[];
     attachments: AIChatAttachment[];
     isPersistedSession?: boolean;
     resumeContextPending?: boolean;
+    runtimeState?: "live" | "persisted_only" | "detached";
 }
 
 export interface AIRuntimeDescriptor {
@@ -280,9 +328,11 @@ export interface AIBackendRuntimeSetupStatusPayload {
     binary_ready: boolean;
     binary_path?: string | null;
     binary_source: AIRuntimeBinarySource;
+    has_custom_binary_path?: boolean;
     auth_ready: boolean;
     auth_method?: string | null;
     auth_methods: AIAuthMethod[];
+    has_gateway_config?: boolean;
     onboarding_required: boolean;
     message?: string | null;
 }
@@ -432,6 +482,20 @@ export type AIComposerPart =
           selectedText: string;
           startLine: number;
           endLine: number;
+      }
+    | {
+          id: string;
+          type: "screenshot";
+          filePath: string;
+          mimeType: string;
+          label: string;
+      }
+    | {
+          id: string;
+          type: "file_attachment";
+          filePath: string;
+          mimeType: string;
+          label: string;
       };
 
 export type AIMentionSuggestion =
@@ -460,6 +524,7 @@ export interface PersistedMessage {
 export interface PersistedSessionHistory {
     version: number;
     session_id: string;
+    runtime_id?: string;
     model_id: string;
     mode_id: string;
     created_at: number;

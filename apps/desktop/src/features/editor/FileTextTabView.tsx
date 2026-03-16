@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Compartment, EditorState } from "@codemirror/state";
 import { search, searchKeymap } from "@codemirror/search";
@@ -14,6 +14,7 @@ import {
     baseTheme,
     getEditorFontFamily,
     getSyntaxExtension,
+    getWrappingExtension,
 } from "./editorExtensions";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { loadCodeLanguage } from "./codeLanguage";
@@ -29,6 +30,7 @@ export function FileTextTabView() {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const syntaxCompartmentRef = useRef(new Compartment());
+    const wrappingCompartmentRef = useRef(new Compartment());
     const languageCompartmentRef = useRef(new Compartment());
     const loadRequestRef = useRef(0);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -45,64 +47,78 @@ export function FileTextTabView() {
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
+    const lineWrapping = useSettingsStore((s) => s.lineWrapping);
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;
 
-    tabRef.current = tab;
+    useEffect(() => {
+        tabRef.current = tab;
+    }, [tab]);
 
-    async function saveFile(
-        targetTab: NonNullable<ReturnType<typeof getActiveFileTab>>,
-        content: string,
-    ) {
-        const lastSaved = lastSavedContentByPathRef.current.get(
-            targetTab.relativePath,
-        );
-        if (lastSaved === content) {
-            return;
-        }
-
-        const requestId =
-            (saveRequestIdByPathRef.current.get(targetTab.relativePath) ?? 0) + 1;
-        saveRequestIdByPathRef.current.set(targetTab.relativePath, requestId);
-
-        try {
-            const detail = await vaultInvoke<SavedVaultFileDetail>(
-                "save_vault_file",
-                {
-                    relativePath: targetTab.relativePath,
-                    content,
-                },
+    const saveFile = useCallback(
+        async (
+            targetTab: NonNullable<ReturnType<typeof getActiveFileTab>>,
+            content: string,
+        ) => {
+            const lastSaved = lastSavedContentByPathRef.current.get(
+                targetTab.relativePath,
             );
-            if (
-                saveRequestIdByPathRef.current.get(targetTab.relativePath) !==
-                requestId
-            ) {
+            if (lastSaved === content) {
                 return;
             }
-            lastSavedContentByPathRef.current.set(
+
+            const requestId =
+                (saveRequestIdByPathRef.current.get(targetTab.relativePath) ??
+                    0) + 1;
+            saveRequestIdByPathRef.current.set(
                 targetTab.relativePath,
-                detail.content,
+                requestId,
             );
-            const store = useEditorStore.getState();
-            store.updateTabTitle(targetTab.id, detail.file_name);
-        } catch (error) {
-            console.error("Error saving vault file:", error);
-        }
-    }
 
-    function scheduleSave(
-        targetTab: NonNullable<ReturnType<typeof getActiveFileTab>>,
-        content: string,
-    ) {
-        if (saveTimerRef.current) {
-            clearTimeout(saveTimerRef.current);
-        }
+            try {
+                const detail = await vaultInvoke<SavedVaultFileDetail>(
+                    "save_vault_file",
+                    {
+                        relativePath: targetTab.relativePath,
+                        content,
+                    },
+                );
+                if (
+                    saveRequestIdByPathRef.current.get(
+                        targetTab.relativePath,
+                    ) !== requestId
+                ) {
+                    return;
+                }
+                lastSavedContentByPathRef.current.set(
+                    targetTab.relativePath,
+                    detail.content,
+                );
+                const store = useEditorStore.getState();
+                store.updateTabTitle(targetTab.id, detail.file_name);
+            } catch (error) {
+                console.error("Error saving vault file:", error);
+            }
+        },
+        [],
+    );
 
-        saveTimerRef.current = setTimeout(() => {
-            saveTimerRef.current = null;
-            void saveFile(targetTab, content);
-        }, 300);
-    }
+    const scheduleSave = useCallback(
+        (
+            targetTab: NonNullable<ReturnType<typeof getActiveFileTab>>,
+            content: string,
+        ) => {
+            if (saveTimerRef.current) {
+                clearTimeout(saveTimerRef.current);
+            }
+
+            saveTimerRef.current = setTimeout(() => {
+                saveTimerRef.current = null;
+                void saveFile(targetTab, content);
+            }, 300);
+        },
+        [saveFile],
+    );
 
     useEffect(() => {
         const container = containerRef.current;
@@ -119,7 +135,9 @@ export function FileTextTabView() {
                 doc: tab.content,
                 extensions: [
                     baseTheme,
-                    EditorView.lineWrapping,
+                    wrappingCompartmentRef.current.of(
+                        getWrappingExtension(lineWrapping),
+                    ),
                     EditorView.editorAttributes.of({
                         "data-live-preview": "false",
                     }),
@@ -146,15 +164,13 @@ export function FileTextTabView() {
                             .updateTabContent(currentTab.id, content);
                         scheduleSave(currentTab, content);
                     }),
-                    syntaxCompartmentRef.current.of(
-                        getSyntaxExtension(isDark),
-                    ),
+                    syntaxCompartmentRef.current.of(getSyntaxExtension(isDark)),
                     languageCompartmentRef.current.of([]),
                 ],
             }),
             parent: container,
         });
-    }, [isDark, tab]);
+    }, [isDark, lineWrapping, scheduleSave, tab]);
 
     useEffect(() => {
         if (!tab) {
@@ -181,7 +197,7 @@ export function FileTextTabView() {
             });
             applyingExternalUpdateRef.current = false;
         }
-    }, [tab]);
+    }, [saveFile, tab]);
 
     useEffect(() => {
         if (!tab) {
@@ -189,9 +205,12 @@ export function FileTextTabView() {
         }
 
         if (!lastSavedContentByPathRef.current.has(tab.relativePath)) {
-            lastSavedContentByPathRef.current.set(tab.relativePath, tab.content);
+            lastSavedContentByPathRef.current.set(
+                tab.relativePath,
+                tab.content,
+            );
         }
-    }, [tab?.relativePath]);
+    }, [tab, tab?.content, tab?.relativePath]);
 
     useEffect(() => {
         const view = viewRef.current;
@@ -208,6 +227,19 @@ export function FileTextTabView() {
 
     useEffect(() => {
         const view = viewRef.current;
+        if (!view) {
+            return;
+        }
+
+        view.dispatch({
+            effects: wrappingCompartmentRef.current.reconfigure(
+                getWrappingExtension(lineWrapping),
+            ),
+        });
+    }, [lineWrapping]);
+
+    useEffect(() => {
+        const view = viewRef.current;
         if (!view || !tab) {
             return;
         }
@@ -219,7 +251,7 @@ export function FileTextTabView() {
             effects: languageCompartmentRef.current.reconfigure([]),
         });
 
-        void loadCodeLanguage(languagePath, languageMimeType).then((extension) => {
+        void loadCodeLanguage(tab.path, tab.mimeType).then((extension) => {
             if (loadRequestRef.current !== requestId || !viewRef.current) {
                 return;
             }
@@ -242,13 +274,16 @@ export function FileTextTabView() {
                 const currentTab = useEditorStore
                     .getState()
                     .tabs.find(
-                        (candidate) =>
+                        (candidate): candidate is FileTab =>
                             candidate.id === tab.id && isFileTab(candidate),
                     );
-                void saveFile(currentTab ?? tab, currentTab?.content ?? tab.content);
+                void saveFile(
+                    currentTab ?? tab,
+                    currentTab?.content ?? tab.content,
+                );
             }
         };
-    }, [tab?.id]);
+    }, [saveFile, tab]);
 
     useEffect(() => {
         return () => {
@@ -343,7 +378,9 @@ export function FileTextTabView() {
 }
 
 function getActiveFileTab(state: ReturnType<typeof useEditorStore.getState>) {
-    const current = state.tabs.find((candidate) => candidate.id === state.activeTabId);
+    const current = state.tabs.find(
+        (candidate) => candidate.id === state.activeTabId,
+    );
     return current && isFileTab(current) && current.viewer === "text"
         ? current
         : null;

@@ -1,0 +1,231 @@
+import { act, fireEvent } from "@testing-library/react";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import {
+    renderComponent,
+    flushPromises,
+    setEditorTabs,
+    setVaultEntries,
+} from "../../test/test-utils";
+import { useEditorStore } from "../../app/store/editorStore";
+import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
+
+const innerPositionMock = vi.fn();
+const scaleFactorMock = vi.fn();
+const onDragDropEventMock = vi.fn();
+
+vi.mock("@tauri-apps/api/window", () => ({
+    getCurrentWindow: () => ({
+        listen: vi.fn(),
+        once: vi.fn(),
+        onCloseRequested: vi.fn(),
+        onMoved: vi.fn().mockResolvedValue(vi.fn()),
+        onResized: vi.fn().mockResolvedValue(vi.fn()),
+        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+        innerPosition: innerPositionMock,
+        scaleFactor: scaleFactorMock,
+        setFocus: vi.fn(),
+        startDragging: vi.fn(),
+        emitTo: vi.fn(),
+        close: vi.fn(),
+        label: "main",
+    }),
+}));
+
+vi.mock("@tauri-apps/api/webview", () => ({
+    getCurrentWebview: () => ({
+        onDragDropEvent: onDragDropEventMock,
+    }),
+}));
+
+vi.mock("../../app/detachedWindows", () => ({
+    ATTACH_EXTERNAL_TAB_EVENT: "vaultai:attach-external-tab",
+    createDetachedWindowPayload: vi.fn(),
+    createGhostWindow: vi.fn(),
+    destroyGhostWindow: vi.fn(),
+    findWindowTabDropTarget: vi.fn(),
+    getCurrentWindowLabel: vi.fn(() => "main"),
+    getDetachedWindowPosition: vi.fn(),
+    isPointerOutsideCurrentWindow: vi.fn(() => false),
+    moveGhostWindow: vi.fn(),
+    openDetachedNoteWindow: vi.fn(),
+    publishWindowTabDropZone: vi.fn(),
+}));
+
+function rect({
+    left,
+    top,
+    width,
+    height,
+}: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}) {
+    return {
+        x: left,
+        y: top,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        toJSON: () => ({}),
+    } as DOMRect;
+}
+
+describe("UnifiedBar tab strip drop", () => {
+    beforeEach(() => {
+        onDragDropEventMock.mockReset();
+        onDragDropEventMock.mockResolvedValue(vi.fn());
+
+        scaleFactorMock.mockResolvedValue(1);
+        innerPositionMock.mockResolvedValue({
+            x: 0,
+            y: 0,
+            toLogical: () => ({ x: 0, y: 0 }),
+        });
+
+        Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+            value: vi.fn(),
+            configurable: true,
+        });
+        Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+            value: vi.fn(),
+            configurable: true,
+        });
+        Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+            value: vi.fn(() => false),
+            configurable: true,
+        });
+    });
+
+    it("switches tabs when clicking another tab", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+            ],
+            "tab-a",
+        );
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const targetTab = document.querySelector(
+            '[data-tab-id="tab-b"]',
+        ) as HTMLElement | null;
+        expect(targetTab).not.toBeNull();
+
+        fireEvent.click(targetTab!);
+        expect(useEditorStore.getState().activeTabId).toBe("tab-b");
+    });
+
+    it("opens a file tree drag drop in the strip at the requested position", async () => {
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+            {
+                id: "tab-b",
+                kind: "note",
+                noteId: "notes/beta.md",
+                title: "Beta",
+                content: "beta",
+            },
+        ]);
+
+        setVaultEntries([
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 128,
+                mime_type: "application/pdf",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const strip = document.querySelector(
+            '[data-tab-strip="true"]',
+        ) as HTMLElement | null;
+        expect(strip).not.toBeNull();
+
+        const tabNodes = Array.from(
+            strip!.querySelectorAll<HTMLElement>("[data-tab-id]"),
+        );
+        expect(tabNodes).toHaveLength(2);
+
+        vi.spyOn(strip!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 360, height: 30 }),
+        );
+        vi.spyOn(tabNodes[0], "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 160, height: 30 }),
+        );
+        vi.spyOn(tabNodes[1], "getBoundingClientRect").mockReturnValue(
+            rect({ left: 264, top: 10, width: 160, height: 30 }),
+        );
+
+        await act(async () => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "end",
+                        x: 280,
+                        y: 20,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: "/vault/docs/reference.pdf",
+                                fileName: "reference.pdf",
+                                mimeType: "application/pdf",
+                            },
+                        ],
+                    },
+                }),
+            );
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        expect(useEditorStore.getState().tabs.map((tab) => tab.title)).toEqual([
+            "Alpha",
+            "Reference",
+            "Beta",
+        ]);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                )?.title,
+        ).toBe("Reference");
+    });
+});

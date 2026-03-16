@@ -75,7 +75,7 @@ const NARRATIVE_LIST_ITEM_THRESHOLD = 72;
 // Characters that can affect markdown structure.  When an edit only involves
 // characters NOT in this set we can skip the full decoration rebuild and simply
 // map existing decorations through the position changes.
-const MARKDOWN_SIGNIFICANT = /[!#$()*+./:<=>\[\\\]^_`{|}~\n\r-]/;
+const MARKDOWN_SIGNIFICANT = /(?:[!#$()*+./:<=>\\\]^_`{|}~\n\r-]|\[)/;
 const MAX_STYLED_LIST_LEVEL = 3;
 
 type LivePreviewNode = {

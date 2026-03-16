@@ -9,7 +9,11 @@ import {
     setEditorTabs,
     setVaultNotes,
 } from "../../test/test-utils";
-import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
+import {
+    type NoteTab,
+    useEditorStore,
+    isNoteTab,
+} from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 
 describe("LinksPanel", () => {
@@ -134,9 +138,12 @@ describe("LinksPanel", () => {
             expect(createNote).toHaveBeenCalledWith("Missing note");
         });
         expect(
-            useEditorStore.getState().tabs.some(
-                (tab) => isNoteTab(tab) && tab.noteId === "notes/missing-note",
-            ),
+            useEditorStore
+                .getState()
+                .tabs.some(
+                    (tab) =>
+                        isNoteTab(tab) && tab.noteId === "notes/missing-note",
+                ),
         ).toBe(true);
     });
 
@@ -202,14 +209,86 @@ describe("LinksPanel", () => {
 
         expect(useEditorStore.getState().pendingReveal).toEqual({
             noteId: "notes/current",
-            targets: [
-                "Reference",
-                "notes/reference",
-                "Reference",
-                "reference",
-            ],
+            targets: ["Reference", "notes/reference", "Reference", "reference"],
             mode: "link",
         });
+    });
+
+    it("opens an outgoing resolved link in a new tab on middle click", async () => {
+        const invokeMock = mockInvoke();
+
+        setVaultNotes([
+            {
+                id: "notes/current",
+                path: "/vault/notes/current.md",
+                title: "Current",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/reference",
+                path: "/vault/notes/reference.md",
+                title: "Reference",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-current",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "[[Reference]]",
+                },
+            ],
+            "tab-current",
+        );
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "get_backlinks") {
+                return [];
+            }
+            if (command === "resolve_wikilinks_batch") {
+                return [
+                    {
+                        target: "Reference",
+                        resolved_note_id: "notes/reference",
+                        resolved_title: "Reference",
+                    },
+                ];
+            }
+            if (command === "read_note") {
+                expect(args).toEqual(
+                    expect.objectContaining({ noteId: "notes/reference" }),
+                );
+                return { content: "reference body" };
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        renderComponent(<LinksPanel />);
+        await flushPromises();
+
+        const referenceItem = await screen.findByText("Reference");
+        fireEvent(
+            referenceItem.closest("button")!,
+            new MouseEvent("auxclick", {
+                bubbles: true,
+                button: 1,
+            }),
+        );
+        await flushPromises();
+
+        const noteTabs = useEditorStore
+            .getState()
+            .tabs.filter((tab): tab is NoteTab => isNoteTab(tab));
+        expect(noteTabs).toHaveLength(2);
+        const latestNoteTab = noteTabs.at(-1);
+        expect(latestNoteTab ? latestNoteTab.noteId : null).toBe(
+            "notes/reference",
+        );
     });
 
     it.todo(

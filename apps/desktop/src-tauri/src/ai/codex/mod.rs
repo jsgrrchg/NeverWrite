@@ -1,7 +1,9 @@
+mod adapter;
 mod client;
 mod process;
 mod setup;
 
+pub use adapter::CodexRuntimeAdapter;
 pub use client::CodexRuntimeHandle;
 pub use process::CodexRuntime;
 pub use setup::{

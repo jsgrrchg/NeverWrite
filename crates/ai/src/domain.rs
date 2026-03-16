@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 pub const CODEX_RUNTIME_ID: &str = "codex-acp";
+pub const CLAUDE_RUNTIME_ID: &str = "claude-acp";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -98,6 +99,15 @@ pub struct AiSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiRuntimeSessionSummary {
+    pub session_id: String,
+    pub runtime_id: String,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AiRuntimeBinarySource {
     Bundled,
@@ -113,9 +123,11 @@ pub struct AiRuntimeSetupStatus {
     pub binary_ready: bool,
     pub binary_path: Option<String>,
     pub binary_source: AiRuntimeBinarySource,
+    pub has_custom_binary_path: bool,
     pub auth_ready: bool,
     pub auth_method: Option<String>,
     pub auth_methods: Vec<AiAuthMethod>,
+    pub has_gateway_config: bool,
     pub onboarding_required: bool,
     pub message: Option<String>,
 }

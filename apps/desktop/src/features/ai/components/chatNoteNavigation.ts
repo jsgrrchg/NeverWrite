@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
     useEditorStore,
     isNoteTab,
@@ -123,6 +124,46 @@ export async function openChatNoteByAbsolutePath(
         return await openResolvedNote(note.id, note.title, !!options?.newTab);
     } catch (error) {
         console.error("Error opening chat note:", error);
+        return false;
+    }
+}
+
+interface MapEntry {
+    id: string;
+    title: string;
+    path: string;
+}
+
+export async function openChatMapByReference(
+    reference: string,
+    options?: { newTab?: boolean },
+) {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) return false;
+
+    try {
+        const maps = await invoke<MapEntry[]>("list_maps", { vaultPath });
+        const normalized = reference
+            .toLowerCase()
+            .replace(/\.excalidraw$/i, "");
+        const map =
+            maps.find((m) => m.path === reference) ??
+            maps.find(
+                (m) =>
+                    m.title.toLowerCase() === normalized ||
+                    m.id.toLowerCase() === normalized,
+            ) ??
+            maps.find(
+                (m) =>
+                    m.path.toLowerCase().endsWith(reference.toLowerCase()) ||
+                    m.title.toLowerCase().includes(normalized),
+            );
+        if (!map) return false;
+
+        useEditorStore.getState().openMap(map.path, map.id, map.title);
+        return true;
+    } catch (error) {
+        console.error("Error opening chat map:", error);
         return false;
     }
 }

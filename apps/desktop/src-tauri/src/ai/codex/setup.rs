@@ -136,9 +136,11 @@ pub fn setup_status(
         } else {
             AiRuntimeBinarySource::Missing
         },
+        has_custom_binary_path: config.custom_binary_path.is_some(),
         auth_ready,
         auth_method,
         auth_methods,
+        has_gateway_config: false,
         onboarding_required: !binary_ready || !auth_ready,
         message,
     })

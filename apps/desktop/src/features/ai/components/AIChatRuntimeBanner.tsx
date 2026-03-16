@@ -2,10 +2,17 @@ import type { AIRuntimeConnectionState } from "../types";
 
 interface AIChatRuntimeBannerProps {
     connection: AIRuntimeConnectionState;
+    runtimeName?: string | null;
 }
 
-export function AIChatRuntimeBanner({ connection }: AIChatRuntimeBannerProps) {
-    if (connection.status === "idle" || connection.status === "ready") {
+export function AIChatRuntimeBanner({
+    connection,
+    runtimeName,
+}: AIChatRuntimeBannerProps) {
+    if (
+        connection.status === "idle" ||
+        (connection.status === "ready" && !connection.message)
+    ) {
         return null;
     }
 
@@ -35,8 +42,9 @@ export function AIChatRuntimeBanner({ connection }: AIChatRuntimeBannerProps) {
                 }}
             >
                 {connection.status === "loading"
-                    ? "Loading AI runtime..."
-                    : connection.message ?? "AI runtime is unavailable."}
+                    ? `Loading ${runtimeName ?? "AI runtime"}...`
+                    : (connection.message ??
+                      `${runtimeName ?? "AI runtime"} is unavailable.`)}
             </div>
         </div>
     );

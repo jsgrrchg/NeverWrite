@@ -6,6 +6,7 @@ import {
     renderComponent,
     setCommands,
     setEditorTabs,
+    setVaultEntries,
     setVaultNotes,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
@@ -115,5 +116,43 @@ describe("QuickSwitcher", () => {
             "read_note",
             expect.anything(),
         );
+    });
+
+    it("keeps the selected result in view when keyboard navigation moves beyond the virtual window", async () => {
+        vi.useFakeTimers();
+
+        setVaultNotes(
+            Array.from({ length: 12 }, (_, index) => ({
+                id: `notes/item-${index + 1}`,
+                path: `/vault/notes/item-${index + 1}.md`,
+                title: `Item ${index + 1}`,
+                modified_at: index + 1,
+                created_at: index + 1,
+            })),
+        );
+        setVaultEntries([]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText("Search files and notes...");
+        const list = input.parentElement?.querySelector("div.max-h-64");
+
+        expect(list).toBeInstanceOf(HTMLDivElement);
+
+        Object.defineProperty(list as HTMLDivElement, "clientHeight", {
+            configurable: true,
+            value: 3 * 48,
+        });
+
+        for (let step = 0; step < 6; step += 1) {
+            fireEvent.keyDown(input, { key: "ArrowDown" });
+        }
+
+        expect((list as HTMLDivElement).scrollTop).toBeGreaterThan(0);
     });
 });

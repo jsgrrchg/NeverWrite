@@ -68,10 +68,7 @@ describe("chatTabsStore", () => {
         const persisted = readPersistedChatWorkspace("/vaults/work");
         expect(persisted).toMatchObject({
             version: 1,
-            tabs: [
-                { sessionId: "session-a" },
-                { sessionId: "session-b" },
-            ],
+            tabs: [{ sessionId: "session-a" }, { sessionId: "session-b" }],
         });
         expect(persisted?.activeTabId).toBe(
             useChatTabsStore.getState().activeTabId,
@@ -95,7 +92,9 @@ describe("chatTabsStore", () => {
 
         const firstTabId = useChatTabsStore.getState().tabs[0]?.id ?? null;
         useChatTabsStore.getState().setActiveTab(firstTabId!);
-        useChatTabsStore.getState().pruneInvalidTabs(["session-a", "session-c"]);
+        useChatTabsStore
+            .getState()
+            .pruneInvalidTabs(["session-a", "session-c"]);
 
         expect(
             useChatTabsStore.getState().tabs.map((tab) => tab.sessionId),
@@ -109,13 +108,19 @@ describe("chatTabsStore", () => {
 
         useChatTabsStore
             .getState()
-            .replaceSessionId("persisted:history-1", "codex-session-1");
+            .replaceSessionId(
+                "persisted:history-1",
+                "codex-session-1",
+                null,
+                "codex-acp",
+            );
 
         expect(useChatTabsStore.getState().tabs).toEqual([
             {
                 id: originalTabId,
                 sessionId: "codex-session-1",
                 historySessionId: "history-1",
+                runtimeId: "codex-acp",
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe(originalTabId);
@@ -230,15 +235,54 @@ describe("chatTabsStore", () => {
         markChatTabsReady();
         useVaultStore.setState({ vaultPath: "/vaults/work" });
 
-        useChatTabsStore
-            .getState()
-            .openSessionTab("session-a", { historySessionId: "history-a" });
+        useChatTabsStore.getState().openSessionTab("session-a", {
+            historySessionId: "history-a",
+            runtimeId: "claude-acp",
+        });
 
         resetChatTabsStore();
 
         const persisted = readPersistedChatWorkspace("/vaults/work");
         expect(persisted).toMatchObject({
-            tabs: [{ sessionId: "session-a", historySessionId: "history-a" }],
+            tabs: [
+                {
+                    sessionId: "session-a",
+                    historySessionId: "history-a",
+                    runtimeId: "claude-acp",
+                },
+            ],
         });
+    });
+
+    it("preserves runtime metadata when restoring tabs against resumed sessions", () => {
+        useChatTabsStore.getState().restoreWorkspace(
+            {
+                version: 1,
+                tabs: [
+                    {
+                        id: "tab-a",
+                        sessionId: "persisted:history-1",
+                        runtimeId: "claude-acp",
+                    },
+                ],
+                activeTabId: "tab-a",
+            },
+            [
+                {
+                    sessionId: "claude-session-9",
+                    historySessionId: "history-1",
+                    runtimeId: "claude-acp",
+                },
+            ],
+        );
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            {
+                id: "tab-a",
+                sessionId: "claude-session-9",
+                historySessionId: "history-1",
+                runtimeId: "claude-acp",
+            },
+        ]);
     });
 });

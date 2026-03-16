@@ -7,19 +7,23 @@ import {
     setEditorTabs,
     setVaultNotes,
 } from "../../../test/test-utils";
-import type { AIComposerPart } from "../types";
+import type { AIAvailableCommand, AIComposerPart } from "../types";
 import { AIChatComposer } from "./AIChatComposer";
 
 function renderComposer({
     parts = [],
     status = "idle" as const,
+    runtimeId,
     composerFontFamily = "system",
+    availableCommands = [],
     onSubmit = vi.fn(),
     onStop = vi.fn(),
 }: {
     parts?: AIComposerPart[];
     status?: "idle" | "streaming";
+    runtimeId?: string;
     composerFontFamily?: EditorFontFamily;
+    availableCommands?: AIAvailableCommand[];
     onSubmit?: ReturnType<typeof vi.fn>;
     onStop?: ReturnType<typeof vi.fn>;
 } = {}) {
@@ -37,7 +41,9 @@ function renderComposer({
             ]}
             status={status}
             runtimeName="Assistant"
+            runtimeId={runtimeId}
             composerFontFamily={composerFontFamily}
+            availableCommands={availableCommands}
             onChange={onChange}
             onMentionAttach={vi.fn()}
             onFolderAttach={vi.fn()}
@@ -95,6 +101,21 @@ describe("AIChatComposer mention picker", () => {
 
         await waitFor(() => {
             expect(screen.getByText("/plan")).toBeInTheDocument();
+        });
+    });
+
+    it("uses runtime-aware slash fallbacks for Claude sessions", async () => {
+        const { composer } = renderComposer({
+            runtimeId: "claude-acp",
+        });
+        composer.textContent = "/co";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("/compact")).toBeInTheDocument();
+            expect(screen.queryByText("/undo")).not.toBeInTheDocument();
         });
     });
 

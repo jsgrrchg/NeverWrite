@@ -636,7 +636,7 @@ function PillEditor({
 }: {
     items: string[];
     fontSize: number;
-    onRemove: (index: number) => void;
+    onRemove: (value: string) => void;
     onAdd: (item: string) => void;
 }) {
     const [draft, setDraft] = useState("");
@@ -654,7 +654,7 @@ function PillEditor({
         >
             {items.map((item, i) => (
                 <span
-                    key={i}
+                    key={`${item}-${i}`}
                     className="inline-flex items-center gap-0.5 px-1.5 py-px rounded-full"
                     style={{
                         fontSize,
@@ -667,7 +667,7 @@ function PillEditor({
                     {item}
                     <button
                         type="button"
-                        onClick={() => onRemove(i)}
+                        onClick={() => onRemove(item)}
                         style={{
                             lineHeight: 1,
                             opacity: 0.5,
@@ -787,8 +787,10 @@ function PropertyEditor({
 
     if (Array.isArray(value) || type === "list" || type === "tags") {
         const items = Array.isArray(value) ? value : [];
-        const removeItem = (index: number) =>
-            onChange(items.filter((_, i) => i !== index));
+        const removeItem = (value: string) => {
+            const idx = items.indexOf(value);
+            if (idx !== -1) onChange(items.filter((_, i) => i !== idx));
+        };
         return (
             <PillEditor
                 items={items}
@@ -1089,12 +1091,10 @@ export function FrontmatterPanel({
     const [collapsed, setCollapsed] = useState(
         () => localStorage.getItem(FM_COLLAPSED_KEY) === "true",
     );
-    const [contextMenu, setContextMenu] = useState<
-        ContextMenuState<
-            | { kind: "panel" }
-            | { kind: "entry"; key: string; value: FrontmatterValue }
-        > | null
-    >(null);
+    const [contextMenu, setContextMenu] = useState<ContextMenuState<
+        | { kind: "panel" }
+        | { kind: "entry"; key: string; value: FrontmatterValue }
+    > | null>(null);
 
     const headerFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
     const labelFontSize = Math.max(10, Math.round(editorFontSize * 0.78));

@@ -19,7 +19,7 @@ interface ExportChatSessionInput {
 
 function sanitizeNoteNameSegment(value: string) {
     const sanitized = value
-        .replace(/[\\/:*?"<>|#^\[\]\r\n\t]+/g, " ")
+        .replace(/[[\\/:*?"<>|#^\]\r\n\t]+/g, " ")
         .replace(/\s+/g, " ")
         .trim()
         .replace(/[. ]+$/g, "");

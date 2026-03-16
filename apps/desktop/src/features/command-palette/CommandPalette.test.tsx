@@ -76,4 +76,32 @@ describe("CommandPalette", () => {
         expect(screen.getByText("Toggle sidebar")).toBeInTheDocument();
         expect(screen.queryByText("Open note")).not.toBeInTheDocument();
     });
+
+    it("hides commands whose when condition returns false", () => {
+        setCommands(
+            [
+                {
+                    id: "developer-visible",
+                    label: "Toggle Developer Panel",
+                    category: "Developer",
+                    when: () => false,
+                    execute: vi.fn(),
+                },
+                {
+                    id: "open",
+                    label: "Open note",
+                    category: "File",
+                    execute: vi.fn(),
+                },
+            ],
+            "command-palette",
+        );
+
+        renderComponent(<CommandPalette />);
+
+        expect(
+            screen.queryByText("Toggle Developer Panel"),
+        ).not.toBeInTheDocument();
+        expect(screen.getByText("Open note")).toBeInTheDocument();
+    });
 });

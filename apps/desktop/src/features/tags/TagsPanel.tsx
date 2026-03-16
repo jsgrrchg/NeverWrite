@@ -381,6 +381,14 @@ export function TagsPanel() {
                                         onClick={() =>
                                             void handleNoteClick(row.noteId)
                                         }
+                                        onAuxClick={(event) => {
+                                            if (event.button !== 1) return;
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            void handleOpenNoteInNewTab(
+                                                row.noteId,
+                                            );
+                                        }}
                                         onContextMenu={(event) => {
                                             event.preventDefault();
                                             setNoteContextMenu({

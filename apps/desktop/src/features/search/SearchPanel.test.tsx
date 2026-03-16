@@ -8,6 +8,11 @@ import {
     renderComponent,
     setEditorTabs,
 } from "../../test/test-utils";
+import {
+    type NoteTab,
+    isNoteTab,
+    useEditorStore,
+} from "../../app/store/editorStore";
 
 describe("SearchPanel", () => {
     it("debounces the query and renders returned results", async () => {
@@ -128,7 +133,9 @@ describe("SearchPanel", () => {
 
         fireEvent.click(screen.getByText("Copy Note Path"));
 
-        expect(getClipboardMock().writeText).toHaveBeenCalledWith("notes/roadmap");
+        expect(getClipboardMock().writeText).toHaveBeenCalledWith(
+            "notes/roadmap",
+        );
     });
 
     it.todo(
@@ -165,9 +172,12 @@ describe("SearchPanel", () => {
 
         renderComponent(<SearchPanel />);
 
-        fireEvent.change(screen.getByPlaceholderText("Search files and notes..."), {
-            target: { value: "road" },
-        });
+        fireEvent.change(
+            screen.getByPlaceholderText("Search files and notes..."),
+            {
+                target: { value: "road" },
+            },
+        );
         await act(async () => {
             await vi.advanceTimersByTimeAsync(300);
         });
@@ -178,6 +188,71 @@ describe("SearchPanel", () => {
         expect(invokeMock).not.toHaveBeenCalledWith(
             "read_note",
             expect.anything(),
+        );
+    });
+
+    it("opens a result in a new tab on middle click", async () => {
+        vi.useFakeTimers();
+        const invokeMock = mockInvoke();
+
+        setEditorTabs([
+            {
+                id: "tab-current",
+                noteId: "notes/current",
+                title: "Current",
+                content: "current",
+            },
+        ]);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "search_notes") {
+                return [
+                    {
+                        id: "notes/roadmap",
+                        path: "/vault/notes/roadmap.md",
+                        title: "Roadmap",
+                        score: 42,
+                    },
+                ];
+            }
+            if (command === "read_note") {
+                return { content: "roadmap body" };
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        renderComponent(<SearchPanel />);
+
+        fireEvent.change(
+            screen.getByPlaceholderText("Search files and notes..."),
+            {
+                target: { value: "road" },
+            },
+        );
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(300);
+        });
+        await flushPromises();
+
+        const row = screen.getByText("Roadmap").closest("button");
+        expect(row).not.toBeNull();
+        fireEvent(
+            row!,
+            new MouseEvent("auxclick", {
+                bubbles: true,
+                button: 1,
+            }),
+        );
+        await flushPromises();
+
+        const noteTabs = useEditorStore
+            .getState()
+            .tabs.filter((tab): tab is NoteTab => isNoteTab(tab));
+        expect(noteTabs).toHaveLength(2);
+        const latestNoteTab = noteTabs.at(-1);
+        expect(latestNoteTab ? latestNoteTab.noteId : null).toBe(
+            "notes/roadmap",
         );
     });
 });

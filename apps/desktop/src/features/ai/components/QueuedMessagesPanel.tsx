@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { QueuedChatMessage } from "../types";
 
 interface QueuedMessagesPanelProps {
@@ -32,8 +32,7 @@ function getSecondaryActionButtonStyle(kind: "edit" | "delete") {
             color: "color-mix(in srgb, var(--text-primary) 76%, #b91c1c)",
             backgroundColor:
                 "color-mix(in srgb, #ef4444 10%, var(--bg-secondary))",
-            border:
-                "1px solid color-mix(in srgb, #ef4444 32%, var(--border))",
+            border: "1px solid color-mix(in srgb, #ef4444 32%, var(--border))",
         };
     }
 
@@ -41,8 +40,7 @@ function getSecondaryActionButtonStyle(kind: "edit" | "delete") {
         color: "color-mix(in srgb, var(--text-primary) 82%, var(--accent) 18%)",
         backgroundColor:
             "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))",
-        border:
-            "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
+        border: "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
     };
 }
 
@@ -56,10 +54,7 @@ export function QueuedMessagesPanel({
     onCancelEdit,
 }: QueuedMessagesPanelProps) {
     const [collapsed, setCollapsed] = useState(false);
-
-    useEffect(() => {
-        if (editingItem) setCollapsed(false);
-    }, [editingItem]);
+    const effectiveCollapsed = editingItem ? false : collapsed;
 
     if (items.length === 0 && !editingItem) return null;
 
@@ -77,7 +72,8 @@ export function QueuedMessagesPanel({
                     className="flex items-center justify-between gap-2.5 px-2.5 py-1.5"
                     style={{
                         borderBottom:
-                            !collapsed && (editingItem || items.length > 0)
+                            !effectiveCollapsed &&
+                            (editingItem || items.length > 0)
                                 ? "1px solid color-mix(in srgb, var(--border) 80%, transparent)"
                                 : "none",
                     }}
@@ -97,14 +93,17 @@ export function QueuedMessagesPanel({
                                 color: "var(--text-secondary)",
                                 backgroundColor:
                                     "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
-                                border:
-                                    "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                                border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
                                 fontWeight: 500,
                             }}
-                            aria-label={collapsed ? "Expand queue" : "Collapse queue"}
-                            aria-expanded={!collapsed}
+                            aria-label={
+                                effectiveCollapsed
+                                    ? "Expand queue"
+                                    : "Collapse queue"
+                            }
+                            aria-expanded={!effectiveCollapsed}
                         >
-                            {collapsed ? "▸" : "▾"}
+                            {effectiveCollapsed ? "▸" : "▾"}
                         </button>
                         <button
                             type="button"
@@ -122,7 +121,7 @@ export function QueuedMessagesPanel({
                 </div>
             )}
 
-            {!collapsed && editingItem && (
+            {!effectiveCollapsed && editingItem && (
                 <div
                     className="flex items-center justify-between gap-2.5 px-2.5 py-1.5"
                     style={{
@@ -165,7 +164,7 @@ export function QueuedMessagesPanel({
                 </div>
             )}
 
-            {!collapsed && (
+            {!effectiveCollapsed && (
                 <div className="flex flex-col">
                     {items.map((item, index) => {
                         const sending = item.status === "sending";
@@ -186,7 +185,9 @@ export function QueuedMessagesPanel({
                                     aria-hidden="true"
                                     className="h-1.5 w-1.5 shrink-0 rounded-full"
                                     style={{
-                                        backgroundColor: getStatusColor(item.status),
+                                        backgroundColor: getStatusColor(
+                                            item.status,
+                                        ),
                                         opacity: sending ? 1 : 0.9,
                                     }}
                                 />
@@ -205,7 +206,9 @@ export function QueuedMessagesPanel({
                                         onClick={() => onCancel(item.id)}
                                         className="rounded-md px-1.5 py-0.5 text-xs"
                                         style={{
-                                            ...getSecondaryActionButtonStyle("delete"),
+                                            ...getSecondaryActionButtonStyle(
+                                                "delete",
+                                            ),
                                             fontWeight: 500,
                                             opacity: sending ? 0.45 : 1,
                                         }}
@@ -220,7 +223,9 @@ export function QueuedMessagesPanel({
                                             onClick={() => onEdit(item.id)}
                                             className="rounded-md px-1.5 py-0.5 text-xs"
                                             style={{
-                                                ...getSecondaryActionButtonStyle("edit"),
+                                                ...getSecondaryActionButtonStyle(
+                                                    "edit",
+                                                ),
                                                 fontWeight: 500,
                                             }}
                                             aria-label={`Edit ${summarizeContent(item.content)}`}
@@ -238,10 +243,9 @@ export function QueuedMessagesPanel({
                                                 : "var(--accent)",
                                             backgroundColor:
                                                 "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
-                                            border:
-                                                failed
-                                                    ? "1px solid color-mix(in srgb, #ef4444 45%, var(--border))"
-                                                    : "1px solid color-mix(in srgb, var(--accent) 55%, var(--border))",
+                                            border: failed
+                                                ? "1px solid color-mix(in srgb, #ef4444 45%, var(--border))"
+                                                : "1px solid color-mix(in srgb, var(--accent) 55%, var(--border))",
                                             opacity: sending ? 0.45 : 1,
                                         }}
                                         disabled={sending}

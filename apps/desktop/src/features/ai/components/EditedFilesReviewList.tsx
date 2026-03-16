@@ -24,6 +24,7 @@ function FullRowActions({
     onKeep,
     onReject,
     onResolveHunks,
+    onResolveHunk,
 }: {
     item: ReviewFileItem;
     expanded: boolean;
@@ -31,21 +32,31 @@ function FullRowActions({
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
+    onResolveHunk?: (
+        decision: "accepted" | "rejected",
+        hunkNewStart: number,
+        hunkNewEnd: number,
+    ) => void;
 }) {
-    const { entry, tone, canResolveHunks, diff } = item;
+    const { entry, canResolveHunks, diff } = item;
 
     return (
         <EditedFileDiffPreview
             diff={diff}
             expanded={expanded}
             diffZoom={diffZoom}
-            accent={tone.accent}
             entry={entry}
             onKeep={onKeep}
             onReject={onReject}
             onResolveHunks={
                 canResolveHunks
                     ? (_, mergedText) => onResolveHunks(mergedText)
+                    : undefined
+            }
+            onResolveHunk={
+                onResolveHunk
+                    ? (_, decision, hunkNewStart, hunkNewEnd) =>
+                          onResolveHunk(decision, hunkNewStart, hunkNewEnd)
                     : undefined
             }
             testId={`edited-buffer-diff:${entry.identityKey}`}
@@ -61,6 +72,7 @@ function FullRow({
     onKeep,
     onReject,
     onResolveHunks,
+    onResolveHunk,
 }: {
     item: ReviewFileItem;
     expanded: boolean;
@@ -69,6 +81,11 @@ function FullRow({
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
+    onResolveHunk?: (
+        decision: "accepted" | "rejected",
+        hunkNewStart: number,
+        hunkNewEnd: number,
+    ) => void;
 }) {
     const { entry, tone, summary, canOpen, canReject } = item;
     const compactPath = getCompactPath(entry.path);
@@ -283,6 +300,7 @@ function FullRow({
                     onKeep={onKeep}
                     onReject={onReject}
                     onResolveHunks={onResolveHunks}
+                    onResolveHunk={onResolveHunk}
                 />
             ) : null}
         </div>
@@ -299,12 +317,18 @@ function CompactRow({
     onKeep,
     onReject,
     onResolveHunks,
+    onResolveHunk,
 }: {
     item: ReviewFileItem;
     diffZoom: number;
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
+    onResolveHunk?: (
+        decision: "accepted" | "rejected",
+        hunkNewStart: number,
+        hunkNewEnd: number,
+    ) => void;
 }) {
     const [expanded, setExpanded] = useState(false);
     const { entry, tone, canOpen, canReject, canResolveHunks, diff } = item;
@@ -479,13 +503,18 @@ function CompactRow({
                 diff={diff}
                 expanded={expanded}
                 diffZoom={diffZoom}
-                accent={tone.accent}
                 entry={entry}
                 onKeep={onKeep}
                 onReject={onReject}
                 onResolveHunks={
                     canResolveHunks
                         ? (_, mergedText) => onResolveHunks(mergedText)
+                        : undefined
+                }
+                onResolveHunk={
+                    onResolveHunk
+                        ? (_, decision, hunkNewStart, hunkNewEnd) =>
+                              onResolveHunk(decision, hunkNewStart, hunkNewEnd)
                         : undefined
                 }
                 testId={`edited-buffer-diff:${entry.identityKey}`}
@@ -507,6 +536,7 @@ export function EditedFilesReviewList({
     onKeepItem,
     onRejectItem,
     onResolveHunks,
+    onResolveHunk,
 }: {
     items: ReviewFileItem[];
     variant: "full" | "compact";
@@ -516,6 +546,12 @@ export function EditedFilesReviewList({
     onKeepItem?: (identityKey: string) => void;
     onRejectItem: (identityKey: string) => void;
     onResolveHunks?: (identityKey: string, mergedText: string) => void;
+    onResolveHunk?: (
+        identityKey: string,
+        decision: "accepted" | "rejected",
+        hunkNewStart: number,
+        hunkNewEnd: number,
+    ) => void;
 }) {
     if (variant === "compact") {
         return (
@@ -529,6 +565,17 @@ export function EditedFilesReviewList({
                         onReject={() => onRejectItem(item.entry.identityKey)}
                         onResolveHunks={(mergedText) =>
                             onResolveHunks?.(item.entry.identityKey, mergedText)
+                        }
+                        onResolveHunk={
+                            onResolveHunk
+                                ? (decision, s, e) =>
+                                      onResolveHunk(
+                                          item.entry.identityKey,
+                                          decision,
+                                          s,
+                                          e,
+                                      )
+                                : undefined
                         }
                     />
                 ))}
@@ -551,6 +598,17 @@ export function EditedFilesReviewList({
                     onReject={() => onRejectItem(item.entry.identityKey)}
                     onResolveHunks={(mergedText) =>
                         onResolveHunks?.(item.entry.identityKey, mergedText)
+                    }
+                    onResolveHunk={
+                        onResolveHunk
+                            ? (decision, s, e) =>
+                                  onResolveHunk(
+                                      item.entry.identityKey,
+                                      decision,
+                                      s,
+                                      e,
+                                  )
+                            : undefined
                     }
                 />
             ))}

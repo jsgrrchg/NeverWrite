@@ -16,11 +16,20 @@ pub const AI_STATUS_EVENT: &str = "ai://status-event";
 pub const AI_PERMISSION_REQUEST_EVENT: &str = "ai://permission-request";
 pub const AI_USER_INPUT_REQUEST_EVENT: &str = "ai://user-input-request";
 pub const AI_PLAN_UPDATED_EVENT: &str = "ai://plan-updated";
+pub const AI_AVAILABLE_COMMANDS_UPDATED_EVENT: &str = "ai://available-commands-updated";
+pub const AI_RUNTIME_CONNECTION_EVENT: &str = "ai://runtime-connection";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiSessionErrorPayload {
     pub session_id: Option<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiRuntimeConnectionPayload {
+    pub runtime_id: String,
+    pub status: String,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +89,20 @@ pub struct AiPlanUpdatePayload {
     pub title: Option<String>,
     pub detail: Option<String>,
     pub entries: Vec<AiPlanEntryPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiAvailableCommandPayload {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub insert_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiAvailableCommandsPayload {
+    pub session_id: String,
+    pub commands: Vec<AiAvailableCommandPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -237,4 +260,12 @@ pub fn emit_plan_update(app: &AppHandle, payload: AiPlanUpdatePayload) {
 
 pub fn emit_permission_request(app: &AppHandle, payload: AiPermissionRequestPayload) {
     let _ = app.emit(AI_PERMISSION_REQUEST_EVENT, payload);
+}
+
+pub fn emit_available_commands_updated(app: &AppHandle, payload: AiAvailableCommandsPayload) {
+    let _ = app.emit(AI_AVAILABLE_COMMANDS_UPDATED_EVENT, payload);
+}
+
+pub fn emit_runtime_connection(app: &AppHandle, payload: AiRuntimeConnectionPayload) {
+    let _ = app.emit(AI_RUNTIME_CONNECTION_EVENT, payload);
 }

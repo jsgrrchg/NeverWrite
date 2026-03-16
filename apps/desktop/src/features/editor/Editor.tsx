@@ -74,10 +74,15 @@ import {
     syntaxCompartment,
     livePreviewCompartment,
     alignmentCompartment,
+    wrappingCompartment,
     tabSizeCompartment,
+    spellcheckCompartment,
+    spellcheckDecorationsCompartment,
     getSyntaxExtension,
     getLivePreviewExtension,
     getAlignmentExtension,
+    getWrappingExtension,
+    getSpellcheckExtension,
     getEditorFontFamily,
 } from "./editorExtensions";
 import {
@@ -103,6 +108,19 @@ import {
     type WikilinkSuggesterState,
 } from "./WikilinkSuggester";
 import { useChatStore } from "../ai/store/chatStore";
+import {
+    changeAuthorAnnotation,
+    userEditNotifier,
+} from "./extensions/changeAuthor";
+import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
+import { getSpellcheckEditorExtension } from "./extensions/spellcheck";
+import { useSpellcheckStore } from "../spellcheck/store";
+import {
+    buildSpellcheckContextMenuEntries,
+    findTextInputWordRange,
+    isSpellcheckCandidate,
+    type SpellcheckContextMenuPayload,
+} from "../spellcheck/contextMenu";
 
 type SavedNoteDetail = {
     id: string;
@@ -114,10 +132,6 @@ type TabScrollPosition = {
     top: number;
     left: number;
 };
-type EditorContextMenuPayload = {
-    hasSelection: boolean;
-};
-
 interface EditorProps {
     emptyStateMessage?: string;
 }
@@ -160,15 +174,16 @@ export function Editor({
     const [linkContextMenu, setLinkContextMenu] =
         useState<LinkContextMenuState | null>(null);
     const [editorContextMenu, setEditorContextMenu] =
-        useState<ContextMenuState<EditorContextMenuPayload> | null>(null);
+        useState<ContextMenuState<SpellcheckContextMenuPayload> | null>(null);
     const [titleContextMenu, setTitleContextMenu] =
-        useState<ContextMenuState<void> | null>(null);
+        useState<ContextMenuState<SpellcheckContextMenuPayload> | null>(null);
     const [selectionToolbar, setSelectionToolbar] =
         useState<FloatingSelectionToolbarState | null>(null);
     const [wikilinkSuggester, setWikilinkSuggester] =
         useState<WikilinkSuggesterState | null>(null);
     const [isDraggingVault, setIsDraggingVault] = useState(false);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
+    const spellcheckRequestIdRef = useRef(0);
 
     useEffect(() => {
         wikilinkSuggesterRef.current = wikilinkSuggester;
@@ -205,9 +220,17 @@ export function Editor({
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
+    const lineWrapping = useSettingsStore((s) => s.lineWrapping);
     const justifyText = useSettingsStore((s) => s.justifyText);
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const tabSize = useSettingsStore((s) => s.tabSize);
+    const editorSpellcheck = useSettingsStore((s) => s.editorSpellcheck);
+    const spellcheckPrimaryLanguage = useSettingsStore(
+        (s) => s.spellcheckPrimaryLanguage,
+    );
+    const spellcheckSecondaryLanguage = useSettingsStore(
+        (s) => s.spellcheckSecondaryLanguage,
+    );
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
@@ -233,6 +256,13 @@ export function Editor({
         return t && isNoteTab(t) ? t : null;
     })();
     activeTabRef.current = activeTab;
+    const titleSpellcheckEnabled =
+        editorSpellcheck &&
+        typeof activeTabInfo?.noteId === "string" &&
+        activeTabInfo.noteId.length > 0;
+    const titleSpellcheckLanguage = titleSpellcheckEnabled
+        ? resolveFrontendSpellcheckLanguage(spellcheckPrimaryLanguage)
+        : undefined;
 
     const getCurrentBody = useCallback(() => {
         return (
@@ -752,12 +782,66 @@ export function Editor({
         return true;
     }, []);
 
+    const loadSpellcheckSuggestions = useCallback(
+        async (
+            word: string,
+            language = useSettingsStore.getState().spellcheckPrimaryLanguage,
+        ) => {
+            return useSpellcheckStore.getState().suggestWord(word, language);
+        },
+        [],
+    );
+
+    const refreshEditorSpellcheck = useCallback(() => {
+        const view = viewRef.current;
+        const noteId = activeTabRef.current?.noteId ?? null;
+        if (!view) return;
+
+        view.dispatch({
+            effects: spellcheckDecorationsCompartment.reconfigure(
+                getSpellcheckEditorExtension({
+                    enabled: useSettingsStore.getState().editorSpellcheck,
+                    primaryLanguage:
+                        useSettingsStore.getState().spellcheckPrimaryLanguage,
+                    secondaryLanguage:
+                        useSettingsStore.getState().spellcheckSecondaryLanguage,
+                    noteId,
+                }),
+            ),
+        });
+    }, []);
+
+    const getSecondaryLanguageCandidates = useCallback(() => {
+        const primary = resolveFrontendSpellcheckLanguage(
+            useSettingsStore.getState().spellcheckPrimaryLanguage,
+        );
+        const currentSecondary =
+            useSettingsStore.getState().spellcheckSecondaryLanguage;
+
+        return useSpellcheckStore
+            .getState()
+            .languages.filter(
+                (language) => language.available && language.id !== primary,
+            )
+            .map((language) => ({
+                id: language.id,
+                label: language.label,
+            }))
+            .sort((left, right) => {
+                if (left.id === currentSecondary) return -1;
+                if (right.id === currentSecondary) return 1;
+                return left.label.localeCompare(right.label, "en");
+            })
+            .slice(0, 3);
+    }, []);
+
     const handleEditorContextMenu = useCallback(
-        (event: {
+        async (event: {
             clientX: number;
             clientY: number;
             target: EventTarget | null;
             preventDefault: () => void;
+            stopPropagation?: () => void;
         }) => {
             if (!activeTabRef.current) return false;
             const view = viewRef.current;
@@ -771,11 +855,19 @@ export function Editor({
                       ? rawTarget.parentElement
                       : null;
 
+            if (
+                target?.closest("textarea, input, [contenteditable='true']") &&
+                !target.closest(".cm-content")
+            ) {
+                return false;
+            }
+
             const liveLink = target?.closest(
                 ".cm-lp-link",
             ) as HTMLElement | null;
             if (liveLink?.dataset.href) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -794,6 +886,7 @@ export function Editor({
             ) as HTMLElement | null;
             if (wikilink?.dataset.wikilinkTarget) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -812,6 +905,7 @@ export function Editor({
             ) as HTMLElement | null;
             if (linkedImage?.dataset.href) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -830,6 +924,7 @@ export function Editor({
             ) as HTMLElement | null;
             if (tableUrl?.dataset.url) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -848,6 +943,7 @@ export function Editor({
             ) as HTMLElement | null;
             if (tableWikilink?.dataset.wikilinkTarget) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -866,6 +962,7 @@ export function Editor({
             ) as HTMLElement | null;
             if (noteEmbed?.dataset.wikilinkTarget) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -884,6 +981,7 @@ export function Editor({
             ) as HTMLElement | null;
             if (youtubeLink?.dataset.href) {
                 event.preventDefault();
+                event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
                 setSelectionToolbar(null);
@@ -917,26 +1015,81 @@ export function Editor({
             }
 
             event.preventDefault();
+            event.stopPropagation?.();
             setSelectionToolbar(null);
             wikilinkSuggesterArmedRef.current = false;
             setWikilinkSuggester(null);
             setLinkContextMenu(null);
             setTitleContextMenu(null);
+            const hasSelection = !view.state.selection.main.empty;
+            const canCheckSpelling =
+                useSettingsStore.getState().editorSpellcheck &&
+                typeof activeTabRef.current?.noteId === "string" &&
+                activeTabRef.current.noteId.length > 0;
+            const word = pos !== null ? view.state.wordAt(pos) : null;
+            const wordText =
+                word && word.from !== word.to
+                    ? view.state.sliceDoc(word.from, word.to).trim()
+                    : null;
+            const shouldFetchSuggestions =
+                canCheckSpelling &&
+                !!wordText &&
+                /[\p{L}\p{M}]/u.test(wordText);
+            const requestId = ++spellcheckRequestIdRef.current;
+            let spellingSuggestions: string[] = [];
+            let spellingCorrect: boolean | null = null;
+
+            if (shouldFetchSuggestions) {
+                try {
+                    const response = await loadSpellcheckSuggestions(wordText);
+                    spellingSuggestions = response.suggestions;
+                    spellingCorrect = response.correct;
+                } catch (error) {
+                    console.error(
+                        "Error loading spellcheck suggestions:",
+                        error,
+                    );
+                }
+            }
+
+            if (requestId !== spellcheckRequestIdRef.current) {
+                return true;
+            }
+
             setEditorContextMenu({
                 x: event.clientX,
                 y: event.clientY,
                 payload: {
-                    hasSelection: !view.state.selection.main.empty,
+                    hasSelection,
+                    spellingWord: shouldFetchSuggestions ? wordText : null,
+                    spellingCorrect: shouldFetchSuggestions
+                        ? spellingCorrect
+                        : null,
+                    wordRange:
+                        shouldFetchSuggestions && word
+                            ? { from: word.from, to: word.to }
+                            : null,
+                    spellingSuggestions,
+                    secondaryLanguage: spellcheckSecondaryLanguage,
+                    secondaryLanguageCandidates:
+                        getSecondaryLanguageCandidates(),
                 },
             });
             return true;
         },
-        [],
+        [
+            getSecondaryLanguageCandidates,
+            loadSpellcheckSuggestions,
+            spellcheckSecondaryLanguage,
+        ],
     );
 
     // Factory to create a fresh EditorState with all extensions
     const createEditorState = useCallback(
-        (doc: string) => {
+        (
+            doc: string,
+            noteId: string | null = activeTabRef.current?.noteId ?? null,
+        ) => {
             return EditorState.create({
                 doc,
                 extensions: [
@@ -946,11 +1099,16 @@ export function Editor({
                     syntaxCompartment.of(
                         getSyntaxExtension(useThemeStore.getState().isDark),
                     ),
-                    EditorView.lineWrapping,
+                    wrappingCompartment.of(
+                        getWrappingExtension(
+                            useSettingsStore.getState().lineWrapping,
+                        ),
+                    ),
                     drawSelection(),
                     alignmentCompartment.of(
                         getAlignmentExtension(
-                            useSettingsStore.getState().justifyText,
+                            useSettingsStore.getState().justifyText &&
+                                useSettingsStore.getState().lineWrapping,
                         ),
                     ),
                     tabSizeCompartment.of([
@@ -961,6 +1119,29 @@ export function Editor({
                             " ".repeat(useSettingsStore.getState().tabSize),
                         ),
                     ]),
+                    spellcheckCompartment.of(
+                        getSpellcheckExtension(
+                            useSettingsStore.getState().editorSpellcheck,
+                            useSettingsStore.getState()
+                                .spellcheckPrimaryLanguage,
+                            useSettingsStore.getState()
+                                .spellcheckSecondaryLanguage,
+                            noteId,
+                        ),
+                    ),
+                    spellcheckDecorationsCompartment.of(
+                        getSpellcheckEditorExtension({
+                            enabled:
+                                useSettingsStore.getState().editorSpellcheck,
+                            primaryLanguage:
+                                useSettingsStore.getState()
+                                    .spellcheckPrimaryLanguage,
+                            secondaryLanguage:
+                                useSettingsStore.getState()
+                                    .spellcheckSecondaryLanguage,
+                            noteId,
+                        }),
+                    ),
                     livePreviewCompartment.of(
                         getLivePreviewExtension(
                             handleOpenLinkContextMenu,
@@ -1047,6 +1228,17 @@ export function Editor({
                         }, 300);
                         scheduleSaveRef.current(tab.id, doc);
                     }),
+                    userEditNotifier(
+                        () => {
+                            const noteId = activeTabRef.current?.noteId;
+                            return noteId ? `${noteId}.md` : null;
+                        },
+                        (fileId, edits, fullText) => {
+                            useChatStore
+                                .getState()
+                                .notifyUserEditOnFile(fileId, edits, fullText);
+                        },
+                    ),
                     EditorView.updateListener.of((update) => {
                         if (
                             update.transactions.some((transaction) =>
@@ -1128,9 +1320,7 @@ export function Editor({
                 updateWikilinkSuggester(nextView);
             };
             const handleNativeContextMenu = (event: MouseEvent) => {
-                const handled = handleEditorContextMenu(event);
-                if (!handled) return;
-                event.stopPropagation();
+                void handleEditorContextMenu(event);
             };
 
             nextView.scrollDOM.addEventListener(
@@ -1183,7 +1373,7 @@ export function Editor({
             markTabSaved(initialTab.noteId, rawContent);
         }
 
-        replaceEditorView(createEditorState(body));
+        replaceEditorView(createEditorState(body, initialTab?.noteId ?? null));
 
         setActiveFrontmatter(
             initialTab
@@ -1295,6 +1485,7 @@ export function Editor({
             savedState ??
             createEditorState(
                 stripFrontmatter(activeNoteId, activeTab.content),
+                activeNoteId,
             );
         // Swap state in-place — avoids destroying/recreating the entire DOM.
         // Falls back to replaceEditorView if setState throws.
@@ -1348,6 +1539,29 @@ export function Editor({
                             handleOpenLinkContextMenu,
                             useSettingsStore.getState().livePreviewEnabled,
                         ),
+                    ),
+                    spellcheckCompartment.reconfigure(
+                        getSpellcheckExtension(
+                            useSettingsStore.getState().editorSpellcheck,
+                            useSettingsStore.getState()
+                                .spellcheckPrimaryLanguage,
+                            useSettingsStore.getState()
+                                .spellcheckSecondaryLanguage,
+                            activeNoteId,
+                        ),
+                    ),
+                    spellcheckDecorationsCompartment.reconfigure(
+                        getSpellcheckEditorExtension({
+                            enabled:
+                                useSettingsStore.getState().editorSpellcheck,
+                            primaryLanguage:
+                                useSettingsStore.getState()
+                                    .spellcheckPrimaryLanguage,
+                            secondaryLanguage:
+                                useSettingsStore.getState()
+                                    .spellcheckSecondaryLanguage,
+                            noteId: activeNoteId,
+                        }),
                     ),
                 ],
             });
@@ -1419,6 +1633,34 @@ export function Editor({
         });
     }, [handleOpenLinkContextMenu, vaultPath, livePreviewEnabled]);
 
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: [
+                spellcheckCompartment.reconfigure(
+                    getSpellcheckExtension(
+                        editorSpellcheck,
+                        spellcheckPrimaryLanguage,
+                        spellcheckSecondaryLanguage,
+                        activeNoteId,
+                    ),
+                ),
+                spellcheckDecorationsCompartment.reconfigure(
+                    getSpellcheckEditorExtension({
+                        enabled: editorSpellcheck,
+                        primaryLanguage: spellcheckPrimaryLanguage,
+                        secondaryLanguage: spellcheckSecondaryLanguage,
+                        noteId: activeNoteId,
+                    }),
+                ),
+            ],
+        });
+    }, [
+        activeNoteId,
+        editorSpellcheck,
+        spellcheckPrimaryLanguage,
+        spellcheckSecondaryLanguage,
+    ]);
+
     // Reload editor content when an external process (e.g. AI agent) writes to the file
     useEffect(() => {
         const unsub = useEditorStore.subscribe((state, prev) => {
@@ -1489,6 +1731,7 @@ export function Editor({
                     anchor: Math.min(selection.anchor, nextDocLength),
                     head: Math.min(selection.head, nextDocLength),
                 },
+                annotations: [changeAuthorAnnotation.of("agent")],
             });
             isInternalRef.current = false;
             requestAnimationFrame(() => {
@@ -1504,7 +1747,10 @@ export function Editor({
         viewRef.current?.dispatch({
             effects: [
                 alignmentCompartment.reconfigure(
-                    getAlignmentExtension(justifyText),
+                    getAlignmentExtension(justifyText && lineWrapping),
+                ),
+                wrappingCompartment.reconfigure(
+                    getWrappingExtension(lineWrapping),
                 ),
                 tabSizeCompartment.reconfigure([
                     EditorState.tabSize.of(tabSize),
@@ -1512,7 +1758,7 @@ export function Editor({
                 ]),
             ],
         });
-    }, [justifyText, tabSize]);
+    }, [justifyText, lineWrapping, tabSize]);
 
     useEffect(() => {
         const view = viewRef.current;
@@ -1570,8 +1816,7 @@ export function Editor({
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
-            const { tabs, activeTabId, closeTab, switchTab } =
-                useEditorStore.getState();
+            const { tabs, activeTabId, closeTab } = useEditorStore.getState();
 
             // Cmd+W / Ctrl+W: close active tab
             if ((e.metaKey || e.ctrlKey) && e.key === "w") {
@@ -1585,7 +1830,9 @@ export function Editor({
                         saveNow(tab, content);
                         // Clean up saved EditorState for all notes in this tab's history
                         for (const entry of tab.history ?? []) {
-                            tabStatesRef.current.delete(entry.noteId);
+                            if (entry.kind === "note") {
+                                tabStatesRef.current.delete(entry.noteId);
+                            }
                         }
                         tabStatesRef.current.delete(tab.noteId);
                     }
@@ -1628,17 +1875,6 @@ export function Editor({
                 }
             }
 
-            // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
-            if (e.ctrlKey && e.key === "Tab") {
-                e.preventDefault();
-                const idx = tabs.findIndex((t) => t.id === activeTabId);
-                if (idx !== -1 && tabs.length > 1) {
-                    const offset = e.shiftKey ? tabs.length - 1 : 1;
-                    const next = tabs[(idx + offset) % tabs.length];
-                    switchTab(next.id);
-                }
-            }
-
             // Cmd+[ / Ctrl+[: go back in history
             if ((e.metaKey || e.ctrlKey) && e.key === "[") {
                 e.preventDefault();
@@ -1666,6 +1902,131 @@ export function Editor({
     const activeLocation = activeTabInfo
         ? getNoteLocation(activeTabInfo.noteId)
         : { parent: "" };
+    const addWordToSpellcheckDictionary = async (word: string) => {
+        await useSpellcheckStore
+            .getState()
+            .addWordToDictionary(word, spellcheckPrimaryLanguage);
+        refreshEditorSpellcheck();
+    };
+    const ignoreWordForSpellcheckSession = async (word: string) => {
+        await useSpellcheckStore
+            .getState()
+            .ignoreWordForSession(word, spellcheckPrimaryLanguage);
+        refreshEditorSpellcheck();
+    };
+    const editorContextMenuEntries = buildSpellcheckContextMenuEntries({
+        payload: editorContextMenu?.payload,
+        applySuggestion: (suggestion, range) => {
+            const view = viewRef.current;
+            if (!view) return;
+
+            view.dispatch({
+                changes: {
+                    from: range.from,
+                    to: range.to,
+                    insert: suggestion,
+                },
+                selection: EditorSelection.cursor(
+                    range.from + suggestion.length,
+                ),
+                scrollIntoView: true,
+                userEvent: "input",
+            });
+            view.focus();
+        },
+        addToDictionary: (word) => {
+            void addWordToSpellcheckDictionary(word);
+        },
+        ignoreForSession: (word) => {
+            void ignoreWordForSpellcheckSession(word);
+        },
+        setSecondaryLanguage: (language) => {
+            useSettingsStore
+                .getState()
+                .setSetting("spellcheckSecondaryLanguage", language);
+            refreshEditorSpellcheck();
+        },
+        trailingEntries: [
+            {
+                label: "Undo",
+                action: () => {
+                    const view = viewRef.current;
+                    if (!view) return;
+                    undo(view);
+                    view.focus();
+                },
+            },
+            {
+                label: "Redo",
+                action: () => {
+                    const view = viewRef.current;
+                    if (!view) return;
+                    redo(view);
+                    view.focus();
+                },
+            },
+            { type: "separator" },
+            {
+                label: "Cut",
+                action: () => void cutSelectedText(),
+                disabled: !editorContextMenu?.payload.hasSelection,
+            },
+            {
+                label: "Copy",
+                action: () => void copySelectedText(),
+                disabled: !editorContextMenu?.payload.hasSelection,
+            },
+            {
+                label: "Paste",
+                action: () => void pasteClipboardText(),
+            },
+            { type: "separator" },
+            {
+                label: "Select All",
+                action: () => selectAllEditorText(),
+            },
+        ],
+    });
+    const titleContextMenuEntries = buildSpellcheckContextMenuEntries({
+        payload: titleContextMenu?.payload,
+        applySuggestion: (suggestion, range) => {
+            const input = titleInputRef.current;
+            if (!input) return;
+
+            const nextTitle =
+                editableTitle.slice(0, range.from) +
+                suggestion +
+                editableTitle.slice(range.to);
+            applyTitleChange(nextTitle);
+            input.focus();
+            input.setSelectionRange(range.from, range.from + suggestion.length);
+        },
+        addToDictionary: (word) => {
+            void addWordToSpellcheckDictionary(word);
+        },
+        ignoreForSession: (word) => {
+            void ignoreWordForSpellcheckSession(word);
+        },
+        setSecondaryLanguage: (language) => {
+            useSettingsStore
+                .getState()
+                .setSetting("spellcheckSecondaryLanguage", language);
+            refreshEditorSpellcheck();
+        },
+        trailingEntries: [
+            {
+                label: "Rename Note",
+                action: () => {
+                    titleInputRef.current?.focus();
+                    titleInputRef.current?.select();
+                },
+            },
+            {
+                label: "Copy Title",
+                action: () => void navigator.clipboard.writeText(editableTitle),
+            },
+        ],
+    });
 
     // Always render the container so CodeMirror initializes properly
     return (
@@ -1754,14 +2115,68 @@ export function Editor({
                             value={editableTitle}
                             onChange={applyTitleChange}
                             textareaRef={titleInputRef}
-                            onContextMenu={(event) => {
+                            onContextMenu={async (event) => {
                                 event.preventDefault();
+                                event.stopPropagation();
                                 setEditorContextMenu(null);
                                 setLinkContextMenu(null);
+                                setSelectionToolbar(null);
+                                const target = event.currentTarget;
+                                const selectionStart =
+                                    target.selectionStart ?? 0;
+                                const selectionEnd = target.selectionEnd ?? 0;
+                                const hasSelection =
+                                    selectionEnd > selectionStart;
+                                const wordRange = findTextInputWordRange(
+                                    target.value,
+                                    selectionStart,
+                                    selectionEnd,
+                                );
+                                const wordText = wordRange
+                                    ? target.value
+                                          .slice(wordRange.from, wordRange.to)
+                                          .trim()
+                                    : null;
+                                let spellingSuggestions: string[] = [];
+                                let spellingCorrect: boolean | null = null;
+
+                                if (
+                                    titleSpellcheckEnabled &&
+                                    wordText &&
+                                    isSpellcheckCandidate(wordText)
+                                ) {
+                                    try {
+                                        const response =
+                                            await loadSpellcheckSuggestions(
+                                                wordText,
+                                                titleSpellcheckLanguage ??
+                                                    spellcheckPrimaryLanguage,
+                                            );
+                                        spellingSuggestions =
+                                            response.suggestions;
+                                        spellingCorrect = response.correct;
+                                    } catch (error) {
+                                        console.error(
+                                            "Error loading title spellcheck suggestions:",
+                                            error,
+                                        );
+                                    }
+                                }
+
                                 setTitleContextMenu({
                                     x: event.clientX,
                                     y: event.clientY,
-                                    payload: undefined,
+                                    payload: {
+                                        hasSelection,
+                                        spellingWord: wordText,
+                                        spellingCorrect,
+                                        wordRange,
+                                        spellingSuggestions,
+                                        secondaryLanguage:
+                                            spellcheckSecondaryLanguage,
+                                        secondaryLanguageCandidates:
+                                            getSecondaryLanguageCandidates(),
+                                    },
                                 });
                             }}
                         />
@@ -1787,68 +2202,14 @@ export function Editor({
                     menu={editorContextMenu}
                     onClose={() => setEditorContextMenu(null)}
                     minWidth={138}
-                    entries={[
-                        {
-                            label: "Undo",
-                            action: () => {
-                                const view = viewRef.current;
-                                if (!view) return;
-                                undo(view);
-                                view.focus();
-                            },
-                        },
-                        {
-                            label: "Redo",
-                            action: () => {
-                                const view = viewRef.current;
-                                if (!view) return;
-                                redo(view);
-                                view.focus();
-                            },
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Cut",
-                            action: () => void cutSelectedText(),
-                            disabled: !editorContextMenu.payload.hasSelection,
-                        },
-                        {
-                            label: "Copy",
-                            action: () => void copySelectedText(),
-                            disabled: !editorContextMenu.payload.hasSelection,
-                        },
-                        {
-                            label: "Paste",
-                            action: () => void pasteClipboardText(),
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Select All",
-                            action: () => selectAllEditorText(),
-                        },
-                    ]}
+                    entries={editorContextMenuEntries}
                 />
             )}
             {titleContextMenu && (
                 <ContextMenu
                     menu={titleContextMenu}
                     onClose={() => setTitleContextMenu(null)}
-                    entries={[
-                        {
-                            label: "Rename Note",
-                            action: () => {
-                                titleInputRef.current?.focus();
-                                titleInputRef.current?.select();
-                            },
-                        },
-                        {
-                            label: "Copy Title",
-                            action: () =>
-                                void navigator.clipboard.writeText(
-                                    editableTitle,
-                                ),
-                        },
-                    ]}
+                    entries={titleContextMenuEntries}
                 />
             )}
         </div>

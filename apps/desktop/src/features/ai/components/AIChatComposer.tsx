@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import {
     ContextMenu,
@@ -9,6 +10,7 @@ import {
     type FileTreeNoteDragDetail,
 } from "../dragEvents";
 import {
+    appendFileAttachmentPart,
     appendFolderMentionPart,
     appendMentionParts,
     normalizeComposerParts,
@@ -26,6 +28,7 @@ import {
     type ChatPillMetrics,
 } from "./chatPillMetrics";
 import type {
+    AIAvailableCommand,
     AIChatNoteSummary,
     AIChatSessionStatus,
     AIComposerPart,
@@ -40,12 +43,14 @@ interface AIChatComposerProps {
     notes: AIChatNoteSummary[];
     status: AIChatSessionStatus;
     runtimeName: string;
+    runtimeId?: string;
     disabled?: boolean;
     autoContextEnabled?: boolean;
     hasActiveNote?: boolean;
     requireCmdEnterToSend?: boolean;
     composerFontSize?: number;
     composerFontFamily?: EditorFontFamily;
+    availableCommands?: AIAvailableCommand[];
     expanded?: boolean;
     contextBar?: ReactNode;
     footer?: ReactNode;
@@ -56,13 +61,13 @@ interface AIChatComposerProps {
     onToggleExpanded?: () => void;
     onAttachAudio?: () => void;
     onAttachFile?: () => void;
-    onFileAttach?: (
-        filePath: string,
-        fileName: string,
-        mimeType: string,
-    ) => void;
+    onPasteImage?: (file: File) => void;
     onSubmit: () => void;
     onStop: () => void;
+    isRecording?: boolean;
+    isTranscribing?: boolean;
+    voiceError?: string | null;
+    onMicClick?: () => void;
 }
 
 interface MentionState {
@@ -111,7 +116,7 @@ const EMPTY_SLASH_STATE: SlashState = {
     range: null,
 };
 
-const SLASH_COMMANDS: AIChatSlashCommand[] = [
+const COMMON_SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "init",
         label: "/init",
@@ -133,6 +138,15 @@ const SLASH_COMMANDS: AIChatSlashCommand[] = [
         insertText: "/plan ",
     },
     {
+        id: "compact",
+        label: "/compact",
+        description: "Compact the active thread before continuing.",
+        insertText: "/compact",
+    },
+];
+
+const CODEX_SLASH_COMMANDS: AIChatSlashCommand[] = [
+    {
         id: "review-branch",
         label: "/review-branch",
         description: "Review changes against a base branch.",
@@ -145,24 +159,26 @@ const SLASH_COMMANDS: AIChatSlashCommand[] = [
         insertText: "/review-commit ",
     },
     {
-        id: "compact",
-        label: "/compact",
-        description: "Compact the active thread before continuing.",
-        insertText: "/compact",
-    },
-    {
         id: "undo",
         label: "/undo",
-        description: "Ask Codex to undo the last change.",
+        description: "Undo the last change from this session.",
         insertText: "/undo",
     },
     {
         id: "logout",
         label: "/logout",
-        description: "Log out the current Codex account for this runtime.",
+        description: "Sign out this runtime in VaultAI.",
         insertText: "/logout",
     },
 ];
+
+function getFallbackSlashCommands(runtimeId?: string) {
+    if (runtimeId === "codex-acp") {
+        return [...COMMON_SLASH_COMMANDS, ...CODEX_SLASH_COMMANDS];
+    }
+
+    return COMMON_SLASH_COMMANDS;
+}
 
 function applyComposerPillStyles(
     element: HTMLSpanElement,
@@ -262,6 +278,36 @@ function createSelectionMentionNode(
     return element;
 }
 
+function createScreenshotNode(
+    part: Extract<AIComposerPart, { type: "screenshot" }>,
+    metrics: ChatPillMetrics,
+) {
+    const element = document.createElement("span");
+    element.dataset.kind = "screenshot";
+    element.dataset.filePath = part.filePath;
+    element.dataset.mimeType = part.mimeType;
+    element.dataset.label = part.label;
+    element.contentEditable = "false";
+    element.textContent = truncatePillLabel(part.label);
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    return element;
+}
+
+function createFileAttachmentNode(
+    part: Extract<AIComposerPart, { type: "file_attachment" }>,
+    metrics: ChatPillMetrics,
+) {
+    const element = document.createElement("span");
+    element.dataset.kind = "file_attachment";
+    element.dataset.filePath = part.filePath;
+    element.dataset.mimeType = part.mimeType;
+    element.dataset.label = part.label;
+    element.contentEditable = "false";
+    element.textContent = truncatePillLabel(part.label);
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    return element;
+}
+
 function appendTextPart(parts: AIComposerPart[], text: string) {
     if (!text) return;
     parts.push({
@@ -337,6 +383,38 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
             selectedText: node.dataset.selectedText,
             startLine: Number(node.dataset.startLine),
             endLine: Number(node.dataset.endLine),
+        });
+        return;
+    }
+
+    if (
+        node.dataset.kind === "screenshot" &&
+        node.dataset.filePath &&
+        node.dataset.mimeType &&
+        node.dataset.label
+    ) {
+        parts.push({
+            id: crypto.randomUUID(),
+            type: "screenshot",
+            filePath: node.dataset.filePath,
+            mimeType: node.dataset.mimeType,
+            label: node.dataset.label,
+        });
+        return;
+    }
+
+    if (
+        node.dataset.kind === "file_attachment" &&
+        node.dataset.filePath &&
+        node.dataset.mimeType &&
+        node.dataset.label
+    ) {
+        parts.push({
+            id: crypto.randomUUID(),
+            type: "file_attachment",
+            filePath: node.dataset.filePath,
+            mimeType: node.dataset.mimeType,
+            label: node.dataset.label,
         });
         return;
     }
@@ -423,6 +501,10 @@ function syncComposerDom(
             root.append(createPlanMentionNode(metrics));
         } else if (part.type === "selection_mention") {
             root.append(createSelectionMentionNode(part, metrics));
+        } else if (part.type === "screenshot") {
+            root.append(createScreenshotNode(part, metrics));
+        } else if (part.type === "file_attachment") {
+            root.append(createFileAttachmentNode(part, metrics));
         }
     }
 
@@ -436,7 +518,9 @@ function isMentionElement(node: Node): node is HTMLElement {
             node.dataset.kind === "folder_mention" ||
             node.dataset.kind === "fetch_mention" ||
             node.dataset.kind === "plan_mention" ||
-            node.dataset.kind === "selection_mention")
+            node.dataset.kind === "selection_mention" ||
+            node.dataset.kind === "screenshot" ||
+            node.dataset.kind === "file_attachment")
     );
 }
 
@@ -682,12 +766,14 @@ export function AIChatComposer({
     notes,
     status,
     runtimeName,
+    runtimeId,
     disabled = false,
     autoContextEnabled = true,
     hasActiveNote = false,
     requireCmdEnterToSend = false,
     composerFontSize = 14,
     composerFontFamily = "system",
+    availableCommands = [],
     expanded = false,
     contextBar,
     footer,
@@ -698,19 +784,29 @@ export function AIChatComposer({
     onToggleExpanded,
     onAttachAudio,
     onAttachFile,
-    onFileAttach,
+    onPasteImage,
     onSubmit,
     onStop,
+    isRecording,
+    isTranscribing,
+    voiceError,
+    onMicClick,
 }: AIChatComposerProps) {
     const [attachMenuOpen, setAttachMenuOpen] = useState(false);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
+    const [composerElement, setComposerElement] =
+        useState<HTMLDivElement | null>(null);
     const [mentionState, setMentionState] =
         useState<MentionState>(EMPTY_MENTION_STATE);
     const [slashState, setSlashState] = useState<SlashState>(EMPTY_SLASH_STATE);
     const [externalDragActive, setExternalDragActive] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ComposerContextMenuPayload> | null>(null);
+    const fallbackSlashCommands = useMemo(
+        () => getFallbackSlashCommands(runtimeId),
+        [runtimeId],
+    );
     const [customHeight, setCustomHeight] = useState<number | null>(null);
     const resizeSession = useRef<{
         startY: number;
@@ -731,6 +827,12 @@ export function AIChatComposer({
         () => getPillMetricsSignature(pillMetrics),
         [pillMetrics],
     );
+    const bindComposerRef = useCallback((element: HTMLDivElement | null) => {
+        composerRef.current = element;
+        setComposerElement((current) =>
+            current === element ? current : element,
+        );
+    }, []);
 
     useEffect(() => {
         const composer = composerRef.current;
@@ -814,9 +916,25 @@ export function AIChatComposer({
             return;
         }
 
-        const items = SLASH_COMMANDS.filter((command) =>
-            command.id.toLowerCase().includes(trigger.query.toLowerCase()),
+        const runtimeCommands: AIChatSlashCommand[] = availableCommands.map(
+            (command) => ({
+                id: command.id,
+                label: command.label,
+                description: command.description,
+                insertText: command.insert_text,
+            }),
         );
+        const commandSource = runtimeCommands.length
+            ? runtimeCommands
+            : fallbackSlashCommands;
+        const normalizedQuery = trigger.query.toLowerCase();
+        const items = commandSource.filter((command) => {
+            const haystack = [command.id, command.label, command.description]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+            return haystack.includes(normalizedQuery);
+        });
         const rect = trigger.range.getBoundingClientRect();
         setSlashState({
             open: true,
@@ -982,15 +1100,17 @@ export function AIChatComposer({
                     return;
                 }
 
-                // File drop (PDFs, etc.)
+                // File drop (PDFs, etc.) — inline pills
                 if (detail.files && detail.files.length > 0) {
-                    detail.files.forEach((file) =>
-                        onFileAttach?.(
-                            file.filePath,
-                            file.fileName,
-                            file.mimeType,
-                        ),
-                    );
+                    let current = parts;
+                    for (const file of detail.files) {
+                        current = appendFileAttachmentPart(current, {
+                            filePath: file.filePath,
+                            mimeType: file.mimeType,
+                            label: file.fileName,
+                        });
+                    }
+                    onChange(current);
                     focusComposerAtEnd();
                     return;
                 }
@@ -1015,7 +1135,117 @@ export function AIChatComposer({
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
         return () =>
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
-    }, [onChange, onFileAttach, onMentionAttach, parts]);
+    }, [onChange, onFolderAttach, onMentionAttach, parts]);
+
+    // Native Finder/Explorer file drop
+    useEffect(() => {
+        let mounted = true;
+        let unlisten: (() => void) | null = null;
+
+        void getCurrentWebview()
+            .onDragDropEvent((event) => {
+                const shell = shellRef.current;
+                if (!shell) return;
+                const { type } = event.payload;
+
+                if (type === "enter" || type === "over") {
+                    const pos = (
+                        event.payload as { position?: { x: number; y: number } }
+                    ).position;
+                    if (pos) {
+                        const rect = shell.getBoundingClientRect();
+                        const isOver =
+                            pos.x >= rect.left &&
+                            pos.x <= rect.right &&
+                            pos.y >= rect.top &&
+                            pos.y <= rect.bottom;
+                        setExternalDragActive(isOver);
+                    }
+                    return;
+                }
+
+                if (type === "drop") {
+                    setExternalDragActive(false);
+                    const pos = (
+                        event.payload as { position?: { x: number; y: number } }
+                    ).position;
+                    if (!pos) return;
+                    const rect = shell.getBoundingClientRect();
+                    const isOver =
+                        pos.x >= rect.left &&
+                        pos.x <= rect.right &&
+                        pos.y >= rect.top &&
+                        pos.y <= rect.bottom;
+                    if (!isOver) return;
+
+                    const paths: string[] =
+                        (event.payload as { paths?: string[] }).paths ?? [];
+                    const mimeMap: Record<string, string> = {
+                        png: "image/png",
+                        jpg: "image/jpeg",
+                        jpeg: "image/jpeg",
+                        gif: "image/gif",
+                        webp: "image/webp",
+                        svg: "image/svg+xml",
+                        pdf: "application/pdf",
+                        json: "application/json",
+                        xml: "application/xml",
+                        yaml: "text/yaml",
+                        yml: "text/yaml",
+                        toml: "text/toml",
+                        csv: "text/csv",
+                        txt: "text/plain",
+                        md: "text/markdown",
+                    };
+                    let currentParts = parts;
+                    for (const filePath of paths) {
+                        const fileName = filePath.split("/").pop() ?? "file";
+                        const dotIdx = fileName.lastIndexOf(".");
+                        const hasExt =
+                            dotIdx > 0 && dotIdx < fileName.length - 1;
+
+                        if (!hasExt) {
+                            // No extension → treat as folder
+                            onFolderAttach(filePath, fileName);
+                            currentParts = appendFolderMentionPart(
+                                currentParts,
+                                filePath,
+                                fileName,
+                            );
+                        } else {
+                            const ext = fileName
+                                .slice(dotIdx + 1)
+                                .toLowerCase();
+                            currentParts = appendFileAttachmentPart(
+                                currentParts,
+                                {
+                                    filePath,
+                                    mimeType:
+                                        mimeMap[ext] ??
+                                        "application/octet-stream",
+                                    label: fileName,
+                                },
+                            );
+                        }
+                    }
+                    onChange(currentParts);
+                    focusComposerAtEnd();
+                    return;
+                }
+
+                // "leave" / "cancel"
+                setExternalDragActive(false);
+            })
+            .then((fn) => {
+                if (mounted) unlisten = fn;
+                else fn();
+            });
+
+        return () => {
+            mounted = false;
+            unlisten?.();
+        };
+    }, [onFolderAttach, onChange, parts]);
 
     const MIN_COMPOSER_HEIGHT = 64;
     const MAX_COMPOSER_HEIGHT = 480;
@@ -1059,6 +1289,7 @@ export function AIChatComposer({
     return (
         <div
             ref={shellRef}
+            data-ai-composer-drop-zone="true"
             className={
                 expanded
                     ? "flex h-full min-h-0 flex-1 flex-col"
@@ -1182,7 +1413,7 @@ export function AIChatComposer({
                     </div>
                 )}
                 <div
-                    ref={composerRef}
+                    ref={bindComposerRef}
                     contentEditable={!disabled}
                     suppressContentEditableWarning
                     role="textbox"
@@ -1212,6 +1443,23 @@ export function AIChatComposer({
                     }}
                     onPaste={(event) => {
                         event.preventDefault();
+                        // Check for pasted images first
+                        if (onPasteImage) {
+                            const items = event.clipboardData.items;
+                            for (let i = 0; i < items.length; i++) {
+                                const item = items[i];
+                                if (
+                                    item.kind === "file" &&
+                                    item.type.startsWith("image/")
+                                ) {
+                                    const file = item.getAsFile();
+                                    if (file) {
+                                        onPasteImage(file);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         const text = event.clipboardData.getData("text/plain");
                         if (text && composerRef.current) {
                             insertPlainTextAtSelection(
@@ -1615,38 +1863,152 @@ export function AIChatComposer({
                             )}
                         </button>
                     )}
-                    <button
-                        type="button"
-                        onClick={onSubmit}
-                        disabled={!canSubmit}
-                        className="flex shrink-0 items-center justify-center rounded-full"
-                        style={{
-                            width: 28,
-                            height: 28,
-                            color: isEmpty ? "var(--text-secondary)" : "#fff",
-                            backgroundColor: isEmpty
-                                ? "transparent"
-                                : "var(--accent)",
-                            border: "none",
-                            opacity: canSubmit ? 1 : 0.4,
-                            transition: "all 0.15s ease",
-                        }}
-                        aria-label={isStreaming ? "Queue" : "Send"}
-                        title={isStreaming ? "Queue" : "Send"}
-                    >
-                        <svg
-                            width="16"
-                            height="16"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                    {isRecording || isTranscribing ? (
+                        <button
+                            type="button"
+                            onClick={onMicClick}
+                            disabled={isTranscribing}
+                            className="flex shrink-0 items-center justify-center rounded-full"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: "#fff",
+                                backgroundColor: isTranscribing
+                                    ? "var(--accent)"
+                                    : "#b91c1c",
+                                border: "none",
+                                opacity: isTranscribing ? 0.7 : 1,
+                                transition: "all 0.15s ease",
+                                animation: isRecording
+                                    ? "voice-pulse 1.5s ease-in-out infinite"
+                                    : "none",
+                            }}
+                            aria-label={
+                                isTranscribing
+                                    ? "Transcribing..."
+                                    : "Stop recording"
+                            }
+                            title={
+                                isTranscribing
+                                    ? "Transcribing..."
+                                    : "Stop recording"
+                            }
                         >
-                            <path d="M8 12V4M4 7l4-3 4 3" />
-                        </svg>
-                    </button>
+                            {isTranscribing ? (
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    style={{
+                                        animation: "spin 1s linear infinite",
+                                    }}
+                                >
+                                    <path d="M8 1a7 7 0 1 0 7 7" />
+                                </svg>
+                            ) : (
+                                <svg
+                                    width="14"
+                                    height="14"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <rect
+                                        x="5"
+                                        y="1"
+                                        width="6"
+                                        height="10"
+                                        rx="3"
+                                    />
+                                    <path d="M3 7a5 5 0 0 0 10 0" />
+                                    <path d="M8 12v2.5M6 14.5h4" />
+                                </svg>
+                            )}
+                        </button>
+                    ) : isEmpty && onMicClick && !isStreaming ? (
+                        <button
+                            type="button"
+                            onClick={onMicClick}
+                            disabled={disabled}
+                            className="flex shrink-0 items-center justify-center rounded-full"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: voiceError
+                                    ? "#ef4444"
+                                    : "var(--text-secondary)",
+                                backgroundColor: "transparent",
+                                border: "none",
+                                opacity: disabled ? 0.4 : 1,
+                                transition: "all 0.15s ease",
+                            }}
+                            aria-label={voiceError ?? "Record voice"}
+                            title={voiceError ?? "Record voice"}
+                        >
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <rect
+                                    x="5"
+                                    y="1"
+                                    width="6"
+                                    height="10"
+                                    rx="3"
+                                />
+                                <path d="M3 7a5 5 0 0 0 10 0" />
+                                <path d="M8 12v2.5M6 14.5h4" />
+                            </svg>
+                        </button>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={onSubmit}
+                            disabled={!canSubmit}
+                            className="flex shrink-0 items-center justify-center rounded-full"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: isEmpty
+                                    ? "var(--text-secondary)"
+                                    : "#fff",
+                                backgroundColor: isEmpty
+                                    ? "transparent"
+                                    : "var(--accent)",
+                                border: "none",
+                                opacity: canSubmit ? 1 : 0.4,
+                                transition: "all 0.15s ease",
+                            }}
+                            aria-label={isStreaming ? "Queue" : "Send"}
+                            title={isStreaming ? "Queue" : "Send"}
+                        >
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M8 12V4M4 7l4-3 4 3" />
+                            </svg>
+                        </button>
+                    )}
                     {isStreaming && (
                         <button
                             type="button"
@@ -1689,7 +2051,7 @@ export function AIChatComposer({
                     query={mentionState.query}
                     selectedIndex={mentionState.selectedIndex}
                     items={mentionState.items}
-                    anchorElement={composerRef.current}
+                    anchorElement={composerElement}
                     onHoverIndex={(index) =>
                         setMentionState((state) => ({
                             ...state,
@@ -1706,7 +2068,7 @@ export function AIChatComposer({
                     query={slashState.query}
                     selectedIndex={slashState.selectedIndex}
                     items={slashState.items}
-                    anchorElement={composerRef.current}
+                    anchorElement={composerElement}
                     onHoverIndex={(index) =>
                         setSlashState((state) => ({
                             ...state,

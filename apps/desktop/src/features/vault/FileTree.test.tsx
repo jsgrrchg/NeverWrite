@@ -106,7 +106,9 @@ describe("FileTree", () => {
             minWidth: "100%",
             boxSizing: "border-box",
         });
-        expect(virtualCanvas.getAttribute("style")).not.toContain("fit-content");
+        expect(virtualCanvas.getAttribute("style")).not.toContain(
+            "fit-content",
+        );
         expect(rowsLayer).toHaveStyle({
             width: "100%",
             minWidth: "100%",
@@ -542,6 +544,81 @@ describe("FileTree", () => {
         ).toBe("Beta body");
     });
 
+    it("opens a file in a new tab on middle click", async () => {
+        const user = userEvent.setup();
+        vi.mocked(invoke).mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toEqual(
+                    expect.objectContaining({
+                        relativePath: "docs/config.toml",
+                    }),
+                );
+                return {
+                    path: "/vault/docs/config.toml",
+                    relative_path: "docs/config.toml",
+                    file_name: "config.toml",
+                    mime_type: "application/toml",
+                    content: "name = 'vault'",
+                };
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            {
+                id: "docs/config.toml",
+                path: "/vault/docs/config.toml",
+                relative_path: "docs/config.toml",
+                title: "Config",
+                file_name: "config.toml",
+                extension: "toml",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 64,
+                mime_type: "application/toml",
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+        setEditorTabs([
+            {
+                id: "tab-alpha",
+                noteId: "docs/alpha",
+                title: "Alpha",
+                content: "Alpha",
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent(
+            getFileRow("Config"),
+            new MouseEvent("auxclick", {
+                bubbles: true,
+                button: 1,
+            }),
+        );
+
+        await waitFor(() => {
+            expect(
+                useEditorStore.getState().tabs.filter(isFileTab),
+            ).toHaveLength(1);
+        });
+
+        const activeTab = useEditorStore
+            .getState()
+            .tabs.find((t) => t.id === useEditorStore.getState().activeTabId);
+        expect(
+            activeTab && isFileTab(activeTab) ? activeTab.relativePath : null,
+        ).toBe("docs/config.toml");
+    });
+
     it("renders the new note input inline inside the tree even when the vault is empty", async () => {
         const user = userEvent.setup();
 
@@ -784,6 +861,14 @@ describe("FileTree", () => {
         useSettingsStore
             .getState()
             .setSetting("fileTreeContentMode", "all_files");
+        setEditorTabs([
+            {
+                id: "tab-alpha",
+                noteId: "docs/alpha",
+                title: "Alpha",
+                content: "Alpha",
+            },
+        ]);
 
         renderComponent(<FileTree />);
         await expandFolder(user, "assets");
@@ -954,6 +1039,176 @@ describe("FileTree", () => {
             "true",
         );
         expect(getFileRow("Photo")).toHaveAttribute("data-selected", "true");
+    });
+
+    it("shows mixed note and file single selections with cmd-click", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            {
+                id: "docs/config.toml",
+                path: "/vault/docs/config.toml",
+                relative_path: "docs/config.toml",
+                title: "Config",
+                file_name: "config.toml",
+                extension: "toml",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 128,
+                mime_type: "application/toml",
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+        setEditorTabs([
+            {
+                id: "tab-alpha",
+                noteId: "docs/alpha",
+                title: "Alpha",
+                content: "Alpha",
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+        fireEvent.click(getFileRow("Config"), { metaKey: true });
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("Config")).toHaveAttribute("data-selected", "true");
+    });
+
+    it("keeps mixed selections with cmd-option click", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            {
+                id: "docs/config.toml",
+                path: "/vault/docs/config.toml",
+                relative_path: "docs/config.toml",
+                title: "Config",
+                file_name: "config.toml",
+                extension: "toml",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 128,
+                mime_type: "application/toml",
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getNoteRow("Alpha"), { metaKey: true, altKey: true });
+        fireEvent.click(getFileRow("Config"), { metaKey: true, altKey: true });
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("Config")).toHaveAttribute("data-selected", "true");
+    });
+
+    it("selects contiguous mixed rows with cmd-shift click", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "docs/guide",
+                path: "/vault/docs/guide.md",
+                title: "Guide",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            {
+                id: "docs/config.toml",
+                path: "/vault/docs/config.toml",
+                relative_path: "docs/config.toml",
+                title: "Config",
+                file_name: "config.toml",
+                extension: "toml",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 128,
+                mime_type: "application/toml",
+            },
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 128,
+                mime_type: "application/pdf",
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+        setEditorTabs([
+            {
+                id: "range-tab-alpha",
+                noteId: "docs/alpha",
+                title: "Alpha",
+                content: "Alpha",
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getNoteRow("Alpha"));
+        fireEvent.click(getFileRow("Reference"), {
+            metaKey: true,
+            shiftKey: true,
+        });
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("Config")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Guide")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("Reference")).toHaveAttribute(
+            "data-selected",
+            "true",
+        );
     });
 
     it("selects unsupported files on context menu and keeps open-in-new-tab disabled", async () => {

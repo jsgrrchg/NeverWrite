@@ -19,14 +19,23 @@ import {
 import { useEditedFilesReviewExpansion } from "./useEditedFilesReviewExpansion";
 import { formatDiffStat } from "../diff/reviewDiff";
 import { useChatStore } from "../store/chatStore";
-import { selectVisibleEditedFilesBuffer } from "../store/editedFilesBufferModel";
+import {
+    selectHasUndoReject,
+    selectVisibleEditedFilesBuffer,
+} from "../store/editedFilesBufferModel";
 import { canOpenAiEditedFileEntry } from "./chatFileNavigation";
 
 /* ------------------------------------------------------------------ */
 /*  Empty state                                                        */
 /* ------------------------------------------------------------------ */
 
-function ReviewEmptyState() {
+function ReviewEmptyState({
+    hasUndo,
+    onUndo,
+}: {
+    hasUndo?: boolean;
+    onUndo?: () => void;
+}) {
     return (
         <div
             className="flex h-full flex-col items-center justify-center"
@@ -86,6 +95,19 @@ function ReviewEmptyState() {
                         New edits will appear here automatically.
                     </div>
                 </div>
+                {hasUndo && onUndo && (
+                    <button
+                        type="button"
+                        onClick={onUndo}
+                        className="rounded-md px-3 py-1.5 text-xs"
+                        style={{
+                            fontWeight: 500,
+                            ...getNeutralButtonStyle(),
+                        }}
+                    >
+                        Undo Last Reject
+                    </button>
+                )}
             </div>
         </div>
     );
@@ -176,6 +198,15 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const keepAllEditedFiles = useChatStore(
         (state) => state.keepAllEditedFiles,
     );
+    const resolveHunkEdits = useChatStore((state) => state.resolveHunkEdits);
+    const hasActionLog = useChatStore((state) => {
+        const session = state.sessionsById[tab.sessionId];
+        return !!session?.actionLog;
+    });
+    const undoLastReject = useChatStore((state) => state.undoLastReject);
+    const hasUndoReject = useChatStore((state) =>
+        selectHasUndoReject(state, tab.sessionId),
+    );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const entries = useVaultStore((state) => state.entries);
 
@@ -198,7 +229,12 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const expansion = useEditedFilesReviewExpansion(items);
 
     if (items.length === 0) {
-        return <ReviewEmptyState />;
+        return (
+            <ReviewEmptyState
+                hasUndo={hasUndoReject}
+                onUndo={() => void undoLastReject(tab.sessionId)}
+            />
+        );
     }
 
     return (
@@ -229,6 +265,22 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
 
                         {/* Global actions */}
                         <div className="flex shrink-0 items-center gap-1.5">
+                            {hasUndoReject && (
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        void undoLastReject(tab.sessionId)
+                                    }
+                                    className="rounded-md px-2 py-1 text-xs"
+                                    style={{
+                                        fontWeight: 500,
+                                        ...getNeutralButtonStyle(),
+                                    }}
+                                    title="Undo last reject"
+                                >
+                                    Undo
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={
@@ -299,6 +351,18 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                 identityKey,
                                 mergedText,
                             )
+                        }
+                        onResolveHunk={
+                            hasActionLog
+                                ? (identityKey, decision, s, e) =>
+                                      void resolveHunkEdits(
+                                          tab.sessionId,
+                                          identityKey,
+                                          decision,
+                                          s,
+                                          e,
+                                      )
+                                : undefined
                         }
                     />
                 </div>

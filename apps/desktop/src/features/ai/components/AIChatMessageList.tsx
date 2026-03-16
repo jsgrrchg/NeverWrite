@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AIChatMessageItem } from "./AIChatMessageItem";
+import { AIChatMessageItem, PlanMessage } from "./AIChatMessageItem";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -225,13 +225,41 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         [messages, status],
     );
 
+    // Find the latest active plan message to pin above the scroll area.
+    const pinnedPlan = useMemo(() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const m = messages[i];
+            if (m.kind !== "plan") continue;
+            const entries = m.planEntries ?? [];
+            const allDone =
+                entries.length > 0 &&
+                entries.every((e) => e.status === "completed");
+            if (!allDone) return m;
+        }
+        return null;
+    }, [messages]);
+
     return (
-        <div className="relative min-h-0 min-w-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">
+            {pinnedPlan && (
+                <div
+                    className="shrink-0 px-3 pt-2 pb-1"
+                    style={{
+                        borderBottom:
+                            "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
+                    }}
+                >
+                    <PlanMessage
+                        message={pinnedPlan}
+                        pillMetrics={pillMetrics}
+                    />
+                </div>
+            )}
             <div
                 ref={containerRef}
                 onScroll={handleScroll}
                 onContextMenu={handleContextMenu}
-                className="h-full min-w-0 overflow-y-auto px-3 py-3"
+                className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
                 data-scrollbar-active="true"
             >
                 <div
@@ -242,16 +270,19 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                         fontFamily: getEditorFontFamily(chatFontFamily),
                     }}
                 >
-                    {messages.map((message) => (
-                        <AIChatMessageItem
-                            key={message.id}
-                            message={message}
-                            pillMetrics={pillMetrics}
-                            visibleWorkCycleId={visibleWorkCycleId}
-                            onPermissionResponse={onPermissionResponse}
-                            onUserInputResponse={onUserInputResponse}
-                        />
-                    ))}
+                    {messages.map((message) =>
+                        message.kind === "plan" &&
+                        message.id === pinnedPlan?.id ? null : (
+                            <AIChatMessageItem
+                                key={message.id}
+                                message={message}
+                                pillMetrics={pillMetrics}
+                                visibleWorkCycleId={visibleWorkCycleId}
+                                onPermissionResponse={onPermissionResponse}
+                                onUserInputResponse={onUserInputResponse}
+                            />
+                        ),
+                    )}
                     {runIndicatorAnchor ? (
                         <StreamingRunIndicator
                             key={runIndicatorAnchor.id}

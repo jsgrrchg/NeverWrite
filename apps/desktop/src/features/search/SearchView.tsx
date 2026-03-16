@@ -588,6 +588,12 @@ export function SearchView() {
                                         onClick={() =>
                                             void handleOpen(r)
                                         }
+                                        onAuxClick={(event) => {
+                                            if (event.button !== 1) return;
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            void handleOpenInNewTab(r);
+                                        }}
                                         className="flex-1 text-left px-3 py-2 min-w-0"
                                     >
                                         <div className="flex items-center gap-2">

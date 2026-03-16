@@ -2,10 +2,13 @@ import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
     useSettingsStore,
     type EditorFontFamily,
+    type SpellcheckLanguage,
+    type SpellcheckSecondaryLanguage,
 } from "../../app/store/settingsStore";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { useThemeStore } from "../../app/store/themeStore";
@@ -21,6 +24,14 @@ import {
     useWhisperStore,
     bindWhisperListeners,
 } from "../ai/store/whisperStore";
+import { useSpellcheckStore } from "../spellcheck/store";
+import {
+    buildSpellcheckLanguageDescription,
+    buildSpellcheckLanguageSelectOptions,
+    buildSpellcheckSecondaryLanguageDescription,
+    buildSpellcheckSecondaryLanguageSelectOptions,
+    buildSpellcheckLanguagesSummary,
+} from "../spellcheck/language";
 
 // --- Primitives ---
 
@@ -121,7 +132,7 @@ function SegmentedControl<T extends string | number>({
     );
 }
 
-function SelectField<T extends string | number>({
+function SelectField<T extends string | number | null>({
     value,
     options,
     onChange,
@@ -641,10 +652,19 @@ function SectionLabel({ children }: { children: string }) {
     );
 }
 
+function formatSpellcheckCatalogSize(sizeBytes: number) {
+    if (sizeBytes >= 1024 * 1024) {
+        return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    return `${Math.round(sizeBytes / 1024)} KB`;
+}
+
 // --- Category content ---
 
 function GeneralSettings() {
-    const { openLastVaultOnLaunch, setSetting } = useSettingsStore();
+    const { openLastVaultOnLaunch, tabOpenBehavior, setSetting } =
+        useSettingsStore();
 
     return (
         <div>
@@ -656,6 +676,24 @@ function GeneralSettings() {
                     <Toggle
                         value={openLastVaultOnLaunch}
                         onChange={(v) => setSetting("openLastVaultOnLaunch", v)}
+                    />
+                }
+            />
+
+            <SectionLabel>Tabs</SectionLabel>
+            <Row
+                label="Open behavior"
+                description="Choose whether opening notes and files reuses the current tab history or creates a new tab."
+                control={
+                    <SegmentedControl
+                        value={tabOpenBehavior}
+                        options={[
+                            { value: "history", label: "History" },
+                            { value: "new_tab", label: "New tab" },
+                        ]}
+                        onChange={(value) =>
+                            setSetting("tabOpenBehavior", value)
+                        }
                     />
                 }
             />
@@ -715,8 +753,145 @@ function EditorSettings() {
         lineWrapping,
         justifyText,
         tabSize,
+        editorSpellcheck,
+        spellcheckPrimaryLanguage,
+        spellcheckSecondaryLanguage,
         setSetting,
     } = useSettingsStore();
+    const spellcheckLanguages = useSpellcheckStore((s) => s.languages);
+    const spellcheckCatalog = useSpellcheckStore((s) => s.catalog);
+    const spellcheckRuntimeDirectory = useSpellcheckStore(
+        (s) => s.runtimeDirectory,
+    );
+    const spellcheckLastError = useSpellcheckStore((s) => s.lastError);
+    const loadSpellcheckLanguages = useSpellcheckStore((s) => s.loadLanguages);
+    const loadSpellcheckCatalog = useSpellcheckStore((s) => s.loadCatalog);
+    const loadSpellcheckRuntimeDirectory = useSpellcheckStore(
+        (s) => s.loadRuntimeDirectory,
+    );
+    const installCatalogDictionary = useSpellcheckStore(
+        (s) => s.installCatalogDictionary,
+    );
+    const removeInstalledCatalogDictionary = useSpellcheckStore(
+        (s) => s.removeInstalledCatalogDictionary,
+    );
+    const [pendingCatalogAction, setPendingCatalogAction] = useState<
+        string | null
+    >(null);
+    const [refreshingCatalog, setRefreshingCatalog] = useState(false);
+    const [spellcheckCatalogNotice, setSpellcheckCatalogNotice] = useState<{
+        tone: "success" | "error";
+        message: string;
+    } | null>(null);
+
+    useEffect(() => {
+        void loadSpellcheckLanguages().catch(() => {});
+        void loadSpellcheckCatalog().catch(() => {});
+        void loadSpellcheckRuntimeDirectory().catch(() => {});
+    }, [
+        loadSpellcheckCatalog,
+        loadSpellcheckLanguages,
+        loadSpellcheckRuntimeDirectory,
+    ]);
+
+    const spellcheckPrimaryLanguageOptions =
+        buildSpellcheckLanguageSelectOptions(
+            spellcheckPrimaryLanguage,
+            spellcheckLanguages,
+        );
+    const spellcheckPrimaryLanguageDescription =
+        buildSpellcheckLanguageDescription(
+            spellcheckPrimaryLanguage,
+            spellcheckLanguages,
+            spellcheckRuntimeDirectory,
+        );
+    const spellcheckSecondaryLanguageOptions =
+        buildSpellcheckSecondaryLanguageSelectOptions(
+            spellcheckPrimaryLanguage,
+            spellcheckSecondaryLanguage,
+            spellcheckLanguages,
+        );
+    const spellcheckSecondaryLanguageDescription =
+        buildSpellcheckSecondaryLanguageDescription(
+            spellcheckSecondaryLanguage,
+            spellcheckLanguages,
+            spellcheckRuntimeDirectory,
+        );
+    const spellcheckLanguagesSummary =
+        buildSpellcheckLanguagesSummary(spellcheckLanguages);
+    const downloadableCatalogEntries = spellcheckCatalog.filter(
+        (entry) => !entry.bundled,
+    );
+    const spellcheckPacksDirectory = spellcheckRuntimeDirectory
+        ? `${spellcheckRuntimeDirectory}/packs`
+        : null;
+
+    const showSpellcheckNotice = (
+        tone: "success" | "error",
+        message: string,
+    ) => {
+        setSpellcheckCatalogNotice({ tone, message });
+    };
+
+    const clearSpellcheckNotice = () => {
+        setSpellcheckCatalogNotice(null);
+    };
+
+    const handleOpenSpellcheckFolder = async () => {
+        if (!spellcheckPacksDirectory) {
+            showSpellcheckNotice(
+                "error",
+                "Spellcheck packs folder is not available yet.",
+            );
+            return;
+        }
+
+        clearSpellcheckNotice();
+
+        try {
+            await revealItemInDir(spellcheckPacksDirectory);
+            showSpellcheckNotice("success", "Spellcheck folder opened.");
+        } catch (error) {
+            try {
+                await openPath(spellcheckPacksDirectory);
+                showSpellcheckNotice("success", "Spellcheck folder opened.");
+            } catch (fallbackError) {
+                const message =
+                    fallbackError instanceof Error
+                        ? fallbackError.message
+                        : error instanceof Error
+                          ? error.message
+                          : "Could not open the spellcheck folder.";
+                showSpellcheckNotice("error", message);
+            }
+        }
+    };
+
+    const handleReloadSpellcheckCatalog = async () => {
+        setRefreshingCatalog(true);
+        clearSpellcheckNotice();
+
+        try {
+            await Promise.all([
+                loadSpellcheckLanguages(),
+                loadSpellcheckCatalog(),
+                loadSpellcheckRuntimeDirectory(),
+            ]);
+            showSpellcheckNotice(
+                "success",
+                "Spellcheck dictionaries refreshed.",
+            );
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not refresh spellcheck dictionaries.";
+            showSpellcheckNotice("error", message);
+        } finally {
+            setRefreshingCatalog(false);
+        }
+    };
+
     return (
         <div>
             <SectionLabel>Typography</SectionLabel>
@@ -774,6 +949,349 @@ function EditorSettings() {
                     />
                 }
             />
+            <Row
+                label="Spellcheck"
+                description="Use the app spellcheck engine in Markdown notes and note titles."
+                control={
+                    <Toggle
+                        value={editorSpellcheck}
+                        onChange={(v) => setSetting("editorSpellcheck", v)}
+                    />
+                }
+            />
+            <Row
+                label="Primary language"
+                description={spellcheckPrimaryLanguageDescription}
+                disabled={!editorSpellcheck}
+                control={
+                    <SelectField
+                        value={spellcheckPrimaryLanguage}
+                        disabled={!editorSpellcheck}
+                        options={spellcheckPrimaryLanguageOptions}
+                        onChange={(value) =>
+                            setSetting(
+                                "spellcheckPrimaryLanguage",
+                                value as SpellcheckLanguage,
+                            )
+                        }
+                    />
+                }
+            />
+            <Row
+                label="Secondary language"
+                description={spellcheckSecondaryLanguageDescription}
+                disabled={!editorSpellcheck}
+                control={
+                    <SelectField
+                        value={spellcheckSecondaryLanguage}
+                        disabled={!editorSpellcheck}
+                        options={spellcheckSecondaryLanguageOptions}
+                        onChange={(value) =>
+                            setSetting(
+                                "spellcheckSecondaryLanguage",
+                                (value as SpellcheckSecondaryLanguage) ?? null,
+                            )
+                        }
+                    />
+                }
+            />
+            <Row
+                label="Spellcheck dictionaries"
+                description="Bundled dictionaries are ready immediately. Downloadable Hunspell packs live in the app spellcheck folder and can be managed even while spellcheck is off."
+                control={
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "flex-end",
+                            gap: 2,
+                            maxWidth: 260,
+                            textAlign: "right",
+                        }}
+                    >
+                        <span
+                            style={{
+                                fontSize: 12,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            {spellcheckLanguagesSummary}
+                        </span>
+                        {spellcheckRuntimeDirectory && (
+                            <span
+                                style={{
+                                    fontSize: 11,
+                                    color: "var(--text-secondary)",
+                                    lineHeight: 1.4,
+                                }}
+                            >
+                                {spellcheckPacksDirectory}
+                            </span>
+                        )}
+                        <div
+                            style={{
+                                display: "flex",
+                                gap: 8,
+                                marginTop: 6,
+                            }}
+                        >
+                            {spellcheckPacksDirectory && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void handleOpenSpellcheckFolder();
+                                    }}
+                                    style={{
+                                        borderRadius: 6,
+                                        border: "1px solid var(--border)",
+                                        backgroundColor: "var(--bg-tertiary)",
+                                        color: "var(--text-primary)",
+                                        padding: "6px 10px",
+                                        fontSize: 12,
+                                        fontFamily: "inherit",
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    Open Folder
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                disabled={refreshingCatalog}
+                                onClick={() => {
+                                    void handleReloadSpellcheckCatalog();
+                                }}
+                                style={{
+                                    borderRadius: 6,
+                                    border: "1px solid var(--border)",
+                                    backgroundColor: "var(--bg-tertiary)",
+                                    color: "var(--text-primary)",
+                                    padding: "6px 10px",
+                                    fontSize: 12,
+                                    fontFamily: "inherit",
+                                    cursor: refreshingCatalog
+                                        ? "not-allowed"
+                                        : "pointer",
+                                    opacity: refreshingCatalog ? 0.5 : 1,
+                                }}
+                            >
+                                {refreshingCatalog ? "Refreshing..." : "Reload"}
+                            </button>
+                        </div>
+                    </div>
+                }
+            />
+            {downloadableCatalogEntries.length > 0 && (
+                <>
+                    <SectionLabel>Dictionary Catalog</SectionLabel>
+                    {downloadableCatalogEntries.map((entry) => {
+                        const pendingInstall =
+                            pendingCatalogAction === `${entry.id}:install`;
+                        const pendingRemove =
+                            pendingCatalogAction === `${entry.id}:remove`;
+                        const installLabel = entry.update_available
+                            ? "Update"
+                            : entry.installed
+                              ? "Reinstall"
+                              : "Download";
+                        const description = [
+                            `Version ${entry.version}`,
+                            entry.installed_version &&
+                            entry.installed_version !== entry.version
+                                ? `Installed ${entry.installed_version}`
+                                : null,
+                            formatSpellcheckCatalogSize(entry.size_bytes),
+                            entry.license,
+                        ]
+                            .filter(Boolean)
+                            .join(" · ");
+
+                        return (
+                            <Row
+                                key={entry.id}
+                                label={entry.label}
+                                description={`${entry.source} · ${description}${
+                                    entry.update_available
+                                        ? " · Update available"
+                                        : ""
+                                }`}
+                                disabled={pendingInstall || pendingRemove}
+                                control={
+                                    <div
+                                        style={{
+                                            display: "flex",
+                                            gap: 8,
+                                        }}
+                                    >
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                pendingInstall || pendingRemove
+                                            }
+                                            onClick={() => {
+                                                setPendingCatalogAction(
+                                                    `${entry.id}:install`,
+                                                );
+                                                clearSpellcheckNotice();
+                                                void installCatalogDictionary(
+                                                    entry.id,
+                                                )
+                                                    .then(() => {
+                                                        showSpellcheckNotice(
+                                                            "success",
+                                                            `${entry.label} is ready to use.`,
+                                                        );
+                                                    })
+                                                    .catch((error) => {
+                                                        const message =
+                                                            error instanceof
+                                                            Error
+                                                                ? error.message
+                                                                : `Could not install ${entry.label}.`;
+                                                        showSpellcheckNotice(
+                                                            "error",
+                                                            message,
+                                                        );
+                                                    })
+                                                    .finally(() =>
+                                                        setPendingCatalogAction(
+                                                            (current) =>
+                                                                current ===
+                                                                `${entry.id}:install`
+                                                                    ? null
+                                                                    : current,
+                                                        ),
+                                                    );
+                                            }}
+                                            style={{
+                                                minWidth: 86,
+                                                borderRadius: 6,
+                                                border: "1px solid var(--border)",
+                                                backgroundColor:
+                                                    "var(--bg-tertiary)",
+                                                color: "var(--text-primary)",
+                                                padding: "6px 10px",
+                                                fontSize: 12,
+                                                fontFamily: "inherit",
+                                                cursor:
+                                                    pendingInstall ||
+                                                    pendingRemove
+                                                        ? "not-allowed"
+                                                        : "pointer",
+                                                opacity:
+                                                    pendingInstall ||
+                                                    pendingRemove
+                                                        ? 0.5
+                                                        : 1,
+                                            }}
+                                        >
+                                            {pendingInstall
+                                                ? "Working..."
+                                                : installLabel}
+                                        </button>
+                                        {entry.installed && (
+                                            <button
+                                                type="button"
+                                                disabled={
+                                                    pendingInstall ||
+                                                    pendingRemove
+                                                }
+                                                onClick={() => {
+                                                    setPendingCatalogAction(
+                                                        `${entry.id}:remove`,
+                                                    );
+                                                    clearSpellcheckNotice();
+                                                    void removeInstalledCatalogDictionary(
+                                                        entry.id,
+                                                    )
+                                                        .then(() => {
+                                                            showSpellcheckNotice(
+                                                                "success",
+                                                                `${entry.label} was removed.`,
+                                                            );
+                                                        })
+                                                        .catch((error) => {
+                                                            const message =
+                                                                error instanceof
+                                                                Error
+                                                                    ? error.message
+                                                                    : `Could not remove ${entry.label}.`;
+                                                            showSpellcheckNotice(
+                                                                "error",
+                                                                message,
+                                                            );
+                                                        })
+                                                        .finally(() =>
+                                                            setPendingCatalogAction(
+                                                                (current) =>
+                                                                    current ===
+                                                                    `${entry.id}:remove`
+                                                                        ? null
+                                                                        : current,
+                                                            ),
+                                                        );
+                                                }}
+                                                style={{
+                                                    minWidth: 74,
+                                                    borderRadius: 6,
+                                                    border: "1px solid var(--border)",
+                                                    backgroundColor:
+                                                        "var(--bg-tertiary)",
+                                                    color: "var(--text-secondary)",
+                                                    padding: "6px 10px",
+                                                    fontSize: 12,
+                                                    fontFamily: "inherit",
+                                                    cursor:
+                                                        pendingInstall ||
+                                                        pendingRemove
+                                                            ? "not-allowed"
+                                                            : "pointer",
+                                                    opacity:
+                                                        pendingInstall ||
+                                                        pendingRemove
+                                                            ? 0.5
+                                                            : 1,
+                                                }}
+                                            >
+                                                {pendingRemove
+                                                    ? "Working..."
+                                                    : "Remove"}
+                                            </button>
+                                        )}
+                                    </div>
+                                }
+                            />
+                        );
+                    })}
+                </>
+            )}
+            {spellcheckLastError && (
+                <div
+                    style={{
+                        marginTop: 10,
+                        fontSize: 11,
+                        color: "#c84b4b",
+                        lineHeight: 1.5,
+                    }}
+                >
+                    {spellcheckLastError}
+                </div>
+            )}
+            {spellcheckCatalogNotice && (
+                <div
+                    style={{
+                        marginTop: spellcheckLastError ? 6 : 10,
+                        fontSize: 11,
+                        color:
+                            spellcheckCatalogNotice.tone === "error"
+                                ? "#c84b4b"
+                                : "var(--text-secondary)",
+                        lineHeight: 1.5,
+                    }}
+                >
+                    {spellcheckCatalogNotice.message}
+                </div>
+            )}
             <Row
                 label="Justify text"
                 description="Distribute wrapped lines evenly across the editor width."
@@ -1021,6 +1539,9 @@ function VaultSettings() {
 
 function DevelopersSettings() {
     const {
+        developerModeEnabled,
+        developerTerminalEnabled,
+        lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
         setSetting,
@@ -1028,6 +1549,46 @@ function DevelopersSettings() {
 
     return (
         <div>
+            <SectionLabel>Developer Mode</SectionLabel>
+            <Row
+                label="Enable Developer Mode"
+                description="Show experimental developer-facing surfaces such as the integrated terminal panel."
+                control={
+                    <Toggle
+                        value={developerModeEnabled}
+                        onChange={(value) =>
+                            setSetting("developerModeEnabled", value)
+                        }
+                    />
+                }
+            />
+            <Row
+                label="Enable Integrated Terminal"
+                description="Show the bottom developer terminal panel and its related commands."
+                disabled={!developerModeEnabled}
+                control={
+                    <Toggle
+                        value={developerTerminalEnabled}
+                        disabled={!developerModeEnabled}
+                        onChange={(value) =>
+                            setSetting("developerTerminalEnabled", value)
+                        }
+                    />
+                }
+            />
+
+            <SectionLabel>Editor</SectionLabel>
+            <Row
+                label="Line wrapping"
+                description="Wrap long lines to fit the editor width."
+                control={
+                    <Toggle
+                        value={lineWrapping}
+                        onChange={(value) => setSetting("lineWrapping", value)}
+                    />
+                }
+            />
+
             <SectionLabel>File Tree</SectionLabel>
             <Row
                 label="Show all vault files"

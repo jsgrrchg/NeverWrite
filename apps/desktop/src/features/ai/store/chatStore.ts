@@ -6,12 +6,15 @@ import {
 import {
     aiCancelTurn,
     aiCreateSession,
+    aiDeleteRuntimeSession,
+    aiDeleteRuntimeSessionsForVault,
     aiDeleteSessionHistory,
     aiDeleteAllSessionHistories,
     aiGetTextFileHash,
     aiGetSetupStatus,
     aiListSessions,
     aiListRuntimes,
+    aiResumeRuntimeSession,
     aiLoadSession,
     aiLoadSessionHistories,
     aiPruneSessionHistories,
@@ -44,13 +47,30 @@ import {
     markEditedFileEntryConflict,
     removeEditedFilesBufferEntry,
     setActiveEditedFilesBuffer,
+    setVisibleEditedFilesBuffer,
     startNewWorkCycle,
     syncEditedFilesBufferState,
+    updateVisibleEditedFilesBufferEntry,
 } from "./editedFilesBufferModel";
+import {
+    applyNonConflictingEdits,
+    computeRestoreAction,
+    consolidateTrackedFiles,
+    emptyActionLogState,
+    getTrackedFilesForWorkCycle,
+    keepEditsInRange,
+    patchIsEmpty,
+    rejectAllEdits as actionLogRejectAll,
+    rejectEditsInRanges,
+    setTrackedFilesForWorkCycle,
+    trackedFileToLegacyEntry,
+} from "./actionLogModel";
+import type { LastRejectUndo, TrackedFile } from "../diff/actionLogTypes";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
     buildSelectionLabel,
     type AIChatAttachment,
+    type AIAvailableCommandsPayload,
     type AIChatMessage,
     type AIChatMessageKind,
     type AIChatNoteSummary,
@@ -63,6 +83,7 @@ import {
     type AIStatusEventPayload,
     type AIToolActivityPayload,
     type AIUserInputRequestPayload,
+    type AIRuntimeConnectionPayload,
     type AIRuntimeConnectionState,
     type AIRuntimeDescriptor,
     type AIRuntimeSetupStatus,
@@ -279,12 +300,14 @@ function hydrateRuntimesFromSessions(
 }
 
 interface ChatStore {
-    runtimeConnection: AIRuntimeConnectionState;
-    setupStatus: AIRuntimeSetupStatus | null;
+    runtimeConnectionByRuntimeId: Record<string, AIRuntimeConnectionState>;
+    setupStatusByRuntimeId: Record<string, AIRuntimeSetupStatus>;
     runtimes: AIRuntimeDescriptor[];
     sessionsById: Record<string, AIChatSession>;
     sessionOrder: string[];
     activeSessionId: string | null;
+    selectedRuntimeId: string | null;
+    isInitializing: boolean;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
@@ -298,20 +321,30 @@ interface ChatStore {
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
     initialize: () => Promise<void>;
-    refreshSetupStatus: () => Promise<void>;
+    setSelectedRuntime: (runtimeId: string | null) => void;
+    refreshSetupStatus: (runtimeId?: string) => Promise<void>;
     saveSetup: (input: {
+        runtimeId?: string;
         customBinaryPath?: string;
         codexApiKey?: string;
         openaiApiKey?: string;
+        anthropicBaseUrl?: string;
+        anthropicCustomHeaders?: string;
+        anthropicAuthToken?: string;
     }) => Promise<void>;
     startAuth: (input: {
+        runtimeId?: string;
         methodId: string;
         customBinaryPath?: string;
         codexApiKey?: string;
         openaiApiKey?: string;
+        anthropicBaseUrl?: string;
+        anthropicCustomHeaders?: string;
+        anthropicAuthToken?: string;
     }) => Promise<void>;
     upsertSession: (session: AIChatSession, activate?: boolean) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
+    applyRuntimeConnection: (payload: AIRuntimeConnectionPayload) => void;
     applyMessageStarted: (payload: {
         session_id: string;
         message_id: string;
@@ -341,6 +374,7 @@ interface ChatStore {
     applyToolActivity: (payload: AIToolActivityPayload) => void;
     applyStatusEvent: (payload: AIStatusEventPayload) => void;
     applyPlanUpdate: (payload: AIPlanUpdatePayload) => void;
+    applyAvailableCommandsUpdate: (payload: AIAvailableCommandsPayload) => void;
     applyPermissionRequest: (payload: AIPermissionRequestPayload) => void;
     applyUserInputRequest: (payload: AIUserInputRequestPayload) => void;
     setActiveSession: (sessionId: string) => void;
@@ -382,6 +416,19 @@ interface ChatStore {
     rejectAllEditedFiles: (sessionId: string) => Promise<void>;
     keepEditedFile: (sessionId: string, identityKey: string) => void;
     keepAllEditedFiles: (sessionId: string) => void;
+    resolveHunkEdits: (
+        sessionId: string,
+        identityKey: string,
+        decision: "accepted" | "rejected",
+        hunkNewStart: number,
+        hunkNewEnd: number,
+    ) => Promise<void>;
+    undoLastReject: (sessionId: string) => Promise<void>;
+    notifyUserEditOnFile: (
+        fileId: string,
+        userEdits: import("../diff/actionLogTypes").LineEdit[],
+        newFullText: string,
+    ) => void;
     newSession: (runtimeId?: string) => Promise<void>;
     deleteSession: (sessionId: string) => Promise<void>;
     deleteAllSessions: () => Promise<void>;
@@ -414,11 +461,83 @@ const INITIAL_RUNTIME_CONNECTION: AIRuntimeConnectionState = {
     message: null,
 };
 
+function cloneInitialRuntimeConnection(): AIRuntimeConnectionState {
+    return { ...INITIAL_RUNTIME_CONNECTION };
+}
+
+function setRuntimeConnectionState(
+    state: Record<string, AIRuntimeConnectionState>,
+    runtimeId: string,
+    connection: AIRuntimeConnectionState,
+) {
+    return {
+        ...state,
+        [runtimeId]: connection,
+    };
+}
+
+function buildRuntimeConnectionMap(
+    runtimes: AIRuntimeDescriptor[],
+    existing: Record<string, AIRuntimeConnectionState> = {},
+) {
+    return runtimes.reduce<Record<string, AIRuntimeConnectionState>>(
+        (accumulator, runtime) => {
+            accumulator[runtime.runtime.id] =
+                existing[runtime.runtime.id] ?? cloneInitialRuntimeConnection();
+            return accumulator;
+        },
+        { ...existing },
+    );
+}
+
+function buildSetupStatusMap(statuses: AIRuntimeSetupStatus[]) {
+    return Object.fromEntries(
+        statuses.map((status) => [status.runtimeId, status]),
+    ) as Record<string, AIRuntimeSetupStatus>;
+}
+
+function getRuntimeConnectionForSetup(
+    setupStatus: AIRuntimeSetupStatus,
+): AIRuntimeConnectionState {
+    if (setupStatus.onboardingRequired || !setupStatus.authReady) {
+        return cloneInitialRuntimeConnection();
+    }
+
+    return {
+        status: "ready",
+        message: null,
+    };
+}
+
+function applyRuntimeSetupStatusPatch(
+    state: Pick<
+        ChatStore,
+        "setupStatusByRuntimeId" | "runtimeConnectionByRuntimeId"
+    >,
+    setupStatus: AIRuntimeSetupStatus,
+) {
+    return {
+        setupStatusByRuntimeId: {
+            ...state.setupStatusByRuntimeId,
+            [setupStatus.runtimeId]: setupStatus,
+        },
+        runtimeConnectionByRuntimeId: setRuntimeConnectionState(
+            state.runtimeConnectionByRuntimeId,
+            setupStatus.runtimeId,
+            getRuntimeConnectionForSetup(setupStatus),
+        ),
+    };
+}
+
 function isAuthenticationErrorMessage(message: string) {
     const normalized = message.trim().toLowerCase();
     return (
         normalized.includes("auth_required") ||
-        normalized.includes("authentication required")
+        normalized.includes("authentication required") ||
+        normalized.includes("you were signed out") ||
+        normalized.includes("reconnect in ai setup") ||
+        normalized.includes("reconnect codex") ||
+        normalized.includes("reconnect claude")
     );
 }
 
@@ -604,6 +723,16 @@ function sortSessionIdsByRecency(sessionsById: Record<string, AIChatSession>) {
         .map((session) => session.sessionId);
 }
 
+function findMostRecentSessionIdForRuntime(
+    sessionsById: Record<string, AIChatSession>,
+    sessionOrder: string[],
+    runtimeId: string,
+) {
+    return sessionOrder.find(
+        (sessionId) => sessionsById[sessionId]?.runtimeId === runtimeId,
+    );
+}
+
 function hasManualAttachment(
     attachments: AIChatAttachment[],
     type: AIChatAttachment["type"],
@@ -753,9 +882,41 @@ function buildQueuedMessage(
             endLine: p.endLine,
         }));
 
+    const screenshotAttachments: AIChatAttachment[] = composerPartsSnapshot
+        .filter(
+            (p): p is Extract<AIComposerPart, { type: "screenshot" }> =>
+                p.type === "screenshot",
+        )
+        .map((p) => ({
+            id: crypto.randomUUID(),
+            type: "file" as const,
+            noteId: null,
+            label: p.label,
+            path: null,
+            filePath: p.filePath,
+            mimeType: p.mimeType,
+        }));
+
+    const fileAttachments: AIChatAttachment[] = composerPartsSnapshot
+        .filter(
+            (p): p is Extract<AIComposerPart, { type: "file_attachment" }> =>
+                p.type === "file_attachment",
+        )
+        .map((p) => ({
+            id: crypto.randomUUID(),
+            type: "file" as const,
+            noteId: null,
+            label: p.label,
+            path: null,
+            filePath: p.filePath,
+            mimeType: p.mimeType,
+        }));
+
     const attachments = [
         ...session.attachments,
         ...selectionAttachments,
+        ...screenshotAttachments,
+        ...fileAttachments,
         ...getAutoContextAttachments(session.attachments),
     ].map(cloneAttachment);
 
@@ -986,17 +1147,108 @@ async function restoreEditedFileEntry(
     });
 }
 
+// ---------------------------------------------------------------------------
+// ActionLog helpers
+// ---------------------------------------------------------------------------
+
+function ensureActionLog(session: AIChatSession): AIChatSession {
+    if (session.actionLog) return session;
+    return { ...session, actionLog: emptyActionLogState() };
+}
+
+function consolidateActionLogDiffs(
+    session: AIChatSession,
+    diffs: import("../types").AIFileDiff[],
+    workCycleId: string | null | undefined,
+): AIChatSession {
+    if (!workCycleId || diffs.length === 0) return session;
+    const actionLog = session.actionLog ?? emptyActionLogState();
+    const currentFiles = getTrackedFilesForWorkCycle(actionLog, workCycleId);
+    const nextFiles = consolidateTrackedFiles(currentFiles, diffs, Date.now());
+    const nextActionLog = setTrackedFilesForWorkCycle(
+        actionLog,
+        workCycleId,
+        nextFiles,
+    );
+    // Clear undo when new agent edits arrive — undo is no longer valid
+    return {
+        ...session,
+        actionLog: { ...nextActionLog, lastRejectUndo: null },
+    };
+}
+
+function removeTrackedFileFromActionLog(
+    session: AIChatSession,
+    identityKey: string,
+): AIChatSession {
+    const actionLog = session.actionLog;
+    if (!actionLog) return session;
+    const workCycleId = session.visibleWorkCycleId ?? session.activeWorkCycleId;
+    if (!workCycleId) return session;
+    const files = { ...getTrackedFilesForWorkCycle(actionLog, workCycleId) };
+    delete files[identityKey];
+    return {
+        ...session,
+        actionLog: setTrackedFilesForWorkCycle(actionLog, workCycleId, files),
+    };
+}
+
+function setActionLogUndo(
+    session: AIChatSession,
+    undo: LastRejectUndo | null,
+): AIChatSession {
+    if (!session.actionLog) return session;
+    return {
+        ...session,
+        actionLog: { ...session.actionLog, lastRejectUndo: undo },
+    };
+}
+
+/**
+ * Execute a lifecycle-aware file restore action on disk.
+ * For "created from nothing" → deletes the file.
+ * For "modified" or "deleted" → writes diffBase back.
+ */
+async function executeRestoreAction(vaultPath: string, tracked: TrackedFile) {
+    const action = computeRestoreAction(tracked);
+    if (action.kind === "delete") {
+        await aiRestoreTextFile({
+            vaultPath,
+            path: tracked.path,
+            content: null,
+        });
+    } else {
+        await aiRestoreTextFile({
+            vaultPath,
+            path:
+                tracked.originPath !== tracked.path
+                    ? tracked.originPath
+                    : tracked.path,
+            previousPath:
+                action.previousPath ??
+                (tracked.originPath !== tracked.path ? tracked.path : null),
+            content: action.content,
+        });
+    }
+}
+
 function createPersistedSession(
     history: PersistedSessionHistory,
     runtimes: AIRuntimeDescriptor[],
 ): AIChatSession | null {
-    const runtime = runtimes[0];
+    const runtime =
+        (history.runtime_id
+            ? runtimes.find(
+                  (candidate) => candidate.runtime.id === history.runtime_id,
+              )
+            : null) ?? runtimes[0];
     if (!runtime) return null;
+    const runtimeId = history.runtime_id ?? runtime.runtime.id;
 
     return {
         sessionId: `persisted:${history.session_id}`,
         historySessionId: history.session_id,
-        runtimeId: runtime.runtime.id,
+        runtimeId,
         modelId: history.model_id,
         modeId: history.mode_id,
         status: "idle",
@@ -1019,6 +1271,7 @@ function createPersistedSession(
         attachments: [],
         isPersistedSession: true,
         resumeContextPending: true,
+        runtimeState: "persisted_only",
     };
 }
 
@@ -1058,6 +1311,9 @@ function mergeSession(
             status: incoming.status === "streaming" ? "idle" : incoming.status,
             messages: incoming.messages ?? [],
             attachments: incoming.attachments ?? [],
+            runtimeState:
+                incoming.runtimeState ??
+                (incoming.isPersistedSession ? "persisted_only" : "live"),
         });
     }
 
@@ -1094,6 +1350,11 @@ function mergeSession(
             Object.keys(incoming.effortsByModel).length > 0
                 ? incoming.effortsByModel
                 : (existing.effortsByModel ?? incoming.effortsByModel ?? {}),
+        availableCommands:
+            incoming.availableCommands && incoming.availableCommands.length > 0
+                ? incoming.availableCommands
+                : (existing.availableCommands ?? incoming.availableCommands),
+        runtimeState: incoming.runtimeState ?? existing.runtimeState ?? "live",
         status,
         messages: existing.messages,
         attachments: existing.attachments,
@@ -1124,19 +1385,73 @@ function getDefaultRuntimeId(runtimes: AIRuntimeDescriptor[]) {
     return runtimes[0]?.runtime.id ?? null;
 }
 
-function getRuntimeConnectionPatchForSetup(
-    setupStatus: AIRuntimeSetupStatus,
-): Partial<Pick<ChatStore, "runtimeConnection">> {
-    if (setupStatus.onboardingRequired || !setupStatus.authReady) {
-        return {};
-    }
+function runtimeSupportsCapability(
+    runtimes: AIRuntimeDescriptor[],
+    runtimeId: string,
+    capability: string,
+) {
+    return runtimes
+        .find((runtime) => runtime.runtime.id === runtimeId)
+        ?.runtime.capabilities.includes(capability);
+}
 
-    return {
-        runtimeConnection: {
-            status: "ready",
-            message: null,
-        },
-    };
+function getRuntimeReadyButDisabledMessage(
+    runtimes: AIRuntimeDescriptor[],
+    runtimeId: string,
+) {
+    const name =
+        runtimes.find((runtime) => runtime.runtime.id === runtimeId)?.runtime
+            .name ?? "This runtime";
+    return `${name} setup is ready, but chat sessions are not enabled yet in this build.`;
+}
+
+function getRuntimeNameForUi(
+    runtimes: AIRuntimeDescriptor[],
+    runtimeId?: string | null,
+) {
+    if (!runtimeId) return "this runtime";
+
+    return (
+        runtimes.find((runtime) => runtime.runtime.id === runtimeId)?.runtime
+            .name ?? runtimeId
+    ).replace(/ ACP$/, "");
+}
+
+function getAuthenticationReconnectMessage(
+    runtimeId: string,
+    runtimes: AIRuntimeDescriptor[],
+) {
+    const runtimeName = getRuntimeNameForUi(runtimes, runtimeId);
+    return `You were signed out. Reconnect ${runtimeName} to continue.`;
+}
+
+function getSessionRuntimeId(
+    state: Pick<ChatStore, "activeSessionId" | "sessionsById">,
+) {
+    const activeSessionId = state.activeSessionId;
+    if (!activeSessionId) return null;
+    return state.sessionsById[activeSessionId]?.runtimeId ?? null;
+}
+
+function getEffectiveRuntimeId(
+    state: Pick<
+        ChatStore,
+        "activeSessionId" | "sessionsById" | "selectedRuntimeId" | "runtimes"
+    >,
+) {
+    return (
+        getSessionRuntimeId(state) ??
+        state.selectedRuntimeId ??
+        getDefaultRuntimeId(state.runtimes)
+    );
+}
+
+function getSetupStatusForRuntime(
+    setupStatusByRuntimeId: Record<string, AIRuntimeSetupStatus>,
+    runtimeId?: string | null,
+) {
+    if (!runtimeId) return null;
+    return setupStatusByRuntimeId[runtimeId] ?? null;
 }
 
 function touchSessionOrder(sessionOrder: string[], sessionId: string) {
@@ -1191,6 +1506,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
     return {
         version: 1,
         session_id: session.historySessionId || session.sessionId,
+        runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
         created_at: timestamps.length ? Math.min(...timestamps) : Date.now(),
@@ -1569,6 +1885,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return session;
     }
 
+    async function ensureRuntimeVisibleAfterOnboarding(runtimeId: string) {
+        const state = get();
+        const activeRuntimeId = state.activeSessionId
+            ? state.sessionsById[state.activeSessionId]?.runtimeId
+            : null;
+        if (activeRuntimeId === runtimeId) {
+            return;
+        }
+
+        const existingSessionId = findMostRecentSessionIdForRuntime(
+            state.sessionsById,
+            state.sessionOrder,
+            runtimeId,
+        );
+        if (existingSessionId) {
+            state.setActiveSession(existingSessionId);
+            return;
+        }
+
+        if (
+            runtimeSupportsCapability(
+                state.runtimes,
+                runtimeId,
+                "create_session",
+            )
+        ) {
+            await state.newSession(runtimeId);
+        }
+    }
+
     async function dispatchMessage(
         sessionId: string,
         queuedItem: QueuedChatMessage,
@@ -1581,7 +1927,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             return;
         }
 
-        if (session.isPersistedSession) {
+        if (session.runtimeState !== "live") {
             const resumedSessionId = await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
                 if (source === "queue") {
@@ -1723,18 +2069,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
             }
             if (isAuthenticationErrorMessage(message)) {
-                await get().refreshSetupStatus();
+                await get().refreshSetupStatus(session.runtimeId);
             }
         }
     }
 
     return {
-        runtimeConnection: INITIAL_RUNTIME_CONNECTION,
-        setupStatus: null,
+        runtimeConnectionByRuntimeId: {},
+        setupStatusByRuntimeId: {},
         runtimes: [],
         sessionsById: {},
         sessionOrder: [],
         activeSessionId: null,
+        selectedRuntimeId: null,
+        isInitializing: false,
         notePickerOpen: false,
         autoContextEnabled: initialPreferences.autoContextEnabled,
         requireCmdEnterToSend: initialPreferences.requireCmdEnterToSend,
@@ -1748,35 +2096,58 @@ export const useChatStore = create<ChatStore>((set, get) => {
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},
 
-        initialize: async () => {
-            const current = get().runtimeConnection.status;
-            if (current === "loading" || current === "ready") return;
+        setSelectedRuntime: (runtimeId) => {
+            set({ selectedRuntimeId: runtimeId });
+        },
 
-            set({
-                runtimeConnection: {
-                    status: "loading",
-                    message: null,
-                },
-            });
+        initialize: async () => {
+            if (get().isInitializing) return;
+
+            set({ isInitializing: true });
 
             try {
                 const runtimes = hydrateRuntimesFromCache(
                     await aiListRuntimes(),
                 );
+                const runtimeIds = runtimes.map(
+                    (descriptor) => descriptor.runtime.id,
+                );
+                const setupResults = await Promise.allSettled(
+                    runtimeIds.map((runtimeId) => aiGetSetupStatus(runtimeId)),
+                );
+                const runtimeConnectionByRuntimeId = buildRuntimeConnectionMap(
+                    runtimes,
+                    get().runtimeConnectionByRuntimeId,
+                );
+                const setupStatuses: AIRuntimeSetupStatus[] = [];
+                setupResults.forEach((result, index) => {
+                    const runtimeId = runtimeIds[index];
+                    if (result.status === "fulfilled") {
+                        setupStatuses.push(result.value);
+                        runtimeConnectionByRuntimeId[runtimeId] =
+                            getRuntimeConnectionForSetup(result.value);
+                        return;
+                    }
+
+                    runtimeConnectionByRuntimeId[runtimeId] = {
+                        status: "error",
+                        message: getAiErrorMessage(
+                            result.reason,
+                            "Failed to check the AI setup.",
+                        ),
+                    };
+                });
+                const setupStatusByRuntimeId =
+                    buildSetupStatusMap(setupStatuses);
+                const defaultRuntimeId =
+                    get().selectedRuntimeId ?? getDefaultRuntimeId(runtimes);
 
                 set({
                     runtimes,
-                    runtimeConnection: {
-                        status: "ready",
-                        message: null,
-                    },
+                    selectedRuntimeId: defaultRuntimeId,
+                    setupStatusByRuntimeId,
+                    runtimeConnectionByRuntimeId,
                 });
-
-                const setupStatus = await aiGetSetupStatus();
-                set({ setupStatus });
-                if (setupStatus.onboardingRequired) {
-                    return;
-                }
 
                 const vaultPath = useVaultStore.getState().vaultPath;
                 const sessions = await aiListSessions(vaultPath);
@@ -1855,12 +2226,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             nextSessionsById[state.activeSessionId]
                                 ? state.activeSessionId
                                 : (nextSessionOrder[0] ?? null);
+                        const nextSelectedRuntimeId =
+                            (nextActiveSessionId
+                                ? nextSessionsById[nextActiveSessionId]
+                                      ?.runtimeId
+                                : null) ??
+                            state.selectedRuntimeId ??
+                            getDefaultRuntimeId(hydratedRuntimes);
 
                         return {
                             runtimes: hydratedRuntimes,
                             sessionsById: nextSessionsById,
                             sessionOrder: nextSessionOrder,
                             activeSessionId: nextActiveSessionId,
+                            selectedRuntimeId: nextSelectedRuntimeId,
                             composerPartsBySessionId: nextSessionOrder.reduce<
                                 Record<string, AIComposerPart[]>
                             >(
@@ -1879,8 +2258,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const nextActiveSessionId = get().activeSessionId;
                     if (
                         nextActiveSessionId &&
-                        get().sessionsById[nextActiveSessionId]
-                            ?.isPersistedSession
+                        get().sessionsById[nextActiveSessionId] &&
+                        get().sessionsById[nextActiveSessionId]!
+                            .runtimeState !== "live"
                     ) {
                         await get().resumeSession(nextActiveSessionId);
                     }
@@ -1888,118 +2268,231 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 if (!get().activeSessionId) {
-                    const runtimeId = getDefaultRuntimeId(runtimes);
+                    const runtimeId = defaultRuntimeId;
+                    const setupStatus = getSetupStatusForRuntime(
+                        setupStatusByRuntimeId,
+                        runtimeId,
+                    );
                     if (runtimeId) {
+                        if (setupStatus?.onboardingRequired) {
+                            return;
+                        }
                         await get().newSession(runtimeId);
                     }
                 }
             } catch (error) {
-                set({
-                    runtimeConnection: {
-                        status: "error",
-                        message: getAiErrorMessage(
-                            error,
-                            "Failed to load AI runtimes.",
+                const runtimeId =
+                    get().selectedRuntimeId ??
+                    getDefaultRuntimeId(get().runtimes);
+                if (runtimeId) {
+                    set((state) => ({
+                        runtimeConnectionByRuntimeId: setRuntimeConnectionState(
+                            state.runtimeConnectionByRuntimeId,
+                            runtimeId,
+                            {
+                                status: "error",
+                                message: getAiErrorMessage(
+                                    error,
+                                    "Failed to load AI runtimes.",
+                                ),
+                            },
                         ),
-                    },
-                });
+                    }));
+                }
+            } finally {
+                set({ isInitializing: false });
             }
         },
 
-        refreshSetupStatus: async () => {
+        refreshSetupStatus: async (runtimeId) => {
+            const nextRuntimeId = runtimeId ?? getEffectiveRuntimeId(get());
+            if (!nextRuntimeId) return;
             try {
-                const setupStatus = await aiGetSetupStatus();
-                set({
-                    setupStatus,
-                    ...getRuntimeConnectionPatchForSetup(setupStatus),
-                });
+                const previousSetupStatus = getSetupStatusForRuntime(
+                    get().setupStatusByRuntimeId,
+                    nextRuntimeId,
+                );
+                const setupStatus = await aiGetSetupStatus(nextRuntimeId);
+                set((state) => ({
+                    selectedRuntimeId: nextRuntimeId,
+                    ...applyRuntimeSetupStatusPatch(state, setupStatus),
+                }));
+                if (
+                    previousSetupStatus?.onboardingRequired &&
+                    !setupStatus.onboardingRequired
+                ) {
+                    await ensureRuntimeVisibleAfterOnboarding(nextRuntimeId);
+                }
             } catch (error) {
-                set({
-                    runtimeConnection: {
-                        status: "error",
-                        message: getAiErrorMessage(
-                            error,
-                            "Failed to check the AI setup.",
-                        ),
-                    },
-                });
+                set((state) => ({
+                    runtimeConnectionByRuntimeId: setRuntimeConnectionState(
+                        state.runtimeConnectionByRuntimeId,
+                        nextRuntimeId,
+                        {
+                            status: "error",
+                            message: getAiErrorMessage(
+                                error,
+                                "Failed to check the AI setup.",
+                            ),
+                        },
+                    ),
+                }));
             }
         },
 
         saveSetup: async (input) => {
+            const targetRuntimeId =
+                input.runtimeId ?? getEffectiveRuntimeId(get());
+            if (!targetRuntimeId) return;
             try {
-                const setupStatus = await aiUpdateSetup(input);
-                set({
-                    setupStatus,
-                    ...getRuntimeConnectionPatchForSetup(setupStatus),
+                const previousSetupStatus = getSetupStatusForRuntime(
+                    get().setupStatusByRuntimeId,
+                    targetRuntimeId,
+                );
+                const setupStatus = await aiUpdateSetup({
+                    ...input,
+                    runtimeId: targetRuntimeId,
                 });
+                set((state) => ({
+                    selectedRuntimeId: targetRuntimeId,
+                    ...applyRuntimeSetupStatusPatch(state, setupStatus),
+                }));
 
                 if (!setupStatus.onboardingRequired) {
                     const state = get();
-                    if (!state.activeSessionId && state.runtimes.length) {
-                        await state.newSession(
-                            getDefaultRuntimeId(state.runtimes) ?? undefined,
+                    if (previousSetupStatus?.onboardingRequired) {
+                        await ensureRuntimeVisibleAfterOnboarding(
+                            setupStatus.runtimeId,
                         );
+                    } else if (
+                        !runtimeSupportsCapability(
+                            state.runtimes,
+                            setupStatus.runtimeId,
+                            "create_session",
+                        )
+                    ) {
+                        set((currentState) => ({
+                            runtimeConnectionByRuntimeId:
+                                setRuntimeConnectionState(
+                                    currentState.runtimeConnectionByRuntimeId,
+                                    setupStatus.runtimeId,
+                                    {
+                                        status: "ready",
+                                        message:
+                                            getRuntimeReadyButDisabledMessage(
+                                                state.runtimes,
+                                                setupStatus.runtimeId,
+                                            ),
+                                    },
+                                ),
+                        }));
                     }
                 }
             } catch (error) {
-                set({
-                    runtimeConnection: {
-                        status: "error",
-                        message: getAiErrorMessage(
-                            error,
-                            "Failed to save the AI setup.",
-                        ),
-                    },
-                });
+                set((state) => ({
+                    runtimeConnectionByRuntimeId: setRuntimeConnectionState(
+                        state.runtimeConnectionByRuntimeId,
+                        targetRuntimeId,
+                        {
+                            status: "error",
+                            message: getAiErrorMessage(
+                                error,
+                                "Failed to save the AI setup.",
+                            ),
+                        },
+                    ),
+                }));
             }
         },
 
         startAuth: async (input) => {
+            const targetRuntimeId =
+                input.runtimeId ?? getEffectiveRuntimeId(get());
+            if (!targetRuntimeId) return;
             try {
+                const previousSetupStatus = getSetupStatusForRuntime(
+                    get().setupStatusByRuntimeId,
+                    targetRuntimeId,
+                );
                 if (
                     input.customBinaryPath ||
                     input.codexApiKey ||
-                    input.openaiApiKey
+                    input.openaiApiKey ||
+                    input.anthropicBaseUrl ||
+                    input.anthropicCustomHeaders ||
+                    input.anthropicAuthToken
                 ) {
                     const setupStatus = await aiUpdateSetup({
+                        runtimeId: targetRuntimeId,
                         customBinaryPath: input.customBinaryPath,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
+                        anthropicBaseUrl: input.anthropicBaseUrl,
+                        anthropicCustomHeaders: input.anthropicCustomHeaders,
+                        anthropicAuthToken: input.anthropicAuthToken,
                     });
-                    set({
-                        setupStatus,
-                        ...getRuntimeConnectionPatchForSetup(setupStatus),
-                    });
+                    set((state) => ({
+                        selectedRuntimeId: targetRuntimeId,
+                        ...applyRuntimeSetupStatusPatch(state, setupStatus),
+                    }));
                 }
 
                 const setupStatus = await aiStartAuth(
-                    input.methodId,
+                    {
+                        methodId: input.methodId,
+                        runtimeId: targetRuntimeId,
+                    },
                     useVaultStore.getState().vaultPath,
                 );
-                set({
-                    setupStatus,
-                    ...getRuntimeConnectionPatchForSetup(setupStatus),
-                });
+                set((state) => ({
+                    selectedRuntimeId: targetRuntimeId,
+                    ...applyRuntimeSetupStatusPatch(state, setupStatus),
+                }));
 
                 if (!setupStatus.onboardingRequired) {
                     const state = get();
-                    if (!state.activeSessionId && state.runtimes.length) {
-                        await state.newSession(
-                            getDefaultRuntimeId(state.runtimes) ?? undefined,
+                    if (previousSetupStatus?.onboardingRequired) {
+                        await ensureRuntimeVisibleAfterOnboarding(
+                            setupStatus.runtimeId,
                         );
+                    } else if (
+                        !runtimeSupportsCapability(
+                            state.runtimes,
+                            setupStatus.runtimeId,
+                            "create_session",
+                        )
+                    ) {
+                        set((currentState) => ({
+                            runtimeConnectionByRuntimeId:
+                                setRuntimeConnectionState(
+                                    currentState.runtimeConnectionByRuntimeId,
+                                    setupStatus.runtimeId,
+                                    {
+                                        status: "ready",
+                                        message:
+                                            getRuntimeReadyButDisabledMessage(
+                                                state.runtimes,
+                                                setupStatus.runtimeId,
+                                            ),
+                                    },
+                                ),
+                        }));
                     }
                 }
             } catch (error) {
-                set({
-                    runtimeConnection: {
-                        status: "error",
-                        message: getAiErrorMessage(
-                            error,
-                            "Failed to authenticate the AI runtime.",
-                        ),
-                    },
-                });
+                set((state) => ({
+                    runtimeConnectionByRuntimeId: setRuntimeConnectionState(
+                        state.runtimeConnectionByRuntimeId,
+                        targetRuntimeId,
+                        {
+                            status: "error",
+                            message: getAiErrorMessage(
+                                error,
+                                "Failed to authenticate the AI runtime.",
+                            ),
+                        },
+                    ),
+                }));
             }
         },
 
@@ -2038,6 +2531,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         activate || !state.activeSessionId
                             ? session.sessionId
                             : state.activeSessionId,
+                    selectedRuntimeId:
+                        activate || !state.activeSessionId
+                            ? nextSession.runtimeId
+                            : state.selectedRuntimeId,
                     composerPartsBySessionId: state.composerPartsBySessionId[
                         session.sessionId
                     ]
@@ -2054,32 +2551,151 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        applyRuntimeConnection: ({ runtime_id, status, message }) => {
+            const affectedSessionIds: string[] = [];
+            set((state) => {
+                const runtimeConnectionByRuntimeId = setRuntimeConnectionState(
+                    state.runtimeConnectionByRuntimeId,
+                    runtime_id,
+                    {
+                        status,
+                        message: message ?? null,
+                    },
+                );
+
+                if (status !== "error") {
+                    return { runtimeConnectionByRuntimeId };
+                }
+
+                const nextSessionsById = { ...state.sessionsById };
+                const failedAt = Date.now();
+                let changed = false;
+
+                for (const [sessionId, session] of Object.entries(
+                    state.sessionsById,
+                )) {
+                    if (
+                        session.runtimeId !== runtime_id ||
+                        session.runtimeState !== "live"
+                    ) {
+                        continue;
+                    }
+
+                    clearStaleStreamingCheck(sessionId);
+                    affectedSessionIds.push(sessionId);
+                    changed = true;
+                    const revertedSession = {
+                        ...session,
+                        isPersistedSession: true,
+                        isResumingSession: false,
+                        runtimeState: "detached" as const,
+                        status: "error" as const,
+                        resumeContextPending: true,
+                        messages: stampElapsedOnTurnStarted(
+                            [
+                                ...session.messages.map((item) =>
+                                    item.kind === "permission" &&
+                                    item.meta?.status === "responding"
+                                        ? {
+                                              ...item,
+                                              meta: {
+                                                  ...item.meta,
+                                                  status: "pending",
+                                              },
+                                          }
+                                        : item.kind === "user_input_request" &&
+                                            item.meta?.status === "responding"
+                                          ? {
+                                                ...item,
+                                                meta: {
+                                                    ...item.meta,
+                                                    status: "pending",
+                                                },
+                                            }
+                                          : item.inProgress
+                                            ? {
+                                                  ...item,
+                                                  inProgress: false,
+                                              }
+                                            : item,
+                                ),
+                                createErrorMessage(
+                                    message ??
+                                        "The AI runtime disconnected unexpectedly.",
+                                ),
+                            ],
+                            failedAt,
+                        ),
+                    };
+                    nextSessionsById[sessionId] = revertedSession;
+                }
+
+                return changed
+                    ? {
+                          runtimeConnectionByRuntimeId,
+                          sessionsById: nextSessionsById,
+                      }
+                    : { runtimeConnectionByRuntimeId };
+            });
+
+            for (const sessionId of affectedSessionIds) {
+                const session = get().sessionsById[sessionId];
+                if (session) {
+                    void persistSession(session);
+                }
+            }
+        },
+
         applySessionError: ({ session_id, message }) => {
             if (session_id) clearStaleStreamingCheck(session_id);
             set((state) => {
-                const nextSetupStatus =
-                    state.setupStatus && isAuthenticationErrorMessage(message)
+                const sessionRuntimeId = session_id
+                    ? state.sessionsById[session_id]?.runtimeId
+                    : null;
+                const effectiveRuntimeId =
+                    sessionRuntimeId ?? getEffectiveRuntimeId(state);
+                const runtimeSetupStatus = getSetupStatusForRuntime(
+                    state.setupStatusByRuntimeId,
+                    effectiveRuntimeId,
+                );
+                const nextSetupStatusByRuntimeId =
+                    runtimeSetupStatus && isAuthenticationErrorMessage(message)
                         ? {
-                              ...state.setupStatus,
-                              authReady: false,
-                              authMethod: undefined,
-                              onboardingRequired: true,
-                              message:
-                                  "You were signed out. Connect your ChatGPT account or add an API key to continue.",
+                              ...state.setupStatusByRuntimeId,
+                              [runtimeSetupStatus.runtimeId]: {
+                                  ...runtimeSetupStatus,
+                                  authReady: false,
+                                  authMethod: undefined,
+                                  onboardingRequired: true,
+                                  message: getAuthenticationReconnectMessage(
+                                      runtimeSetupStatus.runtimeId,
+                                      state.runtimes,
+                                  ),
+                              },
                           }
-                        : state.setupStatus;
+                        : state.setupStatusByRuntimeId;
+                const nextRuntimeConnectionByRuntimeId =
+                    effectiveRuntimeId != null
+                        ? setRuntimeConnectionState(
+                              state.runtimeConnectionByRuntimeId,
+                              effectiveRuntimeId,
+                              {
+                                  status: "error",
+                                  message,
+                              },
+                          )
+                        : state.runtimeConnectionByRuntimeId;
 
                 if (!session_id || !state.sessionsById[session_id]) {
                     return {
-                        setupStatus: nextSetupStatus,
-                        runtimeConnection: {
-                            status: "error",
-                            message,
-                        },
+                        setupStatusByRuntimeId: nextSetupStatusByRuntimeId,
+                        runtimeConnectionByRuntimeId:
+                            nextRuntimeConnectionByRuntimeId,
                     };
                 }
 
                 const session = state.sessionsById[session_id];
+                const failedAt = Date.now();
                 const revertedSession = {
                     ...session,
                     isResumingSession: false,
@@ -2102,20 +2718,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                         status: "pending",
                                     },
                                 }
-                              : item,
+                              : item.inProgress
+                                ? { ...item, inProgress: false }
+                                : item,
                     ),
                 };
                 return {
-                    setupStatus: nextSetupStatus,
+                    setupStatusByRuntimeId: nextSetupStatusByRuntimeId,
+                    runtimeConnectionByRuntimeId:
+                        nextRuntimeConnectionByRuntimeId,
                     sessionsById: {
                         ...state.sessionsById,
                         [session_id]: {
                             ...revertedSession,
                             status: "error",
-                            messages: [
-                                ...revertedSession.messages,
-                                createErrorMessage(message),
-                            ],
+                            runtimeState:
+                                revertedSession.runtimeState ?? "live",
+                            messages: stampElapsedOnTurnStarted(
+                                [
+                                    ...revertedSession.messages,
+                                    createErrorMessage(message),
+                                ],
+                                failedAt,
+                            ),
                         },
                     },
                     sessionOrder: touchSessionOrder(
@@ -2310,22 +2935,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     (message) => message.id === messageId,
                 );
 
+                // Consolidate both legacy buffer and ActionLog
+                let consolidated = shouldConsolidate
+                    ? setActiveEditedFilesBuffer(
+                          nextSession,
+                          consolidateEditedFilesBuffer(
+                              getActiveEditedFilesBuffer(nextSession),
+                              payload.diffs ?? [],
+                              Date.now(),
+                          ),
+                      )
+                    : nextSession;
+
+                // Also update ActionLog (new system)
+                if (shouldConsolidate) {
+                    consolidated = ensureActionLog(consolidated);
+                    consolidated = consolidateActionLogDiffs(
+                        consolidated,
+                        payload.diffs ?? [],
+                        workCycleId,
+                    );
+                }
+
                 return {
                     sessionsById: {
                         ...state.sessionsById,
                         [payload.session_id]: {
-                            ...(shouldConsolidate
-                                ? setActiveEditedFilesBuffer(
-                                      nextSession,
-                                      consolidateEditedFilesBuffer(
-                                          getActiveEditedFilesBuffer(
-                                              nextSession,
-                                          ),
-                                          payload.diffs ?? [],
-                                          Date.now(),
-                                      ),
-                                  )
-                                : nextSession),
+                            ...consolidated,
                             messages: existingMessage
                                 ? nextSession.messages.map((message) =>
                                       message.id === messageId
@@ -2435,6 +3071,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
+        applyAvailableCommandsUpdate: (payload) => {
+            set((state) => {
+                const session = state.sessionsById[payload.session_id];
+                if (!session) return state;
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [payload.session_id]: {
+                            ...session,
+                            availableCommands: payload.commands,
+                        },
+                    },
+                };
+            });
+        },
+
         applyPermissionRequest: (payload) =>
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -2445,7 +3098,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const workCycleId = nextSession.activeWorkCycleId;
                 const hasDiffs =
                     payload.diffs.length > 0 && Boolean(workCycleId);
-                const sessionWithBuffer = hasDiffs
+                let sessionWithBuffer = hasDiffs
                     ? setActiveEditedFilesBuffer(
                           nextSession,
                           consolidateEditedFilesBuffer(
@@ -2455,6 +3108,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                           ),
                       )
                     : nextSession;
+
+                // Also update ActionLog (new system)
+                if (hasDiffs) {
+                    sessionWithBuffer = ensureActionLog(sessionWithBuffer);
+                    sessionWithBuffer = consolidateActionLogDiffs(
+                        sessionWithBuffer,
+                        payload.diffs,
+                        workCycleId,
+                    );
+                }
 
                 const messageId = `permission:${payload.request_id}`;
                 const nextMessage: AIChatMessage = {
@@ -2564,7 +3227,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         setActiveSession: (sessionId) =>
             set((state) =>
                 state.sessionsById[sessionId]
-                    ? { activeSessionId: sessionId }
+                    ? {
+                          activeSessionId: sessionId,
+                          selectedRuntimeId:
+                              state.sessionsById[sessionId]?.runtimeId ??
+                              state.selectedRuntimeId,
+                      }
                     : state,
             ),
 
@@ -2572,12 +3240,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const state = get();
             const session = state.sessionsById[sessionId];
             if (!session) return null;
-            if (!session.isPersistedSession) return sessionId;
+            if (session.runtimeState === "live") return sessionId;
             if (session.isResumingSession) return sessionId;
 
             set((currentState) => {
                 const currentSession = currentState.sessionsById[sessionId];
-                if (!currentSession || !currentSession.isPersistedSession) {
+                if (!currentSession || currentSession.runtimeState === "live") {
                     return currentState;
                 }
 
@@ -2594,70 +3262,94 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const latestSession = get().sessionsById[sessionId];
-                if (!latestSession || !latestSession.isPersistedSession) {
+                if (!latestSession || latestSession.runtimeState === "live") {
                     return get().activeSessionId;
                 }
 
-                let resumedSession = await aiCreateSession(
+                const vaultPath = useVaultStore.getState().vaultPath;
+                const supportsNativeResume = runtimeSupportsCapability(
+                    get().runtimes,
                     latestSession.runtimeId,
-                    useVaultStore.getState().vaultPath,
+                    "resume_session",
                 );
-                const resumedModelConfig = getModelConfigOption(resumedSession);
+                const historySessionId =
+                    latestSession.historySessionId || latestSession.sessionId;
 
-                if (
-                    resumedSession.modelId !== latestSession.modelId &&
-                    supportsModelSelection(
-                        resumedSession,
-                        latestSession.modelId,
-                    )
-                ) {
-                    resumedSession = resumedModelConfig
-                        ? await aiSetConfigOption(
-                              resumedSession.sessionId,
-                              resumedModelConfig.id,
-                              latestSession.modelId,
-                          )
-                        : await aiSetModel(
-                              resumedSession.sessionId,
-                              latestSession.modelId,
-                          );
-                }
+                let resumedSession: AIChatSession;
+                let resumeContextPending = false;
 
-                if (
-                    resumedSession.modeId !== latestSession.modeId &&
-                    resumedSession.modes.some(
-                        (mode) =>
-                            mode.id === latestSession.modeId && !mode.disabled,
-                    )
-                ) {
-                    resumedSession = await aiSetMode(
-                        resumedSession.sessionId,
-                        latestSession.modeId,
+                if (supportsNativeResume) {
+                    resumedSession = await aiResumeRuntimeSession(
+                        latestSession.runtimeId,
+                        historySessionId,
+                        vaultPath,
                     );
-                }
-
-                for (const option of latestSession.configOptions) {
-                    const current = resumedSession.configOptions.find(
-                        (candidate) => candidate.id === option.id,
+                } else {
+                    resumedSession = await aiCreateSession(
+                        latestSession.runtimeId,
+                        vaultPath,
                     );
+                    const resumedModelConfig =
+                        getModelConfigOption(resumedSession);
+
                     if (
-                        current &&
-                        current.value !== option.value &&
-                        current.options.some(
-                            (candidate) => candidate.value === option.value,
+                        resumedSession.modelId !== latestSession.modelId &&
+                        supportsModelSelection(
+                            resumedSession,
+                            latestSession.modelId,
                         )
                     ) {
-                        resumedSession = await aiSetConfigOption(
+                        resumedSession = resumedModelConfig
+                            ? await aiSetConfigOption(
+                                  resumedSession.sessionId,
+                                  resumedModelConfig.id,
+                                  latestSession.modelId,
+                              )
+                            : await aiSetModel(
+                                  resumedSession.sessionId,
+                                  latestSession.modelId,
+                              );
+                    }
+
+                    if (
+                        resumedSession.modeId !== latestSession.modeId &&
+                        resumedSession.modes.some(
+                            (mode) =>
+                                mode.id === latestSession.modeId &&
+                                !mode.disabled,
+                        )
+                    ) {
+                        resumedSession = await aiSetMode(
                             resumedSession.sessionId,
-                            option.id,
-                            option.value,
+                            latestSession.modeId,
                         );
                     }
+
+                    for (const option of latestSession.configOptions) {
+                        const current = resumedSession.configOptions.find(
+                            (candidate) => candidate.id === option.id,
+                        );
+                        if (
+                            current &&
+                            current.value !== option.value &&
+                            current.options.some(
+                                (candidate) => candidate.value === option.value,
+                            )
+                        ) {
+                            resumedSession = await aiSetConfigOption(
+                                resumedSession.sessionId,
+                                option.id,
+                                option.value,
+                            );
+                        }
+                    }
+
+                    resumeContextPending = latestSession.messages.length > 0;
                 }
 
                 const migratedSession = startNewWorkCycle({
                     ...resumedSession,
-                    historySessionId: latestSession.historySessionId,
+                    historySessionId,
                     messages: latestSession.messages,
                     attachments: latestSession.attachments,
                     editedFilesBuffer:
@@ -2671,7 +3363,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         {},
                     isPersistedSession: false,
                     isResumingSession: false,
-                    resumeContextPending: latestSession.messages.length > 0,
+                    resumeContextPending,
+                    runtimeState: "live",
                 });
 
                 set((currentState) => {
@@ -2745,6 +3438,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionId,
                         migratedSession.sessionId,
                         migratedSession.historySessionId,
+                        migratedSession.runtimeId,
                     );
 
                 return migratedSession.sessionId;
@@ -2755,7 +3449,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
                 get().applySessionError({ session_id: sessionId, message });
                 if (isAuthenticationErrorMessage(message)) {
-                    await get().refreshSetupStatus();
+                    await get().refreshSetupStatus(
+                        get().sessionsById[sessionId]?.runtimeId,
+                    );
                 }
                 return null;
             }
@@ -2766,12 +3462,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (existing) {
                 set((state) => ({
                     activeSessionId: sessionId,
+                    selectedRuntimeId:
+                        state.sessionsById[sessionId]?.runtimeId ??
+                        state.selectedRuntimeId,
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         sessionId,
                     ),
                 }));
-                if (existing.isPersistedSession) {
+                if (existing.runtimeState !== "live") {
                     await get().resumeSession(sessionId);
                     return;
                 }
@@ -2805,7 +3504,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            if (session.isPersistedSession) {
+            if (session.runtimeState !== "live") {
                 set((state) => ({
                     sessionsById: {
                         ...state.sessionsById,
@@ -2859,7 +3558,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            if (session.isPersistedSession) {
+            if (session.runtimeState !== "live") {
                 set((state) => ({
                     sessionsById: {
                         ...state.sessionsById,
@@ -2902,7 +3601,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            if (session.isPersistedSession) {
+            if (session.runtimeState !== "live") {
                 set((state) => {
                     const currentSession = state.sessionsById[activeSessionId]!;
                     const nextSession =
@@ -3530,12 +4229,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     };
                 });
             } catch (error) {
-                get().applySessionError({
-                    session_id: activeSessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to resolve the permission request.",
-                    ),
+                const message = getAiErrorMessage(
+                    error,
+                    "Failed to resolve the permission request.",
+                );
+                set((state) => {
+                    const currentSession = state.sessionsById[activeSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: updatePermissionMessageState(
+                                {
+                                    ...currentSession,
+                                    status: "waiting_permission",
+                                },
+                                requestId,
+                                {
+                                    status: "pending",
+                                    resolved_option: null,
+                                },
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            activeSessionId,
+                        ),
+                    };
+                });
+                set((state) => {
+                    const currentSession = state.sessionsById[activeSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: {
+                                ...currentSession,
+                                messages: [
+                                    ...currentSession.messages,
+                                    createErrorMessage(message),
+                                ],
+                            },
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            activeSessionId,
+                        ),
+                    };
                 });
             }
         },
@@ -3543,15 +4283,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
         respondUserInput: async (requestId, answers) => {
             const { activeSessionId } = get();
             if (!activeSessionId) return;
+            const session = get().sessionsById[activeSessionId];
+            if (!session) return;
+
+            if (
+                !runtimeSupportsCapability(
+                    get().runtimes,
+                    session.runtimeId,
+                    "user_input",
+                )
+            ) {
+                set((state) => {
+                    const currentSession = state.sessionsById[activeSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: {
+                                ...currentSession,
+                                messages: [
+                                    ...currentSession.messages,
+                                    createErrorMessage(
+                                        "This runtime does not support interactive user input requests in this build.",
+                                    ),
+                                ],
+                            },
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            activeSessionId,
+                        ),
+                    };
+                });
+                return;
+            }
 
             set((state) => {
-                const session = state.sessionsById[activeSessionId];
-                if (!session) return state;
+                const currentSession = state.sessionsById[activeSessionId];
+                if (!currentSession) return state;
                 return {
                     sessionsById: {
                         ...state.sessionsById,
                         [activeSessionId]: updateUserInputMessageState(
-                            { ...session, status: "streaming" },
+                            { ...currentSession, status: "streaming" },
                             requestId,
                             {
                                 status: "responding",
@@ -3587,12 +4361,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     };
                 });
             } catch (error) {
-                get().applySessionError({
-                    session_id: activeSessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to respond to the input request.",
-                    ),
+                const message = getAiErrorMessage(
+                    error,
+                    "Failed to respond to the input request.",
+                );
+                set((state) => {
+                    const currentSession = state.sessionsById[activeSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: updateUserInputMessageState(
+                                {
+                                    ...currentSession,
+                                    status: "waiting_user_input",
+                                },
+                                requestId,
+                                {
+                                    status: "pending",
+                                    answered: false,
+                                },
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            activeSessionId,
+                        ),
+                    };
+                });
+                set((state) => {
+                    const currentSession = state.sessionsById[activeSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: {
+                                ...currentSession,
+                                messages: [
+                                    ...currentSession.messages,
+                                    createErrorMessage(message),
+                                ],
+                            },
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            activeSessionId,
+                        ),
+                    };
                 });
             }
         },
@@ -3612,6 +4427,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!entry || !entry.supported) {
                 return;
             }
+
+            // Resolve the TrackedFile for lifecycle-aware restore
+            const wc = session.visibleWorkCycleId ?? session.activeWorkCycleId;
+            const tracked =
+                wc && session.actionLog
+                    ? (getTrackedFilesForWorkCycle(session.actionLog, wc)[
+                          identityKey
+                      ] ?? null)
+                    : null;
 
             try {
                 const restoreCheck = await hasSafeRestoreTarget(
@@ -3643,19 +4467,42 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
-                await restoreEditedFileEntry(vaultPath, entry);
+                // Lifecycle-aware restore when TrackedFile exists
+                if (tracked) {
+                    await executeRestoreAction(vaultPath, tracked);
+                } else {
+                    await restoreEditedFileEntry(vaultPath, entry);
+                }
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
 
+                    let sessionAfterRemove = removeEditedFilesBufferEntry(
+                        currentSession,
+                        identityKey,
+                    );
+
+                    // Remove from ActionLog + store undo with snapshot
+                    if (tracked && sessionAfterRemove.actionLog) {
+                        const { undoData } = actionLogRejectAll(tracked);
+                        sessionAfterRemove = setActionLogUndo(
+                            removeTrackedFileFromActionLog(
+                                sessionAfterRemove,
+                                identityKey,
+                            ),
+                            {
+                                buffers: [undoData],
+                                snapshots: { [identityKey]: tracked },
+                                timestamp: Date.now(),
+                            },
+                        );
+                    }
+
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [sessionId]: removeEditedFilesBufferEntry(
-                                currentSession,
-                                identityKey,
-                            ),
+                            [sessionId]: sessionAfterRemove,
                         },
                     };
                 });
@@ -3739,13 +4586,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
 
+                    let updated = removeEditedFilesBufferEntry(
+                        currentSession,
+                        identityKey,
+                    );
+                    // Also remove from ActionLog (resolved = no longer tracked)
+                    updated = removeTrackedFileFromActionLog(
+                        updated,
+                        identityKey,
+                    );
+
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [sessionId]: removeEditedFilesBufferEntry(
-                                currentSession,
-                                identityKey,
-                            ),
+                            [sessionId]: updated,
                         },
                     };
                 });
@@ -3774,11 +4628,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!session) return;
 
             const entries = getSessionEditedFilesBuffer(session);
+            const wc = session.visibleWorkCycleId ?? session.activeWorkCycleId;
+            const trackedFiles =
+                wc && session.actionLog
+                    ? getTrackedFilesForWorkCycle(session.actionLog, wc)
+                    : {};
+
+            // Collect undo data for all rejected files
+            const undoBuffers: import("../diff/actionLogTypes").PerFileUndo[] =
+                [];
+            const undoSnapshots: Record<string, TrackedFile> = {};
 
             for (const entry of entries) {
                 if (!entry.supported) {
                     continue;
                 }
+
+                const tracked = trackedFiles[entry.identityKey] ?? null;
 
                 try {
                     const restoreCheck = await hasSafeRestoreTarget(
@@ -3806,7 +4672,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         continue;
                     }
 
-                    await restoreEditedFileEntry(vaultPath, entry);
+                    // Lifecycle-aware restore
+                    if (tracked) {
+                        await executeRestoreAction(vaultPath, tracked);
+                        const { undoData } = actionLogRejectAll(tracked);
+                        undoBuffers.push(undoData);
+                        undoSnapshots[entry.identityKey] = tracked;
+                    } else {
+                        await restoreEditedFileEntry(vaultPath, entry);
+                    }
 
                     set((state) => {
                         const currentSession = state.sessionsById[sessionId];
@@ -3834,6 +4708,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
             }
 
+            // Store combined undo and clear ActionLog tracked files
+            set((state) => {
+                const currentSession = state.sessionsById[sessionId];
+                if (!currentSession?.actionLog || !wc) return state;
+
+                let updated: AIChatSession = {
+                    ...currentSession,
+                    actionLog: setTrackedFilesForWorkCycle(
+                        currentSession.actionLog,
+                        wc,
+                        {},
+                    ),
+                };
+
+                if (undoBuffers.length > 0) {
+                    updated = setActionLogUndo(updated, {
+                        buffers: undoBuffers,
+                        snapshots: undoSnapshots,
+                        timestamp: Date.now(),
+                    });
+                }
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [sessionId]: updated,
+                    },
+                };
+            });
+
             const updatedSession = get().sessionsById[sessionId];
             if (updatedSession) {
                 void persistSession(updatedSession);
@@ -3845,13 +4749,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = state.sessionsById[sessionId];
                 if (!session) return state;
 
+                let updated = removeEditedFilesBufferEntry(
+                    session,
+                    identityKey,
+                );
+                // Also remove from ActionLog (accepted = no longer tracked)
+                updated = removeTrackedFileFromActionLog(updated, identityKey);
+
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [sessionId]: removeEditedFilesBufferEntry(
-                            session,
-                            identityKey,
-                        ),
+                        [sessionId]: updated,
                     },
                 };
             });
@@ -3867,10 +4775,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = state.sessionsById[sessionId];
                 if (!session) return state;
 
+                let updated = clearVisibleEditedFilesBuffer(session);
+                // Also clear ActionLog tracked files for this cycle
+                if (updated.actionLog) {
+                    const wc =
+                        session.visibleWorkCycleId ?? session.activeWorkCycleId;
+                    if (wc) {
+                        updated = {
+                            ...updated,
+                            actionLog: setTrackedFilesForWorkCycle(
+                                updated.actionLog,
+                                wc,
+                                {},
+                            ),
+                        };
+                    }
+                }
+
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [sessionId]: clearVisibleEditedFilesBuffer(session),
+                        [sessionId]: updated,
                     },
                 };
             });
@@ -3881,12 +4806,350 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        resolveHunkEdits: async (
+            sessionId,
+            identityKey,
+            decision,
+            hunkNewStart,
+            hunkNewEnd,
+        ) => {
+            const { sessionsById } = get();
+            const session = sessionsById[sessionId];
+            if (!session?.actionLog) return;
+
+            const wc = session.visibleWorkCycleId ?? session.activeWorkCycleId;
+            if (!wc) return;
+
+            const tracked =
+                getTrackedFilesForWorkCycle(session.actionLog, wc)[
+                    identityKey
+                ] ?? null;
+            if (!tracked) return;
+
+            let updatedFile: TrackedFile;
+            let hunkUndoSnapshot: {
+                identityKey: string;
+                snapshot: TrackedFile;
+            } | null = null;
+
+            if (decision === "accepted") {
+                // Accept: absorb hunk into diffBase, no disk write needed
+                updatedFile = keepEditsInRange(
+                    tracked,
+                    hunkNewStart,
+                    hunkNewEnd,
+                );
+            } else {
+                // Reject: revert hunk in currentText, write to disk
+                const { file } = rejectEditsInRanges(tracked, [
+                    { start: hunkNewStart, end: hunkNewEnd },
+                ]);
+                updatedFile = file;
+                // Store undo snapshot so the reject can be undone
+                hunkUndoSnapshot = { identityKey, snapshot: tracked };
+
+                const vaultPath = useVaultStore.getState().vaultPath;
+                if (vaultPath) {
+                    await aiRestoreTextFile({
+                        vaultPath,
+                        path: tracked.path,
+                        previousPath:
+                            tracked.originPath !== tracked.path
+                                ? tracked.originPath
+                                : null,
+                        content: updatedFile.currentText,
+                    });
+                }
+            }
+
+            set((state) => {
+                const currentSession = state.sessionsById[sessionId];
+                if (!currentSession?.actionLog || !wc) return state;
+
+                if (patchIsEmpty(updatedFile.unreviewedEdits)) {
+                    // All hunks resolved — remove from tracking
+                    let cleaned = removeTrackedFileFromActionLog(
+                        removeEditedFilesBufferEntry(
+                            currentSession,
+                            identityKey,
+                        ),
+                        identityKey,
+                    );
+                    if (hunkUndoSnapshot) {
+                        cleaned = setActionLogUndo(cleaned, {
+                            buffers: [],
+                            snapshots: {
+                                [hunkUndoSnapshot.identityKey]:
+                                    hunkUndoSnapshot.snapshot,
+                            },
+                            timestamp: Date.now(),
+                        });
+                    }
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [sessionId]: cleaned,
+                        },
+                    };
+                }
+
+                // Partial resolution — update TrackedFile and legacy entry
+                const files = {
+                    ...getTrackedFilesForWorkCycle(
+                        currentSession.actionLog,
+                        wc,
+                    ),
+                };
+                files[identityKey] = updatedFile;
+
+                let updated: AIChatSession = {
+                    ...currentSession,
+                    actionLog: setTrackedFilesForWorkCycle(
+                        currentSession.actionLog,
+                        wc,
+                        files,
+                    ),
+                };
+
+                updated = updateVisibleEditedFilesBufferEntry(
+                    updated,
+                    identityKey,
+                    () => trackedFileToLegacyEntry(updatedFile),
+                );
+
+                if (hunkUndoSnapshot) {
+                    updated = setActionLogUndo(updated, {
+                        buffers: [],
+                        snapshots: {
+                            [hunkUndoSnapshot.identityKey]:
+                                hunkUndoSnapshot.snapshot,
+                        },
+                        timestamp: Date.now(),
+                    });
+                }
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [sessionId]: updated,
+                    },
+                };
+            });
+
+            const updatedSession = get().sessionsById[sessionId];
+            if (updatedSession) {
+                void persistSession(updatedSession);
+            }
+        },
+
+        undoLastReject: async (sessionId) => {
+            const { sessionsById } = get();
+            const vaultPath = useVaultStore.getState().vaultPath;
+            if (!vaultPath) return;
+
+            const session = sessionsById[sessionId];
+            if (!session?.actionLog?.lastRejectUndo) return;
+
+            const { lastRejectUndo } = session.actionLog;
+            const { snapshots } = lastRejectUndo;
+
+            try {
+                // Restore each file on disk from its pre-reject snapshot
+                for (const [, snapshot] of Object.entries(snapshots)) {
+                    // Write the agent's currentText back (undo the rejection)
+                    if (
+                        snapshot.status.kind === "created" &&
+                        snapshot.status.existingFileContent === null
+                    ) {
+                        // File was created by agent — re-create it
+                        await aiRestoreTextFile({
+                            vaultPath,
+                            path: snapshot.path,
+                            content: snapshot.currentText,
+                        });
+                    } else {
+                        await aiRestoreTextFile({
+                            vaultPath,
+                            path: snapshot.path,
+                            previousPath:
+                                snapshot.originPath !== snapshot.path
+                                    ? snapshot.originPath
+                                    : null,
+                            content: snapshot.currentText,
+                        });
+                    }
+                }
+
+                // Re-track files in ActionLog + legacy buffer, clear undo
+                set((state) => {
+                    const currentSession = state.sessionsById[sessionId];
+                    if (!currentSession?.actionLog) return state;
+
+                    const wc =
+                        currentSession.visibleWorkCycleId ??
+                        currentSession.activeWorkCycleId;
+                    if (!wc) return state;
+
+                    // Restore tracked files
+                    const existingFiles = getTrackedFilesForWorkCycle(
+                        currentSession.actionLog,
+                        wc,
+                    );
+                    const restoredFiles = { ...existingFiles, ...snapshots };
+                    let updated: AIChatSession = {
+                        ...currentSession,
+                        actionLog: setTrackedFilesForWorkCycle(
+                            currentSession.actionLog,
+                            wc,
+                            restoredFiles,
+                        ),
+                    };
+
+                    // Re-add to legacy buffer
+                    const legacyEntries = Object.values(snapshots).map(
+                        trackedFileToLegacyEntry,
+                    );
+                    const existingBuffer = getSessionEditedFilesBuffer(updated);
+                    const nextBuffer = [...existingBuffer, ...legacyEntries];
+                    updated = setVisibleEditedFilesBuffer(updated, nextBuffer);
+
+                    // Clear undo state
+                    updated = setActionLogUndo(updated, null);
+
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [sessionId]: updated,
+                        },
+                    };
+                });
+
+                const updatedSession = get().sessionsById[sessionId];
+                if (updatedSession) {
+                    void persistSession(updatedSession);
+                }
+            } catch (error) {
+                get().applySessionError({
+                    session_id: sessionId,
+                    message: getAiErrorMessage(
+                        error,
+                        "Failed to undo the last reject.",
+                    ),
+                });
+            }
+        },
+
+        notifyUserEditOnFile: (fileId, userEdits, newFullText) => {
+            set((state) => {
+                // Find session with this file tracked in ActionLog
+                for (const [sessionId, session] of Object.entries(
+                    state.sessionsById,
+                )) {
+                    if (!session.actionLog) continue;
+                    const wc =
+                        session.visibleWorkCycleId ?? session.activeWorkCycleId;
+                    if (!wc) continue;
+                    const files = getTrackedFilesForWorkCycle(
+                        session.actionLog,
+                        wc,
+                    );
+
+                    // Look up by identityKey first, then by path field
+                    let trackedKey = fileId;
+                    let tracked = files[fileId] ?? null;
+                    if (!tracked) {
+                        for (const [key, file] of Object.entries(files)) {
+                            if (file.path === fileId) {
+                                tracked = file;
+                                trackedKey = key;
+                                break;
+                            }
+                        }
+                    }
+                    if (!tracked) continue;
+
+                    // Apply non-conflicting edits
+                    const updated = applyNonConflictingEdits(
+                        tracked,
+                        userEdits,
+                        newFullText,
+                    );
+
+                    const nextFiles = {
+                        ...files,
+                        [trackedKey]: updated,
+                    };
+                    const nextActionLog = setTrackedFilesForWorkCycle(
+                        session.actionLog,
+                        wc,
+                        nextFiles,
+                    );
+
+                    // Keep legacy buffer entry in sync so hasSafeRestoreTarget
+                    // sees the current appliedHash after user edits.
+                    let updatedSession: AIChatSession = {
+                        ...session,
+                        actionLog: nextActionLog,
+                    };
+                    updatedSession = updateVisibleEditedFilesBufferEntry(
+                        updatedSession,
+                        trackedKey,
+                        () => trackedFileToLegacyEntry(updated),
+                    );
+
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [sessionId]: updatedSession,
+                        },
+                    };
+                }
+                return state;
+            });
+        },
+
         newSession: async (runtimeId) => {
             const runtimes = get().runtimes;
-            const nextRuntimeId = runtimeId ?? getDefaultRuntimeId(runtimes);
+            const nextRuntimeId =
+                runtimeId ??
+                get().selectedRuntimeId ??
+                getDefaultRuntimeId(runtimes);
             if (!nextRuntimeId) return;
 
             try {
+                set({ selectedRuntimeId: nextRuntimeId });
+                const setupStatus = await aiGetSetupStatus(nextRuntimeId);
+                set((state) => ({
+                    selectedRuntimeId: nextRuntimeId,
+                    ...applyRuntimeSetupStatusPatch(state, setupStatus),
+                }));
+                if (setupStatus.onboardingRequired) {
+                    return;
+                }
+
+                if (
+                    !runtimeSupportsCapability(
+                        runtimes,
+                        nextRuntimeId,
+                        "create_session",
+                    )
+                ) {
+                    set((state) => ({
+                        runtimeConnectionByRuntimeId: setRuntimeConnectionState(
+                            state.runtimeConnectionByRuntimeId,
+                            nextRuntimeId,
+                            {
+                                status: "ready",
+                                message: getRuntimeReadyButDisabledMessage(
+                                    runtimes,
+                                    nextRuntimeId,
+                                ),
+                            },
+                        ),
+                    }));
+                    return;
+                }
+
                 const session = await aiCreateSession(
                     nextRuntimeId,
                     useVaultStore.getState().vaultPath,
@@ -3955,20 +5218,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     message,
                 });
                 if (isAuthenticationErrorMessage(message)) {
-                    await get().refreshSetupStatus();
+                    await get().refreshSetupStatus(nextRuntimeId);
                 }
             }
         },
 
         deleteSession: async (sessionId) => {
             const vaultPath = useVaultStore.getState().vaultPath;
+            const targetSession = get().sessionsById[sessionId];
             const historySessionId =
-                get().sessionsById[sessionId]?.historySessionId ?? sessionId;
+                targetSession?.historySessionId ?? sessionId;
+            clearStaleStreamingCheck(sessionId);
+            if (
+                targetSession &&
+                targetSession.runtimeState === "live" &&
+                (targetSession.status === "streaming" ||
+                    targetSession.status === "waiting_permission" ||
+                    targetSession.status === "waiting_user_input")
+            ) {
+                await aiCancelTurn(sessionId).catch(() => {});
+            }
+            await aiDeleteRuntimeSession(sessionId).catch(() => {});
             if (vaultPath) {
                 await aiDeleteSessionHistory(vaultPath, historySessionId).catch(
                     () => {},
                 );
             }
+            useEditorStore.getState().closeReview(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
             _queueDrainLocks.delete(sessionId);
             const state = get();
@@ -3987,10 +5263,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 state.activeSessionId === sessionId
                     ? (remainingIds[0] ?? null)
                     : state.activeSessionId;
+            const nextSelectedRuntimeId =
+                (nextActiveId
+                    ? nextSessionsById[nextActiveId]?.runtimeId
+                    : null) ?? state.selectedRuntimeId;
             set({
                 sessionsById: nextSessionsById,
                 sessionOrder: remainingIds,
                 activeSessionId: nextActiveId,
+                selectedRuntimeId: nextSelectedRuntimeId,
                 composerPartsBySessionId: nextComposerPartsBySessionId,
                 queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
                     state.queuedMessagesBySessionId,
@@ -4008,8 +5289,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         deleteAllSessions: async () => {
             const vaultPath = useVaultStore.getState().vaultPath;
+            const snapshotSessions = Object.values(get().sessionsById);
+            await Promise.all(
+                snapshotSessions.map(async (session) => {
+                    clearStaleStreamingCheck(session.sessionId);
+                    if (
+                        session.runtimeState === "live" &&
+                        (session.status === "streaming" ||
+                            session.status === "waiting_permission" ||
+                            session.status === "waiting_user_input")
+                    ) {
+                        await aiCancelTurn(session.sessionId).catch(() => {});
+                    }
+                }),
+            );
+            await aiDeleteRuntimeSessionsForVault(vaultPath).catch(() => {});
             if (vaultPath) {
                 await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
+            }
+            // Close all review tabs before clearing sessions
+            const editor = useEditorStore.getState();
+            for (const sessionId of Object.keys(get().sessionsById)) {
+                editor.closeReview(sessionId);
             }
             useChatTabsStore.getState().reset();
             _queueDrainLocks.clear();
@@ -4017,6 +5318,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionsById: {},
                 sessionOrder: [],
                 activeSessionId: null,
+                selectedRuntimeId: getDefaultRuntimeId(get().runtimes),
                 composerPartsBySessionId: {},
                 queuedMessagesBySessionId: {},
                 queuedMessageEditBySessionId: {},
@@ -4282,12 +5584,14 @@ export function resetChatStore() {
     const prefs = getNormalizedAiPreferences();
     _queueDrainLocks.clear();
     useChatStore.setState({
-        runtimeConnection: INITIAL_RUNTIME_CONNECTION,
-        setupStatus: null,
+        runtimeConnectionByRuntimeId: {},
+        setupStatusByRuntimeId: {},
         runtimes: [],
         sessionsById: {},
         sessionOrder: [],
         activeSessionId: null,
+        selectedRuntimeId: null,
+        isInitializing: false,
         notePickerOpen: false,
         autoContextEnabled: prefs.autoContextEnabled,
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,

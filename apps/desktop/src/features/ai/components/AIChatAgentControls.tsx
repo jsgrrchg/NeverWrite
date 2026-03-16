@@ -29,6 +29,25 @@ interface DropdownFieldProps {
     onChange: (value: string) => void;
 }
 
+function formatFallbackLabel(value: string) {
+    if (value.trim().includes(" ")) {
+        return value;
+    }
+
+    return value
+        .replace(/_/g, " ")
+        .split("-")
+        .map((token) => {
+            if (!token) return token;
+            if (/^gpt$/i.test(token)) return "GPT";
+            if (/^claude$/i.test(token)) return "Claude";
+            if (/^\d+(\.\d+)?$/.test(token)) return token;
+            if (/^[a-z]\d+$/i.test(token)) return token.toUpperCase();
+            return token.charAt(0).toUpperCase() + token.slice(1);
+        })
+        .join(" ");
+}
+
 function DropdownField({
     disabled = false,
     label,
@@ -89,7 +108,7 @@ function DropdownField({
             </button>
             {open && options.length > 0 && (
                 <div
-                    className="absolute bottom-full left-0 z-50 mb-1 min-w-[140px] overflow-hidden rounded-lg py-1"
+                    className="absolute bottom-full left-0 z-50 mb-1 min-w-35 overflow-hidden rounded-lg py-1"
                     style={{
                         backgroundColor: "var(--bg-secondary)",
                         border: "1px solid var(--border)",
@@ -210,7 +229,7 @@ export function AIChatAgentControls({
                 value={modeId}
                 options={modes.map((mode) => ({
                     value: mode.id,
-                    label: mode.name,
+                    label: formatFallbackLabel(mode.name),
                     description: mode.description,
                     disabled: mode.disabled,
                 }))}
@@ -225,7 +244,7 @@ export function AIChatAgentControls({
                         ? mapConfigOption(modelConfig)
                         : models.map((model) => ({
                               value: model.id,
-                              label: model.name,
+                              label: formatFallbackLabel(model.name),
                               description: model.description,
                           }))
                 }

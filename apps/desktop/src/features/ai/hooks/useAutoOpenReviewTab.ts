@@ -5,24 +5,42 @@ import { getReviewTabTitle } from "../reviewTabTitle";
 import { selectVisibleEditedFilesBufferCount } from "../store/editedFilesBufferModel";
 
 export function useAutoOpenReviewTab() {
-    const prevCountRef = useRef(0);
+    const prevCountsRef = useRef<Map<string, number>>(new Map());
 
     useEffect(() => {
+        const initialState = useChatStore.getState();
+        prevCountsRef.current = new Map(
+            Object.keys(initialState.sessionsById).map((sessionId) => [
+                sessionId,
+                selectVisibleEditedFilesBufferCount(initialState, sessionId),
+            ]),
+        );
+
         const unsubscribe = useChatStore.subscribe((state) => {
-            const sessionId = state.activeSessionId;
-            if (!sessionId) return;
+            const nextSessionIds = new Set(Object.keys(state.sessionsById));
 
-            const count = selectVisibleEditedFilesBufferCount(state, sessionId);
-            const prev = prevCountRef.current;
-            prevCountRef.current = count;
+            for (const sessionId of nextSessionIds) {
+                const count = selectVisibleEditedFilesBufferCount(
+                    state,
+                    sessionId,
+                );
+                const prev = prevCountsRef.current.get(sessionId) ?? 0;
+                prevCountsRef.current.set(sessionId, count);
 
-            // Open review tab in background when entries appear for the first time
-            if (count > 0 && prev === 0) {
-                const session = state.sessionsById[sessionId];
-                useEditorStore.getState().openReview(sessionId, {
-                    background: true,
-                    title: getReviewTabTitle(session, state.runtimes),
-                });
+                // Open a review tab the first time a session surfaces edits.
+                if (count > 0 && prev === 0) {
+                    const session = state.sessionsById[sessionId];
+                    useEditorStore.getState().openReview(sessionId, {
+                        background: true,
+                        title: getReviewTabTitle(session, state.runtimes),
+                    });
+                }
+            }
+
+            for (const sessionId of Array.from(prevCountsRef.current.keys())) {
+                if (!nextSessionIds.has(sessionId)) {
+                    prevCountsRef.current.delete(sessionId);
+                }
             }
         });
 

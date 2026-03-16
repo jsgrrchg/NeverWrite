@@ -399,7 +399,10 @@ fn discover_vault_entries_guesses_text_mime_types_for_common_config_files() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("Dockerfile"), "FROM rust:latest\n").unwrap();
     fs::write(dir.path().join(".env.local"), "APP_ENV=local\n").unwrap();
+    fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+    fs::write(dir.path().join(".eslintrc"), "{\n  \"root\": true\n}\n").unwrap();
     fs::write(dir.path().join("Makefile"), "build:\n\tcargo build\n").unwrap();
+    fs::write(dir.path().join("rules.mk"), "VAR += value\n").unwrap();
 
     let vault = Vault::open(dir.path().to_path_buf()).unwrap();
     let entries = vault.discover_vault_entries().unwrap();
@@ -412,7 +415,25 @@ fn discover_vault_entries_guesses_text_mime_types_for_common_config_files() {
 
     assert!(mimes.contains(&("Dockerfile", Some("text/plain"))));
     assert!(mimes.contains(&(".env.local", Some("text/plain"))));
+    assert!(mimes.contains(&(".gitignore", Some("text/plain"))));
+    assert!(mimes.contains(&(".eslintrc", Some("text/plain"))));
     assert!(mimes.contains(&("Makefile", Some("text/plain"))));
+    assert!(mimes.contains(&("rules.mk", Some("text/plain"))));
+}
+
+#[test]
+fn discover_vault_entries_uses_file_name_as_title_for_dotfiles_without_stem() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let entries = vault.discover_vault_entries().unwrap();
+    let entry = entries
+        .iter()
+        .find(|entry| entry.file_name == ".gitignore")
+        .unwrap();
+
+    assert_eq!(entry.title, ".gitignore");
 }
 
 #[test]

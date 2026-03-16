@@ -1,6 +1,9 @@
 mod ai;
+mod devtools;
+mod maps;
+mod spellcheck;
 
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -25,6 +28,11 @@ use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, Write
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const OPEN_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const DEFAULT_GRAPH_MAX_NODES_GLOBAL: usize = 8_000;
+const DEFAULT_GRAPH_MAX_LINKS_GLOBAL: usize = 24_000;
+const DEFAULT_GRAPH_MAX_NODES_LOCAL: usize = 2_500;
+const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
+const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
 
 // --- Debug timing ---
 static DEBUG_TIMING: AtomicBool = AtomicBool::new(false);
@@ -35,6 +43,18 @@ macro_rules! dbg_log {
             eprintln!("[perf] {}", format!($($arg)*));
         }
     };
+}
+
+fn debug_timing_enabled() -> bool {
+    DEBUG_TIMING.load(Ordering::Relaxed)
+}
+
+fn serialized_payload_bytes<T: Serialize>(value: &T) -> Option<usize> {
+    if !debug_timing_enabled() {
+        return None;
+    }
+
+    serde_json::to_vec(value).ok().map(|bytes| bytes.len())
 }
 
 fn path_has_extension(path: &Path, extension: &str) -> bool {
@@ -76,6 +96,10 @@ struct VaultInstance {
     vault: Option<Vault>,
     index: Option<VaultIndex>,
     entries: Option<Vec<VaultEntryDto>>,
+    graph_base_snapshot: Option<CachedGraphBaseSnapshot>,
+    graph_revision: u64,
+    index_revision: u64,
+    graph_query_cache: HashMap<String, CachedGraphQueryResult>,
     watcher: Option<RecommendedWatcher>,
     open_job_id: u64,
     open_cancel: Option<Arc<AtomicBool>>,
@@ -88,6 +112,10 @@ impl VaultInstance {
             vault: None,
             index: None,
             entries: None,
+            graph_base_snapshot: None,
+            graph_revision: 0,
+            index_revision: 0,
+            graph_query_cache: HashMap::new(),
             watcher: None,
             open_job_id: 0,
             open_cancel: None,
@@ -100,6 +128,58 @@ struct AppState {
     vaults: HashMap<String, VaultInstance>,
     write_tracker: WriteTracker,
     next_job_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGraphBaseNode {
+    id: String,
+    title: String,
+    overview_cluster_id: String,
+    overview_cluster_title: String,
+    overview_cluster_filter: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGraphBaseTag {
+    id: String,
+    title: String,
+    note_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGraphBaseAttachment {
+    id: String,
+    title: String,
+    source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGraphBaseSnapshot {
+    revision: u64,
+    note_nodes: Vec<CachedGraphBaseNode>,
+    note_links: Vec<GraphLinkDto>,
+    tags: Vec<CachedGraphBaseTag>,
+    attachments: Vec<CachedGraphBaseAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphNoteFingerprint {
+    title: String,
+    tags: Vec<String>,
+    links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphQueryKind {
+    Cheap,
+    Expensive,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGraphQueryResult {
+    revision: u64,
+    kind: GraphQueryKind,
+    note_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -583,6 +663,201 @@ fn refresh_entries_cache(instance: &mut VaultInstance) -> Result<(), String> {
     Ok(())
 }
 
+fn next_graph_revision(current: u64) -> u64 {
+    current.saturating_add(1).max(1)
+}
+
+fn next_index_revision(current: u64) -> u64 {
+    current.saturating_add(1).max(1)
+}
+
+fn invalidate_graph_cache(instance: &mut VaultInstance) {
+    instance.graph_revision = next_graph_revision(instance.graph_revision);
+    instance.graph_base_snapshot = None;
+}
+
+fn reset_graph_cache(instance: &mut VaultInstance) {
+    instance.graph_revision = 1;
+    instance.graph_base_snapshot = None;
+}
+
+fn invalidate_graph_query_cache(instance: &mut VaultInstance) {
+    instance.index_revision = next_index_revision(instance.index_revision);
+    instance.graph_query_cache.clear();
+}
+
+fn reset_graph_query_cache(instance: &mut VaultInstance) {
+    instance.index_revision = 1;
+    instance.graph_query_cache.clear();
+}
+
+fn graph_note_fingerprint_from_index(
+    index: &VaultIndex,
+    note_id: &NoteId,
+) -> Option<GraphNoteFingerprint> {
+    let metadata = index.metadata.get(note_id)?;
+    let indexed = index
+        .notes
+        .get(note_id)
+        .cloned()
+        .unwrap_or(vault_ai_types::IndexedNote {
+            tags: Vec::new(),
+            links: Vec::new(),
+        });
+
+    let mut tags = indexed.tags;
+    tags.sort();
+
+    let mut links = indexed.links;
+    links.sort();
+
+    Some(GraphNoteFingerprint {
+        title: metadata.title.clone(),
+        tags,
+        links,
+    })
+}
+
+fn graph_note_fingerprint_from_document(note: &NoteDocument) -> GraphNoteFingerprint {
+    let mut tags = note.tags.clone();
+    tags.sort();
+
+    let mut links: Vec<String> = note.links.iter().map(|link| link.target.clone()).collect();
+    links.sort();
+
+    GraphNoteFingerprint {
+        title: note.title.clone(),
+        tags,
+        links,
+    }
+}
+
+fn note_graph_exists(index: &VaultIndex, note_id: &NoteId) -> bool {
+    index.metadata.contains_key(note_id)
+        || index.notes.contains_key(note_id)
+        || index.forward_links.contains_key(note_id)
+        || index.backlinks.contains_key(note_id)
+        || index.unresolved_links.contains_key(note_id)
+}
+
+fn overview_cluster_for_note_id(note_id: &str) -> (String, String, Option<String>) {
+    let mut segments = note_id.split('/');
+    let first = segments.next().unwrap_or_default();
+    if first.is_empty() || !note_id.contains('/') {
+        return (
+            "cluster:__root__".to_string(),
+            "Root Notes".to_string(),
+            None,
+        );
+    }
+
+    let cluster_id = format!("cluster:{first}");
+    (cluster_id, first.to_string(), Some(first.to_string()))
+}
+
+fn build_cached_graph_base_snapshot(index: &VaultIndex, revision: u64) -> CachedGraphBaseSnapshot {
+    let mut note_nodes: Vec<CachedGraphBaseNode> = index
+        .metadata
+        .values()
+        .map(|meta| {
+            let (overview_cluster_id, overview_cluster_title, overview_cluster_filter) =
+                overview_cluster_for_note_id(&meta.id.0);
+            CachedGraphBaseNode {
+                id: meta.id.0.clone(),
+                title: meta.title.clone(),
+                overview_cluster_id,
+                overview_cluster_title,
+                overview_cluster_filter,
+            }
+        })
+        .collect();
+    note_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut note_links: Vec<GraphLinkDto> = index
+        .forward_links
+        .iter()
+        .flat_map(|(source_id, targets)| {
+            targets.iter().map(move |target_id| GraphLinkDto {
+                source: source_id.0.clone(),
+                target: target_id.0.clone(),
+            })
+        })
+        .collect();
+    note_links.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| left.target.cmp(&right.target))
+    });
+
+    let mut tags: Vec<CachedGraphBaseTag> = index
+        .tags
+        .iter()
+        .map(|(tag, note_ids)| {
+            let mut ids: Vec<String> = note_ids.iter().map(|id| id.0.clone()).collect();
+            ids.sort();
+            CachedGraphBaseTag {
+                id: format!("tag:{tag}"),
+                title: format!("#{tag}"),
+                note_ids: ids,
+            }
+        })
+        .collect();
+    tags.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut attachment_sources = HashMap::<String, CachedGraphBaseAttachment>::new();
+    for (note_id, targets) in &index.unresolved_links {
+        for target in targets {
+            let attachment_id = format!("att:{target}");
+            let entry = attachment_sources
+                .entry(attachment_id.clone())
+                .or_insert_with(|| CachedGraphBaseAttachment {
+                    id: attachment_id.clone(),
+                    title: target.rsplit('/').next().unwrap_or(target).to_string(),
+                    source_ids: Vec::new(),
+                });
+            entry.source_ids.push(note_id.0.clone());
+        }
+    }
+
+    let mut attachments: Vec<CachedGraphBaseAttachment> =
+        attachment_sources.into_values().collect();
+    for attachment in &mut attachments {
+        attachment.source_ids.sort();
+    }
+    attachments.sort_by(|left, right| left.id.cmp(&right.id));
+
+    CachedGraphBaseSnapshot {
+        revision,
+        note_nodes,
+        note_links,
+        tags,
+        attachments,
+    }
+}
+
+fn ensure_graph_base_snapshot(
+    instance: &mut VaultInstance,
+) -> Result<&CachedGraphBaseSnapshot, String> {
+    let graph_revision = instance.graph_revision.max(1);
+    let needs_rebuild = instance
+        .graph_base_snapshot
+        .as_ref()
+        .is_none_or(|snapshot| snapshot.revision != graph_revision);
+
+    if needs_rebuild {
+        let Some(index) = instance.index.as_ref() else {
+            return Err("No hay vault abierto".to_string());
+        };
+        instance.graph_base_snapshot =
+            Some(build_cached_graph_base_snapshot(index, graph_revision));
+    }
+
+    instance
+        .graph_base_snapshot
+        .as_ref()
+        .ok_or("No hay snapshot de grafo".to_string())
+}
+
 fn rebuild_index(instance: &mut VaultInstance) -> Result<(), String> {
     let Some(vault) = instance.vault.as_ref() else {
         instance.index = None;
@@ -617,6 +892,8 @@ fn rebuild_index(instance: &mut VaultInstance) -> Result<(), String> {
     }
 
     instance.index = Some(index);
+    invalidate_graph_query_cache(instance);
+    invalidate_graph_cache(instance);
     Ok(())
 }
 
@@ -677,7 +954,9 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
         };
         dbg_log!("{event_label} mutex wait: {lock_wait:.2?}");
 
-        let change = match event {
+        let mut graph_changed = false;
+        let mut search_changed = false;
+        let mut change = match event {
             VaultEvent::FileCreated(ref path) | VaultEvent::FileModified(ref path)
                 if path_has_extension(path, "pdf") =>
             {
@@ -705,6 +984,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                             .unwrap_or(modified_at);
                         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                         index.reindex_pdf(&doc, modified_at, created_at, size);
+                        search_changed = true;
                     }
                     Err(e) => {
                         eprintln!("[pdf-watcher] Failed to extract {}: {e}", path.display());
@@ -716,16 +996,19 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     kind: "upsert".to_string(),
                     note: None,
                     note_id: None,
+                    graph_revision: 0,
                 })
             }
             VaultEvent::FileDeleted(ref path) if path_has_extension(path, "pdf") => {
                 let pdf_id = vault.path_to_entry_id(path);
                 index.remove_pdf(&NoteId(pdf_id));
+                search_changed = true;
                 Some(VaultNoteChangeDto {
                     vault_path: vault_path.to_string(),
                     kind: "delete".to_string(),
                     note: None,
                     note_id: None,
+                    graph_revision: 0,
                 })
             }
             VaultEvent::FileRenamed { ref from, ref to }
@@ -733,6 +1016,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
             {
                 let old_id = vault.path_to_entry_id(from);
                 index.remove_pdf(&NoteId(old_id));
+                search_changed = true;
                 if path_has_extension(to, "pdf") {
                     let new_id = vault.path_to_entry_id(to);
                     if let Ok(doc) = vault_ai_vault::pdf::extract_pdf_text(&vault.root, to, &new_id)
@@ -758,6 +1042,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                             .unwrap_or(modified_at);
                         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                         index.register_pdf(&doc, modified_at, created_at, size);
+                        search_changed = true;
                     }
                 }
                 Some(VaultNoteChangeDto {
@@ -765,60 +1050,77 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     kind: "upsert".to_string(),
                     note: None,
                     note_id: None,
+                    graph_revision: 0,
                 })
             }
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path)
                 if path_has_extension(&path, "md") =>
             {
+                let note_id = vault.path_to_id(&path);
+                let before = graph_note_fingerprint_from_index(index, &NoteId(note_id.clone()));
                 match vault.read_note_from_path(&path) {
                     Ok(note) => {
                         let dto = note_document_to_dto(&note);
                         let note_id = note.id.0.clone();
+                        let after = graph_note_fingerprint_from_document(&note);
                         index.reindex_note(note);
+                        graph_changed = before.as_ref() != Some(&after);
+                        search_changed = true;
                         Some(VaultNoteChangeDto {
                             vault_path: vault_path.to_string(),
                             kind: "upsert".to_string(),
                             note: Some(dto),
                             note_id: Some(note_id),
+                            graph_revision: 0,
                         })
                     }
                     Err(_) => {
-                        let note_id = vault.path_to_id(&path);
+                        graph_changed = before.is_some();
                         index.remove_note(&NoteId(note_id.clone()));
+                        search_changed = true;
                         Some(VaultNoteChangeDto {
                             vault_path: vault_path.to_string(),
                             kind: "delete".to_string(),
                             note: None,
                             note_id: Some(note_id),
+                            graph_revision: 0,
                         })
                     }
                 }
             }
             VaultEvent::FileDeleted(path) if path_has_extension(&path, "md") => {
                 let note_id = vault.path_to_id(&path);
+                graph_changed = note_graph_exists(index, &NoteId(note_id.clone()));
                 index.remove_note(&NoteId(note_id.clone()));
+                search_changed = true;
                 Some(VaultNoteChangeDto {
                     vault_path: vault_path.to_string(),
                     kind: "delete".to_string(),
                     note: None,
                     note_id: Some(note_id),
+                    graph_revision: 0,
                 })
             }
             VaultEvent::FileRenamed { from, to }
                 if path_has_extension(&from, "md") || path_has_extension(&to, "md") =>
             {
                 let old_id = vault.path_to_id(&from);
+                graph_changed = note_graph_exists(index, &NoteId(old_id.clone()));
                 index.remove_note(&NoteId(old_id.clone()));
+                search_changed = true;
                 match vault.read_note_from_path(&to) {
                     Ok(note) => {
                         let dto = note_document_to_dto(&note);
                         let note_id = note.id.0.clone();
                         index.reindex_note(note);
+                        graph_changed = true;
+                        search_changed = true;
                         Some(VaultNoteChangeDto {
                             vault_path: vault_path.to_string(),
                             kind: "upsert".to_string(),
                             note: Some(dto),
                             note_id: Some(note_id),
+                            graph_revision: 0,
                         })
                     }
                     Err(_) => Some(VaultNoteChangeDto {
@@ -826,6 +1128,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                         kind: "delete".to_string(),
                         note: None,
                         note_id: Some(old_id),
+                        graph_revision: 0,
                     }),
                 }
             }
@@ -837,11 +1140,23 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 kind: "upsert".to_string(),
                 note: None,
                 note_id: None,
+                graph_revision: 0,
             }),
         };
 
+        if search_changed {
+            invalidate_graph_query_cache(instance);
+        }
+        if graph_changed {
+            invalidate_graph_cache(instance);
+        }
+
         if change.is_some() {
             let _ = refresh_entries_cache(instance);
+        }
+
+        if let Some(change) = change.as_mut() {
+            change.graph_revision = instance.graph_revision.max(1);
         }
 
         change
@@ -1184,6 +1499,10 @@ fn start_open_vault_inner(
         instance.vault = None;
         instance.index = None;
         instance.entries = None;
+        instance.graph_base_snapshot = None;
+        instance.graph_revision = 0;
+        instance.index_revision = 0;
+        instance.graph_query_cache.clear();
         instance.watcher = None;
 
         (write_tracker, job_id)
@@ -1227,6 +1546,8 @@ fn start_open_vault_inner(
                     instance.vault = Some(result.vault);
                     instance.index = Some(result.index);
                     instance.entries = Some(result.entries);
+                    reset_graph_cache(instance);
+                    reset_graph_query_cache(instance);
                     instance.watcher = Some(watcher);
                     instance.open_cancel = None;
                     instance.open_state.finish_ready(
@@ -1349,6 +1670,19 @@ fn list_notes(
 }
 
 #[tauri::command]
+fn get_graph_revision(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<u64, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    Ok(instance.graph_revision.max(1))
+}
+
+#[tauri::command]
 fn list_vault_entries(
     vault_path: String,
     state: tauri::State<Mutex<AppState>>,
@@ -1455,6 +1789,45 @@ fn save_vault_file(
     build_vault_file_detail(vault, relative_path, content)
 }
 
+#[derive(serde::Serialize)]
+struct SavedBinaryFileDetail {
+    path: String,
+    relative_path: String,
+    file_name: String,
+    mime_type: Option<String>,
+}
+
+#[tauri::command]
+fn save_vault_binary_file(
+    vault_path: String,
+    relative_dir: String,
+    file_name: String,
+    bytes: Vec<u8>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<SavedBinaryFileDetail, String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+
+    let (abs_path, entry) = vault
+        .save_binary_file(&relative_dir, &file_name, &bytes)
+        .map_err(|e| e.to_string())?;
+
+    write_tracker.track_any(abs_path);
+    refresh_entries_cache(instance)?;
+
+    Ok(SavedBinaryFileDetail {
+        path: entry.path,
+        relative_path: entry.relative_path,
+        file_name: entry.file_name,
+        mime_type: entry.mime_type,
+    })
+}
+
 #[tauri::command]
 fn read_note(
     vault_path: String,
@@ -1542,6 +1915,8 @@ fn create_note(
     if let Some(index) = instance.index.as_mut() {
         index.reindex_note(note);
     }
+    invalidate_graph_query_cache(instance);
+    invalidate_graph_cache(instance);
     refresh_entries_cache(instance)?;
 
     Ok(dto)
@@ -1592,6 +1967,8 @@ fn delete_note(
     if let Some(index) = instance.index.as_mut() {
         index.remove_note(&NoteId(note_id));
     }
+    invalidate_graph_query_cache(instance);
+    invalidate_graph_cache(instance);
     refresh_entries_cache(instance)?;
 
     Ok(())
@@ -1706,6 +2083,8 @@ fn rename_note(
         index.remove_note(&NoteId(note_id));
         index.reindex_note(note);
     }
+    invalidate_graph_query_cache(instance);
+    invalidate_graph_cache(instance);
     refresh_entries_cache(instance)?;
 
     Ok(dto)
@@ -1945,6 +2324,7 @@ fn advanced_search(
     params: AdvancedSearchParams,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<AdvancedSearchResultDto>, String> {
+    let cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -1953,7 +2333,23 @@ fn advanced_search(
     let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
-    Ok(index.advanced_search(&params, vault))
+    let results = index.advanced_search(&params, vault);
+    let payload_bytes = serialized_payload_bytes(&results).unwrap_or(0);
+
+    dbg_log!(
+        "advanced_search() → {} results, bytes: {}, terms: {}, tags: {}, paths: {}, files: {}, content: {}, properties: {}, total: {:.2?}",
+        results.len(),
+        payload_bytes,
+        params.terms.len(),
+        params.tag_filters.len(),
+        params.path_filters.len(),
+        params.file_filters.len(),
+        params.content_searches.len(),
+        params.property_filters.len(),
+        cmd_start.elapsed()
+    );
+
+    Ok(results)
 }
 
 #[derive(serde::Serialize)]
@@ -1967,6 +2363,7 @@ fn get_tags(
     vault_path: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<TagDto>, String> {
+    let cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -1984,7 +2381,1028 @@ fn get_tags(
         .collect();
 
     tags.sort_by(|a, b| a.tag.cmp(&b.tag));
+    let payload_bytes = serialized_payload_bytes(&tags).unwrap_or(0);
+    let note_refs: usize = tags.iter().map(|tag| tag.note_ids.len()).sum();
+    dbg_log!(
+        "get_tags() → {} tags, {} note refs, bytes: {}, total: {:.2?}",
+        tags.len(),
+        note_refs,
+        payload_bytes,
+        cmd_start.elapsed()
+    );
     Ok(tags)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct GraphLinkDto {
+    source: String,
+    target: String,
+}
+
+#[derive(serde::Serialize)]
+struct GraphDataDto {
+    nodes: Vec<NoteDto>,
+    links: Vec<GraphLinkDto>,
+}
+
+#[derive(serde::Deserialize)]
+struct GraphGroupQueryDto {
+    color: String,
+    params: AdvancedSearchParams,
+}
+
+#[derive(serde::Deserialize)]
+struct GraphSnapshotOptions {
+    mode: String,
+    root_note_id: Option<String>,
+    local_depth: Option<u32>,
+    preferred_node_ids: Option<Vec<String>>,
+    include_tags: bool,
+    include_attachments: bool,
+    include_groups: bool,
+    group_queries: Option<Vec<GraphGroupQueryDto>>,
+    search_filter: Option<AdvancedSearchParams>,
+    show_orphans: bool,
+    max_nodes: Option<usize>,
+    max_links: Option<usize>,
+    overview_mode: Option<bool>,
+    layout_cache_key: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct GraphSnapshotStatsDto {
+    total_nodes: usize,
+    total_links: usize,
+    truncated: bool,
+    cluster_count: Option<usize>,
+}
+
+#[derive(serde::Serialize)]
+struct GraphNodeDto {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hop_distance: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_root: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    importance: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_filter: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct GraphSnapshotDto {
+    version: u32,
+    mode: String,
+    stats: GraphSnapshotStatsDto,
+    nodes: Vec<GraphNodeDto>,
+    links: Vec<GraphLinkDto>,
+}
+
+fn graph_search_has_filters(params: &AdvancedSearchParams) -> bool {
+    !params.terms.is_empty()
+        || !params.tag_filters.is_empty()
+        || !params.file_filters.is_empty()
+        || !params.path_filters.is_empty()
+        || !params.content_searches.is_empty()
+        || !params.property_filters.is_empty()
+}
+
+fn graph_note_title(index: &VaultIndex, note_id: &NoteId) -> Option<String> {
+    index.metadata.get(note_id).map(|meta| meta.title.clone())
+}
+
+fn graph_query_kind(params: &AdvancedSearchParams) -> GraphQueryKind {
+    if params.content_searches.is_empty() && params.property_filters.is_empty() {
+        GraphQueryKind::Cheap
+    } else {
+        GraphQueryKind::Expensive
+    }
+}
+
+fn normalize_graph_query(params: &AdvancedSearchParams) -> Result<String, String> {
+    serde_json::to_string(params).map_err(|error| error.to_string())
+}
+
+fn resolve_graph_query_ids_batch(
+    instance: &mut VaultInstance,
+    queries: &[&AdvancedSearchParams],
+) -> Result<HashMap<String, HashSet<String>>, String> {
+    if queries.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let Some(index) = instance.index.as_ref() else {
+        return Err("No hay vault abierto".to_string());
+    };
+    let Some(vault) = instance.vault.as_ref() else {
+        return Err("No hay vault abierto".to_string());
+    };
+    let index_revision = instance.index_revision.max(1);
+
+    let mut unique_queries = HashMap::<String, &AdvancedSearchParams>::new();
+    for query in queries {
+        unique_queries
+            .entry(normalize_graph_query(query)?)
+            .or_insert(*query);
+    }
+
+    let mut resolved = HashMap::<String, HashSet<String>>::new();
+
+    for (normalized_query, params) in unique_queries {
+        let expected_kind = graph_query_kind(params);
+        let cached_ids = instance
+            .graph_query_cache
+            .get(&normalized_query)
+            .filter(|entry| entry.revision == index_revision && entry.kind == expected_kind)
+            .map(|entry| entry.note_ids.clone());
+
+        if let Some(note_ids) = cached_ids {
+            dbg_log!(
+                "graph_query_cache HIT kind={:?}, ids={}, revision={}",
+                expected_kind,
+                note_ids.len(),
+                index_revision
+            );
+            resolved.insert(normalized_query, note_ids.into_iter().collect());
+            continue;
+        }
+
+        let query_start = Instant::now();
+        let note_ids = index.advanced_search_note_ids(params, vault);
+        let mut sorted_note_ids: Vec<String> = note_ids.into_iter().collect();
+        sorted_note_ids.sort();
+
+        dbg_log!(
+            "graph_query_cache MISS kind={:?}, ids={}, revision={}, total: {:.2?}",
+            expected_kind,
+            sorted_note_ids.len(),
+            index_revision,
+            query_start.elapsed()
+        );
+
+        instance.graph_query_cache.insert(
+            normalized_query.clone(),
+            CachedGraphQueryResult {
+                revision: index_revision,
+                kind: expected_kind,
+                note_ids: sorted_note_ids.clone(),
+            },
+        );
+        resolved.insert(normalized_query, sorted_note_ids.into_iter().collect());
+    }
+
+    Ok(resolved)
+}
+
+fn graph_node_type_rank(node_type: Option<&str>) -> u8 {
+    match node_type {
+        Some("cluster") => 0,
+        Some("tag") => 1,
+        Some("attachment") => 2,
+        _ => 0,
+    }
+}
+
+fn graph_note_weight(index: &VaultIndex, note_id: &NoteId) -> usize {
+    index.forward_links.get(note_id).map_or(0, Vec::len)
+        + index.backlinks.get(note_id).map_or(0, Vec::len)
+}
+
+fn graph_sort_nodes_by_priority(
+    nodes: &mut [GraphNodeDto],
+    links: &[GraphLinkDto],
+    preferred_node_ids: &HashSet<String>,
+) {
+    let mut degrees = HashMap::<&str, usize>::new();
+    for link in links {
+        *degrees.entry(link.source.as_str()).or_default() += 1;
+        *degrees.entry(link.target.as_str()).or_default() += 1;
+    }
+
+    nodes.sort_by(|left, right| {
+        let left_is_root = left.is_root.unwrap_or(false);
+        let right_is_root = right.is_root.unwrap_or(false);
+        right_is_root
+            .cmp(&left_is_root)
+            .then_with(|| {
+                let left_is_preferred = preferred_node_ids.contains(&left.id);
+                let right_is_preferred = preferred_node_ids.contains(&right.id);
+                right_is_preferred.cmp(&left_is_preferred)
+            })
+            .then_with(|| {
+                left.hop_distance
+                    .unwrap_or(u32::MAX)
+                    .cmp(&right.hop_distance.unwrap_or(u32::MAX))
+            })
+            .then_with(|| {
+                let left_degree = degrees.get(left.id.as_str()).copied().unwrap_or(0);
+                let right_degree = degrees.get(right.id.as_str()).copied().unwrap_or(0);
+                right_degree.cmp(&left_degree)
+            })
+            .then_with(|| {
+                graph_node_type_rank(left.node_type.as_deref())
+                    .cmp(&graph_node_type_rank(right.node_type.as_deref()))
+            })
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn graph_truncate_snapshot(
+    nodes: &mut Vec<GraphNodeDto>,
+    links: &mut Vec<GraphLinkDto>,
+    max_nodes: usize,
+    max_links: usize,
+    preferred_node_ids: &HashSet<String>,
+) -> bool {
+    let mut truncated = false;
+    let max_nodes = max_nodes.max(1);
+    let max_links = max_links.max(1);
+
+    graph_sort_nodes_by_priority(nodes, links, preferred_node_ids);
+
+    if nodes.len() > max_nodes {
+        nodes.truncate(max_nodes);
+        let visible_ids: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
+        links.retain(|link| {
+            visible_ids.contains(link.source.as_str()) && visible_ids.contains(link.target.as_str())
+        });
+        truncated = true;
+    }
+
+    if links.len() > max_links {
+        let mut node_rank = HashMap::<&str, usize>::new();
+        for (index, node) in nodes.iter().enumerate() {
+            node_rank.insert(node.id.as_str(), index);
+        }
+
+        links.sort_by(|left, right| {
+            let left_min_rank = node_rank
+                .get(left.source.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+                .min(
+                    node_rank
+                        .get(left.target.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                );
+            let right_min_rank = node_rank
+                .get(right.source.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+                .min(
+                    node_rank
+                        .get(right.target.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                );
+            let left_max_rank = node_rank
+                .get(left.source.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+                .max(
+                    node_rank
+                        .get(left.target.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                );
+            let right_max_rank = node_rank
+                .get(right.source.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+                .max(
+                    node_rank
+                        .get(right.target.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                );
+
+            left_min_rank
+                .cmp(&right_min_rank)
+                .then_with(|| left_max_rank.cmp(&right_max_rank))
+                .then_with(|| left.source.cmp(&right.source))
+                .then_with(|| left.target.cmp(&right.target))
+        });
+        links.truncate(max_links);
+        truncated = true;
+    }
+
+    truncated
+}
+
+fn build_limited_local_graph(
+    index: &VaultIndex,
+    root: &NoteId,
+    max_depth: u32,
+    max_nodes: usize,
+    max_links: usize,
+) -> (Vec<(NoteId, u32)>, Vec<GraphLinkDto>, bool) {
+    let mut visited: HashSet<NoteId> = HashSet::new();
+    let mut queue: VecDeque<(NoteId, u32)> = VecDeque::new();
+    let mut nodes: Vec<(NoteId, u32)> = Vec::new();
+    let mut truncated = false;
+    let node_limit = max_nodes.max(1);
+    let link_limit = max_links.max(1);
+    let hub_neighbor_limit = DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT.min(node_limit.max(1));
+
+    if !index.metadata.contains_key(root) {
+        return (nodes, Vec::new(), false);
+    }
+
+    visited.insert(root.clone());
+    queue.push_back((root.clone(), 0));
+
+    while let Some((current, depth)) = queue.pop_front() {
+        nodes.push((current.clone(), depth));
+
+        if depth >= max_depth {
+            continue;
+        }
+
+        let mut unique_neighbors = HashSet::<NoteId>::new();
+        if let Some(targets) = index.forward_links.get(&current) {
+            unique_neighbors.extend(targets.iter().cloned());
+        }
+        if let Some(sources) = index.backlinks.get(&current) {
+            unique_neighbors.extend(sources.iter().cloned());
+        }
+
+        let mut neighbors: Vec<NoteId> = unique_neighbors.into_iter().collect();
+        neighbors.sort_by(|left, right| {
+            let left_weight = graph_note_weight(index, left);
+            let right_weight = graph_note_weight(index, right);
+            right_weight
+                .cmp(&left_weight)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+
+        if neighbors.len() > hub_neighbor_limit {
+            neighbors.truncate(hub_neighbor_limit);
+            truncated = true;
+        }
+
+        for neighbor in neighbors {
+            if visited.contains(&neighbor) {
+                continue;
+            }
+            if visited.len() >= node_limit {
+                truncated = true;
+                break;
+            }
+            visited.insert(neighbor.clone());
+            queue.push_back((neighbor, depth + 1));
+        }
+    }
+
+    let mut links: Vec<GraphLinkDto> = Vec::new();
+    for node_id in &visited {
+        if let Some(targets) = index.forward_links.get(node_id) {
+            for target in targets {
+                if visited.contains(target) {
+                    links.push(GraphLinkDto {
+                        source: node_id.0.clone(),
+                        target: target.0.clone(),
+                    });
+                    if links.len() >= link_limit {
+                        truncated = true;
+                        return (nodes, links, truncated);
+                    }
+                }
+            }
+        }
+    }
+
+    (nodes, links, truncated)
+}
+
+fn build_overview_graph(
+    base_nodes: &[CachedGraphBaseNode],
+    visible_note_ids: &HashSet<String>,
+    note_links: &[GraphLinkDto],
+    show_orphans: bool,
+) -> (Vec<GraphNodeDto>, Vec<GraphLinkDto>, usize) {
+    let mut note_to_cluster = HashMap::<&str, (&str, &str, Option<&str>)>::new();
+    let mut cluster_sizes = HashMap::<String, (String, Option<String>, u32)>::new();
+
+    for node in base_nodes {
+        if !visible_note_ids.contains(&node.id) {
+            continue;
+        }
+
+        note_to_cluster.insert(
+            node.id.as_str(),
+            (
+                node.overview_cluster_id.as_str(),
+                node.overview_cluster_title.as_str(),
+                node.overview_cluster_filter.as_deref(),
+            ),
+        );
+
+        let entry = cluster_sizes
+            .entry(node.overview_cluster_id.clone())
+            .or_insert((
+                node.overview_cluster_title.clone(),
+                node.overview_cluster_filter.clone(),
+                0,
+            ));
+        entry.2 += 1;
+    }
+
+    let mut cluster_links = HashSet::<(String, String)>::new();
+    for link in note_links {
+        let Some((source_cluster, _, _)) = note_to_cluster.get(link.source.as_str()) else {
+            continue;
+        };
+        let Some((target_cluster, _, _)) = note_to_cluster.get(link.target.as_str()) else {
+            continue;
+        };
+        if source_cluster == target_cluster {
+            continue;
+        }
+
+        let ordered = if source_cluster <= target_cluster {
+            ((*source_cluster).to_string(), (*target_cluster).to_string())
+        } else {
+            ((*target_cluster).to_string(), (*source_cluster).to_string())
+        };
+        cluster_links.insert(ordered);
+    }
+
+    let mut nodes: Vec<GraphNodeDto> = cluster_sizes
+        .into_iter()
+        .map(
+            |(cluster_id, (cluster_title, cluster_filter, size))| GraphNodeDto {
+                id: cluster_id,
+                title: format!("{cluster_title} ({size})"),
+                node_type: Some("cluster".to_string()),
+                hop_distance: None,
+                group_color: None,
+                is_root: None,
+                importance: Some(size),
+                cluster_filter,
+            },
+        )
+        .collect();
+
+    let mut links: Vec<GraphLinkDto> = cluster_links
+        .into_iter()
+        .map(|(source, target)| GraphLinkDto { source, target })
+        .collect();
+
+    if !show_orphans {
+        let connected_ids: HashSet<&str> = links
+            .iter()
+            .flat_map(|link| [link.source.as_str(), link.target.as_str()])
+            .collect();
+        nodes.retain(|node| connected_ids.contains(node.id.as_str()));
+    }
+
+    links.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let cluster_count = nodes.len();
+    (nodes, links, cluster_count)
+}
+
+#[tauri::command]
+fn get_graph_snapshot(
+    vault_path: String,
+    options: GraphSnapshotOptions,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<GraphSnapshotDto, String> {
+    let cmd_start = Instant::now();
+    let mut state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let graph_revision = instance.graph_revision.max(1);
+
+    let _ = (options.overview_mode, options.layout_cache_key.as_ref());
+
+    let mode = if options.mode == "local" {
+        "local"
+    } else if options.mode == "overview" {
+        "overview"
+    } else {
+        "global"
+    };
+    let local_depth = options.local_depth.unwrap_or(2);
+    let root_note_id = options.root_note_id.clone();
+    let max_nodes = options.max_nodes.unwrap_or(if mode == "local" {
+        DEFAULT_GRAPH_MAX_NODES_LOCAL
+    } else {
+        DEFAULT_GRAPH_MAX_NODES_GLOBAL
+    });
+    let max_links = options.max_links.unwrap_or(if mode == "local" {
+        DEFAULT_GRAPH_MAX_LINKS_LOCAL
+    } else {
+        DEFAULT_GRAPH_MAX_LINKS_GLOBAL
+    });
+    let mut preferred_node_ids: HashSet<String> = options
+        .preferred_node_ids
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    if let Some(root_id) = root_note_id.as_ref() {
+        preferred_node_ids.insert(root_id.clone());
+    }
+
+    let mut note_nodes: Vec<GraphNodeDto>;
+    let mut note_links: Vec<GraphLinkDto>;
+    let mut truncated = false;
+    let mut cluster_count = None;
+
+    if mode == "local" {
+        let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+        let Some(root_note_id) = root_note_id.as_ref() else {
+            let response = GraphSnapshotDto {
+                version: graph_revision as u32,
+                mode: mode.to_string(),
+                stats: GraphSnapshotStatsDto {
+                    total_nodes: 0,
+                    total_links: 0,
+                    truncated: false,
+                    cluster_count: None,
+                },
+                nodes: Vec::new(),
+                links: Vec::new(),
+            };
+            dbg_log!(
+                "get_graph_snapshot(mode=local, missing root) → 0 nodes, 0 links, bytes: {}, total: {:.2?}",
+                serialized_payload_bytes(&response).unwrap_or(0),
+                cmd_start.elapsed()
+            );
+            return Ok(response);
+        };
+
+        let root = NoteId(root_note_id.clone());
+        let (bfs_nodes, bfs_links, local_truncated) =
+            build_limited_local_graph(index, &root, local_depth, max_nodes, max_links);
+        truncated |= local_truncated;
+
+        note_nodes = bfs_nodes
+            .iter()
+            .filter_map(|(id, depth)| {
+                graph_note_title(index, id).map(|title| GraphNodeDto {
+                    id: id.0.clone(),
+                    title,
+                    node_type: None,
+                    hop_distance: Some(*depth),
+                    group_color: None,
+                    is_root: Some(id.0 == *root_note_id),
+                    importance: None,
+                    cluster_filter: None,
+                })
+            })
+            .collect();
+
+        note_links = bfs_links;
+    } else {
+        let base_snapshot = ensure_graph_base_snapshot(instance)?.clone();
+        note_nodes = base_snapshot
+            .note_nodes
+            .into_iter()
+            .map(|node| GraphNodeDto {
+                id: node.id,
+                title: node.title,
+                node_type: None,
+                hop_distance: None,
+                group_color: None,
+                is_root: None,
+                importance: None,
+                cluster_filter: None,
+            })
+            .collect();
+        note_links = base_snapshot.note_links;
+    }
+
+    let search_filter = options
+        .search_filter
+        .as_ref()
+        .filter(|params| graph_search_has_filters(params));
+    let group_queries = options.group_queries.as_ref();
+    let mut batched_queries: Vec<&AdvancedSearchParams> = Vec::new();
+    if let Some(search_filter) = search_filter {
+        batched_queries.push(search_filter);
+    }
+    if options.include_groups {
+        if let Some(group_queries) = group_queries {
+            for group in group_queries {
+                if graph_search_has_filters(&group.params) {
+                    batched_queries.push(&group.params);
+                }
+            }
+        }
+    }
+
+    let resolved_graph_queries = resolve_graph_query_ids_batch(instance, &batched_queries)?;
+
+    if let Some(search_filter) = search_filter {
+        let normalized_query = normalize_graph_query(search_filter)?;
+        let allowed_ids = resolved_graph_queries
+            .get(&normalized_query)
+            .cloned()
+            .unwrap_or_default();
+        note_nodes.retain(|node| allowed_ids.contains(&node.id));
+    }
+
+    let visible_note_ids: HashSet<String> = note_nodes.iter().map(|node| node.id.clone()).collect();
+    note_links.retain(|link| {
+        visible_note_ids.contains(&link.source) && visible_note_ids.contains(&link.target)
+    });
+
+    if mode == "overview" {
+        let base_snapshot = ensure_graph_base_snapshot(instance)?.clone();
+        let (mut overview_nodes, mut overview_links, overview_cluster_count) = build_overview_graph(
+            &base_snapshot.note_nodes,
+            &visible_note_ids,
+            &note_links,
+            options.show_orphans,
+        );
+
+        let total_nodes = overview_nodes.len();
+        let total_links = overview_links.len();
+        truncated |= graph_truncate_snapshot(
+            &mut overview_nodes,
+            &mut overview_links,
+            max_nodes,
+            max_links,
+            &preferred_node_ids,
+        );
+
+        cluster_count = Some(overview_cluster_count);
+
+        let response = GraphSnapshotDto {
+            version: graph_revision as u32,
+            mode: mode.to_string(),
+            stats: GraphSnapshotStatsDto {
+                total_nodes,
+                total_links,
+                truncated,
+                cluster_count,
+            },
+            nodes: overview_nodes,
+            links: overview_links,
+        };
+
+        dbg_log!(
+            "get_graph_snapshot(mode={}, root={}, tags={}, attachments={}, groups={}, filtered={}, show_orphans={}, max_nodes={}, max_links={}) → visible {} nodes / {} links, total {} nodes / {} links, truncated={}, bytes: {}, total: {:.2?}",
+            mode,
+            root_note_id.as_deref().unwrap_or("-"),
+            options.include_tags,
+            options.include_attachments,
+            options.include_groups,
+            options
+                .search_filter
+                .as_ref()
+                .is_some_and(graph_search_has_filters),
+            options.show_orphans,
+            max_nodes,
+            max_links,
+            response.nodes.len(),
+            response.links.len(),
+            total_nodes,
+            total_links,
+            truncated,
+            serialized_payload_bytes(&response).unwrap_or(0),
+            cmd_start.elapsed()
+        );
+
+        return Ok(response);
+    }
+
+    if options.include_groups {
+        if let Some(group_queries) = group_queries {
+            let mut note_colors = HashMap::<String, String>::new();
+            for group in group_queries {
+                if !graph_search_has_filters(&group.params) {
+                    continue;
+                }
+                let normalized_query = normalize_graph_query(&group.params)?;
+                let Some(group_ids) = resolved_graph_queries.get(&normalized_query) else {
+                    continue;
+                };
+
+                for note_id in group_ids {
+                    if visible_note_ids.contains(note_id) && !note_colors.contains_key(note_id) {
+                        note_colors.insert(note_id.clone(), group.color.clone());
+                    }
+                }
+            }
+
+            for node in &mut note_nodes {
+                if let Some(color) = note_colors.get(&node.id) {
+                    node.group_color = Some(color.clone());
+                }
+            }
+        }
+    }
+
+    let mut nodes = note_nodes;
+    let mut links = note_links;
+
+    if options.include_tags {
+        let base_snapshot = ensure_graph_base_snapshot(instance)?.clone();
+        for tag in base_snapshot.tags {
+            let connected_note_ids: Vec<String> = tag
+                .note_ids
+                .iter()
+                .filter(|id| visible_note_ids.contains(*id))
+                .cloned()
+                .collect();
+
+            if connected_note_ids.is_empty() {
+                continue;
+            }
+
+            nodes.push(GraphNodeDto {
+                id: tag.id.clone(),
+                title: tag.title.clone(),
+                node_type: Some("tag".to_string()),
+                hop_distance: None,
+                group_color: None,
+                is_root: None,
+                importance: None,
+                cluster_filter: None,
+            });
+
+            links.extend(connected_note_ids.into_iter().map(|note_id| GraphLinkDto {
+                source: note_id,
+                target: tag.id.clone(),
+            }));
+        }
+    }
+
+    if options.include_attachments {
+        let base_snapshot = ensure_graph_base_snapshot(instance)?.clone();
+        for attachment in base_snapshot.attachments {
+            let connected_source_ids: Vec<String> = attachment
+                .source_ids
+                .iter()
+                .filter(|source_id| visible_note_ids.contains(*source_id))
+                .cloned()
+                .collect();
+
+            if connected_source_ids.is_empty() {
+                continue;
+            }
+
+            nodes.push(GraphNodeDto {
+                id: attachment.id.clone(),
+                title: attachment.title.clone(),
+                node_type: Some("attachment".to_string()),
+                hop_distance: None,
+                group_color: None,
+                is_root: None,
+                importance: None,
+                cluster_filter: None,
+            });
+
+            links.extend(
+                connected_source_ids
+                    .into_iter()
+                    .map(|source_id| GraphLinkDto {
+                        source: source_id,
+                        target: attachment.id.clone(),
+                    }),
+            );
+        }
+    }
+
+    if !options.show_orphans {
+        let connected_ids: HashSet<String> = links
+            .iter()
+            .flat_map(|link| [link.source.clone(), link.target.clone()])
+            .collect();
+        nodes.retain(|node| connected_ids.contains(&node.id));
+    }
+
+    let visible_ids: HashSet<String> = nodes.iter().map(|node| node.id.clone()).collect();
+    links.retain(|link| visible_ids.contains(&link.source) && visible_ids.contains(&link.target));
+
+    let total_nodes = nodes.len();
+    let total_links = links.len();
+    truncated |= graph_truncate_snapshot(
+        &mut nodes,
+        &mut links,
+        max_nodes,
+        max_links,
+        &preferred_node_ids,
+    );
+    if !options.show_orphans {
+        let connected_ids: HashSet<&str> = links
+            .iter()
+            .flat_map(|link| [link.source.as_str(), link.target.as_str()])
+            .collect();
+        nodes.retain(|node| connected_ids.contains(node.id.as_str()));
+    }
+
+    let response = GraphSnapshotDto {
+        version: graph_revision as u32,
+        mode: mode.to_string(),
+        stats: GraphSnapshotStatsDto {
+            total_nodes,
+            total_links,
+            truncated,
+            cluster_count,
+        },
+        nodes,
+        links,
+    };
+
+    dbg_log!(
+        "get_graph_snapshot(mode={}, root={}, tags={}, attachments={}, groups={}, filtered={}, show_orphans={}, max_nodes={}, max_links={}) → visible {} nodes / {} links, total {} nodes / {} links, truncated={}, bytes: {}, total: {:.2?}",
+        mode,
+        root_note_id.as_deref().unwrap_or("-"),
+        options.include_tags,
+        options.include_attachments,
+        options.include_groups,
+        options
+            .search_filter
+            .as_ref()
+            .is_some_and(graph_search_has_filters),
+        options.show_orphans,
+        max_nodes,
+        max_links,
+        response.nodes.len(),
+        response.links.len(),
+        total_nodes,
+        total_links,
+        truncated,
+        serialized_payload_bytes(&response).unwrap_or(0),
+        cmd_start.elapsed()
+    );
+
+    Ok(response)
+}
+
+#[derive(serde::Serialize)]
+struct LocalGraphNodeDto {
+    #[serde(flatten)]
+    note: NoteDto,
+    depth: u32,
+}
+
+#[derive(serde::Serialize)]
+struct LocalGraphDataDto {
+    nodes: Vec<LocalGraphNodeDto>,
+    links: Vec<GraphLinkDto>,
+}
+
+#[tauri::command]
+fn get_all_links(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<GraphDataDto, String> {
+    let cmd_start = Instant::now();
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+
+    let nodes: Vec<NoteDto> = index.metadata.values().map(note_to_dto).collect();
+
+    let links: Vec<GraphLinkDto> = index
+        .forward_links
+        .iter()
+        .flat_map(|(source_id, targets)| {
+            targets.iter().map(move |target_id| GraphLinkDto {
+                source: source_id.0.clone(),
+                target: target_id.0.clone(),
+            })
+        })
+        .collect();
+
+    let response = GraphDataDto { nodes, links };
+    dbg_log!(
+        "get_all_links() → {} nodes, {} links, bytes: {}, total: {:.2?}",
+        response.nodes.len(),
+        response.links.len(),
+        serialized_payload_bytes(&response).unwrap_or(0),
+        cmd_start.elapsed()
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn get_local_graph(
+    vault_path: String,
+    note_id: String,
+    max_depth: u32,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<LocalGraphDataDto, String> {
+    let cmd_start = Instant::now();
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+
+    let root = NoteId(note_id.clone());
+    let (bfs_nodes, bfs_links) = index.get_local_graph(&root, max_depth);
+
+    let nodes: Vec<LocalGraphNodeDto> = bfs_nodes
+        .iter()
+        .filter_map(|(id, depth)| {
+            index.metadata.get(id).map(|meta| LocalGraphNodeDto {
+                note: note_to_dto(meta),
+                depth: *depth,
+            })
+        })
+        .collect();
+
+    let links: Vec<GraphLinkDto> = bfs_links
+        .into_iter()
+        .map(|(source, target)| GraphLinkDto {
+            source: source.0,
+            target: target.0,
+        })
+        .collect();
+
+    let response = LocalGraphDataDto { nodes, links };
+    dbg_log!(
+        "get_local_graph({note_id}, depth={max_depth}) → {} nodes, {} links, bytes: {}, total: {:.2?}",
+        response.nodes.len(),
+        response.links.len(),
+        serialized_payload_bytes(&response).unwrap_or(0),
+        cmd_start.elapsed()
+    );
+    Ok(response)
+}
+
+#[derive(serde::Serialize)]
+struct AttachmentNodeDto {
+    id: String,
+    title: String,
+}
+
+#[derive(serde::Serialize)]
+struct AttachmentLinksDto {
+    nodes: Vec<AttachmentNodeDto>,
+    links: Vec<GraphLinkDto>,
+}
+
+#[tauri::command]
+fn get_attachment_links(
+    vault_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<AttachmentLinksDto, String> {
+    let cmd_start = Instant::now();
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
+
+    let mut attachment_ids = std::collections::HashSet::new();
+    let mut nodes = Vec::new();
+    let mut links = Vec::new();
+
+    for (note_id, targets) in &index.unresolved_links {
+        for target in targets {
+            let att_id = format!("att:{target}");
+            if attachment_ids.insert(att_id.clone()) {
+                // Use the filename as title
+                let title = target.rsplit('/').next().unwrap_or(target).to_string();
+                nodes.push(AttachmentNodeDto {
+                    id: att_id.clone(),
+                    title,
+                });
+            }
+            links.push(GraphLinkDto {
+                source: note_id.0.clone(),
+                target: att_id,
+            });
+        }
+    }
+
+    let response = AttachmentLinksDto { nodes, links };
+    dbg_log!(
+        "get_attachment_links() → {} nodes, {} links, bytes: {}, total: {:.2?}",
+        response.nodes.len(),
+        response.links.len(),
+        serialized_payload_bytes(&response).unwrap_or(0),
+        cmd_start.elapsed()
+    );
+
+    Ok(response)
 }
 
 #[tauri::command]
@@ -2203,16 +3621,21 @@ pub fn run() {
             next_job_id: 0,
         }))
         .manage(Mutex::new(ai::AiManager::new()))
+        .manage(ai::auth_terminal::AiAuthTerminalManager::new())
+        .manage(devtools::DevTerminalManager::new())
         .manage(ai::whisper::WhisperDownloadCancel::new())
+        .manage(spellcheck::SpellcheckState::new())
         .invoke_handler(tauri::generate_handler![
             open_vault,
             start_open_vault,
             get_vault_open_state,
             cancel_open_vault,
             list_notes,
+            get_graph_revision,
             list_vault_entries,
             read_vault_file,
             save_vault_file,
+            save_vault_binary_file,
             read_note,
             save_note,
             create_note,
@@ -2229,18 +3652,43 @@ pub fn run() {
             search_notes,
             advanced_search,
             get_backlinks,
+            get_all_links,
+            get_graph_snapshot,
+            get_local_graph,
+            get_attachment_links,
             get_tags,
             resolve_outgoing_links,
             resolve_wikilinks_batch,
             suggest_wikilinks,
             get_note_outline,
             debug_set_timing,
+            spellcheck::spellcheck_list_languages,
+            spellcheck::spellcheck_list_catalog,
+            spellcheck::spellcheck_check_text,
+            spellcheck::spellcheck_suggest,
+            spellcheck::spellcheck_add_to_dictionary,
+            spellcheck::spellcheck_remove_from_dictionary,
+            spellcheck::spellcheck_ignore_word,
+            spellcheck::spellcheck_get_runtime_directory,
+            spellcheck::spellcheck_get_metrics,
+            spellcheck::spellcheck_reset_metrics,
+            spellcheck::spellcheck_install_dictionary,
+            spellcheck::spellcheck_remove_installed_dictionary,
             ai::commands::ai_list_runtimes,
             ai::commands::ai_get_setup_status,
             ai::commands::ai_update_setup,
             ai::commands::ai_start_auth,
+            ai::auth_terminal::ai_start_auth_terminal_session,
+            ai::auth_terminal::ai_write_auth_terminal_session,
+            ai::auth_terminal::ai_resize_auth_terminal_session,
+            ai::auth_terminal::ai_close_auth_terminal_session,
+            ai::auth_terminal::ai_get_auth_terminal_session_snapshot,
+            ai::commands::ai_list_runtime_sessions,
             ai::commands::ai_list_sessions,
             ai::commands::ai_load_session,
+            ai::commands::ai_load_runtime_session,
+            ai::commands::ai_resume_runtime_session,
+            ai::commands::ai_fork_runtime_session,
             ai::commands::ai_create_session,
             ai::commands::ai_set_model,
             ai::commands::ai_set_mode,
@@ -2253,6 +3701,8 @@ pub fn run() {
             ai::commands::ai_load_session_histories,
             ai::commands::ai_delete_session_history,
             ai::commands::ai_delete_all_session_histories,
+            ai::commands::ai_delete_runtime_session,
+            ai::commands::ai_delete_runtime_sessions_for_vault,
             ai::commands::ai_prune_session_histories,
             ai::whisper::whisper_list_models,
             ai::whisper::whisper_get_status,
@@ -2262,8 +3712,21 @@ pub fn run() {
             ai::whisper::whisper_set_enabled,
             ai::whisper::whisper_check_audio_file,
             ai::whisper::whisper_transcribe,
+            ai::whisper::whisper_transcribe_recording,
             ai::whisper::whisper_cancel_download,
+            devtools::commands::devtools_create_terminal_session,
+            devtools::commands::devtools_write_terminal_session,
+            devtools::commands::devtools_resize_terminal_session,
+            devtools::commands::devtools_restart_terminal_session,
+            devtools::commands::devtools_close_terminal_session,
+            devtools::commands::devtools_get_terminal_session_snapshot,
             delete_vault_snapshot,
+            maps::list_maps,
+            maps::read_map,
+            maps::save_map,
+            maps::create_map,
+            maps::delete_map,
+            maps::notify_map_changed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
