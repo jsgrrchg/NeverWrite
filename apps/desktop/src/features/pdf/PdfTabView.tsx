@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
@@ -11,10 +11,7 @@ import {
     isWheelZoomGesture,
     useWheelZoomModifier,
 } from "../../app/hooks/useWheelZoomModifier";
-import {
-    formatZoomPercentage,
-    persistWheelZoom,
-} from "../../app/utils/zoom";
+import { formatZoomPercentage, persistWheelZoom } from "../../app/utils/zoom";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -197,7 +194,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         });
 
         loadingTask.promise
-            .then((nextPdf) => {
+            .then((nextPdf: pdfjsLib.PDFDocumentProxy) => {
                 resolvedPdf = nextPdf;
                 if (cancelled) {
                     void nextPdf.destroy();
@@ -211,7 +208,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 });
                 setErrorState(null);
             })
-            .catch((err) => {
+            .catch((err: unknown) => {
                 if (cancelled) return;
                 setPdfError(String(err));
             });
@@ -391,7 +388,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             container.removeEventListener("wheel", handleWheel);
             window.clearTimeout(pinchTimerRef.current);
         };
-    }, [tab.id, tab.zoom, updatePdfZoom]);
+    }, [tab.id, tab.zoom, updatePdfZoom, wheelZoomModifierRef]);
 
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
@@ -713,7 +710,7 @@ function PdfPageCanvas({
         };
 
         pdf.getPage(pageNumber)
-            .then((page) => {
+            .then((page: pdfjsLib.PDFPageProxy) => {
                 currentPage = page;
                 if (cancelled) return;
 
@@ -758,7 +755,7 @@ function PdfPageCanvas({
                     canvasContext: context,
                     viewport: renderViewport,
                 });
-                renderTask.promise.catch((err) => {
+                renderTask.promise.catch((err: unknown) => {
                     if (
                         cancelled ||
                         err instanceof pdfjsLib.RenderingCancelledException
@@ -769,8 +766,9 @@ function PdfPageCanvas({
                 });
 
                 textLayer = new pdfjsLib.TextLayer({
-                    textContentSource:
-                        page.streamTextContent(PDF_TEXT_CONTENT_OPTIONS),
+                    textContentSource: page.streamTextContent(
+                        PDF_TEXT_CONTENT_OPTIONS,
+                    ),
                     container: textLayerElement,
                     viewport: displayViewport,
                 });
@@ -781,13 +779,13 @@ function PdfPageCanvas({
                         endOfContent.className = "endOfContent";
                         textLayerElement.append(endOfContent);
                     },
-                    (err) => {
+                    (err: unknown) => {
                         if (cancelled) return;
                         onRenderError(String(err));
                     },
                 );
             })
-            .catch((err) => {
+            .catch((err: unknown) => {
                 if (!cancelled) {
                     onRenderError(String(err));
                 }

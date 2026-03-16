@@ -367,7 +367,6 @@ export function EditedFileDiffPreview({
     diff,
     expanded,
     diffZoom,
-    accent,
     testId,
     emptyLabel = "Path-only change",
     showWhenEmpty = true,
@@ -375,11 +374,11 @@ export function EditedFileDiffPreview({
     onKeep,
     onReject,
     onResolveHunks,
+    onResolveHunk,
 }: {
     diff: AIFileDiff;
     expanded: boolean;
     diffZoom: number;
-    accent: string;
     testId?: string;
     emptyLabel?: string;
     showWhenEmpty?: boolean;
@@ -390,10 +389,20 @@ export function EditedFileDiffPreview({
         identityKey: string,
         mergedText: string,
     ) => void | Promise<void>;
+    onResolveHunk?: (
+        identityKey: string,
+        decision: "accepted" | "rejected",
+        hunkNewStart: number,
+        hunkNewEnd: number,
+    ) => void | Promise<void>;
 }) {
-    const [hunkDecisions, setHunkDecisions] = useState<
-        Map<number, HunkDecision>
-    >(new Map());
+    const [hunkDecisionState, setHunkDecisionState] = useState<{
+        key: string;
+        map: Map<number, HunkDecision>;
+    }>({
+        key: "",
+        map: new Map(),
+    });
     const [panelHeight, setPanelHeight] = useState(DIFF_PANEL_MAX_HEIGHT);
     const isDraggingRef = useRef(false);
     const dragStartYRef = useRef(0);
@@ -436,6 +445,8 @@ export function EditedFileDiffPreview({
         () => (expanded && entry ? computeDecisionHunks(diff) : []),
         [diff, entry, expanded],
     );
+    const decisionStateKey = `${entry?.identityKey ?? ""}:${decisionHunks.length}`;
+    const immediateHunkMode = !!onResolveHunk;
     const interactiveHunksEnabled =
         expanded &&
         !!entry &&
@@ -446,21 +457,63 @@ export function EditedFileDiffPreview({
         entry.appliedText != null &&
         visualBlocks.length > 0 &&
         decisionHunks.length > 0 &&
-        !!onKeep &&
-        !!onReject &&
-        !!onResolveHunks;
+        (immediateHunkMode || (!!onKeep && !!onReject && !!onResolveHunks));
     const renderBlocks = useMemo(() => buildDiffRenderBlocks(lines), [lines]);
     const visualBlockByIndex = useMemo(
         () => new Map(visualBlocks.map((block) => [block.index, block])),
         [visualBlocks],
     );
+    const hunkDecisions = useMemo(
+        () =>
+            hunkDecisionState.key === decisionStateKey
+                ? hunkDecisionState.map
+                : new Map<number, HunkDecision>(),
+        [decisionStateKey, hunkDecisionState],
+    );
 
     useEffect(() => {
-        setHunkDecisions(new Map());
         autoResolvedSignatureRef.current = null;
-    }, [entry?.identityKey, decisionHunks.length]);
+    }, [decisionStateKey]);
 
+    const handleHunkDecision = useCallback(
+        (hunkIndex: number, decision: HunkDecision) => {
+            if (immediateHunkMode && entry) {
+                const hunk = decisionHunks.find((h) => h.index === hunkIndex);
+                if (hunk) {
+                    void onResolveHunk?.(
+                        entry.identityKey,
+                        decision,
+                        hunk.newStart,
+                        hunk.newEnd,
+                    );
+                }
+            } else {
+                setHunkDecisionState((current) => {
+                    const next = new Map(
+                        current.key === decisionStateKey
+                            ? current.map
+                            : undefined,
+                    );
+                    next.set(hunkIndex, decision);
+                    return {
+                        key: decisionStateKey,
+                        map: next,
+                    };
+                });
+            }
+        },
+        [
+            decisionHunks,
+            decisionStateKey,
+            entry,
+            immediateHunkMode,
+            onResolveHunk,
+        ],
+    );
+
+    // Auto-resolve: only in accumulation mode (no onResolveHunk)
     useEffect(() => {
+        if (immediateHunkMode) return;
         if (!interactiveHunksEnabled || !entry || decisionHunks.length === 0) {
             return;
         }
@@ -507,6 +560,7 @@ export function EditedFileDiffPreview({
         entry,
         decisionHunks,
         hunkDecisions,
+        immediateHunkMode,
         interactiveHunksEnabled,
         onKeep,
         onReject,
@@ -523,12 +577,12 @@ export function EditedFileDiffPreview({
 
     return (
         <div
-            data-testid={testId}
             style={{
                 borderTop: `1px solid color-mix(in srgb, var(--border) 35%, transparent)`,
             }}
         >
             <div
+                data-testid={testId}
                 style={{
                     height: panelHeight,
                     overflow: "auto",
@@ -667,46 +721,34 @@ export function EditedFileDiffPreview({
                                                         }
                                                         decision={decision}
                                                         onAccept={() =>
-                                                            setHunkDecisions(
-                                                                (current) => {
-                                                                    const next =
-                                                                        new Map(
-                                                                            current,
-                                                                        );
-                                                                    next.set(
-                                                                        segment.decisionHunkIndex,
-                                                                        "accepted",
-                                                                    );
-                                                                    return next;
-                                                                },
+                                                            handleHunkDecision(
+                                                                segment.decisionHunkIndex,
+                                                                "accepted",
                                                             )
                                                         }
                                                         onReject={() =>
-                                                            setHunkDecisions(
-                                                                (current) => {
-                                                                    const next =
-                                                                        new Map(
-                                                                            current,
-                                                                        );
-                                                                    next.set(
-                                                                        segment.decisionHunkIndex,
-                                                                        "rejected",
-                                                                    );
-                                                                    return next;
-                                                                },
+                                                            handleHunkDecision(
+                                                                segment.decisionHunkIndex,
+                                                                "rejected",
                                                             )
                                                         }
                                                         onUndo={() =>
-                                                            setHunkDecisions(
+                                                            setHunkDecisionState(
                                                                 (current) => {
                                                                     const next =
                                                                         new Map(
-                                                                            current,
+                                                                            current.key ===
+                                                                                decisionStateKey
+                                                                                ? current.map
+                                                                                : undefined,
                                                                         );
                                                                     next.delete(
                                                                         segment.decisionHunkIndex,
                                                                     );
-                                                                    return next;
+                                                                    return {
+                                                                        key: decisionStateKey,
+                                                                        map: next,
+                                                                    };
                                                                 },
                                                             )
                                                         }

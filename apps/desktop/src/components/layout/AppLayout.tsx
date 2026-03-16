@@ -6,36 +6,52 @@ import {
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+    DEFAULT_BOTTOM_PANEL_HEIGHT,
     DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
+    MIN_BOTTOM_PANEL_HEIGHT,
     MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
 } from "../../app/store/layoutStore";
 
 const COLLAPSE_TRIGGER_WIDTH = 168;
+const COLLAPSE_TRIGGER_HEIGHT = 120;
 const LEFT_SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH, 320];
 const RIGHT_SNAP_POINTS = [DEFAULT_RIGHT_PANEL_WIDTH, 360, 500];
+const BOTTOM_SNAP_POINTS = [DEFAULT_BOTTOM_PANEL_HEIGHT, 320];
 const SNAP_DISTANCE = 18;
 const RESIZER_HITBOX_WIDTH = 10;
+const RESIZER_HITBOX_HEIGHT = 10;
 const RESIZER_VISIBLE_WIDTH = 1;
+const RESIZER_VISIBLE_HEIGHT = 1;
 const RESIZER_OVERLAP = RESIZER_HITBOX_WIDTH / 2;
+const RESIZER_VERTICAL_OVERLAP = RESIZER_HITBOX_HEIGHT / 2;
 const MIN_CENTER_PEEK_WIDTH = 36;
+const MIN_TOP_PEEK_HEIGHT = 48;
 
-interface ResizeSession {
+interface HorizontalResizeSession {
     pointerId: number;
     startX: number;
     startWidth: number;
     pendingWidth: number;
 }
 
+interface VerticalResizeSession {
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    pendingHeight: number;
+}
+
 interface AppLayoutProps {
     left: React.ReactNode;
     center: React.ReactNode;
     right?: React.ReactNode;
+    bottom?: React.ReactNode;
 }
 
-export function AppLayout({ left, center, right }: AppLayoutProps) {
+export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
     const collapseSidebarToWidth = useLayoutStore(
@@ -53,15 +69,25 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         (s) => s.showRightPanelAtWidth,
     );
     const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
+    const bottomPanelCollapsed = useLayoutStore((s) => s.bottomPanelCollapsed);
+    const bottomPanelHeight = useLayoutStore((s) => s.bottomPanelHeight);
+    const collapseBottomPanelToHeight = useLayoutStore(
+        (s) => s.collapseBottomPanelToHeight,
+    );
+    const showBottomPanelAtHeight = useLayoutStore(
+        (s) => s.showBottomPanelAtHeight,
+    );
+    const toggleBottomPanel = useLayoutStore((s) => s.toggleBottomPanel);
     const rootRef = useRef<HTMLDivElement>(null);
     const [layoutWidth, setLayoutWidth] = useState(0);
+    const [layoutHeight, setLayoutHeight] = useState(0);
 
     // --- Left panel ---
     const [isResizingLeft, setIsResizingLeft] = useState(false);
     const [collapsePreviewLeft, setCollapsePreviewLeft] = useState(false);
     const leftPanelRef = useRef<HTMLDivElement>(null);
     const leftResizerRef = useRef<HTMLDivElement>(null);
-    const leftSessionRef = useRef<ResizeSession | null>(null);
+    const leftSessionRef = useRef<HorizontalResizeSession | null>(null);
     const leftFrameRef = useRef<number | null>(null);
     const leftCollapsePreviewRef = useRef(false);
 
@@ -70,28 +96,43 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const [collapsePreviewRight, setCollapsePreviewRight] = useState(false);
     const rightPanelRef = useRef<HTMLDivElement>(null);
     const rightResizerRef = useRef<HTMLDivElement>(null);
-    const rightSessionRef = useRef<ResizeSession | null>(null);
+    const rightSessionRef = useRef<HorizontalResizeSession | null>(null);
     const rightFrameRef = useRef<number | null>(null);
     const rightCollapsePreviewRef = useRef(false);
+
+    // --- Bottom panel ---
+    const [isResizingBottom, setIsResizingBottom] = useState(false);
+    const [collapsePreviewBottom, setCollapsePreviewBottom] = useState(false);
+    const bottomPanelRef = useRef<HTMLDivElement>(null);
+    const bottomResizerRef = useRef<HTMLDivElement>(null);
+    const bottomSessionRef = useRef<VerticalResizeSession | null>(null);
+    const bottomFrameRef = useRef<number | null>(null);
+    const bottomCollapsePreviewRef = useRef(false);
+
     const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
     const effectiveRightForLeftCalc = rightPanelCollapsed ? 0 : rightPanelWidth;
     const maxLeftWidthForLayout = Math.max(
         MIN_SIDEBAR_WIDTH,
-        layoutWidth -
-            effectiveRightForLeftCalc -
-            MIN_CENTER_PEEK_WIDTH,
+        layoutWidth - effectiveRightForLeftCalc - MIN_CENTER_PEEK_WIDTH,
     );
     const maxRightWidthForLayout = Math.max(
         MIN_RIGHT_PANEL_WIDTH,
-        layoutWidth -
-            effectiveLeft -
-            MIN_CENTER_PEEK_WIDTH,
+        layoutWidth - effectiveLeft - MIN_CENTER_PEEK_WIDTH,
     );
     const effectiveRight = rightPanelCollapsed
         ? 0
         : rightPanelExpanded
           ? maxRightWidthForLayout
           : Math.min(rightPanelWidth, maxRightWidthForLayout);
+    const maxBottomHeightForLayout = Math.max(
+        MIN_BOTTOM_PANEL_HEIGHT,
+        layoutHeight - MIN_TOP_PEEK_HEIGHT,
+    );
+    const effectiveBottom = bottom
+        ? bottomPanelCollapsed
+            ? 0
+            : Math.min(bottomPanelHeight, maxBottomHeightForLayout)
+        : 0;
 
     // ---- Left resize logic ----
 
@@ -346,12 +387,174 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         const el = rootRef.current;
         if (!el) return;
         setLayoutWidth(el.clientWidth);
+        setLayoutHeight(el.clientHeight);
         const ro = new ResizeObserver(([entry]) => {
             setLayoutWidth(Math.round(entry.contentRect.width));
+            setLayoutHeight(Math.round(entry.contentRect.height));
         });
         ro.observe(el);
         return () => ro.disconnect();
     }, []);
+
+    // ---- Bottom resize logic ----
+
+    const applyBottomHeight = useCallback((height: number) => {
+        const panel = bottomPanelRef.current;
+        if (!panel) return;
+        panel.style.height = `${height}px`;
+        panel.style.borderTop = height > 0 ? "1px solid var(--border)" : "none";
+    }, []);
+
+    const syncBottomPreview = useCallback((next: boolean) => {
+        if (bottomCollapsePreviewRef.current === next) return;
+        bottomCollapsePreviewRef.current = next;
+        setCollapsePreviewBottom(next);
+    }, []);
+
+    const flushBottomHeight = useCallback(() => {
+        bottomFrameRef.current = null;
+        const s = bottomSessionRef.current;
+        if (!s) return;
+        applyBottomHeight(s.pendingHeight);
+        syncBottomPreview(s.pendingHeight < COLLAPSE_TRIGGER_HEIGHT);
+    }, [applyBottomHeight, syncBottomPreview]);
+
+    const scheduleBottomHeight = useCallback(() => {
+        if (bottomFrameRef.current !== null) return;
+        bottomFrameRef.current =
+            window.requestAnimationFrame(flushBottomHeight);
+    }, [flushBottomHeight]);
+
+    const finishBottomResize = useCallback(
+        (pointerId?: number) => {
+            const s = bottomSessionRef.current;
+            if (!s) return;
+            if (pointerId !== undefined && s.pointerId !== pointerId) return;
+
+            if (bottomFrameRef.current !== null) {
+                window.cancelAnimationFrame(bottomFrameRef.current);
+                bottomFrameRef.current = null;
+            }
+            const resizer = bottomResizerRef.current;
+            if (
+                resizer &&
+                pointerId !== undefined &&
+                resizer.hasPointerCapture(pointerId)
+            ) {
+                resizer.releasePointerCapture(pointerId);
+            }
+            applyBottomHeight(s.pendingHeight);
+            document.body.classList.remove("resizing-sidebar");
+            bottomSessionRef.current = null;
+            syncBottomPreview(false);
+            setIsResizingBottom(false);
+
+            if (s.pendingHeight < COLLAPSE_TRIGGER_HEIGHT) {
+                collapseBottomPanelToHeight(MIN_BOTTOM_PANEL_HEIGHT);
+                return;
+            }
+
+            const clamped = Math.max(
+                MIN_BOTTOM_PANEL_HEIGHT,
+                Math.min(maxBottomHeightForLayout, s.pendingHeight),
+            );
+            const snapped =
+                BOTTOM_SNAP_POINTS.find(
+                    (p) => Math.abs(p - clamped) <= SNAP_DISTANCE,
+                ) ?? clamped;
+            showBottomPanelAtHeight(snapped);
+        },
+        [
+            applyBottomHeight,
+            collapseBottomPanelToHeight,
+            maxBottomHeightForLayout,
+            showBottomPanelAtHeight,
+            syncBottomPreview,
+        ],
+    );
+
+    useEffect(() => {
+        if (!isResizingBottom) return;
+        const stop = () => finishBottomResize();
+        window.addEventListener("pointerup", stop);
+        window.addEventListener("pointercancel", stop);
+        window.addEventListener("mouseup", stop);
+        window.addEventListener("blur", stop);
+        const onVis = () => {
+            if (document.visibilityState !== "visible") stop();
+        };
+        document.addEventListener("visibilitychange", onVis);
+        return () => {
+            window.removeEventListener("pointerup", stop);
+            window.removeEventListener("pointercancel", stop);
+            window.removeEventListener("mouseup", stop);
+            window.removeEventListener("blur", stop);
+            document.removeEventListener("visibilitychange", onVis);
+        };
+    }, [finishBottomResize, isResizingBottom]);
+
+    useEffect(
+        () => () => {
+            if (bottomFrameRef.current !== null)
+                window.cancelAnimationFrame(bottomFrameRef.current);
+        },
+        [],
+    );
+
+    const onBottomDown = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => {
+            if (e.button !== 0) return;
+            const startHeight = bottomPanelCollapsed ? 0 : effectiveBottom;
+            bottomSessionRef.current = {
+                pointerId: e.pointerId,
+                startY: e.clientY,
+                startHeight,
+                pendingHeight: startHeight,
+            };
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            document.body.classList.add("resizing-sidebar");
+            syncBottomPreview(false);
+            setIsResizingBottom(true);
+            applyBottomHeight(startHeight);
+        },
+        [
+            applyBottomHeight,
+            bottomPanelCollapsed,
+            effectiveBottom,
+            syncBottomPreview,
+        ],
+    );
+
+    const onBottomMove = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) => {
+            const s = bottomSessionRef.current;
+            if (!s || s.pointerId !== e.pointerId) return;
+            s.pendingHeight = Math.max(
+                0,
+                Math.min(
+                    maxBottomHeightForLayout,
+                    s.startHeight - (e.clientY - s.startY),
+                ),
+            );
+            scheduleBottomHeight();
+        },
+        [maxBottomHeightForLayout, scheduleBottomHeight],
+    );
+
+    const onBottomUp = useCallback(
+        (e: ReactPointerEvent<HTMLDivElement>) =>
+            finishBottomResize(e.pointerId),
+        [finishBottomResize],
+    );
+
+    const onBottomDoubleClick = useCallback(() => {
+        if (bottomPanelCollapsed) {
+            showBottomPanelAtHeight(DEFAULT_BOTTOM_PANEL_HEIGHT);
+        } else {
+            toggleBottomPanel();
+        }
+    }, [bottomPanelCollapsed, showBottomPanelAtHeight, toggleBottomPanel]);
 
     const onRightDown = useCallback(
         (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -409,7 +612,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         }
     }, [rightPanelCollapsed, showRightPanelAtWidth, toggleRightPanel]);
 
-    const isResizing = isResizingLeft || isResizingRight;
+    const isResizing = isResizingLeft || isResizingRight || isResizingBottom;
 
     return (
         <div
@@ -417,7 +620,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             className="relative flex h-full overflow-hidden"
             style={{ backgroundColor: "var(--bg-primary)" }}
         >
-            {/* Left sidebar */}
+            {/* Left sidebar — full height, unaffected by bottom panel */}
             <div
                 ref={leftPanelRef}
                 style={{
@@ -438,14 +641,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
 
             {/* Left resizer */}
             <div
-                ref={leftResizerRef}
-                className="relative flex-shrink-0 cursor-col-resize touch-none"
+                className="relative shrink-0 cursor-col-resize touch-none"
                 style={{
                     width: RESIZER_HITBOX_WIDTH,
                     marginLeft: -RESIZER_OVERLAP,
                     marginRight: -RESIZER_OVERLAP,
                     zIndex: 2,
                 }}
+                ref={leftResizerRef}
                 onPointerDown={onLeftDown}
                 onPointerMove={onLeftMove}
                 onPointerUp={onLeftUp}
@@ -473,74 +676,148 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 />
             </div>
 
-            {/* Center */}
-            <div
-                className="flex-1 flex flex-col overflow-hidden min-w-0"
-                style={{
-                    minWidth: rightPanelExpanded ? MIN_CENTER_PEEK_WIDTH : 0,
-                }}
-            >
-                {center}
-            </div>
-
-            {/* Right resizer */}
-            {right && (
+            {/* Center column + right panel. Bottom panel only affects the center column. */}
+            <div className="flex min-w-0 flex-1 overflow-hidden">
                 <div
-                    ref={rightResizerRef}
-                    className="relative flex-shrink-0 cursor-col-resize touch-none"
-                    style={{
-                        width: RESIZER_HITBOX_WIDTH,
-                        marginLeft: -RESIZER_OVERLAP,
-                        marginRight: -RESIZER_OVERLAP,
-                        zIndex: 2,
-                    }}
-                    onPointerDown={onRightDown}
-                    onPointerMove={onRightMove}
-                    onPointerUp={onRightUp}
-                    onPointerCancel={onRightUp}
-                    onLostPointerCapture={onRightUp}
-                    onDoubleClick={onRightDoubleClick}
+                    className="flex min-w-0 flex-1 flex-col overflow-hidden"
+                    data-testid="app-layout-center-column"
                 >
                     <div
-                        className="pointer-events-none absolute bottom-0 top-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+                        className="flex min-h-0 flex-1 flex-col overflow-hidden"
                         style={{
-                            width: RESIZER_VISIBLE_WIDTH,
-                            backgroundColor: collapsePreviewRight
-                                ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
-                                : isResizingRight
-                                  ? "var(--accent)"
-                                  : "transparent",
-                            boxShadow: isResizingRight
-                                ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
-                                : "none",
+                            minHeight: bottom ? MIN_TOP_PEEK_HEIGHT : 0,
+                            minWidth: rightPanelExpanded
+                                ? MIN_CENTER_PEEK_WIDTH
+                                : 0,
                         }}
-                    />
-                </div>
-            )}
+                    >
+                        {center}
+                    </div>
 
-            {/* Right panel */}
-            {right && (
-                <div
-                    ref={rightPanelRef}
-                    style={{
-                        width: effectiveRight,
-                        flexShrink: 0,
-                        overflow: "hidden",
-                        backgroundColor: "var(--bg-secondary)",
-                        borderLeft: rightPanelCollapsed
-                            ? "none"
-                            : "1px solid var(--border)",
-                        transition: isResizingRight
-                            ? "none"
-                            : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
-                    }}
-                >
-                    {right}
+                    {/* Bottom resizer — only spans the center column */}
+                    {bottom && (
+                        <div
+                            ref={bottomResizerRef}
+                            className="relative shrink-0 cursor-row-resize touch-none"
+                            style={{
+                                height: RESIZER_HITBOX_HEIGHT,
+                                marginTop: -RESIZER_VERTICAL_OVERLAP,
+                                marginBottom: -RESIZER_VERTICAL_OVERLAP,
+                                zIndex: 2,
+                            }}
+                            onPointerDown={onBottomDown}
+                            onPointerMove={onBottomMove}
+                            onPointerUp={onBottomUp}
+                            onPointerCancel={onBottomUp}
+                            onLostPointerCapture={onBottomUp}
+                            onDoubleClick={onBottomDoubleClick}
+                        >
+                            <div
+                                className="pointer-events-none absolute left-0 right-0 top-1/2 -translate-y-1/2 rounded-full transition-all duration-150"
+                                style={{
+                                    height: RESIZER_VISIBLE_HEIGHT,
+                                    backgroundColor: collapsePreviewBottom
+                                        ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
+                                        : isResizingBottom
+                                          ? "var(--accent)"
+                                          : "transparent",
+                                    boxShadow: isResizingBottom
+                                        ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
+                                        : "none",
+                                }}
+                            />
+                        </div>
+                    )}
+
+                    {/* Bottom panel — only spans the center column */}
+                    {bottom && (
+                        <div
+                            ref={bottomPanelRef}
+                            data-testid="app-layout-bottom-panel"
+                            style={{
+                                height: effectiveBottom,
+                                flexShrink: 0,
+                                overflow: "hidden",
+                                minHeight: 0,
+                                backgroundColor: "var(--bg-secondary)",
+                                borderTop: bottomPanelCollapsed
+                                    ? "none"
+                                    : "1px solid var(--border)",
+                                transition: isResizingBottom
+                                    ? "none"
+                                    : "height 160ms cubic-bezier(0.22, 1, 0.36, 1)",
+                            }}
+                        >
+                            {bottom}
+                        </div>
+                    )}
                 </div>
-            )}
+
+                {/* Right resizer */}
+                {right && (
+                    <div
+                        ref={rightResizerRef}
+                        className="relative shrink-0 cursor-col-resize touch-none"
+                        style={{
+                            width: RESIZER_HITBOX_WIDTH,
+                            marginLeft: -RESIZER_OVERLAP,
+                            marginRight: -RESIZER_OVERLAP,
+                            zIndex: 2,
+                        }}
+                        onPointerDown={onRightDown}
+                        onPointerMove={onRightMove}
+                        onPointerUp={onRightUp}
+                        onPointerCancel={onRightUp}
+                        onLostPointerCapture={onRightUp}
+                        onDoubleClick={onRightDoubleClick}
+                    >
+                        <div
+                            className="pointer-events-none absolute bottom-0 top-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+                            style={{
+                                width: RESIZER_VISIBLE_WIDTH,
+                                backgroundColor: collapsePreviewRight
+                                    ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
+                                    : isResizingRight
+                                      ? "var(--accent)"
+                                      : "transparent",
+                                boxShadow: isResizingRight
+                                    ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
+                                    : "none",
+                            }}
+                        />
+                    </div>
+                )}
+
+                {/* Right panel — full height, unaffected by bottom panel */}
+                {right && (
+                    <div
+                        ref={rightPanelRef}
+                        data-testid="app-layout-right-panel"
+                        style={{
+                            width: effectiveRight,
+                            flexShrink: 0,
+                            overflow: "hidden",
+                            backgroundColor: "var(--bg-secondary)",
+                            borderLeft: rightPanelCollapsed
+                                ? "none"
+                                : "1px solid var(--border)",
+                            transition: isResizingRight
+                                ? "none"
+                                : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
+                        }}
+                    >
+                        {right}
+                    </div>
+                )}
+            </div>
 
             {isResizing && (
-                <div className="pointer-events-none absolute inset-0 z-10 cursor-col-resize" />
+                <div
+                    className="pointer-events-none absolute inset-0 z-10"
+                    style={{
+                        cursor: isResizingBottom ? "row-resize" : "col-resize",
+                    }}
+                />
             )}
         </div>
     );

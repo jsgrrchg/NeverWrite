@@ -847,7 +847,7 @@ function buildCodeBlockDecorations(state: EditorState): DecorationSet {
  * deletes characters outside this set we can cheaply remap existing
  * decorations instead of rebuilding them from scratch.
  */
-const BLOCK_MARKER_RE = /[`$!|\n\[#]/;
+const BLOCK_MARKER_RE = /(?:[`$!|\n#]|\[)/;
 
 /** Returns true when a transaction requires block decorations to be rebuilt. */
 function needsBlockRebuild(tr: Transaction): boolean {

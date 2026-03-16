@@ -10,8 +10,7 @@ function getLastMeaningfulMessage(messages: AIChatMessage[]) {
         .reverse()
         .find(
             (message) =>
-                message.kind !== "status" &&
-                message.content.trim().length > 0,
+                message.kind !== "status" && message.content.trim().length > 0,
         );
 }
 
@@ -54,14 +53,21 @@ export function getSessionPreview(session: AIChatSession) {
     return truncateText(lastMessage.content, 72);
 }
 
+export function getRuntimeName(
+    runtimeId: string | null | undefined,
+    runtimes: AIRuntimeOption[],
+) {
+    if (!runtimeId) return "Chat";
+    return (
+        runtimes.find((runtime) => runtime.id === runtimeId)?.name ?? runtimeId
+    );
+}
+
 export function getSessionRuntimeName(
     session: AIChatSession,
     runtimes: AIRuntimeOption[],
 ) {
-    return (
-        runtimes.find((runtime) => runtime.id === session.runtimeId)?.name ??
-        session.runtimeId
-    );
+    return getRuntimeName(session.runtimeId, runtimes);
 }
 
 export function getSessionUpdatedAt(session: AIChatSession) {

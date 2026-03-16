@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
     formatSessionTime,
+    getRuntimeName,
     getSessionTitle,
     getSessionUpdatedAt,
 } from "../sessionPresentation";
@@ -17,6 +18,7 @@ interface AIChatSessionListProps {
 export function AIChatSessionList({
     activeSessionId,
     sessions,
+    runtimes,
     onSelectSession,
     onDeleteSession,
 }: AIChatSessionListProps) {
@@ -35,13 +37,17 @@ export function AIChatSessionList({
 
     return (
         <div
-            className="max-h-[300px] overflow-y-auto p-1"
+            className="max-h-75 overflow-y-auto p-1"
             data-scrollbar-active="true"
         >
             {sessions.map((session) => {
                 const isActive = session.sessionId === activeSessionId;
                 const isHovered = hoveredId === session.sessionId;
                 const updatedAt = getSessionUpdatedAt(session);
+                const runtimeLabel = getRuntimeName(
+                    session.runtimeId,
+                    runtimes,
+                ).replace(/ ACP$/, "");
 
                 return (
                     <div
@@ -71,6 +77,15 @@ export function AIChatSessionList({
                                 }}
                             >
                                 {getSessionTitle(session)}
+                            </span>
+                            <span
+                                className="shrink-0 text-[10px]"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    opacity: 0.7,
+                                }}
+                            >
+                                {runtimeLabel}
                             </span>
                             {updatedAt > 0 && !isHovered && (
                                 <span

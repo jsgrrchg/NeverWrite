@@ -11,10 +11,10 @@ use std::{
 
 use agent_client_protocol::{
     Agent, AuthenticateRequest, Client, ClientCapabilities, ClientSideConnection, ContentBlock,
-    ContentChunk, FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest,
-    PermissionOption, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, Result as AcpResult,
-    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
+    ContentChunk, FileSystemCapability, Implementation, InitializeRequest, ListSessionsRequest,
+    LoadSessionRequest, NewSessionRequest, PermissionOption, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    Result as AcpResult, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest, ToolCall,
     ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
@@ -26,17 +26,17 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio::sync::mpsc as tokio_mpsc;
 use vault_ai_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
-    CODEX_RUNTIME_ID,
+    AiRuntimeSessionSummary, CODEX_RUNTIME_ID,
 };
 
 use crate::ai::emit::{
     emit_message_completed, emit_message_delta, emit_message_started, emit_permission_request,
-    emit_plan_update, emit_session_error, emit_status_event, emit_thinking_completed,
-    emit_thinking_delta, emit_thinking_started, emit_tool_activity, emit_user_input_request,
-    AiFileDiffHunkPayload, AiFileDiffPayload, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiStatusEventPayload,
-    AiToolActivityPayload, AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload,
-    AiUserInputRequestPayload,
+    emit_plan_update, emit_runtime_connection, emit_session_error, emit_status_event,
+    emit_thinking_completed, emit_thinking_delta, emit_thinking_started, emit_tool_activity,
+    emit_user_input_request, AiFileDiffHunkPayload, AiFileDiffPayload, AiPermissionOptionPayload,
+    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
+    AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
+    AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
 
 use super::{process::CodexProcessSpec, setup::apply_auth_env};
@@ -56,6 +56,15 @@ enum RuntimeCommand {
     CreateSession {
         spec: CodexProcessSpec,
         response_tx: mpsc::Sender<Result<CodexSessionState, String>>,
+    },
+    LoadSession {
+        spec: CodexProcessSpec,
+        session_id: String,
+        response_tx: mpsc::Sender<Result<CodexSessionState, String>>,
+    },
+    ListSessions {
+        spec: CodexProcessSpec,
+        response_tx: mpsc::Sender<Result<Vec<AiRuntimeSessionSummary>, String>>,
     },
     Authenticate {
         spec: CodexProcessSpec,
@@ -96,6 +105,9 @@ enum RuntimeCommand {
         session_id: String,
         request_id: String,
         answers: HashMap<String, Vec<String>>,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    CheckHealth {
         response_tx: mpsc::Sender<Result<(), String>>,
     },
 }
@@ -507,6 +519,33 @@ impl CodexRuntimeHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
+    pub fn load_session(
+        &self,
+        spec: CodexProcessSpec,
+        session_id: &str,
+    ) -> Result<CodexSessionState, String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(RuntimeCommand::LoadSession {
+                spec,
+                session_id: session_id.to_string(),
+                response_tx,
+            })
+            .map_err(|error| error.to_string())?;
+        response_rx.recv().map_err(|error| error.to_string())?
+    }
+
+    pub fn list_sessions(
+        &self,
+        spec: CodexProcessSpec,
+    ) -> Result<Vec<AiRuntimeSessionSummary>, String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(RuntimeCommand::ListSessions { spec, response_tx })
+            .map_err(|error| error.to_string())?;
+        response_rx.recv().map_err(|error| error.to_string())?
+    }
+
     pub fn authenticate(&self, spec: CodexProcessSpec, method_id: &str) -> Result<(), String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
@@ -636,6 +675,14 @@ impl CodexRuntimeHandle {
             .map_err(|error| error.to_string())?;
         response_rx.recv().map_err(|error| error.to_string())?
     }
+
+    pub fn check_health(&self) -> Result<(), String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(RuntimeCommand::CheckHealth { response_tx })
+            .map_err(|error| error.to_string())?;
+        response_rx.recv().map_err(|error| error.to_string())?
+    }
 }
 
 async fn run_actor(
@@ -674,10 +721,52 @@ impl RuntimeActor {
         }
     }
 
+    fn reset_connection(&mut self) {
+        self.connection = None;
+        self._io_task_done = None;
+        self.initialized = false;
+    }
+
+    fn poll_connection_health(&mut self) -> Result<(), String> {
+        let Some(done_rx) = self._io_task_done.as_mut() else {
+            return Ok(());
+        };
+
+        match done_rx.try_recv() {
+            Ok(Ok(())) => {
+                self.reset_connection();
+                Err("The AI runtime process exited. Start a new turn to reconnect.".to_string())
+            }
+            Ok(Err(error)) => {
+                self.reset_connection();
+                Err(format!(
+                    "The AI runtime process disconnected unexpectedly: {error}"
+                ))
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(()),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.reset_connection();
+                Err("The AI runtime process disconnected unexpectedly.".to_string())
+            }
+        }
+    }
+
     async fn handle(&mut self, command: RuntimeCommand) {
         match command {
             RuntimeCommand::CreateSession { spec, response_tx } => {
                 let result = self.create_session(spec).await;
+                let _ = response_tx.send(result);
+            }
+            RuntimeCommand::LoadSession {
+                spec,
+                session_id,
+                response_tx,
+            } => {
+                let result = self.load_session(spec, session_id).await;
+                let _ = response_tx.send(result);
+            }
+            RuntimeCommand::ListSessions { spec, response_tx } => {
+                let result = self.list_sessions(spec).await;
                 let _ = response_tx.send(result);
             }
             RuntimeCommand::Authenticate {
@@ -746,6 +835,9 @@ impl RuntimeActor {
                     .await;
                 let _ = response_tx.send(result);
             }
+            RuntimeCommand::CheckHealth { response_tx } => {
+                let _ = response_tx.send(self.poll_connection_health());
+            }
         }
     }
 
@@ -753,6 +845,7 @@ impl RuntimeActor {
         &mut self,
         spec: &CodexProcessSpec,
     ) -> Result<Rc<ClientSideConnection>, String> {
+        self.poll_connection_health()?;
         if let Some(connection) = self.connection.as_ref() {
             return Ok(connection.clone());
         }
@@ -803,13 +896,38 @@ impl RuntimeActor {
 
         let connection = Rc::new(connection);
         let (done_tx, done_rx) = oneshot::channel();
+        let app = self.app.clone();
         tokio::task::spawn_local(async move {
             let result = io_task.await.map_err(|error| error.to_string());
+            let message = match &result {
+                Ok(()) => {
+                    "The AI runtime process exited. Start a new turn to reconnect.".to_string()
+                }
+                Err(error) => {
+                    format!("The AI runtime process disconnected unexpectedly: {error}")
+                }
+            };
+            emit_runtime_connection(
+                &app,
+                AiRuntimeConnectionPayload {
+                    runtime_id: CODEX_RUNTIME_ID.to_string(),
+                    status: "error".to_string(),
+                    message: Some(message),
+                },
+            );
             let _ = done_tx.send(result);
         });
 
         self.connection = Some(connection.clone());
         self._io_task_done = Some(done_rx);
+        emit_runtime_connection(
+            &self.app,
+            AiRuntimeConnectionPayload {
+                runtime_id: CODEX_RUNTIME_ID.to_string(),
+                status: "ready".to_string(),
+                message: None,
+            },
+        );
 
         Ok(connection)
     }
@@ -888,6 +1006,56 @@ impl RuntimeActor {
         })
     }
 
+    async fn load_session(
+        &mut self,
+        spec: CodexProcessSpec,
+        session_id: String,
+    ) -> Result<CodexSessionState, String> {
+        let cwd = spec
+            .cwd
+            .clone()
+            .ok_or_else(|| "No hay vault abierto para cargar una sesion ACP.".to_string())?;
+
+        let connection = self.ensure_initialized(&spec).await?;
+        let response = connection
+            .load_session(LoadSessionRequest::new(
+                SessionId::new(session_id.clone()),
+                cwd,
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
+
+        map_loaded_session_state(
+            session_id,
+            response.models,
+            response.modes,
+            response.config_options,
+        )
+    }
+
+    async fn list_sessions(
+        &mut self,
+        spec: CodexProcessSpec,
+    ) -> Result<Vec<AiRuntimeSessionSummary>, String> {
+        let connection = self.ensure_initialized(&spec).await?;
+        let response = connection
+            .list_sessions(ListSessionsRequest::new().cwd(spec.cwd.clone()))
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(response
+            .sessions
+            .into_iter()
+            .map(|session| AiRuntimeSessionSummary {
+                session_id: session.session_id.0.to_string(),
+                runtime_id: CODEX_RUNTIME_ID.to_string(),
+                cwd: Some(session.cwd.display().to_string()),
+                title: session.title,
+                updated_at: session.updated_at,
+            })
+            .collect())
+    }
+
     async fn authenticate(
         &mut self,
         spec: CodexProcessSpec,
@@ -902,6 +1070,7 @@ impl RuntimeActor {
     }
 
     async fn set_mode(&mut self, session_id: String, mode_id: String) -> Result<(), String> {
+        self.poll_connection_health()?;
         let connection = self
             .connection
             .as_ref()
@@ -919,6 +1088,7 @@ impl RuntimeActor {
     }
 
     async fn set_model(&mut self, session_id: String, model_id: String) -> Result<(), String> {
+        self.poll_connection_health()?;
         let connection = self
             .connection
             .as_ref()
@@ -941,6 +1111,7 @@ impl RuntimeActor {
         option_id: String,
         value: String,
     ) -> Result<(), String> {
+        self.poll_connection_health()?;
         let connection = self
             .connection
             .as_ref()
@@ -959,11 +1130,15 @@ impl RuntimeActor {
     }
 
     fn spawn_prompt(
-        &self,
+        &mut self,
         session_id: String,
         content: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     ) {
+        if let Err(error) = self.poll_connection_health() {
+            let _ = response_tx.send(Err(error));
+            return;
+        }
         let connection = match self.connection.as_ref() {
             Some(c) => c.clone(),
             None => {
@@ -1009,6 +1184,7 @@ impl RuntimeActor {
     }
 
     async fn cancel(&mut self, session_id: String) -> Result<(), String> {
+        self.poll_connection_health()?;
         let connection = self
             .connection
             .as_ref()
@@ -1040,6 +1216,7 @@ impl RuntimeActor {
         request_id: String,
         answers: HashMap<String, Vec<String>>,
     ) -> Result<(), String> {
+        self.poll_connection_health()?;
         let turn_id = self.user_inputs.resolve_turn_id(&request_id)?;
         let connection = self
             .connection
@@ -1105,6 +1282,40 @@ struct MappedModels {
     models: Vec<AiModelOption>,
     efforts_by_model: std::collections::HashMap<String, Vec<String>>,
     acp_model_ids: std::collections::HashMap<String, String>,
+}
+
+fn map_loaded_session_state(
+    session_id: String,
+    models_state: Option<agent_client_protocol::SessionModelState>,
+    modes_state: Option<agent_client_protocol::SessionModeState>,
+    config_options: Option<Vec<agent_client_protocol::SessionConfigOption>>,
+) -> Result<CodexSessionState, String> {
+    let current_model_id = models_state
+        .as_ref()
+        .map(|state| strip_effort_suffix(&state.current_model_id.0).to_string())
+        .unwrap_or_default();
+
+    let mapped = models_state.map(map_session_models);
+    let (models, efforts_by_model, acp_model_ids) = match mapped {
+        Some(mapped) => (mapped.models, mapped.efforts_by_model, mapped.acp_model_ids),
+        None => Default::default(),
+    };
+
+    Ok(CodexSessionState {
+        session_id,
+        model_id: current_model_id,
+        mode_id: modes_state
+            .as_ref()
+            .map(|state| state.current_mode_id.0.to_string())
+            .unwrap_or_else(|| "default".to_string()),
+        models,
+        modes: modes_state.map(map_session_modes).unwrap_or_default(),
+        config_options: config_options
+            .map(map_session_config_options)
+            .unwrap_or_default(),
+        efforts_by_model,
+        acp_model_ids,
+    })
 }
 
 #[derive(Debug, Clone)]

@@ -1,6 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { type Operator, type SearchToken, type ParsedQuery, parseQuery } from "./queryParser";
+import {
+    type Operator,
+    type SearchToken,
+    type ParsedQuery,
+    parseQuery,
+} from "./queryParser";
 
 type Field = "title" | Operator;
 type Condition = "contains" | "not_contains" | "regex" | "exact";
@@ -73,7 +78,10 @@ function rowsToQuery(rows: FilterRow[], boolMode: BoolMode): string {
     return parts.join(boolMode === "any" ? " OR " : " ");
 }
 
-function parsedToRows(parsed: ParsedQuery): { rows: FilterRow[]; boolMode: BoolMode } {
+function parsedToRows(parsed: ParsedQuery): {
+    rows: FilterRow[];
+    boolMode: BoolMode;
+} {
     const rows: FilterRow[] = [];
     let hasOr = false;
 
@@ -106,7 +114,10 @@ function parsedToRows(parsed: ParsedQuery): { rows: FilterRow[]; boolMode: BoolM
         }
     }
 
-    return { rows: rows.length > 0 ? rows : [makeRow()], boolMode: hasOr ? "any" : "all" };
+    return {
+        rows: rows.length > 0 ? rows : [makeRow()],
+        boolMode: hasOr ? "any" : "all",
+    };
 }
 
 // ── Custom Dropdown ─────────────────────────────────────
@@ -180,7 +191,8 @@ export function Dropdown<T extends string>({
                         e.currentTarget.style.borderColor = "var(--accent)";
                 }}
                 onMouseLeave={(e) => {
-                    if (!open) e.currentTarget.style.borderColor = "var(--border)";
+                    if (!open)
+                        e.currentTarget.style.borderColor = "var(--border)";
                 }}
             >
                 <span className="truncate">{selected?.label ?? value}</span>
@@ -264,26 +276,37 @@ interface QueryBuilderProps {
 export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
     const parsed = parseQuery(query);
     const initial = parsedToRows(parsed);
-
-    const [rows, setRows] = useState<FilterRow[]>(initial.rows);
-    const [boolMode, setBoolMode] = useState<BoolMode>(initial.boolMode);
+    const [builderState, setBuilderState] = useState(() => ({
+        sourceQuery: query,
+        rows: initial.rows,
+        boolMode: initial.boolMode,
+    }));
     const [collapsed, setCollapsed] = useState(false);
-    const lastEmittedRef = useRef<string>(query);
-
-    // Sync from external query changes (text input, operator chips, history clicks)
-    useEffect(() => {
-        if (query === lastEmittedRef.current) return;
-        const p = parseQuery(query);
-        const { rows: newRows, boolMode: newMode } = parsedToRows(p);
-        setRows(newRows);
-        setBoolMode(newMode);
-        lastEmittedRef.current = query;
-    }, [query]);
+    const [lastEmittedQuery, setLastEmittedQuery] = useState(query);
+    const externalState =
+        query === lastEmittedQuery || query === builderState.sourceQuery
+            ? builderState
+            : (() => {
+                  const nextParsed = parseQuery(query);
+                  const { rows, boolMode } = parsedToRows(nextParsed);
+                  return {
+                      sourceQuery: query,
+                      rows,
+                      boolMode,
+                  };
+              })();
+    const rows = externalState.rows;
+    const boolMode = externalState.boolMode;
 
     const emitQuery = useCallback(
         (newRows: FilterRow[], mode: BoolMode) => {
             const q = rowsToQuery(newRows, mode);
-            lastEmittedRef.current = q;
+            setLastEmittedQuery(q);
+            setBuilderState({
+                sourceQuery: q,
+                rows: newRows,
+                boolMode: mode,
+            });
             onQueryChange(q);
         },
         [onQueryChange],
@@ -291,24 +314,25 @@ export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
 
     const updateRow = (id: string, patch: Partial<FilterRow>) => {
         const next = rows.map((r) => (r.id === id ? { ...r, ...patch } : r));
-        setRows(next);
         emitQuery(next, boolMode);
     };
 
     const removeRow = (id: string) => {
         const next = rows.filter((r) => r.id !== id);
         const final = next.length > 0 ? next : [makeRow()];
-        setRows(final);
         emitQuery(final, boolMode);
     };
 
     const addRow = () => {
         const next = [...rows, makeRow()];
-        setRows(next);
+        setBuilderState({
+            sourceQuery: lastEmittedQuery,
+            rows: next,
+            boolMode,
+        });
     };
 
     const handleBoolChange = (mode: BoolMode) => {
-        setBoolMode(mode);
         emitQuery(rows, mode);
     };
 
@@ -329,7 +353,11 @@ export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
             {/* Header */}
             <div
                 className="flex items-center justify-between px-3 py-2"
-                style={{ borderBottom: collapsed ? "none" : "1px solid var(--border)" }}
+                style={{
+                    borderBottom: collapsed
+                        ? "none"
+                        : "1px solid var(--border)",
+                }}
             >
                 <span
                     className="text-[11px] font-medium uppercase tracking-wider"
@@ -350,8 +378,14 @@ export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
                                 onClick={() => handleBoolChange("all")}
                                 className="px-2 py-0.5 rounded text-[11px] transition-colors"
                                 style={{
-                                    backgroundColor: boolMode === "all" ? "var(--accent)" : "var(--bg-primary)",
-                                    color: boolMode === "all" ? "#fff" : "var(--text-secondary)",
+                                    backgroundColor:
+                                        boolMode === "all"
+                                            ? "var(--accent)"
+                                            : "var(--bg-primary)",
+                                    color:
+                                        boolMode === "all"
+                                            ? "#fff"
+                                            : "var(--text-secondary)",
                                     border: `1px solid ${boolMode === "all" ? "var(--accent)" : "var(--border)"}`,
                                 }}
                             >
@@ -361,8 +395,14 @@ export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
                                 onClick={() => handleBoolChange("any")}
                                 className="px-2 py-0.5 rounded text-[11px] transition-colors"
                                 style={{
-                                    backgroundColor: boolMode === "any" ? "var(--accent)" : "var(--bg-primary)",
-                                    color: boolMode === "any" ? "#fff" : "var(--text-secondary)",
+                                    backgroundColor:
+                                        boolMode === "any"
+                                            ? "var(--accent)"
+                                            : "var(--bg-primary)",
+                                    color:
+                                        boolMode === "any"
+                                            ? "#fff"
+                                            : "var(--text-secondary)",
                                     border: `1px solid ${boolMode === "any" ? "var(--accent)" : "var(--border)"}`,
                                 }}
                             >
@@ -385,7 +425,9 @@ export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
                             strokeWidth="2"
                             strokeLinecap="round"
                             style={{
-                                transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                                transform: collapsed
+                                    ? "rotate(-90deg)"
+                                    : "rotate(0deg)",
                                 transition: "transform 150ms",
                             }}
                         >
@@ -396,139 +438,165 @@ export function QueryBuilder({ query, onQueryChange }: QueryBuilderProps) {
             </div>
 
             {/* Filter rows */}
-            {!collapsed && <div className="px-3 py-2 flex flex-col gap-2">
-                {rows.map((row, idx) => (
-                    <div key={row.id} className="flex items-center gap-2">
-                        {/* Row number */}
-                        <span
-                            className="text-[10px] font-mono shrink-0"
-                            style={{
-                                color: "var(--text-secondary)",
-                                opacity: 0.5,
-                                width: 14,
-                                textAlign: "right",
-                            }}
-                        >
-                            {idx + 1}
-                        </span>
+            {!collapsed && (
+                <div className="px-3 py-2 flex flex-col gap-2">
+                    {rows.map((row, idx) => (
+                        <div key={row.id} className="flex items-center gap-2">
+                            {/* Row number */}
+                            <span
+                                className="text-[10px] font-mono shrink-0"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    opacity: 0.5,
+                                    width: 14,
+                                    textAlign: "right",
+                                }}
+                            >
+                                {idx + 1}
+                            </span>
 
-                        {/* Field selector */}
-                        <Dropdown
-                            value={row.field}
-                            options={FIELD_OPTIONS}
-                            onChange={(v) => updateRow(row.id, { field: v })}
-                        />
+                            {/* Field selector */}
+                            <Dropdown
+                                value={row.field}
+                                options={FIELD_OPTIONS}
+                                onChange={(v) =>
+                                    updateRow(row.id, { field: v })
+                                }
+                            />
 
-                        {/* Property key (only for property field) */}
-                        {row.field === "property" && (
+                            {/* Property key (only for property field) */}
+                            {row.field === "property" && (
+                                <input
+                                    type="text"
+                                    value={row.propertyKey}
+                                    onChange={(e) =>
+                                        updateRow(row.id, {
+                                            propertyKey: e.target.value,
+                                        })
+                                    }
+                                    placeholder="key"
+                                    className="shrink-0 px-1.5 rounded text-[11px] outline-none"
+                                    style={{
+                                        ...inputStyle,
+                                        height: 26,
+                                        width: 60,
+                                    }}
+                                    spellCheck={false}
+                                />
+                            )}
+
+                            {/* Condition selector */}
+                            <Dropdown
+                                value={row.condition}
+                                options={CONDITION_OPTIONS}
+                                onChange={(v) =>
+                                    updateRow(row.id, { condition: v })
+                                }
+                            />
+
+                            {/* Value input */}
                             <input
                                 type="text"
-                                value={row.propertyKey}
-                                onChange={(e) => updateRow(row.id, { propertyKey: e.target.value })}
-                                placeholder="key"
-                                className="shrink-0 px-1.5 rounded text-[11px] outline-none"
-                                style={{ ...inputStyle, height: 26, width: 60 }}
-                                spellCheck={false}
-                            />
-                        )}
-
-                        {/* Condition selector */}
-                        <Dropdown
-                            value={row.condition}
-                            options={CONDITION_OPTIONS}
-                            onChange={(v) => updateRow(row.id, { condition: v })}
-                        />
-
-                        {/* Value input */}
-                        <input
-                            type="text"
-                            value={row.value}
-                            onChange={(e) => updateRow(row.id, { value: e.target.value })}
-                            placeholder="value..."
-                            className="flex-1 min-w-0 px-2 rounded text-[11px] outline-none"
-                            style={{ ...inputStyle, height: 26 }}
-                            spellCheck={false}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    emitQuery(rows, boolMode);
+                                value={row.value}
+                                onChange={(e) =>
+                                    updateRow(row.id, { value: e.target.value })
                                 }
-                            }}
-                        />
+                                placeholder="value..."
+                                className="flex-1 min-w-0 px-2 rounded text-[11px] outline-none"
+                                style={{ ...inputStyle, height: 26 }}
+                                spellCheck={false}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        emitQuery(rows, boolMode);
+                                    }
+                                }}
+                            />
 
-                        {/* Remove button */}
-                        <button
-                            onClick={() => removeRow(row.id)}
-                            className="shrink-0 p-1 rounded opacity-40 hover:opacity-100 transition-opacity"
-                            style={{ color: "var(--text-secondary)" }}
-                            title="Remove filter"
-                        >
-                            <svg
-                                width="12"
-                                height="12"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
+                            {/* Remove button */}
+                            <button
+                                onClick={() => removeRow(row.id)}
+                                className="shrink-0 p-1 rounded opacity-40 hover:opacity-100 transition-opacity"
+                                style={{ color: "var(--text-secondary)" }}
+                                title="Remove filter"
                             >
-                                <path d="M4 4l8 8M4 12l8-8" />
-                            </svg>
-                        </button>
-                    </div>
-                ))}
-            </div>}
+                                <svg
+                                    width="12"
+                                    height="12"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                >
+                                    <path d="M4 4l8 8M4 12l8-8" />
+                                </svg>
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {/* Footer */}
-            {!collapsed && <div className="px-3 pb-2.5 flex items-center justify-between">
-                <button
-                    onClick={addRow}
-                    className="flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors"
-                    style={{
-                        color: "var(--accent)",
-                        backgroundColor: "transparent",
-                    }}
-                    onMouseEnter={(e) =>
-                        (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-                    }
-                    onMouseLeave={(e) =>
-                        (e.currentTarget.style.backgroundColor = "transparent")
-                    }
-                >
-                    <svg
-                        width="11"
-                        height="11"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
+            {!collapsed && (
+                <div className="px-3 pb-2.5 flex items-center justify-between">
+                    <button
+                        onClick={addRow}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors"
+                        style={{
+                            color: "var(--accent)",
+                            backgroundColor: "transparent",
+                        }}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                                "var(--bg-tertiary)")
+                        }
+                        onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                                "transparent")
+                        }
                     >
-                        <path d="M8 3v10M3 8h10" />
-                    </svg>
-                    Add filter
-                </button>
-                <button
-                    onClick={() => {
-                        const fresh = [makeRow()];
-                        setRows(fresh);
-                        lastEmittedRef.current = "";
-                        onQueryChange("");
-                    }}
-                    className="px-2 py-1 rounded text-[11px] transition-colors"
-                    style={{
-                        color: "var(--text-secondary)",
-                        backgroundColor: "transparent",
-                    }}
-                    onMouseEnter={(e) =>
-                        (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-                    }
-                    onMouseLeave={(e) =>
-                        (e.currentTarget.style.backgroundColor = "transparent")
-                    }
-                >
-                    Clear all
-                </button>
-            </div>}
+                        <svg
+                            width="11"
+                            height="11"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                        >
+                            <path d="M8 3v10M3 8h10" />
+                        </svg>
+                        Add filter
+                    </button>
+                    <button
+                        onClick={() => {
+                            const fresh = [makeRow()];
+                            setBuilderState({
+                                sourceQuery: "",
+                                rows: fresh,
+                                boolMode,
+                            });
+                            setLastEmittedQuery("");
+                            onQueryChange("");
+                        }}
+                        className="px-2 py-1 rounded text-[11px] transition-colors"
+                        style={{
+                            color: "var(--text-secondary)",
+                            backgroundColor: "transparent",
+                        }}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                                "var(--bg-tertiary)")
+                        }
+                        onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                                "transparent")
+                        }
+                    >
+                        Clear all
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

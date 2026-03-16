@@ -16,6 +16,95 @@ pub struct SearchResult<'a> {
 }
 
 impl VaultIndex {
+    pub fn advanced_search_note_ids(
+        &self,
+        params: &AdvancedSearchParams,
+        vault: &Vault,
+    ) -> HashSet<String> {
+        let mut candidates: HashSet<&NoteId> = self.metadata.keys().collect();
+
+        for filter in &params.tag_filters {
+            let matching = self.find_notes_with_tag(&filter.value, filter.is_regex);
+            if filter.negated {
+                candidates.retain(|id| !matching.contains(id));
+            } else {
+                candidates.retain(|id| matching.contains(id));
+            }
+        }
+
+        for filter in &params.file_filters {
+            let matcher = build_matcher(&filter.value, filter.is_regex);
+            candidates.retain(|id| {
+                let entry = match self.search_index.get(*id) {
+                    Some(e) => e,
+                    None => return false,
+                };
+                let filename = entry
+                    .path_lower
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&entry.path_lower);
+                matcher.matches(filename) != filter.negated
+            });
+        }
+
+        for filter in &params.path_filters {
+            let matcher = build_matcher(&filter.value, filter.is_regex);
+            candidates.retain(|id| {
+                let entry = match self.search_index.get(*id) {
+                    Some(e) => e,
+                    None => return false,
+                };
+                matcher.matches(&entry.path_lower) != filter.negated
+            });
+        }
+
+        for term in &params.terms {
+            let matcher = build_matcher(&term.value, term.is_regex);
+            candidates.retain(|id| {
+                let entry = match self.search_index.get(*id) {
+                    Some(e) => e,
+                    None => return false,
+                };
+                let found =
+                    matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower);
+                found != term.negated
+            });
+        }
+
+        let needs_disk_read =
+            !params.content_searches.is_empty() || !params.property_filters.is_empty();
+        if needs_disk_read {
+            candidates.retain(|note_id| {
+                let Ok(doc) = vault.read_note(&note_id.0) else {
+                    return false;
+                };
+
+                for cs in &params.content_searches {
+                    let found = search_content(&doc.raw_markdown, cs);
+                    if cs.negated {
+                        if !found.is_empty() {
+                            return false;
+                        }
+                    } else if found.is_empty() {
+                        return false;
+                    }
+                }
+
+                for pf in &params.property_filters {
+                    let matched = check_property(doc.frontmatter.as_ref(), pf);
+                    if matched == pf.negated {
+                        return false;
+                    }
+                }
+
+                true
+            });
+        }
+
+        candidates.into_iter().map(|id| id.0.clone()).collect()
+    }
+
     pub fn search_by_title(&self, query: &str) -> Vec<SearchResult<'_>> {
         self.search_internal(query, SearchScope::TitleOnly)
     }

@@ -5,6 +5,7 @@ import {
 } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { Tab } from "./store/editorStore";
+import { getPathBaseName } from "./utils/path";
 
 const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "vaultai:detached-window:";
@@ -309,7 +310,7 @@ export async function openVaultWindow(vaultPath: string) {
     const label = `vault-${crypto.randomUUID()}`;
     const win = new WebviewWindow(label, {
         url: `/?vault=${encodeURIComponent(vaultPath)}`,
-        title: vaultPath.split("/").pop() ?? "Vault",
+        title: getPathBaseName(vaultPath) || "Vault",
         width: 1200,
         height: 800,
         minWidth: 800,

@@ -25,12 +25,13 @@ export function setEditorTabs(
     tabs: TabInput[],
     activeTabId: string | null = tabs[0]?.id ?? null,
 ) {
-    const fullTabs = tabs.map((t) =>
-        t.kind === "pdf" || t.kind === "file" || !("noteId" in t)
-            ? t
-            : { ...t, history: t.history ?? [], historyIndex: t.historyIndex ?? 0 },
-    );
-    useEditorStore.setState({ tabs: fullTabs, activeTabId });
+    useEditorStore.getState().hydrateTabs(tabs, activeTabId);
+    useEditorStore.setState({
+        activeTabId,
+        activationHistory: activeTabId ? [activeTabId] : [],
+        tabNavigationHistory: activeTabId ? [activeTabId] : [],
+        tabNavigationIndex: activeTabId ? 0 : -1,
+    });
 }
 
 export function setVaultNotes(notes: NoteDto[], vaultPath = "/vault") {

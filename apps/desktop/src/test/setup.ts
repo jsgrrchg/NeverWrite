@@ -27,6 +27,12 @@ vi.mock("@tauri-apps/api/window", () => ({
     }),
 }));
 
+vi.mock("@tauri-apps/api/webview", () => ({
+    getCurrentWebview: () => ({
+        onDragDropEvent: vi.fn().mockResolvedValue(vi.fn()),
+    }),
+}));
+
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
     WebviewWindow: class MockWebviewWindow {
         label: string;
@@ -135,6 +141,16 @@ Object.defineProperty(window, "matchMedia", {
     })),
 });
 
+Object.defineProperty(globalThis, "ResizeObserver", {
+    writable: true,
+    configurable: true,
+    value: class MockResizeObserver {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+    },
+});
+
 Object.defineProperty(window, "BroadcastChannel", {
     writable: true,
     value: class MockBroadcastChannel {
@@ -158,6 +174,15 @@ Object.defineProperty(globalThis, "requestAnimationFrame", {
     writable: true,
     value: (cb: FrameRequestCallback) =>
         window.setTimeout(() => cb(performance.now()), 0),
+});
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+    writable: true,
+    value: class MockResizeObserver {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+    },
 });
 
 Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -245,6 +270,8 @@ beforeEach(async () => {
         tabs: [],
         activeTabId: null,
         activationHistory: [],
+        tabNavigationHistory: [],
+        tabNavigationIndex: -1,
         pendingReveal: null,
         pendingSelectionReveal: null,
     });
@@ -265,6 +292,7 @@ beforeEach(async () => {
         contentRevision: 0,
         structureRevision: 0,
         resolverRevision: 0,
+        graphRevision: 0,
         tagsRevision: 0,
         isLoading: false,
         vaultOpenState: {

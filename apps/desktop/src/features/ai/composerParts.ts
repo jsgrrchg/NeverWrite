@@ -16,9 +16,11 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
             if (part.type === "text") return part.text;
             if (part.type === "fetch_mention") return "@fetch";
             if (part.type === "plan_mention") return "/plan";
-            if (part.type === "folder_mention") return `@${part.label}`;
-            if (part.type === "mention") return `@${part.label}`;
-            if (part.type === "selection_mention") return `@${part.label}`;
+            if (part.type === "folder_mention") return `[@📁 ${part.label}]`;
+            if (part.type === "mention") return `[@${part.label}]`;
+            if (part.type === "selection_mention") return `[@${part.label}]`;
+            if (part.type === "screenshot") return `[${part.label}]`;
+            if (part.type === "file_attachment") return `[📎 ${part.label}]`;
             return "";
         })
         .join("");
@@ -31,9 +33,11 @@ export function serializeComposerPartsForAI(parts: AIComposerPart[]): string {
             if (part.type === "fetch_mention") return "@fetch";
             if (part.type === "plan_mention") return "/plan";
             if (part.type === "folder_mention") return `@${part.folderPath}`;
-            if (part.type === "mention") return `@${part.noteId}`;
+            if (part.type === "mention") return `@${part.path}`;
             if (part.type === "selection_mention")
-                return `@${part.noteId}:${part.startLine}-${part.endLine}`;
+                return `@${part.path}:${part.startLine}-${part.endLine}`;
+            if (part.type === "screenshot") return `@${part.filePath}`;
+            if (part.type === "file_attachment") return `@${part.filePath}`;
             return "";
         })
         .join("");
@@ -155,6 +159,58 @@ export function appendSelectionMentionPart(
         id: crypto.randomUUID(),
         type: "selection_mention",
         ...selection,
+    });
+    next.push({ id: crypto.randomUUID(), type: "text", text: " " });
+
+    return normalizeComposerParts(next);
+}
+
+export function appendScreenshotPart(
+    parts: AIComposerPart[],
+    screenshot: { filePath: string; mimeType: string; label: string },
+): AIComposerPart[] {
+    const next = [...parts];
+
+    const last = next.at(-1);
+    if (!last || last.type !== "text") {
+        next.push({ id: crypto.randomUUID(), type: "text", text: "" });
+    }
+
+    const currentLast = next.at(-1);
+    if (currentLast?.type === "text" && currentLast.text.length > 0) {
+        currentLast.text += currentLast.text.endsWith(" ") ? "" : " ";
+    }
+
+    next.push({
+        id: crypto.randomUUID(),
+        type: "screenshot",
+        ...screenshot,
+    });
+    next.push({ id: crypto.randomUUID(), type: "text", text: " " });
+
+    return normalizeComposerParts(next);
+}
+
+export function appendFileAttachmentPart(
+    parts: AIComposerPart[],
+    file: { filePath: string; mimeType: string; label: string },
+): AIComposerPart[] {
+    const next = [...parts];
+
+    const last = next.at(-1);
+    if (!last || last.type !== "text") {
+        next.push({ id: crypto.randomUUID(), type: "text", text: "" });
+    }
+
+    const currentLast = next.at(-1);
+    if (currentLast?.type === "text" && currentLast.text.length > 0) {
+        currentLast.text += currentLast.text.endsWith(" ") ? "" : " ";
+    }
+
+    next.push({
+        id: crypto.randomUUID(),
+        type: "file_attachment",
+        ...file,
     });
     next.push({ id: crypto.randomUUID(), type: "text", text: " " });
 

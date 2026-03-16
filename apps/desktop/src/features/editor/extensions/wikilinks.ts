@@ -15,7 +15,7 @@ import { selectionTouchesLine } from "./selectionActivity";
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 // Characters that can affect wikilink structure: brackets, pipe, newlines.
-const WIKILINK_SIGNIFICANT = /[\[\]\n\r|]/;
+const WIKILINK_SIGNIFICANT = /(?:[\]\n\r|]|\[)/;
 
 const DENSE_VISIBLE_WIKILINK_THRESHOLD = 50;
 const DENSE_IMMEDIATE_TARGET_LIMIT = 48;
@@ -91,6 +91,10 @@ const refreshWikilinksEffect = StateEffect.define<null>();
 // every rebuild. The cache is small (one entry per unique target×state)
 // and grows/shrinks naturally as the viewport changes.
 const wikilinkMarkCache = new Map<string, Decoration>();
+
+function isViewDetached(view: EditorView) {
+    return !view.dom.isConnected;
+}
 
 function wikilinkMark(
     target: string,
@@ -289,7 +293,7 @@ export function wikilinkExtension(
                     this.deferredDenseResolutionHandle = requestIdleWork(
                         (deadline) => {
                             if (
-                                view.destroyed ||
+                                isViewDetached(view) ||
                                 version !== this.deferredDenseResolutionVersion
                             ) {
                                 return;
@@ -313,7 +317,7 @@ export function wikilinkExtension(
                                 );
                                 resolveLinkBatch(noteId, batch, () => {
                                     if (
-                                        view.destroyed ||
+                                        isViewDetached(view) ||
                                         version !==
                                             this.deferredDenseResolutionVersion
                                     ) {
@@ -364,7 +368,7 @@ export function wikilinkExtension(
                     : [];
                 const noteId = getNoteId();
                 const onResolved = () => {
-                    if (view.destroyed) return;
+                    if (isViewDetached(view)) return;
                     view.dispatch({
                         effects: refreshWikilinksEffect.of(null),
                     });

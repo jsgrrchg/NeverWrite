@@ -1,75 +1,133 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useEditorStore, isFileTab, isPdfTab } from "../store/editorStore";
+import {
+    useEditorStore,
+    isFileTab,
+    isMapTab,
+    isPdfTab,
+    type TabInput,
+} from "../store/editorStore";
 import type { VaultEntryDto } from "../store/vaultStore";
 import { vaultInvoke } from "./vaultInvoke";
 
 const TEXT_EXTENSIONS = new Set([
+    "astro",
     "bat",
     "bash",
     "c",
     "cc",
+    "cfg",
     "cjs",
+    "clj",
+    "cljs",
+    "cmake",
     "conf",
     "cpp",
+    "cs",
     "cts",
     "css",
     "csv",
+    "d",
+    "dart",
+    "diff",
+    "elm",
     "env",
+    "erl",
+    "ex",
+    "exs",
+    "fish",
     "gitignore",
     "go",
     "gradle",
     "graphql",
+    "groovy",
     "h",
     "hpp",
+    "hs",
     "html",
     "ini",
     "java",
+    "jl",
     "js",
     "json",
+    "jsonc",
     "jsx",
     "kt",
     "kts",
+    "less",
     "lock",
     "log",
     "lua",
     "m",
     "md",
+    "mdx",
     "mjs",
     "mts",
+    "mk",
+    "nim",
+    "nix",
+    "patch",
     "php",
+    "pl",
+    "plist",
+    "prisma",
     "properties",
     "proto",
     "ps1",
     "py",
+    "r",
     "rb",
+    "rc",
     "rs",
+    "sass",
+    "scala",
     "scss",
     "sh",
     "sql",
+    "styl",
+    "svelte",
     "swift",
+    "tcl",
+    "tex",
     "tf",
     "tfvars",
     "toml",
     "ts",
     "tsx",
     "txt",
+    "v",
+    "vb",
     "vue",
+    "wast",
     "xml",
     "yaml",
     "yml",
+    "zig",
     "zsh",
 ]);
 
 const TEXT_FILE_NAMES = new Set([
+    ".babelrc",
     ".dockerignore",
     ".editorconfig",
     ".eslintignore",
+    ".eslintrc",
     ".gitattributes",
+    ".gitignore",
     ".gitmodules",
+    ".gitconfig",
     ".ignore",
+    ".node-version",
+    ".npmignore",
     ".npmrc",
+    ".python-version",
     ".prettierignore",
     ".prettierrc",
+    ".ruby-version",
+    ".stylelintrc",
+    ".stylelintignore",
+    ".tool-versions",
+    ".terraform-version",
+    ".yarnrc",
     ".bash_profile",
     ".bashrc",
     ".profile",
@@ -80,6 +138,7 @@ const TEXT_FILE_NAMES = new Set([
     "containerfile",
     "dockerfile",
     "gemfile",
+    "gnumakefile",
     "justfile",
     "makefile",
     "podfile",
@@ -109,6 +168,12 @@ export function isTextLikeVaultEntry(
     const fileName = entry.file_name.toLowerCase();
     if (TEXT_FILE_NAMES.has(fileName)) return true;
     if (fileName === ".env" || fileName.startsWith(".env.")) return true;
+    if (
+        fileName.startsWith(".") &&
+        (fileName.endsWith("rc") || fileName.endsWith("ignore"))
+    ) {
+        return true;
+    }
     if (!entry.mime_type) return false;
     return (
         entry.mime_type.startsWith("text/") ||
@@ -140,7 +205,7 @@ export function getVaultEntryDisplayName(
     if (showExtensions) {
         return entry.file_name;
     }
-    return entry.kind === "note" ? entry.title : entry.title;
+    return entry.title || entry.file_name;
 }
 
 type VaultFileReadDetail = {
@@ -151,36 +216,125 @@ type VaultFileReadDetail = {
     content: string;
 };
 
-export async function openVaultFileEntry(
+async function buildVaultEntryTab(
     entry: VaultEntryDto,
-    options?: { newTab?: boolean },
-) {
-    if (isImageLikeVaultEntry(entry)) {
-        const nextTab = {
+): Promise<TabInput | null> {
+    if (entry.kind === "folder") {
+        return null;
+    }
+
+    if (entry.kind === "note") {
+        const detail = await vaultInvoke<{ content: string }>("read_note", {
+            noteId: entry.id,
+        });
+
+        return {
             id: crypto.randomUUID(),
-            kind: "file" as const,
+            kind: "note",
+            noteId: entry.id,
+            title: entry.title || entry.file_name,
+            content: detail.content,
+        };
+    }
+
+    if (entry.kind === "pdf") {
+        return {
+            id: crypto.randomUUID(),
+            kind: "pdf",
+            entryId: entry.id,
+            title: entry.title || entry.file_name,
+            path: entry.path,
+            page: 1,
+            zoom: 1,
+            viewMode: "continuous",
+        };
+    }
+
+    if (isImageLikeVaultEntry(entry)) {
+        return {
+            id: crypto.randomUUID(),
+            kind: "file",
             relativePath: entry.relative_path,
             title: entry.file_name,
             path: entry.path,
             mimeType: entry.mime_type,
-            viewer: "image" as const,
+            viewer: "image",
             content: "",
         };
+    }
 
-        if (options?.newTab) {
-            useEditorStore.getState().insertExternalTab(nextTab);
-            return;
+    if (!canOpenVaultFileEntryInApp(entry)) {
+        return null;
+    }
+
+    const detail = await vaultInvoke<VaultFileReadDetail>("read_vault_file", {
+        relativePath: entry.relative_path,
+    });
+
+    return {
+        id: crypto.randomUUID(),
+        kind: "file",
+        relativePath: detail.relative_path,
+        title: detail.file_name,
+        path: detail.path,
+        mimeType: detail.mime_type,
+        viewer: "text",
+        content: detail.content,
+    };
+}
+
+export async function insertVaultEntryTab(
+    entry: VaultEntryDto,
+    index?: number,
+) {
+    const nextTab = await buildVaultEntryTab(entry);
+    if (!nextTab) {
+        return false;
+    }
+
+    useEditorStore.getState().insertExternalTab(nextTab, index);
+    return true;
+}
+
+export function isExcalidrawVaultEntry(
+    entry: Pick<VaultEntryDto, "extension">,
+) {
+    return entry.extension.toLowerCase() === "excalidraw";
+}
+
+export async function openVaultFileEntry(
+    entry: VaultEntryDto,
+    options?: { newTab?: boolean },
+) {
+    if (isExcalidrawVaultEntry(entry)) {
+        useEditorStore
+            .getState()
+            .openMap(
+                entry.path,
+                entry.relative_path,
+                entry.title || entry.file_name,
+            );
+        return;
+    }
+
+    if (options?.newTab) {
+        const inserted = await insertVaultEntryTab(entry);
+        if (!inserted) {
+            await openPath(entry.path);
         }
+        return;
+    }
 
+    if (isImageLikeVaultEntry(entry)) {
         useEditorStore
             .getState()
             .openFile(
-                nextTab.relativePath,
-                nextTab.title,
-                nextTab.path,
-                nextTab.content,
-                nextTab.mimeType,
-                nextTab.viewer,
+                entry.relative_path,
+                entry.file_name,
+                entry.path,
+                "",
+                entry.mime_type,
+                "image",
             );
         return;
     }
@@ -193,20 +347,6 @@ export async function openVaultFileEntry(
     const detail = await vaultInvoke<VaultFileReadDetail>("read_vault_file", {
         relativePath: entry.relative_path,
     });
-
-    if (options?.newTab) {
-        useEditorStore.getState().insertExternalTab({
-            id: crypto.randomUUID(),
-            kind: "file",
-            relativePath: detail.relative_path,
-            title: detail.file_name,
-            path: detail.path,
-            mimeType: detail.mime_type,
-            viewer: "text",
-            content: detail.content,
-        });
-        return;
-    }
 
     useEditorStore
         .getState()
@@ -229,7 +369,9 @@ export async function moveVaultEntryToTrash(relativePath: string) {
 export function closeOpenTabsForVaultPath(path: string) {
     const { tabs, closeTab } = useEditorStore.getState();
     const matchingTabs = tabs.filter(
-        (tab) => (isPdfTab(tab) || isFileTab(tab)) && tab.path === path,
+        (tab) =>
+            ((isPdfTab(tab) || isFileTab(tab)) && tab.path === path) ||
+            (isMapTab(tab) && tab.filePath === path),
     );
 
     for (const tab of matchingTabs) {

@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
+    listenToAiAvailableCommandsUpdated,
     listenToAiMessageCompleted,
     listenToAiMessageDelta,
     listenToAiMessageStarted,
     listenToAiPlanUpdated,
     listenToAiPermissionRequest,
+    listenToAiRuntimeConnection,
     listenToAiSessionCreated,
     listenToAiSessionError,
     listenToAiSessionUpdated,
@@ -22,31 +25,49 @@ import {
     whisperGetStatus,
     whisperTranscribe,
 } from "./api";
-import { buildSelectionLabel } from "./types";
+import { buildSelectionLabel, type AIRuntimeConnectionState } from "./types";
 import { AIChatAgentControls } from "./components/AIChatAgentControls";
 import { AIChatComposer } from "./components/AIChatComposer";
 import { AIChatContextBar } from "./components/AIChatContextBar";
 import { EditedFilesBufferPanel } from "./components/EditedFilesBufferPanel";
 import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
+import { AIAuthTerminalModal } from "./components/AIAuthTerminalModal";
 import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
 import { QueuedMessagesPanel } from "./components/QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
 import { WhisperSetupModal } from "./components/WhisperSetupModal";
+import {
+    appendFileAttachmentPart,
+    appendScreenshotPart,
+    createEmptyComposerParts,
+} from "./composerParts";
 import { exportChatSessionToVaultNote } from "./chatExport";
+import { useVoiceRecorder } from "./hooks/useVoiceRecorder";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 
 export function AIChatPanel() {
     const [savingSetup, setSavingSetup] = useState(false);
     const [composerExpanded, setComposerExpanded] = useState(false);
+    const [authTerminalRequest, setAuthTerminalRequest] = useState<{
+        runtimeId: string;
+        runtimeName: string;
+        customBinaryPath?: string;
+    } | null>(null);
     const tabDrivenSessionIdRef = useRef<string | null>(null);
     const suppressedAutoTabSessionIdRef = useRef<string | null>(null);
     // Data selectors — only subscribe to data that drives renders
-    const runtimeConnection = useChatStore((s) => s.runtimeConnection);
-    const setupStatus = useChatStore((s) => s.setupStatus);
+    const runtimeConnectionByRuntimeId = useChatStore(
+        (s) => s.runtimeConnectionByRuntimeId,
+    );
+    const setupStatusByRuntimeId = useChatStore(
+        (s) => s.setupStatusByRuntimeId,
+    );
     const runtimes = useChatStore((s) => s.runtimes);
     const activeSessionId = useChatStore((s) => s.activeSessionId);
+    const selectedRuntimeId = useChatStore((s) => s.selectedRuntimeId);
+    const isInitializing = useChatStore((s) => s.isInitializing);
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const composerPartsBySessionId = useChatStore(
@@ -66,6 +87,9 @@ export function AIChatPanel() {
     // Actions — access via getState() to avoid 30+ unnecessary subscriptions
     const chatActions = useRef(useChatStore.getState()).current;
 
+    const refreshEntries = useVaultStore((state) => state.refreshEntries);
+    const vaultPath = useVaultStore((state) => state.vaultPath);
+
     const [whisperSetupOpen, setWhisperSetupOpen] = useState(false);
     const pendingAudioPathRef = useRef<string | null>(null);
     // Tracks which attachment IDs have been removed so in-flight transcriptions
@@ -76,6 +100,67 @@ export function AIChatPanel() {
         Array<{ filePath: string; attachmentId: string }>
     >([]);
     const isTranscribingRef = useRef(false);
+
+    const {
+        isRecording,
+        isTranscribing: isVoiceTranscribing,
+        error: voiceError,
+        startRecording,
+        stopAndTranscribe,
+    } = useVoiceRecorder();
+
+    const handleMicClick = useCallback(async () => {
+        if (isRecording) {
+            const text = await stopAndTranscribe();
+            if (text) {
+                const sessionId = useChatStore.getState().activeSessionId;
+                if (sessionId) {
+                    const currentParts =
+                        useChatStore.getState().composerPartsBySessionId[
+                            sessionId
+                        ] ?? createEmptyComposerParts();
+                    // Replace the empty text part or append
+                    const hasContent = currentParts.some(
+                        (p) => p.type === "text" && p.text.length > 0,
+                    );
+                    if (hasContent) {
+                        // Append with a space
+                        const newParts = [
+                            ...currentParts,
+                            {
+                                id: crypto.randomUUID(),
+                                type: "text" as const,
+                                text: " " + text,
+                            },
+                        ];
+                        chatActions.setComposerParts(newParts);
+                    } else {
+                        // Replace the empty part with the transcription
+                        chatActions.setComposerParts([
+                            {
+                                id: crypto.randomUUID(),
+                                type: "text" as const,
+                                text,
+                            },
+                        ]);
+                    }
+                }
+            }
+        } else {
+            // Check if whisper is set up
+            try {
+                const status = await whisperGetStatus();
+                if (!status.enabled) return;
+                if (status.downloadedModels.length === 0) {
+                    setWhisperSetupOpen(true);
+                    return;
+                }
+            } catch {
+                // If we can't check, try anyway
+            }
+            await startRecording();
+        }
+    }, [isRecording, stopAndTranscribe, startRecording, chatActions]);
 
     const processTranscriptionQueue = useCallback(async () => {
         if (isTranscribingRef.current) return;
@@ -118,7 +203,7 @@ export function AIChatPanel() {
 
         isTranscribingRef.current = false;
         void processTranscriptionQueue();
-    }, []);
+    }, [chatActions]);
 
     const enqueueTranscription = useCallback(
         (filePath: string, attachmentId: string) => {
@@ -129,14 +214,18 @@ export function AIChatPanel() {
     );
 
     // Wrap removeAttachment to also cancel pending transcriptions
-    const handleRemoveAttachment = useCallback((attachmentId: string) => {
-        cancelledAttachmentsRef.current.add(attachmentId);
-        // Remove from queue if still pending
-        transcriptionQueueRef.current = transcriptionQueueRef.current.filter(
-            (item) => item.attachmentId !== attachmentId,
-        );
-        chatActions.removeAttachment(attachmentId);
-    }, []);
+    const handleRemoveAttachment = useCallback(
+        (attachmentId: string) => {
+            cancelledAttachmentsRef.current.add(attachmentId);
+            // Remove from queue if still pending
+            transcriptionQueueRef.current =
+                transcriptionQueueRef.current.filter(
+                    (item) => item.attachmentId !== attachmentId,
+                );
+            chatActions.removeAttachment(attachmentId);
+        },
+        [chatActions],
+    );
 
     const handleClearAttachments = useCallback(() => {
         // Mark all audio attachments as cancelled
@@ -149,7 +238,7 @@ export function AIChatPanel() {
             .forEach((a) => cancelledAttachmentsRef.current.add(a.id));
         transcriptionQueueRef.current = [];
         chatActions.clearAttachments();
-    }, []);
+    }, [chatActions]);
 
     const handleAttachAudio = useCallback(async () => {
         const selected = await tauriOpen({
@@ -217,7 +306,7 @@ export function AIChatPanel() {
         if (attachment) {
             enqueueTranscription(filePath, attachment.id);
         }
-    }, [enqueueTranscription]);
+    }, [chatActions, enqueueTranscription]);
 
     const handleAttachFile = useCallback(async () => {
         const selected = await tauriOpen({
@@ -257,12 +346,82 @@ export function AIChatPanel() {
             toml: "text/toml",
             log: "text/plain",
         };
-        chatActions.attachFile(
-            filePath,
-            fileName,
-            mimeMap[ext] ?? "application/octet-stream",
+        const sessionId = useChatStore.getState().activeSessionId;
+        if (!sessionId) return;
+        const currentParts =
+            useChatStore.getState().composerPartsBySessionId[sessionId] ??
+            createEmptyComposerParts();
+        chatActions.setComposerParts(
+            appendFileAttachmentPart(currentParts, {
+                filePath,
+                mimeType: mimeMap[ext] ?? "application/octet-stream",
+                label: fileName,
+            }),
         );
-    }, []);
+    }, [chatActions]);
+
+    const handlePasteImage = useCallback(
+        async (file: File) => {
+            const MAX_SIZE = 25 * 1024 * 1024; // 25 MB
+            if (file.size > MAX_SIZE) {
+                console.warn("[chat] Pasted image too large:", file.size);
+                return;
+            }
+            try {
+                const buffer = await file.arrayBuffer();
+                const bytes = Array.from(new Uint8Array(buffer));
+                const ext =
+                    file.type === "image/jpeg"
+                        ? "jpg"
+                        : file.type === "image/gif"
+                          ? "gif"
+                          : file.type === "image/webp"
+                            ? "webp"
+                            : "png";
+                const now = new Date();
+                const ts = [
+                    now.getFullYear(),
+                    String(now.getMonth() + 1).padStart(2, "0"),
+                    String(now.getDate()).padStart(2, "0"),
+                    "-",
+                    String(now.getHours()).padStart(2, "0"),
+                    String(now.getMinutes()).padStart(2, "0"),
+                    String(now.getSeconds()).padStart(2, "0"),
+                ].join("");
+                const fileName = `pasted-image-${ts}.${ext}`;
+
+                const saved = await vaultInvoke<{
+                    path: string;
+                    relative_path: string;
+                    file_name: string;
+                    mime_type: string | null;
+                }>("save_vault_binary_file", {
+                    relativeDir: "assets/chat",
+                    fileName,
+                    bytes,
+                });
+                await refreshEntries();
+
+                const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
+                const sessionId = useChatStore.getState().activeSessionId;
+                if (!sessionId) return;
+                const currentParts =
+                    useChatStore.getState().composerPartsBySessionId[
+                        sessionId
+                    ] ?? createEmptyComposerParts();
+                chatActions.setComposerParts(
+                    appendScreenshotPart(currentParts, {
+                        filePath: saved.path,
+                        mimeType: saved.mime_type ?? file.type,
+                        label: timeLabel,
+                    }),
+                );
+            } catch (error) {
+                console.error("[chat] Failed to save pasted image:", error);
+            }
+        },
+        [chatActions, refreshEntries],
+    );
 
     const handleWhisperReady = useCallback(() => {
         setWhisperSetupOpen(false);
@@ -284,7 +443,7 @@ export function AIChatPanel() {
                 enqueueTranscription(filePath, attachment.id);
             }
         }, 0);
-    }, [enqueueTranscription]);
+    }, [chatActions, enqueueTranscription]);
     const autoContextEnabled = useChatStore(
         (state) => state.autoContextEnabled,
     );
@@ -390,14 +549,58 @@ export function AIChatPanel() {
               Boolean(attachment),
           )
         : [];
-    const currentRuntime = runtimes.find(
-        (descriptor) => descriptor.runtime.id === currentSession?.runtimeId,
+    const selectedSetupStatus = selectedRuntimeId
+        ? (setupStatusByRuntimeId[selectedRuntimeId] ?? null)
+        : null;
+    const selectedConnection: AIRuntimeConnectionState = selectedRuntimeId
+        ? (runtimeConnectionByRuntimeId[selectedRuntimeId] ?? {
+              status: "idle",
+              message: null,
+          })
+        : { status: "idle", message: null };
+    const shouldFocusSelectedRuntime =
+        Boolean(selectedRuntimeId) &&
+        selectedRuntimeId !== currentSession?.runtimeId &&
+        (!currentSession ||
+            Boolean(selectedSetupStatus?.onboardingRequired) ||
+            selectedConnection.status !== "idle" ||
+            authTerminalRequest?.runtimeId === selectedRuntimeId);
+    const activeRuntimeId = shouldFocusSelectedRuntime
+        ? selectedRuntimeId
+        : (currentSession?.runtimeId ??
+          selectedRuntimeId ??
+          runtimes[0]?.runtime.id ??
+          null);
+    const activeRuntime = runtimes.find(
+        (descriptor) => descriptor.runtime.id === activeRuntimeId,
     );
-    const runtimeModels =
-        currentSession?.models ?? currentRuntime?.models ?? [];
-    const runtimeModes = currentSession?.modes ?? currentRuntime?.modes ?? [];
+    const activeSetupStatus = activeRuntimeId
+        ? (setupStatusByRuntimeId[activeRuntimeId] ?? null)
+        : null;
+    const activeConnection: AIRuntimeConnectionState = activeRuntimeId
+        ? (runtimeConnectionByRuntimeId[activeRuntimeId] ?? {
+              status: "idle",
+              message: null,
+          })
+        : { status: "idle", message: null };
+    const runtimeModels = currentSession?.models ?? activeRuntime?.models ?? [];
+    const runtimeModes = currentSession?.modes ?? activeRuntime?.modes ?? [];
     const runtimeLabel =
-        currentRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+        activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+    const handleRefreshSetup = useCallback(
+        async (runtimeId: string) => {
+            await chatActions.refreshSetupStatus(runtimeId);
+        },
+        [chatActions],
+    );
+
+    useEffect(() => {
+        if (!authTerminalRequest) return;
+        if (activeSetupStatus?.runtimeId !== authTerminalRequest.runtimeId)
+            return;
+        if (activeSetupStatus.onboardingRequired) return;
+        setAuthTerminalRequest(null);
+    }, [activeSetupStatus, authTerminalRequest]);
 
     useEffect(() => {
         let disposed = false;
@@ -417,8 +620,10 @@ export function AIChatPanel() {
                 unlistenToolActivity,
                 unlistenStatusEvent,
                 unlistenPlanUpdated,
+                unlistenAvailableCommandsUpdated,
                 unlistenPermissionRequest,
                 unlistenUserInputRequest,
+                unlistenRuntimeConnection,
             ] = await Promise.all([
                 listenToAiSessionCreated((session) => {
                     if (!disposed) chatActions.upsertSession(session);
@@ -456,11 +661,18 @@ export function AIChatPanel() {
                 listenToAiPlanUpdated((payload) => {
                     if (!disposed) chatActions.applyPlanUpdate(payload);
                 }),
+                listenToAiAvailableCommandsUpdated((payload) => {
+                    if (!disposed)
+                        chatActions.applyAvailableCommandsUpdate(payload);
+                }),
                 listenToAiPermissionRequest((payload) => {
                     if (!disposed) chatActions.applyPermissionRequest(payload);
                 }),
                 listenToAiUserInputRequest((payload) => {
                     if (!disposed) chatActions.applyUserInputRequest(payload);
+                }),
+                listenToAiRuntimeConnection((payload) => {
+                    if (!disposed) chatActions.applyRuntimeConnection(payload);
                 }),
             ]);
 
@@ -477,8 +689,10 @@ export function AIChatPanel() {
                 unlistenToolActivity,
                 unlistenStatusEvent,
                 unlistenPlanUpdated,
+                unlistenAvailableCommandsUpdated,
                 unlistenPermissionRequest,
                 unlistenUserInputRequest,
+                unlistenRuntimeConnection,
             ];
         };
 
@@ -492,7 +706,7 @@ export function AIChatPanel() {
                 }
             });
         };
-    }, []);
+    }, [chatActions]);
 
     useEffect(() => {
         if (!tabsReady) return;
@@ -532,6 +746,7 @@ export function AIChatPanel() {
             const tabId = ensureSessionTab(
                 activeSessionId,
                 sessionsById[activeSessionId]?.historySessionId ?? null,
+                sessionsById[activeSessionId]?.runtimeId ?? null,
             );
             setActiveTab(tabId);
         }
@@ -547,6 +762,9 @@ export function AIChatPanel() {
     ]);
 
     useEffect(() => {
+        if (shouldFocusSelectedRuntime) {
+            return;
+        }
         if (!activeTabSessionId || activeTabSessionId === activeSessionId) {
             return;
         }
@@ -554,20 +772,35 @@ export function AIChatPanel() {
         if (!sessionsById[activeTabSessionId]) return;
         tabDrivenSessionIdRef.current = activeTabSessionId;
         chatActions.setActiveSession(activeTabSessionId);
-    }, [activeSessionId, activeTabSessionId, sessionsById]);
+    }, [
+        activeSessionId,
+        activeTabSessionId,
+        chatActions,
+        sessionsById,
+        shouldFocusSelectedRuntime,
+    ]);
 
     useEffect(() => {
+        if (shouldFocusSelectedRuntime) {
+            return;
+        }
         if (!tabsReady || !activeTabSessionId) {
             return;
         }
 
         const session = sessionsById[activeTabSessionId];
-        if (!session?.isPersistedSession || session.isResumingSession) {
+        if (session?.runtimeState === "live" || session?.isResumingSession) {
             return;
         }
 
         void chatActions.resumeSession(activeTabSessionId);
-    }, [activeTabSessionId, sessionsById, tabsReady]);
+    }, [
+        activeTabSessionId,
+        chatActions,
+        sessionsById,
+        shouldFocusSelectedRuntime,
+        tabsReady,
+    ]);
 
     return (
         <div
@@ -590,6 +823,7 @@ export function AIChatPanel() {
                         activate: true,
                         historySessionId:
                             sessionsById[sessionId]?.historySessionId ?? null,
+                        runtimeId: sessionsById[sessionId]?.runtimeId ?? null,
                     });
                     void chatActions.loadSession(sessionId);
                 }}
@@ -633,17 +867,45 @@ export function AIChatPanel() {
                 }}
                 onToggleExpanded={toggleRightPanelExpanded}
             />
-            <AIChatRuntimeBanner connection={runtimeConnection} />
+            <AIChatRuntimeBanner
+                connection={activeConnection}
+                runtimeName={activeRuntime?.runtime.name.replace(/ ACP$/, "")}
+            />
             {!composerExpanded &&
-                (setupStatus?.onboardingRequired ? (
+                (activeSetupStatus?.onboardingRequired ? (
                     <div
                         className="min-h-0 flex-1 overflow-y-auto"
                         data-scrollbar-active="true"
                     >
                         <AIChatOnboardingCard
-                            setupStatus={setupStatus}
+                            runtime={activeRuntime?.runtime ?? null}
+                            setupStatus={activeSetupStatus}
                             saving={savingSetup}
+                            onSaveSetup={(input) => {
+                                setSavingSetup(true);
+                                void chatActions
+                                    .saveSetup(input)
+                                    .finally(() => {
+                                        setSavingSetup(false);
+                                    });
+                            }}
                             onAuthenticate={(input) => {
+                                const shouldUseIntegratedAuthTerminal =
+                                    input.runtimeId === "claude-acp" &&
+                                    input.methodId === "claude-login";
+                                if (shouldUseIntegratedAuthTerminal) {
+                                    setAuthTerminalRequest({
+                                        runtimeId: input.runtimeId,
+                                        runtimeName:
+                                            activeRuntime?.runtime.name.replace(
+                                                / ACP$/,
+                                                "",
+                                            ) ?? "Claude",
+                                        customBinaryPath:
+                                            input.customBinaryPath,
+                                    });
+                                    return;
+                                }
                                 setSavingSetup(true);
                                 void chatActions
                                     .startAuth(input)
@@ -722,19 +984,22 @@ export function AIChatPanel() {
                     notes={noteOptions}
                     status={currentSession?.status ?? "idle"}
                     runtimeName={runtimeLabel}
+                    runtimeId={currentSession?.runtimeId}
                     autoContextEnabled={autoContextEnabled}
                     hasActiveNote={activeNote !== null}
                     requireCmdEnterToSend={requireCmdEnterToSend}
                     composerFontSize={composerFontSize}
                     composerFontFamily={composerFontFamily}
+                    availableCommands={currentSession?.availableCommands}
                     onToggleAutoContext={toggleAutoContext}
                     expanded={composerExpanded}
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
                     disabled={
                         !currentSession ||
-                        runtimeConnection.status === "loading" ||
+                        isInitializing ||
+                        activeConnection.status === "loading" ||
                         Boolean(currentSession?.isResumingSession) ||
-                        Boolean(setupStatus?.onboardingRequired)
+                        Boolean(activeSetupStatus?.onboardingRequired)
                     }
                     contextBar={
                         <AIChatContextBar
@@ -796,11 +1061,15 @@ export function AIChatPanel() {
                     onChange={chatActions.setComposerParts}
                     onAttachAudio={handleAttachAudio}
                     onAttachFile={handleAttachFile}
-                    onFileAttach={chatActions.attachFile}
+                    onPasteImage={handlePasteImage}
                     onMentionAttach={chatActions.attachNote}
                     onFolderAttach={chatActions.attachFolder}
                     onSubmit={chatActions.sendMessage}
                     onStop={chatActions.stopStreaming}
+                    isRecording={isRecording}
+                    isTranscribing={isVoiceTranscribing}
+                    voiceError={voiceError}
+                    onMicClick={handleMicClick}
                 />
             </div>
             <WhisperSetupModal
@@ -808,6 +1077,17 @@ export function AIChatPanel() {
                 onClose={() => setWhisperSetupOpen(false)}
                 onReady={handleWhisperReady}
             />
+            {authTerminalRequest ? (
+                <AIAuthTerminalModal
+                    open
+                    runtimeId={authTerminalRequest.runtimeId}
+                    runtimeName={authTerminalRequest.runtimeName}
+                    vaultPath={vaultPath}
+                    customBinaryPath={authTerminalRequest.customBinaryPath}
+                    onClose={() => setAuthTerminalRequest(null)}
+                    onRefreshSetup={handleRefreshSetup}
+                />
+            ) : null}
         </div>
     );
 }

@@ -147,7 +147,8 @@ function QuickSwitcherDialog() {
                                       title: tab.title.replace(/\.[^/.]+$/, ""),
                                       file_name: tab.title,
                                       extension:
-                                          tab.relativePath.split(".").pop() ?? "",
+                                          tab.relativePath.split(".").pop() ??
+                                          "",
                                       kind: "file",
                                       modified_at: 0,
                                       created_at: 0,
@@ -163,13 +164,18 @@ function QuickSwitcherDialog() {
                 .filter((item): item is QuickSwitcherItem => item !== null);
 
             const remainingNotes = notes
-                .filter((note) => !ordered.some((item) => item.key === `note:${note.id}`))
+                .filter(
+                    (note) =>
+                        !ordered.some((item) => item.key === `note:${note.id}`),
+                )
                 .map(buildNoteItem);
             const remainingEntries = searchableEntries
                 .filter(
                     (entry) =>
                         !ordered.some(
-                            (item) => item.key === `${entry.kind}:${entry.relative_path}`,
+                            (item) =>
+                                item.key ===
+                                `${entry.kind}:${entry.relative_path}`,
                         ),
                 )
                 .map(buildEntryItem);
@@ -215,6 +221,11 @@ function QuickSwitcherDialog() {
         QUICK_SWITCHER_ROW_HEIGHT,
         6,
     );
+    const maxVisibleResults = Math.min(results.length, 200);
+    const boundedSelectedIndex = Math.min(
+        selectedIndex,
+        Math.max(0, maxVisibleResults - 1),
+    );
     const visibleResults = results
         .slice(0, 200)
         .slice(virtual.startIndex, virtual.endIndex);
@@ -225,17 +236,25 @@ function QuickSwitcherDialog() {
     }, []);
 
     useEffect(() => {
-        setSelectedIndex((current) =>
-            Math.min(current, Math.max(0, Math.min(results.length, 200) - 1)),
-        );
-    }, [results]);
-
-    useEffect(() => {
         const list = listRef.current;
         if (!list) return;
-        const item = list.children[selectedIndex] as HTMLElement | undefined;
-        item?.scrollIntoView({ block: "nearest" });
-    }, [selectedIndex]);
+        const itemTop = boundedSelectedIndex * QUICK_SWITCHER_ROW_HEIGHT;
+        const itemBottom = itemTop + QUICK_SWITCHER_ROW_HEIGHT;
+        const viewportTop = list.scrollTop;
+        const viewportBottom = viewportTop + list.clientHeight;
+        let nextScrollTop: number | null = null;
+
+        if (itemTop < viewportTop) {
+            nextScrollTop = itemTop;
+        } else if (itemBottom > viewportBottom) {
+            nextScrollTop = itemBottom - list.clientHeight;
+        }
+
+        if (nextScrollTop === null || nextScrollTop === viewportTop) return;
+
+        list.scrollTop = nextScrollTop;
+        list.dispatchEvent(new Event("scroll"));
+    }, [boundedSelectedIndex]);
 
     const openItemAndClose = useCallback(
         async (item: QuickSwitcherItem) => {
@@ -257,15 +276,20 @@ function QuickSwitcherDialog() {
             const note = item.note;
             const existing = useEditorStore
                 .getState()
-                .tabs.find((t): t is NoteTab => isNoteTab(t) && t.noteId === note.id);
+                .tabs.find(
+                    (t): t is NoteTab => isNoteTab(t) && t.noteId === note.id,
+                );
             if (existing) {
                 openNote(note.id, note.title, existing.content);
                 return;
             }
             try {
-                const detail = await vaultInvoke<{ content: string }>("read_note", {
-                    noteId: note.id,
-                });
+                const detail = await vaultInvoke<{ content: string }>(
+                    "read_note",
+                    {
+                        noteId: note.id,
+                    },
+                );
                 openNote(note.id, note.title, detail.content);
             } catch (e) {
                 console.error("Error reading note:", e);
@@ -276,23 +300,29 @@ function QuickSwitcherDialog() {
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
-            const maxIndex = Math.max(0, Math.min(results.length, 200) - 1);
+            const maxIndex = Math.max(0, maxVisibleResults - 1);
             if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setSelectedIndex((i) => Math.min(i + 1, maxIndex));
+                setSelectedIndex(Math.min(boundedSelectedIndex + 1, maxIndex));
             } else if (e.key === "ArrowUp") {
                 e.preventDefault();
-                setSelectedIndex((i) => Math.max(i - 1, 0));
+                setSelectedIndex(Math.max(boundedSelectedIndex - 1, 0));
             } else if (e.key === "Enter") {
                 e.preventDefault();
-                const item = results[selectedIndex];
+                const item = results[boundedSelectedIndex];
                 if (item) void openItemAndClose(item);
             } else if (e.key === "Escape") {
                 e.preventDefault();
                 closeModal();
             }
         },
-        [results, selectedIndex, openItemAndClose, closeModal],
+        [
+            boundedSelectedIndex,
+            closeModal,
+            maxVisibleResults,
+            openItemAndClose,
+            results,
+        ],
     );
 
     return (
@@ -353,11 +383,13 @@ function QuickSwitcherDialog() {
                                     return (
                                         <button
                                             key={item.key}
-                                            onClick={() => void openItemAndClose(item)}
+                                            onClick={() =>
+                                                void openItemAndClose(item)
+                                            }
                                             className="w-full text-left px-4 py-2 text-sm"
                                             style={{
                                                 backgroundColor:
-                                                    i === selectedIndex
+                                                    i === boundedSelectedIndex
                                                         ? "var(--accent)"
                                                         : "transparent",
                                                 color:
@@ -368,14 +400,16 @@ function QuickSwitcherDialog() {
                                                     QUICK_SWITCHER_ROW_HEIGHT,
                                             }}
                                         >
-                                            <div className="truncate">{item.title}</div>
+                                            <div className="truncate">
+                                                {item.title}
+                                            </div>
                                             <div
                                                 className="text-xs truncate"
                                                 style={{
                                                     opacity:
                                                         i === selectedIndex
-                                                        ? 0.7
-                                                        : 0.5,
+                                                            ? 0.7
+                                                            : 0.5,
                                                 }}
                                             >
                                                 {item.subtitle}

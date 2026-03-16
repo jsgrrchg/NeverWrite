@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -319,6 +320,81 @@ pub async fn whisper_transcribe(
                     format!("Transcription failed: {}", msg)
                 }
             })?;
+
+    Ok(WhisperTranscriptionDto {
+        text: result.text,
+        language: result.language,
+        duration_ms: result.duration_ms,
+    })
+}
+
+/// Transcribe audio bytes from a live recording (e.g. MediaRecorder in the webview).
+/// Receives base64-encoded audio data, writes to a temp file, transcribes, and cleans up.
+#[tauri::command]
+pub async fn whisper_transcribe_recording(
+    audio_base64: String,
+    app: AppHandle,
+) -> Result<WhisperTranscriptionDto, String> {
+    let config = load_config(&app);
+    if !config.enabled {
+        return Err("Whisper transcription is disabled".to_string());
+    }
+
+    let model = vault_ai_whisper::manifest::find_model(&config.selected_model)
+        .ok_or_else(|| format!("Unknown model: {}", config.selected_model))?;
+
+    let dir = models_dir(&app)?;
+    let model_path = dir.join(vault_ai_whisper::manifest::model_filename(model));
+
+    if !model_path.exists() {
+        return Err(format!(
+            "Model '{}' is not downloaded. Please download it first.",
+            config.selected_model
+        ));
+    }
+
+    // Decode base64 audio data
+    use base64::Engine;
+    let audio_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&audio_base64)
+        .map_err(|e| format!("Invalid audio data: {}", e))?;
+
+    if audio_bytes.len() as u64 > MAX_AUDIO_FILE_SIZE {
+        return Err(format!(
+            "Recording is too large ({:.1} MB). Maximum allowed size is {:.0} MB.",
+            audio_bytes.len() as f64 / (1024.0 * 1024.0),
+            MAX_AUDIO_FILE_SIZE as f64 / (1024.0 * 1024.0)
+        ));
+    }
+
+    // Write to temp file
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("vaultai_recording_{}.ogg", std::process::id()));
+    let mut file =
+        std::fs::File::create(&temp_path).map_err(|e| format!("Cannot create temp file: {}", e))?;
+    file.write_all(&audio_bytes)
+        .map_err(|e| format!("Cannot write temp file: {}", e))?;
+    drop(file);
+
+    let audio = temp_path.clone();
+    let result =
+        tokio::task::spawn_blocking(move || vault_ai_whisper::transcribe(&audio, &model_path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&temp_path);
+                let msg = e.to_string();
+                if msg.contains("Whisper") || msg.contains("model") {
+                    format!("Transcription failed — the model file may be corrupted. Try deleting and re-downloading it. ({})", msg)
+                } else {
+                    format!("Transcription failed: {}", msg)
+                }
+            })?;
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(
+        &temp_dir.join(format!("vaultai_recording_{}.ogg", std::process::id())),
+    );
 
     Ok(WhisperTranscriptionDto {
         text: result.text,

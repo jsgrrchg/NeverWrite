@@ -310,6 +310,12 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                                 <button
                                     key={r.id}
                                     onClick={() => void handleOpen(r)}
+                                    onAuxClick={(event) => {
+                                        if (event.button !== 1) return;
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        void handleOpenInNewTab(r);
+                                    }}
                                     onContextMenu={(event) => {
                                         event.preventDefault();
                                         setContextMenu({

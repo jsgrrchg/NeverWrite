@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
+import { getPathBaseName } from "../utils/path";
+import { useEditorStore } from "./editorStore";
 
 export interface NoteDto {
     id: string;
@@ -68,6 +70,7 @@ export interface VaultNoteChange {
     kind: "upsert" | "delete";
     note: NoteDto | null;
     note_id: string | null;
+    graph_revision: number;
 }
 
 function didResolverStructureChange(
@@ -207,7 +210,7 @@ export async function removeVaultFromList(path: string) {
 }
 
 function addToRecentVaults(path: string) {
-    const name = path.split("/").pop() ?? path;
+    const name = getPathBaseName(path);
     const prev = getRecentVaults().filter((v) => v.path !== path);
     localStorage.setItem(
         RECENT_VAULTS_KEY,
@@ -242,6 +245,7 @@ interface VaultStore {
     contentRevision: number;
     structureRevision: number;
     resolverRevision: number;
+    graphRevision: number;
     tagsRevision: number;
     isLoading: boolean;
     vaultOpenState: VaultOpenState;
@@ -274,6 +278,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     contentRevision: 0,
     structureRevision: 0,
     resolverRevision: 0,
+    graphRevision: 0,
     tagsRevision: 0,
     isLoading: false,
     vaultOpenState: IDLE_OPEN_STATE,
@@ -313,9 +318,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 });
 
                 if (openState.stage === "ready") {
-                    const [notes, entries] = await Promise.all([
+                    const [notes, entries, graphRevision] = await Promise.all([
                         invoke<NoteDto[]>("list_notes", { vaultPath: path }),
                         invoke<VaultEntryDto[]>("list_vault_entries", {
+                            vaultPath: path,
+                        }),
+                        invoke<number>("get_graph_revision", {
                             vaultPath: path,
                         }),
                     ]);
@@ -335,6 +343,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                         contentRevision: state.contentRevision + 1,
                         structureRevision: state.structureRevision + 1,
                         resolverRevision: state.resolverRevision + 1,
+                        graphRevision,
                         tagsRevision: state.tagsRevision + 1,
                     }));
                     return;
@@ -428,9 +437,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         if (!vaultPath) return;
 
         try {
-            const [nextNotes, nextEntries] = await Promise.all([
+            const [nextNotes, nextEntries, graphRevision] = await Promise.all([
                 invoke<NoteDto[]>("list_notes", { vaultPath }),
                 invoke<VaultEntryDto[]>("list_vault_entries", { vaultPath }),
+                invoke<number>("get_graph_revision", { vaultPath }),
             ]);
             set((state) => ({
                 notes: Array.isArray(nextNotes) ? nextNotes : state.notes,
@@ -441,6 +451,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 contentRevision: state.contentRevision + 1,
                 structureRevision: state.structureRevision + 1,
                 resolverRevision: state.resolverRevision + 1,
+                graphRevision,
                 tagsRevision: state.tagsRevision + 1,
             }));
         } catch (error) {
@@ -481,6 +492,13 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 resolverRevision: structureChanged
                     ? state.resolverRevision + 1
                     : state.resolverRevision,
+                graphRevision:
+                    change.graph_revision > 0
+                        ? change.graph_revision
+                        : state.graphRevision +
+                          (change.kind === "upsert" || change.kind === "delete"
+                              ? 1
+                              : 0),
                 tagsRevision:
                     change.kind === "upsert" || change.kind === "delete"
                         ? state.tagsRevision + 1
@@ -511,6 +529,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
+                graphRevision: s.graphRevision + 1,
                 tagsRevision: s.tagsRevision + 1,
             }));
             return note;
@@ -542,26 +561,34 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     deleteFolder: async (relativePath) => {
         try {
             const vaultPath = get().vaultPath ?? "";
+            const folderPrefix = relativePath + "/";
+            const deletedNoteIds = get()
+                .notes.filter(
+                    (n) =>
+                        n.id === relativePath || n.id.startsWith(folderPrefix),
+                )
+                .map((n) => n.id);
             await invoke("delete_folder", { vaultPath, relativePath });
-            set((s) => {
-                const folderPrefix = relativePath + "/";
-                return {
-                    notes: s.notes.filter(
-                        (n) =>
-                            n.id !== relativePath &&
-                            !n.id.startsWith(folderPrefix),
-                    ),
-                    entries: s.entries.filter(
-                        (e) =>
-                            e.relative_path !== relativePath &&
-                            !e.relative_path.startsWith(folderPrefix),
-                    ),
-                    vaultRevision: s.vaultRevision + 1,
-                    structureRevision: s.structureRevision + 1,
-                    resolverRevision: s.resolverRevision + 1,
-                    tagsRevision: s.tagsRevision + 1,
-                };
-            });
+            set((s) => ({
+                notes: s.notes.filter(
+                    (n) =>
+                        n.id !== relativePath && !n.id.startsWith(folderPrefix),
+                ),
+                entries: s.entries.filter(
+                    (e) =>
+                        e.relative_path !== relativePath &&
+                        !e.relative_path.startsWith(folderPrefix),
+                ),
+                vaultRevision: s.vaultRevision + 1,
+                structureRevision: s.structureRevision + 1,
+                resolverRevision: s.resolverRevision + 1,
+                graphRevision: s.graphRevision + 1,
+                tagsRevision: s.tagsRevision + 1,
+            }));
+            const editor = useEditorStore.getState();
+            for (const noteId of deletedNoteIds) {
+                editor.handleNoteDeleted(noteId);
+            }
         } catch (e) {
             console.error("Error al eliminar carpeta:", e);
             throw e;
@@ -577,8 +604,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
+                graphRevision: s.graphRevision + 1,
                 tagsRevision: s.tagsRevision + 1,
             }));
+            useEditorStore.getState().handleNoteDeleted(noteId);
         } catch (e) {
             console.error("Error al eliminar nota:", e);
         }
@@ -607,7 +636,11 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
+                graphRevision: s.graphRevision + 1,
             }));
+            useEditorStore
+                .getState()
+                .handleNoteRenamed(noteId, updated.id, updated.title);
             return updated;
         } catch (e) {
             console.error("Error al renombrar nota:", e);
@@ -638,6 +671,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 resolverRevision: structureChanged
                     ? s.resolverRevision + 1
                     : s.resolverRevision,
+                graphRevision: structureChanged
+                    ? s.graphRevision + 1
+                    : s.graphRevision,
             };
         });
     },

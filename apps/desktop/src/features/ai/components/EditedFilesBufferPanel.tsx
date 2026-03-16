@@ -4,7 +4,10 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { formatDiffStat } from "../diff/reviewDiff";
 import { getReviewTabTitle } from "../reviewTabTitle";
 import { useChatStore } from "../store/chatStore";
-import { selectVisibleEditedFilesBuffer } from "../store/editedFilesBufferModel";
+import {
+    selectHasUndoReject,
+    selectVisibleEditedFilesBuffer,
+} from "../store/editedFilesBufferModel";
 import { EditedFilesReviewList } from "./EditedFilesReviewList";
 import {
     getAccentButtonStyle,
@@ -17,8 +20,7 @@ import {
 } from "./editedFilesPresentationModel";
 import { canOpenAiEditedFileEntry } from "./chatFileNavigation";
 
-const COMPACT_VISIBLE_ITEM_COUNT = 4;
-const COMPACT_ROW_MAX_HEIGHT_PX = 52;
+const COMPACT_MAX_LIST_HEIGHT = "208px";
 
 function CollapseToggle({
     expanded,
@@ -79,6 +81,16 @@ export function EditedFilesBufferPanel() {
     const keepAllEditedFiles = useChatStore(
         (state) => state.keepAllEditedFiles,
     );
+    const resolveHunkEdits = useChatStore((state) => state.resolveHunkEdits);
+    const hasActionLog = useChatStore((state) => {
+        if (!activeSessionId) return false;
+        const session = state.sessionsById[activeSessionId];
+        return !!session?.actionLog;
+    });
+    const undoLastReject = useChatStore((state) => state.undoLastReject);
+    const hasUndoReject = useChatStore((state) =>
+        selectHasUndoReject(state, activeSessionId),
+    );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const entries = useVaultStore((state) => state.entries);
 
@@ -97,13 +109,53 @@ export function EditedFilesBufferPanel() {
     );
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = items.filter((item) => item.canReject).length;
-    const compactListMaxHeight =
-        items.length > COMPACT_VISIBLE_ITEM_COUNT
-            ? `${COMPACT_VISIBLE_ITEM_COUNT * COMPACT_ROW_MAX_HEIGHT_PX}px`
-            : undefined;
 
-    if (!activeSessionId || items.length === 0) {
+    if (!activeSessionId || (items.length === 0 && !hasUndoReject)) {
         return null;
+    }
+
+    // Only undo available, no pending items — minimal undo-only strip
+    if (items.length === 0 && hasUndoReject) {
+        return (
+            <section
+                className="mx-3 mb-2 overflow-hidden rounded-xl"
+                style={{
+                    border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
+                }}
+            >
+                <div className="flex items-center gap-1.5 px-2 py-1.5">
+                    <button
+                        type="button"
+                        title="Undo last reject"
+                        onClick={() => void undoLastReject(activeSessionId)}
+                        className="rounded-md p-1"
+                        style={getNeutralButtonStyle()}
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <polyline points="1 4 1 10 7 10" />
+                            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                        </svg>
+                    </button>
+                    <span
+                        className="text-xs"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        Undo last reject
+                    </span>
+                </div>
+            </section>
+        );
     }
 
     return (
@@ -181,6 +233,30 @@ export function EditedFilesBufferPanel() {
                 )}
 
                 <div className="ml-auto flex items-center gap-1">
+                    {/* Undo last reject — undo icon */}
+                    {hasUndoReject && (
+                        <button
+                            type="button"
+                            title="Undo last reject"
+                            onClick={() => void undoLastReject(activeSessionId)}
+                            className="rounded-md p-1"
+                            style={getNeutralButtonStyle()}
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <polyline points="1 4 1 10 7 10" />
+                                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                            </svg>
+                        </button>
+                    )}
                     {/* Review All — document icon */}
                     <button
                         type="button"
@@ -264,10 +340,11 @@ export function EditedFilesBufferPanel() {
             {!collapsed ? (
                 <div
                     data-testid="edited-files-buffer-list"
+                    data-scrollbar-active="true"
                     className="flex flex-col"
                     style={{
-                        maxHeight: compactListMaxHeight,
-                        overflowY: compactListMaxHeight ? "auto" : "visible",
+                        maxHeight: COMPACT_MAX_LIST_HEIGHT,
+                        overflowY: "auto",
                     }}
                 >
                     <EditedFilesReviewList
@@ -286,6 +363,18 @@ export function EditedFilesBufferPanel() {
                                 identityKey,
                                 mergedText,
                             )
+                        }
+                        onResolveHunk={
+                            hasActionLog
+                                ? (identityKey, decision, s, e) =>
+                                      void resolveHunkEdits(
+                                          activeSessionId,
+                                          identityKey,
+                                          decision,
+                                          s,
+                                          e,
+                                      )
+                                : undefined
                         }
                     />
                 </div>

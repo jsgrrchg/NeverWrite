@@ -35,3 +35,36 @@ export function getTabStripScrollTarget({
 
     return null;
 }
+
+export function getTabStripInsertIndex(
+    clientX: number,
+    tabRects: Array<{ left: number; width: number }>,
+) {
+    for (let index = 0; index < tabRects.length; index += 1) {
+        const rect = tabRects[index];
+        if (clientX < rect.left + rect.width / 2) {
+            return index;
+        }
+    }
+
+    return tabRects.length;
+}
+
+export function getTabStripDropIndex(
+    strip: HTMLElement | null,
+    clientX: number,
+) {
+    if (!strip) return 0;
+
+    const tabRects = Array.from(
+        strip.querySelectorAll<HTMLElement>("[data-tab-id]"),
+    ).map((tab) => {
+        const rect = tab.getBoundingClientRect();
+        return {
+            left: rect.left,
+            width: rect.width,
+        };
+    });
+
+    return getTabStripInsertIndex(clientX, tabRects);
+}

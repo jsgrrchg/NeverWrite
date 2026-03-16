@@ -30,11 +30,12 @@ function isDetachedWindowPayload(
     value: unknown,
 ): value is DetachedWindowPayload {
     if (!value || typeof value !== "object") return false;
-    const payload = value as Partial<DetachedWindowPayload>;
+    const payload = value as Record<string, unknown>;
     return (
         Array.isArray(payload.tabs) &&
-        ("activeTabId" in payload || payload.activeTabId === null) &&
-        ("vaultPath" in payload || payload.vaultPath === null)
+        (typeof payload.activeTabId === "string" ||
+            payload.activeTabId === null) &&
+        (typeof payload.vaultPath === "string" || payload.vaultPath === null)
     );
 }
 

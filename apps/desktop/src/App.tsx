@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ActivityBar, type SidebarView } from "./components/layout/ActivityBar";
@@ -20,10 +21,17 @@ import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
 import { NewTabView } from "./features/editor/NewTabView";
 import { SearchView } from "./features/search/SearchView";
 import { PdfTabView } from "./features/pdf/PdfTabView";
+import { MapsPanel } from "./features/maps/MapsPanel";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
 import { SettingsPanel } from "./features/settings";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
+import {
+    DEVELOPER_PANEL_NEW_TAB_EVENT,
+    DEVELOPER_PANEL_RESTART_EVENT,
+    DeveloperPanel,
+} from "./features/devtools/DeveloperPanel";
+import { getPathBaseName } from "./app/utils/path";
 import {
     ATTACH_EXTERNAL_TAB_EVENT,
     type AttachExternalTabPayload,
@@ -45,6 +53,8 @@ import {
     useEditorStore,
     type TabInput,
     isFileTab,
+    isGraphTab,
+    isMapTab,
     isNoteTab,
     isPdfTab,
     isReviewTab,
@@ -68,6 +78,7 @@ import {
     useChatTabsStore,
 } from "./features/ai/store/chatTabsStore";
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
+import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 
 function SidebarPanel({ view }: { view: SidebarView }) {
     return (
@@ -77,11 +88,13 @@ function SidebarPanel({ view }: { view: SidebarView }) {
                     <FileTree />
                 ) : view === "search" ? (
                     <SearchPanel autoFocus />
+                ) : view === "maps" ? (
+                    <MapsPanel />
                 ) : (
                     <TagsPanel />
                 )}
             </div>
-            <VaultSwitcher />
+            {view !== "maps" && <VaultSwitcher />}
         </div>
     );
 }
@@ -105,7 +118,9 @@ function VaultOpeningOverlay() {
     if (!isLoading) return null;
 
     const hasProgress = openState.total > 0;
-    const vaultName = openState.path?.split("/").pop() ?? "Vault";
+    const vaultName = openState.path
+        ? getPathBaseName(openState.path)
+        : "Vault";
     const progressUnit = openState.message.toLowerCase().includes("link")
         ? "links"
         : "notes";
@@ -368,7 +383,10 @@ function YouTubeModalHost() {
 }
 
 // Register all initial commands
-function useRegisterCommands(openSearchPanel: () => void) {
+function useRegisterCommands(
+    openSearchPanel: () => void,
+    developerCommandsEnabled: boolean,
+) {
     const register = useCommandStore((s) => s.register);
     const openCommandPalette = useCommandStore((s) => s.openCommandPalette);
     const openQuickSwitcher = useCommandStore((s) => s.openQuickSwitcher);
@@ -377,6 +395,10 @@ function useRegisterCommands(openSearchPanel: () => void) {
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             useEditorStore.getState().activeTabId !== null;
+        const developerModeEnabled = () =>
+            developerCommandsEnabled &&
+            useSettingsStore.getState().developerModeEnabled &&
+            useSettingsStore.getState().developerTerminalEnabled;
 
         // Navigation
         register({
@@ -438,6 +460,26 @@ function useRegisterCommands(openSearchPanel: () => void) {
             },
         });
 
+        register({
+            id: "vault:new-concept-map",
+            label: "New Concept Map",
+            category: "Vault",
+            when: hasVault,
+            execute: () => {
+                const vaultPath = useVaultStore.getState().vaultPath;
+                if (!vaultPath) return;
+                const name = `Map ${new Date().toLocaleDateString("en-CA")}`;
+                void invoke<{ id: string; title: string; path: string }>(
+                    "create_map",
+                    { vaultPath, name },
+                ).then((entry) => {
+                    useEditorStore
+                        .getState()
+                        .openMap(entry.path, entry.id, entry.title);
+                });
+            },
+        });
+
         // Editor
         register({
             id: "editor:close-tab",
@@ -476,7 +518,61 @@ function useRegisterCommands(openSearchPanel: () => void) {
             when: hasVault,
             execute: openSearchPanel,
         });
-    }, [register, openCommandPalette, openQuickSwitcher, openSearchPanel]);
+
+        register({
+            id: "developer:toggle-panel",
+            label: "Toggle Developer Panel",
+            category: "Developer",
+            when: developerModeEnabled,
+            execute: () => {
+                const layout = useLayoutStore.getState();
+                if (
+                    layout.bottomPanelCollapsed ||
+                    layout.bottomPanelView !== "terminal"
+                ) {
+                    layout.activateBottomView("terminal");
+                    return;
+                }
+                layout.toggleBottomPanel();
+            },
+        });
+
+        register({
+            id: "developer:restart-terminal",
+            label: "Restart Active Terminal",
+            category: "Developer",
+            when: developerModeEnabled,
+            execute: () => {
+                useLayoutStore.getState().activateBottomView("terminal");
+                window.setTimeout(() => {
+                    window.dispatchEvent(
+                        new Event(DEVELOPER_PANEL_RESTART_EVENT),
+                    );
+                }, 0);
+            },
+        });
+
+        register({
+            id: "developer:new-terminal-tab",
+            label: "New Terminal Tab",
+            category: "Developer",
+            when: developerModeEnabled,
+            execute: () => {
+                useLayoutStore.getState().activateBottomView("terminal");
+                window.setTimeout(() => {
+                    window.dispatchEvent(
+                        new Event(DEVELOPER_PANEL_NEW_TAB_EVENT),
+                    );
+                }, 0);
+            },
+        });
+    }, [
+        register,
+        openCommandPalette,
+        openQuickSwitcher,
+        openSearchPanel,
+        developerCommandsEnabled,
+    ]);
 }
 
 // Global keyboard shortcuts that dispatch to the command store
@@ -566,8 +662,35 @@ function useGlobalShortcuts(
                 return;
             }
 
+            // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
+            if (e.ctrlKey && e.key === "Tab") {
+                e.preventDefault();
+                const { tabs, activeTabId, switchTab } =
+                    useEditorStore.getState();
+                const idx = tabs.findIndex((t) => t.id === activeTabId);
+                if (idx !== -1 && tabs.length > 1) {
+                    const offset = e.shiftKey ? tabs.length - 1 : 1;
+                    const next = tabs[(idx + offset) % tabs.length];
+                    switchTab(next.id);
+                }
+                return;
+            }
+
+            // Cmd+Option+T: cycle tabs backward
+            if (e.metaKey && e.altKey && e.key === "t") {
+                e.preventDefault();
+                const { tabs, activeTabId, switchTab } =
+                    useEditorStore.getState();
+                const idx = tabs.findIndex((t) => t.id === activeTabId);
+                if (idx !== -1 && tabs.length > 1) {
+                    const next = tabs[(idx + tabs.length - 1) % tabs.length];
+                    switchTab(next.id);
+                }
+                return;
+            }
+
             // Cmd+T: new tab
-            if (mod && e.key === "t") {
+            if (mod && e.key === "t" && !e.altKey) {
                 e.preventDefault();
                 if (useVaultStore.getState().vaultPath) {
                     useEditorStore.getState().insertExternalTab({
@@ -708,7 +831,21 @@ type EditorPanelView =
     | "new"
     | "search"
     | "ai-review"
-    | "editor";
+    | "editor"
+    | "map"
+    | "graph";
+
+const LazyExcalidrawTabView = React.lazy(() =>
+    import("./features/maps/ExcalidrawTabView").then((m) => ({
+        default: m.ExcalidrawTabView,
+    })),
+);
+
+const LazyGraphTabView = React.lazy(() =>
+    import("./features/graph/GraphTabView").then((m) => ({
+        default: m.GraphTabView,
+    })),
+);
 
 function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
     const view = useEditorStore((s): EditorPanelView => {
@@ -717,6 +854,8 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
         if (isPdfTab(tab)) return "pdf";
         if (isFileTab(tab)) return "file";
         if (isReviewTab(tab)) return "ai-review";
+        if (isMapTab(tab)) return "map";
+        if (isGraphTab(tab)) return "graph";
         if (!isNoteTab(tab)) return "editor";
         if (tab.noteId === "") return "new";
         if (tab.noteId === "__search__") return "search";
@@ -729,6 +868,18 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
             return <FileTabView />;
         case "ai-review":
             return <AIReviewView />;
+        case "map":
+            return (
+                <React.Suspense fallback={null}>
+                    <LazyExcalidrawTabView />
+                </React.Suspense>
+            );
+        case "graph":
+            return (
+                <React.Suspense fallback={null}>
+                    <LazyGraphTabView />
+                </React.Suspense>
+            );
         case "new":
             return <NewTabView />;
         case "search":
@@ -741,6 +892,7 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
 export default function App() {
     const sidebarView = useLayoutStore((s) => s.sidebarView);
     const setSidebarView = useLayoutStore((s) => s.setSidebarView);
+    const bottomPanelView = useLayoutStore((s) => s.bottomPanelView);
     const restoreVault = useVaultStore((s) => s.restoreVault);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
@@ -750,6 +902,12 @@ export default function App() {
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
+    const developerModeEnabled = useSettingsStore(
+        (s) => s.developerModeEnabled,
+    );
+    const developerTerminalEnabled = useSettingsStore(
+        (s) => s.developerTerminalEnabled,
+    );
     const windowMode = getWindowMode();
     const vaultParam = new URLSearchParams(window.location.search).get("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
@@ -774,7 +932,7 @@ export default function App() {
         [vaultPath],
     );
 
-    useRegisterCommands(openSearchPanel);
+    useRegisterCommands(openSearchPanel, windowMode === "main");
     useGlobalShortcuts(openSearchPanel, openSettings);
     useDynamicScrollbars();
     useAutoOpenReviewTab();
@@ -784,114 +942,176 @@ export default function App() {
         const session = readPersistedSession(vaultPath);
         if (
             !session?.noteIds.length &&
+            !session?.tabs?.length &&
             !session?.pdfTabs?.length &&
-            !session?.fileTabs?.length
+            !session?.fileTabs?.length &&
+            !session?.mapTabs?.length &&
+            !session?.hasGraphTab
         ) {
             return;
         }
 
         const restoredTabs: TabInput[] = [];
-        for (const entry of session?.noteIds ?? []) {
-            try {
-                const detail = await vaultInvoke<{ content: string }>(
-                    "read_note",
-                    {
+
+        if (session?.tabs?.length) {
+            restoredTabs.push(...session.tabs);
+        } else {
+            for (const entry of session?.noteIds ?? []) {
+                try {
+                    const detail = await vaultInvoke<{ content: string }>(
+                        "read_note",
+                        {
+                            noteId: entry.noteId,
+                        },
+                    );
+                    const history = (
+                        entry.history ?? [
+                            { noteId: entry.noteId, title: entry.title },
+                        ]
+                    ).map((h) => ({
+                        noteId: h.noteId,
+                        title: h.title,
+                        content: "",
+                    }));
+                    const historyIndex = Math.min(
+                        entry.historyIndex ?? history.length - 1,
+                        history.length - 1,
+                    );
+                    if (history[historyIndex]) {
+                        history[historyIndex].content = detail.content;
+                    }
+                    restoredTabs.push({
+                        id: crypto.randomUUID(),
                         noteId: entry.noteId,
-                    },
-                );
-                // Restore history entries (content only for current entry)
+                        title: entry.title,
+                        content: detail.content,
+                        history,
+                        historyIndex,
+                    });
+                } catch {
+                    // Nota eliminada o no encontrada, se omite
+                }
+            }
+
+            for (const pdfEntry of session?.pdfTabs ?? []) {
                 const history = (
-                    entry.history ?? [
-                        { noteId: entry.noteId, title: entry.title },
+                    pdfEntry.history ?? [
+                        {
+                            entryId: pdfEntry.entryId,
+                            title: pdfEntry.title,
+                            path: pdfEntry.path,
+                            page: pdfEntry.page ?? 1,
+                            zoom: pdfEntry.zoom ?? 1,
+                            viewMode: pdfEntry.viewMode ?? "continuous",
+                        },
                     ]
-                ).map((h) => ({
-                    noteId: h.noteId,
-                    title: h.title,
-                    content: "",
+                ).map((entry) => ({
+                    entryId: entry.entryId,
+                    title: entry.title,
+                    path: entry.path,
+                    page: entry.page ?? 1,
+                    zoom: entry.zoom ?? 1,
+                    viewMode: entry.viewMode ?? "continuous",
                 }));
                 const historyIndex = Math.min(
-                    entry.historyIndex ?? history.length - 1,
+                    pdfEntry.historyIndex ?? history.length - 1,
                     history.length - 1,
                 );
-                // Fill in content for the current history entry
-                if (history[historyIndex]) {
-                    history[historyIndex].content = detail.content;
-                }
+                const currentEntry = history[historyIndex];
                 restoredTabs.push({
                     id: crypto.randomUUID(),
-                    noteId: entry.noteId,
-                    title: entry.title,
-                    content: detail.content,
+                    kind: "pdf",
+                    entryId: currentEntry?.entryId ?? pdfEntry.entryId,
+                    title: currentEntry?.title ?? pdfEntry.title,
+                    path: currentEntry?.path ?? pdfEntry.path,
+                    page: currentEntry?.page ?? pdfEntry.page ?? 1,
+                    zoom: currentEntry?.zoom ?? pdfEntry.zoom ?? 1,
+                    viewMode:
+                        currentEntry?.viewMode ??
+                        pdfEntry.viewMode ??
+                        "continuous",
                     history,
                     historyIndex,
                 });
-            } catch {
-                // Nota eliminada o no encontrada, se omite
+            }
+
+            for (const fileEntry of session?.fileTabs ?? []) {
+                const history = (
+                    fileEntry.history ?? [
+                        {
+                            relativePath: fileEntry.relativePath,
+                            title: fileEntry.title,
+                            path: fileEntry.path,
+                            mimeType: fileEntry.mimeType ?? null,
+                            viewer:
+                                fileEntry.viewer ??
+                                (fileEntry.mimeType?.startsWith("image/")
+                                    ? "image"
+                                    : "text"),
+                        },
+                    ]
+                ).map((h) => ({
+                    relativePath: h.relativePath,
+                    title: h.title,
+                    path: h.path,
+                    mimeType: h.mimeType ?? null,
+                    viewer:
+                        h.viewer ??
+                        (h.mimeType?.startsWith("image/") ? "image" : "text"),
+                    content: "",
+                }));
+                const historyIndex = Math.min(
+                    fileEntry.historyIndex ?? history.length - 1,
+                    history.length - 1,
+                );
+                if (history[historyIndex]) {
+                    history[historyIndex].content = fileEntry.content;
+                }
+
+                restoredTabs.push({
+                    id: crypto.randomUUID(),
+                    kind: "file",
+                    relativePath: fileEntry.relativePath,
+                    title: fileEntry.title,
+                    path: fileEntry.path,
+                    mimeType: fileEntry.mimeType ?? null,
+                    viewer:
+                        fileEntry.viewer ??
+                        (fileEntry.mimeType?.startsWith("image/")
+                            ? "image"
+                            : "text"),
+                    content: fileEntry.content,
+                    history,
+                    historyIndex,
+                });
             }
         }
 
-        // Restore PDF tabs
-        for (const pdfEntry of session?.pdfTabs ?? []) {
+        for (const mapEntry of session?.mapTabs ?? []) {
+            if (
+                restoredTabs.some(
+                    (tab) =>
+                        tab.kind === "map" &&
+                        tab.filePath === mapEntry.filePath,
+                )
+            ) {
+                continue;
+            }
+
             restoredTabs.push({
                 id: crypto.randomUUID(),
-                kind: "pdf",
-                entryId: pdfEntry.entryId,
-                title: pdfEntry.title,
-                path: pdfEntry.path,
-                page: 1,
-                zoom: 1,
-                viewMode: pdfEntry.viewMode ?? "single",
+                kind: "map",
+                filePath: mapEntry.filePath,
+                relativePath: mapEntry.relativePath,
+                title: mapEntry.title,
             });
         }
 
-        for (const fileEntry of session?.fileTabs ?? []) {
-            const history = (
-                fileEntry.history ?? [
-                    {
-                        relativePath: fileEntry.relativePath,
-                        title: fileEntry.title,
-                        path: fileEntry.path,
-                        mimeType: fileEntry.mimeType ?? null,
-                        viewer:
-                            fileEntry.viewer ??
-                            (fileEntry.mimeType?.startsWith("image/")
-                                ? "image"
-                                : "text"),
-                    },
-                ]
-            ).map((h) => ({
-                relativePath: h.relativePath,
-                title: h.title,
-                path: h.path,
-                mimeType: h.mimeType ?? null,
-                viewer:
-                    h.viewer ??
-                    (h.mimeType?.startsWith("image/") ? "image" : "text"),
-                content: "",
-            }));
-            const historyIndex = Math.min(
-                fileEntry.historyIndex ?? history.length - 1,
-                history.length - 1,
-            );
-            if (history[historyIndex]) {
-                history[historyIndex].content = fileEntry.content;
-            }
-
+        if (session?.hasGraphTab) {
             restoredTabs.push({
                 id: crypto.randomUUID(),
-                kind: "file",
-                relativePath: fileEntry.relativePath,
-                title: fileEntry.title,
-                path: fileEntry.path,
-                mimeType: fileEntry.mimeType ?? null,
-                viewer:
-                    fileEntry.viewer ??
-                    (fileEntry.mimeType?.startsWith("image/")
-                        ? "image"
-                        : "text"),
-                content: fileEntry.content,
-                history,
-                historyIndex,
+                kind: "graph",
+                title: "Graph View",
             });
         }
 
@@ -899,7 +1119,17 @@ export default function App() {
 
         // Find active tab: check PDF first, then note
         let activeTab: TabInput | undefined;
-        if (session?.activePdfEntryId) {
+        if (session?.activeGraphTab) {
+            activeTab = restoredTabs.find((tab) => tab.kind === "graph");
+        }
+        if (!activeTab && session?.activeMapFilePath) {
+            activeTab = restoredTabs.find(
+                (tab) =>
+                    tab.kind === "map" &&
+                    tab.filePath === session.activeMapFilePath,
+            );
+        }
+        if (!activeTab && session?.activePdfEntryId) {
             activeTab = restoredTabs.find(
                 (tab) =>
                     tab.kind === "pdf" &&
@@ -923,6 +1153,10 @@ export default function App() {
 
     useEffect(() => {
         const blockNativeContextMenu = (event: MouseEvent) => {
+            if (shouldAllowNativeContextMenu(event.target)) {
+                return;
+            }
+
             event.preventDefault();
         };
 
@@ -1043,6 +1277,7 @@ export default function App() {
                 Object.values(chatState.sessionsById).map((session) => ({
                     sessionId: session.sessionId,
                     historySessionId: session.historySessionId,
+                    runtimeId: session.runtimeId,
                 })),
                 chatState.activeSessionId,
             );
@@ -1234,6 +1469,13 @@ export default function App() {
                         left={<SidebarPanel view={sidebarView} />}
                         center={<EditorPanel />}
                         right={<RightPanel />}
+                        bottom={
+                            developerModeEnabled &&
+                            developerTerminalEnabled &&
+                            bottomPanelView === "terminal" ? (
+                                <DeveloperPanel />
+                            ) : undefined
+                        }
                     />
                 </div>
                 <VaultOpeningOverlay />

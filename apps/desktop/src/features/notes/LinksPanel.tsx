@@ -102,6 +102,7 @@ interface NoteItemProps {
     title: string;
     subtitle?: string;
     onClick: () => void;
+    onAuxClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
     broken?: boolean;
     onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
@@ -110,21 +111,17 @@ function NoteItem({
     title,
     subtitle,
     onClick,
+    onAuxClick,
     broken = false,
     onContextMenu,
 }: NoteItemProps) {
     return (
         <button
             onClick={onClick}
+            onAuxClick={onAuxClick}
             onContextMenu={onContextMenu}
-            className="w-full text-left px-3 py-1.5 flex items-start gap-2 rounded-sm"
+            className="w-full text-left px-3 py-1.5 flex items-start gap-2 rounded-sm hover:bg-[var(--bg-tertiary)]"
             style={{ color: "var(--text-primary)" }}
-            onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-            }
-            onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = "transparent")
-            }
         >
             <div className="mt-0.5">
                 {broken ? <BrokenLinkIcon /> : <LinkIcon />}
@@ -221,17 +218,11 @@ function BacklinksContextMenu({
                 action();
                 onClose();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs rounded"
+            className="w-full text-left px-3 py-1.5 text-xs rounded hover:bg-[var(--bg-tertiary)]"
             style={{
                 color: "var(--text-primary)",
                 background: "transparent",
             }}
-            onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-            }
-            onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = "transparent")
-            }
         >
             {label}
         </button>
@@ -328,17 +319,11 @@ function OutgoingLinksContextMenu({
                 action();
                 onClose();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs rounded"
+            className="w-full text-left px-3 py-1.5 text-xs rounded hover:bg-[var(--bg-tertiary)]"
             style={{
                 color: "var(--text-primary)",
                 background: "transparent",
             }}
-            onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-            }
-            onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = "transparent")
-            }
         >
             {label}
         </button>
@@ -687,6 +672,12 @@ export function LinksPanel() {
                             title={bl.title}
                             subtitle={bl.id}
                             onClick={() => void openNoteById(bl.id, bl.title)}
+                            onAuxClick={(event) => {
+                                if (event.button !== 1) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void openBacklinkInNewTab(bl);
+                            }}
                             onContextMenu={(e) => {
                                 e.preventDefault();
                                 setBacklinkContextMenu({
@@ -729,6 +720,12 @@ export function LinksPanel() {
                                 onClick={() =>
                                     void openNoteById(note.id, note.title)
                                 }
+                                onAuxClick={(event) => {
+                                    if (event.button !== 1) return;
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    void openOutgoingInNewTab({ target, note });
+                                }}
                                 onContextMenu={(e) => {
                                     e.preventDefault();
                                     setOutgoingContextMenu({

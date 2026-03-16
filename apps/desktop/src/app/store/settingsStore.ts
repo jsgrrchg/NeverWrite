@@ -14,11 +14,17 @@ export interface Settings {
     justifyText: boolean;
     livePreviewEnabled: boolean;
     tabSize: 2 | 4;
+    editorSpellcheck: boolean;
+    spellcheckPrimaryLanguage: SpellcheckLanguage;
+    spellcheckSecondaryLanguage: SpellcheckSecondaryLanguage;
 
     // Navigation
     fileTreeScale: number; // 90–140
+    tabOpenBehavior: TabOpenBehavior;
 
     // Developers
+    developerModeEnabled: boolean;
+    developerTerminalEnabled: boolean;
     fileTreeContentMode: "notes_only" | "all_files";
     fileTreeShowExtensions: boolean;
 }
@@ -30,6 +36,10 @@ interface SettingsStore extends Settings {
 
 const SETTINGS_KEY_PREFIX = "vaultai:settings:";
 const SETTINGS_KEY_FALLBACK = "vaultai:settings";
+const GLOBAL_SPELLCHECK_KEYS = [
+    "spellcheckPrimaryLanguage",
+    "spellcheckSecondaryLanguage",
+] as const;
 const LAST_VAULT_KEY = "vaultai:lastVaultPath";
 
 export type EditorFontFamily =
@@ -45,6 +55,10 @@ export type EditorFontFamily =
     | "typewriter"
     | "newspaper"
     | "condensed";
+
+export type TabOpenBehavior = "history" | "new_tab";
+export type SpellcheckLanguage = "system" | string;
+export type SpellcheckSecondaryLanguage = string | null;
 
 const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "system",
@@ -89,7 +103,13 @@ const defaults: Settings = {
     justifyText: false,
     livePreviewEnabled: true,
     tabSize: 4,
+    editorSpellcheck: true,
+    spellcheckPrimaryLanguage: "system",
+    spellcheckSecondaryLanguage: null,
     fileTreeScale: 100,
+    tabOpenBehavior: "history",
+    developerModeEnabled: false,
+    developerTerminalEnabled: true,
     fileTreeContentMode: "notes_only",
     fileTreeShowExtensions: false,
 };
@@ -98,6 +118,10 @@ function normalizeFileTreeContentMode(
     value: unknown,
 ): Settings["fileTreeContentMode"] {
     return value === "all_files" ? "all_files" : "notes_only";
+}
+
+function normalizeTabOpenBehavior(value: unknown): TabOpenBehavior {
+    return value === "new_tab" ? "new_tab" : "history";
 }
 
 function normalizeIntInRange(
@@ -122,6 +146,80 @@ function normalizeTabSize(value: unknown): 2 | 4 {
     return normalized <= 2 ? 2 : 4;
 }
 
+function normalizeSpellcheckLanguageTag(value: string) {
+    const normalized = value.trim().replace(/_/g, "-");
+    if (!normalized) {
+        return "";
+    }
+
+    return normalized
+        .split("-")
+        .filter(Boolean)
+        .map((segment, index) => {
+            if (index === 0) {
+                return segment.toLowerCase();
+            }
+
+            if (/^[A-Za-z]{2}$/.test(segment)) {
+                return segment.toUpperCase();
+            }
+
+            if (/^\d+$/.test(segment)) {
+                return segment;
+            }
+
+            return segment[0]?.toUpperCase() + segment.slice(1).toLowerCase();
+        })
+        .join("-");
+}
+
+function normalizeSpellcheckLanguage(value: unknown): SpellcheckLanguage {
+    if (typeof value !== "string") {
+        return "system";
+    }
+
+    const normalized = normalizeSpellcheckLanguageTag(value);
+    return normalized.length > 0 ? normalized : "system";
+}
+
+function normalizeSpellcheckSecondaryLanguage(
+    value: unknown,
+): SpellcheckSecondaryLanguage {
+    if (value == null || value === "") {
+        return null;
+    }
+
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const normalized = normalizeSpellcheckLanguageTag(value);
+    if (!normalized || normalized.toLowerCase() === "system") {
+        return null;
+    }
+
+    return normalized;
+}
+
+function normalizeSpellcheckLanguagePair(
+    primary: unknown,
+    secondary: unknown,
+): {
+    primary: SpellcheckLanguage;
+    secondary: SpellcheckSecondaryLanguage;
+} {
+    const normalizedPrimary = normalizeSpellcheckLanguage(primary);
+    const normalizedSecondary = normalizeSpellcheckSecondaryLanguage(secondary);
+
+    return {
+        primary: normalizedPrimary,
+        secondary:
+            normalizedSecondary === normalizedPrimary
+                ? null
+                : normalizedSecondary,
+    };
+}
+
 export function normalizeEditorFontFamily(
     value: unknown,
     fallback: EditorFontFamily = defaults.editorFontFamily,
@@ -136,8 +234,17 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
     if (!raw) return null;
 
     try {
-        const parsed = JSON.parse(raw) as { state?: Partial<Settings> };
+        const parsed = JSON.parse(raw) as {
+            state?: Partial<Settings> & {
+                spellcheckLanguage?: SpellcheckLanguage;
+            };
+        };
         if (!parsed?.state) return null;
+        const normalizedSpellcheckLanguages = normalizeSpellcheckLanguagePair(
+            parsed.state.spellcheckPrimaryLanguage ??
+                parsed.state.spellcheckLanguage,
+            parsed.state.spellcheckSecondaryLanguage,
+        );
 
         return {
             openLastVaultOnLaunch:
@@ -169,12 +276,26 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             livePreviewEnabled:
                 parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
             tabSize: normalizeTabSize(parsed.state.tabSize),
+            editorSpellcheck:
+                parsed.state.editorSpellcheck ?? defaults.editorSpellcheck,
+            spellcheckPrimaryLanguage: normalizedSpellcheckLanguages.primary,
+            spellcheckSecondaryLanguage:
+                normalizedSpellcheckLanguages.secondary,
             fileTreeScale: normalizeIntInRange(
                 parsed.state.fileTreeScale,
                 defaults.fileTreeScale,
                 90,
                 140,
             ),
+            tabOpenBehavior: normalizeTabOpenBehavior(
+                parsed.state.tabOpenBehavior,
+            ),
+            developerModeEnabled:
+                parsed.state.developerModeEnabled ??
+                defaults.developerModeEnabled,
+            developerTerminalEnabled:
+                parsed.state.developerTerminalEnabled ??
+                defaults.developerTerminalEnabled,
             fileTreeContentMode: normalizeFileTreeContentMode(
                 parsed.state.fileTreeContentMode,
             ),
@@ -198,9 +319,48 @@ function pickSettings(state: SettingsStore): Settings {
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
         tabSize: state.tabSize,
+        editorSpellcheck: state.editorSpellcheck,
+        spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,
+        spellcheckSecondaryLanguage: state.spellcheckSecondaryLanguage,
         fileTreeScale: state.fileTreeScale,
+        tabOpenBehavior: state.tabOpenBehavior,
+        developerModeEnabled: state.developerModeEnabled,
+        developerTerminalEnabled: state.developerTerminalEnabled,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
+    };
+}
+
+function pickGlobalSpellcheckSettings(
+    state: Pick<
+        Settings,
+        "spellcheckPrimaryLanguage" | "spellcheckSecondaryLanguage"
+    >,
+) {
+    return {
+        spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,
+        spellcheckSecondaryLanguage: state.spellcheckSecondaryLanguage,
+    };
+}
+
+function mergeGlobalSpellcheckSettings(settings: Settings): Settings {
+    const global = extractSettingsFromStorage(
+        localStorage.getItem(SETTINGS_KEY_FALLBACK),
+    );
+
+    if (!global) {
+        return settings;
+    }
+
+    const normalizedSpellcheckLanguages = normalizeSpellcheckLanguagePair(
+        global.spellcheckPrimaryLanguage,
+        global.spellcheckSecondaryLanguage,
+    );
+
+    return {
+        ...settings,
+        spellcheckPrimaryLanguage: normalizedSpellcheckLanguages.primary,
+        spellcheckSecondaryLanguage: normalizedSpellcheckLanguages.secondary,
     };
 }
 
@@ -211,19 +371,28 @@ function getStorageKey(vaultPath: string | null): string {
 }
 
 function migrateGlobalSettings(vaultPath: string) {
-    const vaultKey = getStorageKey(vaultPath);
-    if (localStorage.getItem(vaultKey)) return; // already migrated
-    const global = extractSettingsFromStorage(
-        localStorage.getItem(SETTINGS_KEY_FALLBACK),
-    );
-    if (!global) return;
-    localStorage.setItem(vaultKey, JSON.stringify({ state: global }));
+    try {
+        const vaultKey = getStorageKey(vaultPath);
+        if (localStorage.getItem(vaultKey)) return; // already migrated
+        const global = extractSettingsFromStorage(
+            localStorage.getItem(SETTINGS_KEY_FALLBACK),
+        );
+        if (!global) return;
+        localStorage.setItem(vaultKey, JSON.stringify({ state: global }));
+    } catch {
+        // localStorage unavailable
+    }
 }
 
 function loadSettings(vaultPath: string | null): Settings {
-    if (vaultPath) migrateGlobalSettings(vaultPath);
-    const raw = localStorage.getItem(getStorageKey(vaultPath));
-    return extractSettingsFromStorage(raw) ?? defaults;
+    try {
+        if (vaultPath) migrateGlobalSettings(vaultPath);
+        const raw = localStorage.getItem(getStorageKey(vaultPath));
+        const loaded = extractSettingsFromStorage(raw) ?? defaults;
+        return mergeGlobalSpellcheckSettings(loaded);
+    } catch {
+        return defaults;
+    }
 }
 
 function getEffectiveVaultPath(
@@ -235,10 +404,41 @@ function getEffectiveVaultPath(
 }
 
 function saveSettings(vaultPath: string | null, settings: Settings) {
-    localStorage.setItem(
-        getStorageKey(vaultPath),
-        JSON.stringify({ state: settings }),
-    );
+    try {
+        const nextState = pickSettings(useSettingsStore.getState());
+        const currentGlobal =
+            extractSettingsFromStorage(
+                localStorage.getItem(SETTINGS_KEY_FALLBACK),
+            ) ?? defaults;
+        localStorage.setItem(
+            SETTINGS_KEY_FALLBACK,
+            JSON.stringify({
+                state: {
+                    ...currentGlobal,
+                    ...pickGlobalSpellcheckSettings(settings),
+                },
+            }),
+        );
+
+        if (vaultPath) {
+            const scopedSettings = { ...settings };
+            for (const key of GLOBAL_SPELLCHECK_KEYS) {
+                delete (scopedSettings as Record<string, unknown>)[key];
+            }
+            localStorage.setItem(
+                getStorageKey(vaultPath),
+                JSON.stringify({ state: scopedSettings }),
+            );
+            return;
+        }
+
+        localStorage.setItem(
+            getStorageKey(vaultPath),
+            JSON.stringify({ state: nextState }),
+        );
+    } catch {
+        // localStorage unavailable (e.g. during test module init)
+    }
 }
 
 // Read vault path synchronously at module load to avoid a flash of defaults.
@@ -259,7 +459,29 @@ const initialVaultPath = readInitialVaultPath();
 
 export const useSettingsStore = create<SettingsStore>()((set) => ({
     ...loadSettings(initialVaultPath),
-    setSetting: (key, value) => set({ [key]: value } as Partial<Settings>),
+    setSetting: (key, value) =>
+        set((state) => {
+            if (
+                key === "spellcheckPrimaryLanguage" ||
+                key === "spellcheckSecondaryLanguage"
+            ) {
+                const nextPair = normalizeSpellcheckLanguagePair(
+                    key === "spellcheckPrimaryLanguage"
+                        ? value
+                        : state.spellcheckPrimaryLanguage,
+                    key === "spellcheckSecondaryLanguage"
+                        ? value
+                        : state.spellcheckSecondaryLanguage,
+                );
+
+                return {
+                    spellcheckPrimaryLanguage: nextPair.primary,
+                    spellcheckSecondaryLanguage: nextPair.secondary,
+                } as Partial<Settings>;
+            }
+
+            return { [key]: value } as Partial<Settings>;
+        }),
     reset: () => set(defaults),
 }));
 
@@ -277,19 +499,35 @@ useSettingsStore.subscribe((state) => {
 // React to changes made by other windows (e.g. settings window) via localStorage
 if (typeof window !== "undefined") {
     window.addEventListener("storage", (event) => {
-        if (event.key !== getStorageKey(_currentVaultPath)) return;
+        if (
+            event.key !== getStorageKey(_currentVaultPath) &&
+            event.key !== SETTINGS_KEY_FALLBACK
+        ) {
+            return;
+        }
         const settings = extractSettingsFromStorage(event.newValue);
-        if (!settings) return;
+        if (!settings) {
+            const reloaded = loadSettings(_currentVaultPath);
+            _isApplyingExternal = true;
+            useSettingsStore.setState(reloaded);
+            _isApplyingExternal = false;
+            return;
+        }
         _isApplyingExternal = true;
-        useSettingsStore.setState(settings);
+        useSettingsStore.setState(loadSettings(_currentVaultPath));
         _isApplyingExternal = false;
     });
 }
 
-// Reload settings when the active vault changes
-useVaultStore.subscribe((state) => {
-    const newVaultPath = getEffectiveVaultPath(state);
-    if (newVaultPath === _currentVaultPath) return;
-    _currentVaultPath = newVaultPath;
-    useSettingsStore.setState(loadSettings(newVaultPath));
+// Reload settings when the active vault changes (lazy to avoid circular init)
+queueMicrotask(() => {
+    if (!useVaultStore || typeof useVaultStore.subscribe !== "function") {
+        return;
+    }
+    useVaultStore.subscribe((state) => {
+        const newVaultPath = getEffectiveVaultPath(state);
+        if (newVaultPath === _currentVaultPath) return;
+        _currentVaultPath = newVaultPath;
+        useSettingsStore.setState(loadSettings(newVaultPath));
+    });
 });

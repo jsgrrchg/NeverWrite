@@ -129,6 +129,7 @@ pub struct VaultNoteChangeDto {
     pub kind: String,
     pub note: Option<NoteDto>,
     pub note_id: Option<String>,
+    pub graph_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

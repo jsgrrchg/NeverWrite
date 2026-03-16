@@ -31,7 +31,18 @@ interface TabDragSession {
 interface UseTabDragReorderOptions {
     tabs: Tab[];
     onCommitReorder: (fromIndex: number, toIndex: number) => void;
+    onActivate?: (tabId: string) => void;
+    liveReorder?: boolean;
     shouldDetach?: (clientX: number, clientY: number) => boolean;
+    shouldCommitDrag?: (
+        tabId: string,
+        coords: {
+            clientX: number;
+            clientY: number;
+            screenX: number;
+            screenY: number;
+        },
+    ) => boolean;
     onDetachStart?: (
         tabId: string,
         coords: { screenX: number; screenY: number },
@@ -42,6 +53,34 @@ interface UseTabDragReorderOptions {
         coords: { screenX: number; screenY: number },
     ) => Promise<void> | void;
     onDetachCancel?: () => void;
+    onDragStart?: (
+        tabId: string,
+        coords: {
+            clientX: number;
+            clientY: number;
+            screenX: number;
+            screenY: number;
+        },
+    ) => void;
+    onDragMove?: (
+        tabId: string,
+        coords: {
+            clientX: number;
+            clientY: number;
+            screenX: number;
+            screenY: number;
+        },
+    ) => void;
+    onDragEnd?: (
+        tabId: string,
+        coords: {
+            clientX: number;
+            clientY: number;
+            screenX: number;
+            screenY: number;
+        },
+    ) => void;
+    onDragCancel?: (tabId: string) => void;
 }
 
 function arraysEqual(left: string[], right: string[]) {
@@ -54,11 +93,18 @@ function arraysEqual(left: string[], right: string[]) {
 export function useTabDragReorder({
     tabs,
     onCommitReorder,
+    onActivate,
+    liveReorder = true,
     shouldDetach,
+    shouldCommitDrag,
     onDetachStart,
     onDetachMove,
     onDetachEnd,
     onDetachCancel,
+    onDragStart,
+    onDragMove,
+    onDragEnd,
+    onDragCancel,
 }: UseTabDragReorderOptions) {
     const tabStripRef = useRef<HTMLDivElement>(null);
     const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -71,7 +117,12 @@ export function useTabDragReorder({
     const handlePointerUpRef = useRef<
         (
             pointerId?: number,
-            screenCoords?: { screenX: number; screenY: number },
+            coords?: {
+                clientX: number;
+                clientY: number;
+                screenX: number;
+                screenY: number;
+            },
         ) => void
     >(() => {});
     const latestPointerXRef = useRef(0);
@@ -89,7 +140,9 @@ export function useTabDragReorder({
         () => Object.fromEntries(tabs.map((tab) => [tab.id, tab])),
         [tabs],
     );
-    const visualOrder = previewOrder ?? tabs.map((tab) => tab.id);
+    const visualOrder = liveReorder
+        ? (previewOrder ?? tabs.map((tab) => tab.id))
+        : tabs.map((tab) => tab.id);
     const visualTabs = visualOrder
         .map((tabId) => tabsById[tabId])
         .filter((tab): tab is Tab => Boolean(tab));
@@ -159,8 +212,41 @@ export function useTabDragReorder({
         [tabs],
     );
 
+    const computeDropIndex = useCallback(
+        (clientX: number) => {
+            const session = sessionRef.current;
+            const strip = tabStripRef.current;
+            if (!session || !strip) return session?.originalIndex ?? -1;
+
+            const nextOrder = tabs
+                .map((tab) => tab.id)
+                .filter((id) => id !== session.tabId);
+            const stripRect = strip.getBoundingClientRect();
+            const pointerInContent =
+                clientX - stripRect.left + strip.scrollLeft;
+
+            let contentX = 0;
+            let insertAt = nextOrder.length;
+            for (let i = 0; i < nextOrder.length; i++) {
+                const w = session.tabWidths[nextOrder[i]] ?? 0;
+                if (pointerInContent < contentX + w / 2) {
+                    insertAt = i;
+                    break;
+                }
+                contentX += w;
+            }
+
+            return insertAt;
+        },
+        [tabs],
+    );
+
     const syncDraggedTab = useCallback(
         (clientX: number) => {
+            if (!liveReorder) {
+                return;
+            }
+
             setDragOffsetX(computeDragOffset(clientX) - domShiftRef.current);
 
             const nextOrder = buildPreviewOrder(clientX);
@@ -172,7 +258,7 @@ export function useTabDragReorder({
                 setPreviewOrder(nextOrder);
             }
         },
-        [buildPreviewOrder, computeDragOffset, tabs],
+        [buildPreviewOrder, computeDragOffset, liveReorder, tabs],
     );
 
     useEffect(() => {
@@ -241,7 +327,11 @@ export function useTabDragReorder({
     const finishDrag = useCallback(
         (
             pointerId?: number,
-            options?: { commit?: boolean; suppressClick?: boolean },
+            options?: {
+                commit?: boolean;
+                suppressClick?: boolean;
+                clientX?: number;
+            },
         ) => {
             const session = sessionRef.current;
             if (!session) return;
@@ -270,8 +360,11 @@ export function useTabDragReorder({
             }
 
             if (commit) {
-                const finalIndex =
-                    previewOrderRef.current?.indexOf(session.tabId) ?? -1;
+                const finalIndex = liveReorder
+                    ? (previewOrderRef.current?.indexOf(session.tabId) ?? -1)
+                    : options?.clientX !== undefined
+                      ? computeDropIndex(options.clientX)
+                      : session.originalIndex;
                 if (finalIndex !== -1 && finalIndex !== session.originalIndex) {
                     onCommitReorder(session.originalIndex, finalIndex);
                 }
@@ -285,18 +378,26 @@ export function useTabDragReorder({
             setDraggingTabId(null);
             setDragOffsetX(0);
         },
-        [onCommitReorder, stopEdgeScroll],
+        [computeDropIndex, liveReorder, onCommitReorder, stopEdgeScroll],
     );
 
     useEffect(() => {
         return () => {
+            const session = sessionRef.current;
+            if (session?.dragging) {
+                onDragCancel?.(session.tabId);
+            }
             stopEdgeScroll();
             document.body.classList.remove("dragging-tab");
             setDetachPreviewActive(false);
         };
-    }, [stopEdgeScroll]);
+    }, [onDragCancel, stopEdgeScroll]);
 
     useLayoutEffect(() => {
+        if (!liveReorder) {
+            return;
+        }
+
         const nextPositions: Record<string, number> = {};
 
         visualTabs.forEach((tab) => {
@@ -315,6 +416,7 @@ export function useTabDragReorder({
                             node.setPointerCapture(session.pointerId);
                         } catch {
                             // Pointer was released — end drag
+                            onDragCancel?.(session.tabId);
                             finishDrag(session.pointerId);
                             return;
                         }
@@ -358,7 +460,7 @@ export function useTabDragReorder({
         });
 
         previousPositionsRef.current = nextPositions;
-    }, [draggingTabId, finishDrag, visualTabs]);
+    }, [draggingTabId, finishDrag, liveReorder, onDragCancel, visualTabs]);
 
     const handlePointerDown = useCallback(
         (
@@ -396,8 +498,6 @@ export function useTabDragReorder({
                 dragging: false,
                 detachArmedAt: null,
             };
-
-            node.setPointerCapture(event.pointerId);
         },
         [tabs],
     );
@@ -422,6 +522,11 @@ export function useTabDragReorder({
 
             if (!session.dragging) {
                 session.dragging = true;
+                try {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                } catch {
+                    // Ignore capture failures and continue with best-effort drag.
+                }
                 if (previewOrderRef.current === null) {
                     const initialOrder = tabs.map((tab) => tab.id);
                     previewOrderRef.current = initialOrder;
@@ -429,7 +534,21 @@ export function useTabDragReorder({
                 }
                 setDraggingTabId(tabId);
                 document.body.classList.add("dragging-tab");
+                window.getSelection()?.removeAllRanges();
+                onDragStart?.(tabId, {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                });
             }
+
+            onDragMove?.(tabId, {
+                clientX: event.clientX,
+                clientY: event.clientY,
+                screenX: event.screenX,
+                screenY: event.screenY,
+            });
 
             const wantsDetach = shouldDetach?.(event.clientX, event.clientY);
 
@@ -483,6 +602,8 @@ export function useTabDragReorder({
                     if (e.pointerId !== session.pointerId) return;
                     cleanup();
                     handlePointerUpRef.current(e.pointerId, {
+                        clientX: e.clientX,
+                        clientY: e.clientY,
                         screenX: e.screenX,
                         screenY: e.screenY,
                     });
@@ -521,13 +642,21 @@ export function useTabDragReorder({
                 setDetachPreviewActive(false);
             }
 
+            if (liveReorder) {
+                updateEdgeScroll(event.clientX);
+                syncDraggedTab(event.clientX);
+                return;
+            }
+
             updateEdgeScroll(event.clientX);
-            syncDraggedTab(event.clientX);
         },
         [
             computeDragOffset,
             detachPreviewActive,
             finishDrag,
+            liveReorder,
+            onDragMove,
+            onDragStart,
             onDetachCancel,
             onDetachEnd,
             onDetachMove,
@@ -543,25 +672,56 @@ export function useTabDragReorder({
     const handlePointerUp = useCallback(
         (
             pointerId?: number,
-            screenCoords?: { screenX: number; screenY: number },
+            coords?: {
+                clientX: number;
+                clientY: number;
+                screenX: number;
+                screenY: number;
+            },
         ) => {
             detachCleanupRef.current?.();
 
             const session = sessionRef.current;
 
-            if (detachActiveRef.current && session && screenCoords) {
-                const tabId = session.tabId;
+            if (session && !session.dragging) {
+                onActivate?.(session.tabId);
                 finishDrag(pointerId, {
                     commit: false,
                     suppressClick: true,
                 });
-                void onDetachEnd?.(tabId, screenCoords);
                 return;
             }
 
-            finishDrag(pointerId);
+            if (detachActiveRef.current && session && coords) {
+                const tabId = session.tabId;
+                if (session.dragging) {
+                    onDragEnd?.(tabId, coords);
+                }
+                finishDrag(pointerId, {
+                    commit: false,
+                    suppressClick: true,
+                });
+                void onDetachEnd?.(tabId, {
+                    screenX: coords.screenX,
+                    screenY: coords.screenY,
+                });
+                return;
+            }
+
+            if (session?.dragging && coords) {
+                onDragEnd?.(session.tabId, coords);
+            }
+
+            finishDrag(pointerId, {
+                commit: coords
+                    ? session
+                        ? (shouldCommitDrag?.(session.tabId, coords) ?? true)
+                        : true
+                    : true,
+                clientX: coords?.clientX,
+            });
         },
-        [finishDrag, onDetachEnd],
+        [finishDrag, onActivate, onDetachEnd, onDragEnd, shouldCommitDrag],
     );
 
     useEffect(() => {

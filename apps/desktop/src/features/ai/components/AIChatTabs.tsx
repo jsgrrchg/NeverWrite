@@ -3,7 +3,11 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import { getSessionRuntimeName, getSessionTitle } from "../sessionPresentation";
+import {
+    getRuntimeName,
+    getSessionRuntimeName,
+    getSessionTitle,
+} from "../sessionPresentation";
 import type {
     AIChatSession,
     AIChatSessionStatus,
@@ -90,7 +94,7 @@ export function AIChatTabs({
                     : getFallbackTitle(tab.sessionId);
                 const runtimeName = session
                     ? getSessionRuntimeName(session, runtimes)
-                    : "Chat";
+                    : getRuntimeName(tab.runtimeId, runtimes);
 
                 return (
                     <div

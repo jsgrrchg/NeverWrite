@@ -4,8 +4,20 @@ import type {
     AIEditedFileBufferEntry,
     AIFileDiff,
 } from "../types";
+import type { TrackedFile } from "../diff/actionLogTypes";
+import {
+    getTrackedFilesForWorkCycle,
+    setTrackedFilesForWorkCycle,
+    trackedFilesToLegacyEntries,
+} from "./actionLogModel";
 
 const EMPTY_EDITED_FILES_BUFFER: AIEditedFileBufferEntry[] = [];
+
+// Cache for trackedFilesToLegacyEntries to maintain referential stability.
+// Zustand immutable updates guarantee that actionLog reference only changes
+// when data actually changes, so we can use it as a cache key.
+let _cachedTracked: Record<string, TrackedFile> | null = null;
+let _cachedEntries: AIEditedFileBufferEntry[] = EMPTY_EDITED_FILES_BUFFER;
 
 function hasDiffBuffer(message: AIChatMessage) {
     return (message.diffs?.length ?? 0) > 0;
@@ -46,6 +58,28 @@ export function startNewWorkCycle(session: AIChatSession): AIChatSession {
         ...(session.editedFilesBufferByWorkCycleId ?? {}),
     };
 
+    // Carry forward actionLog tracked files to the new work cycle so
+    // they accumulate across prompts until the user explicitly resets.
+    let nextActionLog = session.actionLog;
+    const oldCycleId = keepVisibleCycle ? null : session.visibleWorkCycleId;
+
+    if (oldCycleId && nextActionLog) {
+        const oldFiles = getTrackedFilesForWorkCycle(nextActionLog, oldCycleId);
+        if (Object.keys(oldFiles).length > 0) {
+            // Move tracked files from old cycle to new cycle
+            nextActionLog = setTrackedFilesForWorkCycle(
+                nextActionLog,
+                oldCycleId,
+                {},
+            );
+            nextActionLog = setTrackedFilesForWorkCycle(
+                nextActionLog,
+                nextWorkCycleId,
+                oldFiles,
+            );
+        }
+    }
+
     if (!keepVisibleCycle && session.visibleWorkCycleId) {
         const carryForward = nextBuffers[session.visibleWorkCycleId] ?? [];
         delete nextBuffers[session.visibleWorkCycleId];
@@ -56,6 +90,7 @@ export function startNewWorkCycle(session: AIChatSession): AIChatSession {
 
     return syncEditedFilesBufferState({
         ...session,
+        actionLog: nextActionLog,
         activeWorkCycleId: nextWorkCycleId,
         visibleWorkCycleId: keepVisibleCycle
             ? session.visibleWorkCycleId
@@ -462,7 +497,7 @@ export function setActiveEditedFilesBuffer(
     return replaceEditedFilesBufferForWorkCycle(session, workCycleId, entries);
 }
 
-function updateVisibleEditedFilesBufferEntry(
+export function updateVisibleEditedFilesBufferEntry(
     session: AIChatSession,
     identityKey: string,
     updater: (entry: AIEditedFileBufferEntry) => AIEditedFileBufferEntry,
@@ -518,6 +553,27 @@ export function selectVisibleEditedFilesBuffer(
     if (!sessionId) return EMPTY_EDITED_FILES_BUFFER;
     const session = state.sessionsById[sessionId];
     if (!session) return EMPTY_EDITED_FILES_BUFFER;
+
+    // ActionLog is the source of truth when present
+    if (session.actionLog) {
+        const workCycleId =
+            session.visibleWorkCycleId ?? session.activeWorkCycleId;
+        const tracked = getTrackedFilesForWorkCycle(
+            session.actionLog,
+            workCycleId,
+        );
+        if (Object.keys(tracked).length > 0) {
+            // Cache to maintain referential stability — Zustand's immutable
+            // updates guarantee `tracked` reference only changes on real mutations.
+            if (tracked !== _cachedTracked) {
+                _cachedTracked = tracked;
+                _cachedEntries = trackedFilesToLegacyEntries(tracked);
+            }
+            return _cachedEntries;
+        }
+        return EMPTY_EDITED_FILES_BUFFER;
+    }
+
     if (session.visibleWorkCycleId) {
         return (
             session.editedFilesBufferByWorkCycleId?.[
@@ -535,4 +591,16 @@ export function selectVisibleEditedFilesBufferCount(
     sessionId: string | null,
 ): number {
     return selectVisibleEditedFilesBuffer(state, sessionId).length;
+}
+
+export function selectHasUndoReject(
+    state: {
+        sessionsById: Record<string, AIChatSession>;
+    },
+    sessionId: string | null,
+): boolean {
+    if (!sessionId) return false;
+    const session = state.sessionsById[sessionId];
+    if (!session?.actionLog?.lastRejectUndo) return false;
+    return Object.keys(session.actionLog.lastRejectUndo.snapshots).length > 0;
 }

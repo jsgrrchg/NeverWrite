@@ -35,7 +35,7 @@ export interface ChangeHunk {
     newEnd: number;
 }
 
-export interface DecisionHunk extends ChangeHunk {}
+export type DecisionHunk = ChangeHunk;
 
 export interface VisualDiffBlock extends ChangeHunk {
     decisionHunkIndexes: number[];

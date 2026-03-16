@@ -42,6 +42,9 @@ pub struct VaultIndex {
     pub pdf_metadata: HashMap<NoteId, PdfMetadata>,
     #[serde(default)]
     pub pdf_search_index: HashMap<NoteId, SearchEntry>,
+    /// Links that didn't resolve to any note (potential attachment references)
+    #[serde(default)]
+    pub unresolved_links: HashMap<NoteId, Vec<String>>,
 }
 
 impl VaultIndex {
@@ -74,6 +77,7 @@ impl VaultIndex {
             suggestion_order: Vec::with_capacity(note_count),
             pdf_metadata: HashMap::new(),
             pdf_search_index: HashMap::new(),
+            unresolved_links: HashMap::new(),
         };
 
         let total_notes = prepared_notes.len();
@@ -113,6 +117,7 @@ impl VaultIndex {
         }
 
         self.backlinks.remove(note_id);
+        self.unresolved_links.remove(note_id);
 
         let metadata = self.metadata.get(note_id).cloned();
         let indexed_note = self.notes.get(note_id).cloned();
@@ -197,7 +202,8 @@ impl VaultIndex {
         self.insert_suggestion_sorted(&note_id);
 
         let mut resolved_targets = Vec::new();
-        for link in &prepared.prepared_links {
+        let mut unresolved_targets = Vec::new();
+        for (raw_target, link) in prepared.raw_links.iter().zip(&prepared.prepared_links) {
             if let Some(target_id) = self.resolve_prepared_link_in_index(link, &prepared.parent_dir)
             {
                 resolved_targets.push(target_id.clone());
@@ -205,10 +211,15 @@ impl VaultIndex {
                     .entry(target_id)
                     .or_default()
                     .push(note_id.clone());
+            } else {
+                unresolved_targets.push(raw_target.clone());
             }
         }
 
-        self.forward_links.insert(note_id, resolved_targets);
+        self.forward_links.insert(note_id.clone(), resolved_targets);
+        if !unresolved_targets.is_empty() {
+            self.unresolved_links.insert(note_id, unresolved_targets);
+        }
     }
 
     fn register_note(&mut self, note: &PreparedNote) {
@@ -272,17 +283,21 @@ impl VaultIndex {
                 scope.spawn(move || {
                     let mut forward_links = Vec::with_capacity(chunk.len());
                     let mut backlinks = Vec::new();
+                    let mut unresolved_links = Vec::new();
                     let mut pending_progress = 0_usize;
 
                     for note in chunk {
                         let mut resolved_targets = Vec::new();
+                        let mut unresolved_targets = Vec::new();
 
-                        for link in &note.prepared_links {
+                        for (raw_target, link) in note.raw_links.iter().zip(&note.prepared_links) {
                             if let Some(target_id) =
                                 resolver.resolve_prepared_link(link, &note.parent_dir, Some(&cache))
                             {
                                 resolved_targets.push(target_id.clone());
                                 backlinks.push((target_id, note.id.clone()));
+                            } else {
+                                unresolved_targets.push(raw_target.clone());
                             }
 
                             pending_progress += 1;
@@ -296,6 +311,9 @@ impl VaultIndex {
                         }
 
                         forward_links.push((note.id.clone(), resolved_targets));
+                        if !unresolved_targets.is_empty() {
+                            unresolved_links.push((note.id.clone(), unresolved_targets));
+                        }
                     }
 
                     if pending_progress > 0 {
@@ -307,6 +325,7 @@ impl VaultIndex {
                     let _ = tx.send(WorkerMessage::Chunk(ResolvedChunk {
                         forward_links,
                         backlinks,
+                        unresolved_links,
                     }));
                 });
             }
@@ -328,6 +347,10 @@ impl VaultIndex {
 
                         for (target_id, source_id) in chunk.backlinks {
                             self.backlinks.entry(target_id).or_default().push(source_id);
+                        }
+
+                        for (note_id, targets) in chunk.unresolved_links {
+                            self.unresolved_links.insert(note_id, targets);
                         }
 
                         received_chunks += 1;
@@ -892,6 +915,7 @@ struct ResolveCacheKey {
 struct ResolvedChunk {
     forward_links: Vec<(NoteId, Vec<NoteId>)>,
     backlinks: Vec<(NoteId, NoteId)>,
+    unresolved_links: Vec<(NoteId, Vec<String>)>,
 }
 
 enum WorkerMessage {

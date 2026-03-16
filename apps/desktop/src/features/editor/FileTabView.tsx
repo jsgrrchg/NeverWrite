@@ -44,7 +44,7 @@ export function FileTabView() {
     }
 
     return tab.viewer === "image" ? (
-        <ImageFileViewer tab={tab} />
+        <ImageFileViewer key={tab.path} tab={tab} />
     ) : (
         <FileTextTabView />
     );
@@ -110,13 +110,6 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
         "loading",
     );
 
-    useEffect(() => {
-        setMode("fit");
-        setZoom(1);
-        zoomRef.current = 1;
-        setStatus("loading");
-    }, [tab.path]);
-
     const setFit = useCallback(() => setMode("fit"), []);
     const setActual = useCallback(() => {
         setMode("zoom");
@@ -147,7 +140,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
 
         container.addEventListener("wheel", handleWheel, { passive: false });
         return () => container.removeEventListener("wheel", handleWheel);
-    }, []);
+    }, [wheelZoomModifierRef]);
 
     const isFit = mode === "fit";
     const zoomPercent = formatZoomPercentage(zoom);

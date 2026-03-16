@@ -40,6 +40,12 @@ const runtimes: AIRuntimeOption[] = [
         description: "Codex runtime embedded as an ACP sidecar.",
         capabilities: ["attachments", "permissions", "reasoning"],
     },
+    {
+        id: "claude-acp",
+        name: "Claude ACP",
+        description: "Claude runtime embedded as an ACP sidecar.",
+        capabilities: ["create_session", "resume_session"],
+    },
 ];
 
 describe("AIChatTabs", () => {
@@ -68,9 +74,10 @@ describe("AIChatTabs", () => {
             />,
         );
 
-        expect(
-            screen.getByRole("tab", { name: /Second tab/ }),
-        ).toHaveAttribute("aria-selected", "true");
+        expect(screen.getByRole("tab", { name: /Second tab/ })).toHaveAttribute(
+            "aria-selected",
+            "true",
+        );
         expect(screen.getByTitle("Streaming")).toBeInTheDocument();
     });
 
@@ -147,5 +154,30 @@ describe("AIChatTabs", () => {
         fireEvent.click(screen.getByText("Export chat to Markdown"));
 
         expect(onExportSession).toHaveBeenCalledWith("session-a");
+    });
+
+    it("uses the tab runtime as fallback metadata for restored tabs", () => {
+        renderComponent(
+            <AIChatTabs
+                tabs={[
+                    {
+                        id: "tab-a",
+                        sessionId: "persisted:history-1",
+                        runtimeId: "claude-acp",
+                    },
+                ]}
+                activeTabId="tab-a"
+                sessionsById={{}}
+                runtimes={runtimes}
+                onSelectTab={() => {}}
+                onCloseTab={() => {}}
+                onExportSession={() => {}}
+            />,
+        );
+
+        expect(screen.getByRole("tab", { name: /Saved chat/ })).toHaveAttribute(
+            "title",
+            "Claude ACP • Saved chat",
+        );
     });
 });

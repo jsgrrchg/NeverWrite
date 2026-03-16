@@ -126,11 +126,7 @@ function shouldCollect() {
     return enabled;
 }
 
-function recordEvent(
-    name: string,
-    durationMs: number | null,
-    meta?: PerfMeta,
-) {
+function recordEvent(name: string, durationMs: number | null, meta?: PerfMeta) {
     const metric = metrics.get(name) ?? {
         count: 0,
         totalMs: 0,
@@ -180,6 +176,10 @@ function recordEvent(
 
 export function perfNow() {
     return shouldCollect() ? performance.now() : null;
+}
+
+export function perfEnabled() {
+    return shouldCollect();
 }
 
 export function perfMeasure(

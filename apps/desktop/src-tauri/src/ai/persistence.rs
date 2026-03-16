@@ -37,6 +37,8 @@ pub struct PersistedMessage {
 pub struct PersistedSessionHistory {
     pub version: u32,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
     pub model_id: String,
     pub mode_id: String,
     pub created_at: u64,

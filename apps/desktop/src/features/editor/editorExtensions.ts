@@ -5,11 +5,16 @@ import {
     defaultHighlightStyle,
 } from "@codemirror/language";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
-import type { EditorFontFamily } from "../../app/store/settingsStore";
+import type {
+    EditorFontFamily,
+    SpellcheckLanguage,
+    SpellcheckSecondaryLanguage,
+} from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { livePreviewExtension } from "./extensions/livePreview";
 import { resolveWikilink } from "./wikilinkResolution";
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
+import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 
 export type LinkContextMenuState = {
     x: number;
@@ -37,6 +42,10 @@ export const baseTheme = EditorView.theme({
         paddingBottom: "72px",
         scrollbarColor: "var(--app-scrollbar-thumb) transparent",
         minWidth: 0,
+    },
+    '&[data-line-wrapping="false"] .cm-scroller': {
+        overflowX: "auto",
+        overflowY: "auto",
     },
     ".cm-lp-scroll-header": {
         flex: "0 0 100%",
@@ -67,7 +76,6 @@ export const baseTheme = EditorView.theme({
         width: editorLineNumberGutterWidth,
         minWidth: editorLineNumberGutterWidth,
         marginLeft: `max(0px, calc(${editorHorizontalInset} - ${editorLineNumberGutterWidth}))`,
-        padding: "24px 0 120px",
         pointerEvents: "none",
     },
     '&[data-live-preview="false"] .cm-content': {
@@ -77,12 +85,10 @@ export const baseTheme = EditorView.theme({
         minWidth: editorLineNumberGutterWidth,
     },
     '&[data-live-preview="false"] .cm-lineNumbers .cm-gutterElement': {
-        display: "flex",
-        alignItems: "center",
         minWidth: "3ch",
         padding: "0 14px 0 0",
-        transform: "translateY(1.5px)",
-        justifyContent: "flex-end",
+        textAlign: "right",
+        lineHeight: "var(--text-input-line-height)",
     },
     ".cm-cursor": {
         borderLeftColor: "var(--text-primary)",
@@ -120,8 +126,14 @@ export const syntaxCompartment = new Compartment();
 export const livePreviewCompartment = new Compartment();
 // Compartment for justified alignment
 export const alignmentCompartment = new Compartment();
+// Compartment for line wrapping
+export const wrappingCompartment = new Compartment();
 // Compartment for tab size
 export const tabSizeCompartment = new Compartment();
+// Compartment for spellcheck attributes
+export const spellcheckCompartment = new Compartment();
+// Compartment for app-owned spellcheck decorations
+export const spellcheckDecorationsCompartment = new Compartment();
 
 export function getSyntaxExtension(isDark: boolean) {
     // Only switch syntax highlighting colors, not the full editor theme
@@ -175,6 +187,51 @@ export function getAlignmentExtension(enabled: boolean) {
               }),
           ]
         : [];
+}
+
+export function getWrappingExtension(enabled: boolean) {
+    return enabled
+        ? [
+              EditorView.lineWrapping,
+              EditorView.editorAttributes.of({
+                  "data-line-wrapping": "true",
+              }),
+          ]
+        : [
+              EditorView.editorAttributes.of({
+                  "data-line-wrapping": "false",
+              }),
+          ];
+}
+
+export function getSpellcheckExtension(
+    enabled: boolean,
+    primaryLanguage: SpellcheckLanguage,
+    secondaryLanguage: SpellcheckSecondaryLanguage,
+    noteId: string | null | undefined,
+) {
+    const active = enabled && typeof noteId === "string" && noteId.length > 0;
+    const resolvedLanguage = active
+        ? resolveFrontendSpellcheckLanguage(primaryLanguage)
+        : undefined;
+    const resolvedSecondaryLanguage =
+        active && secondaryLanguage
+            ? resolveFrontendSpellcheckLanguage(secondaryLanguage)
+            : undefined;
+
+    return EditorView.contentAttributes.of({
+        spellcheck: "false",
+        "data-spellcheck-engine": active ? "app" : "off",
+        ...(resolvedLanguage
+            ? { "data-spellcheck-language": resolvedLanguage }
+            : {}),
+        ...(resolvedSecondaryLanguage
+            ? {
+                  "data-spellcheck-secondary-language":
+                      resolvedSecondaryLanguage,
+              }
+            : {}),
+    });
 }
 
 export function getEditorFontFamily(fontFamily: EditorFontFamily) {
