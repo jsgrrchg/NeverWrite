@@ -234,6 +234,8 @@ function buildVisualDiffLine(
         type: op.type,
         prefix: op.type === "context" ? "  " : op.type === "add" ? "+ " : "- ",
         text: op.text,
+        oldLineNumber: op.oldIndex != null ? op.oldIndex + 1 : null,
+        newLineNumber: op.newIndex != null ? op.newIndex + 1 : null,
         hunkIndex: visualBlockIndex,
         decisionHunkIndex,
         visualBlockIndex,
@@ -508,6 +510,8 @@ function largeFilePreview(oldLines: string[], newLines: string[]): DiffLine[] {
     );
     const result: DiffLine[] = [];
 
+    let oldNum = 1;
+    let newNum = 1;
     for (let idx = 0; idx < limit; idx++) {
         const oldLine = oldLines[idx];
         const newLine = newLines[idx];
@@ -517,7 +521,11 @@ function largeFilePreview(oldLines: string[], newLines: string[]): DiffLine[] {
                 type: "context",
                 prefix: "  ",
                 text: newLine ?? oldLine ?? "",
+                oldLineNumber: oldNum,
+                newLineNumber: newNum,
             });
+            oldNum++;
+            newNum++;
             continue;
         }
 
@@ -526,7 +534,10 @@ function largeFilePreview(oldLines: string[], newLines: string[]): DiffLine[] {
                 type: "remove",
                 prefix: "- ",
                 text: oldLine,
+                oldLineNumber: oldNum,
+                newLineNumber: null,
             });
+            oldNum++;
         }
 
         if (newLine !== undefined) {
@@ -534,7 +545,10 @@ function largeFilePreview(oldLines: string[], newLines: string[]): DiffLine[] {
                 type: "add",
                 prefix: "+ ",
                 text: newLine,
+                oldLineNumber: null,
+                newLineNumber: newNum,
             });
+            newNum++;
         }
     }
 
@@ -571,10 +585,12 @@ export function computeDiffLines(diff: AIFileDiff): DiffLine[] {
         diff.kind === "move" && (diff.old_text ?? "") === (diff.new_text ?? "");
 
     if (diff.kind === "add") {
-        return newLines.map((line) => ({
+        return newLines.map((line, idx) => ({
             type: "add" as const,
             prefix: "+ ",
             text: line,
+            oldLineNumber: null,
+            newLineNumber: idx + 1,
         }));
     }
 
@@ -588,10 +604,12 @@ export function computeDiffLines(diff: AIFileDiff): DiffLine[] {
                 },
             ];
         }
-        return oldLines.map((line) => ({
+        return oldLines.map((line, idx) => ({
             type: "remove" as const,
             prefix: "- ",
             text: line,
+            oldLineNumber: idx + 1,
+            newLineNumber: null,
         }));
     }
 

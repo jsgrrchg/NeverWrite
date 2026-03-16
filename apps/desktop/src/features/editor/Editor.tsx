@@ -116,6 +116,13 @@ import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 import { getSpellcheckEditorExtension } from "./extensions/spellcheck";
 import { useSpellcheckStore } from "../spellcheck/store";
 import {
+    getInlineDiffExtension,
+    inlineDiffField,
+    setInlineDiff,
+    clearInlineDiff,
+} from "./extensions/inlineDiff";
+import { getTrackedFilesForWorkCycle } from "../ai/store/actionLogModel";
+import {
     buildSpellcheckContextMenuEntries,
     findTextInputWordRange,
     isSpellcheckCandidate,
@@ -1239,6 +1246,7 @@ export function Editor({
                                 .notifyUserEditOnFile(fileId, edits, fullText);
                         },
                     ),
+                    getInlineDiffExtension(),
                     EditorView.updateListener.of((update) => {
                         if (
                             update.transactions.some((transaction) =>
@@ -1742,6 +1750,97 @@ export function Editor({
         });
         return unsub;
     }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
+
+    // Sync inline diff decorations with chatStore TrackedFile changes
+    useEffect(() => {
+        function syncInlineDiff(
+            state: ReturnType<typeof useChatStore.getState>,
+        ) {
+            const view = viewRef.current;
+            if (!view) return;
+
+            const noteId = activeTabRef.current?.noteId;
+            if (!noteId) return;
+            const fileId = `${noteId}.md`;
+
+            // Find TrackedFile for this file in any session.
+            let foundEdits: import("../ai/diff/actionLogTypes").LineEdit[] = [];
+            let foundSessionId: string | null = null;
+            let foundIdentityKey: string | null = null;
+            let foundVersion = 0;
+            let foundDiffBase = "";
+
+            const sessionEntries = Object.entries(state.sessionsById);
+            const suffix = `/${fileId}`;
+
+            // ActionLog TrackedFiles lookup
+            for (const [sid, session] of sessionEntries) {
+                if (!session.actionLog) continue;
+                const wc =
+                    session.visibleWorkCycleId ?? session.activeWorkCycleId;
+                const files = getTrackedFilesForWorkCycle(
+                    session.actionLog,
+                    wc,
+                );
+                let tracked = files[fileId] ?? null;
+                if (!tracked) {
+                    for (const file of Object.values(files)) {
+                        if (
+                            file.path === fileId ||
+                            file.path.endsWith(suffix) ||
+                            file.identityKey.endsWith(suffix)
+                        ) {
+                            tracked = file;
+                            break;
+                        }
+                    }
+                }
+                if (tracked && tracked.unreviewedEdits.edits.length > 0) {
+                    foundEdits = tracked.unreviewedEdits.edits;
+                    foundSessionId = sid;
+                    foundIdentityKey = tracked.identityKey;
+                    foundVersion = tracked.version;
+                    foundDiffBase = tracked.diffBase;
+                    break;
+                }
+            }
+
+            const currentDiffState = view.state.field(inlineDiffField);
+
+            if (foundEdits.length === 0) {
+                if (currentDiffState.edits.length > 0) {
+                    view.dispatch({ effects: clearInlineDiff.of(null) });
+                }
+                return;
+            }
+
+            if (currentDiffState.version === foundVersion) return;
+
+            // Extract deleted text from diffBase for each edit
+            const baseLines = foundDiffBase ? foundDiffBase.split("\n") : [];
+            const deletedTexts = foundEdits.map((edit) =>
+                edit.newStart === edit.newEnd && baseLines.length > 0
+                    ? baseLines.slice(edit.oldStart, edit.oldEnd)
+                    : [],
+            );
+
+            view.dispatch({
+                effects: setInlineDiff.of({
+                    edits: foundEdits,
+                    deletedTexts,
+                    sessionId: foundSessionId,
+                    identityKey: foundIdentityKey,
+                    version: foundVersion,
+                }),
+            });
+        }
+
+        // Process initial state (in case tracked files already exist)
+        syncInlineDiff(useChatStore.getState());
+
+        const unsub = useChatStore.subscribe(syncInlineDiff);
+        return unsub;
+    }, []);
 
     useEffect(() => {
         viewRef.current?.dispatch({

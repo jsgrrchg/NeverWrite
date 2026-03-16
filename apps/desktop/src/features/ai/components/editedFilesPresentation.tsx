@@ -328,10 +328,31 @@ export function DiffLineView({ line }: { line: DiffLine }) {
         );
     }
 
+    if (line.type === "separator") {
+        return (
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "36px minmax(0, 1fr)",
+                    padding: "2px 8px",
+                    opacity: 0.5,
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <div />
+                <div style={{ textAlign: "center" }}>{line.text}</div>
+            </div>
+        );
+    }
+
+    const lineNumber = line.oldLineNumber ?? line.newLineNumber ?? "";
+
     return (
         <div
             style={{
-                padding: "0 12px",
+                display: "grid",
+                gridTemplateColumns: "36px minmax(0, 1fr)",
+                alignItems: "stretch",
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-all",
                 backgroundColor:
@@ -352,12 +373,23 @@ export function DiffLineView({ line }: { line: DiffLine }) {
                         : line.type === "remove"
                           ? "2px solid color-mix(in srgb, var(--diff-remove) 45%, transparent)"
                           : "2px solid transparent",
-                opacity: line.type === "separator" ? 0.5 : 1,
-                textAlign: line.type === "separator" ? "center" : "left",
             }}
         >
-            {line.prefix}
-            {line.text}
+            <div
+                style={{
+                    padding: "0 4px 0 6px",
+                    textAlign: "right",
+                    color: "var(--text-secondary)",
+                    opacity: 0.55,
+                    borderRight:
+                        "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                    userSelect: "none",
+                    fontSize: "0.85em",
+                }}
+            >
+                {lineNumber}
+            </div>
+            <div style={{ padding: "0 8px" }}>{line.text}</div>
         </div>
     );
 }
