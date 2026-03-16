@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AIEditedFileBufferEntry, AIFileDiff } from "../types";
 import {
-    DIFF_PANEL_MAX_HEIGHT,
     computeDecisionHunks,
     computeDiffLines,
     computeMergedText,
@@ -403,36 +402,8 @@ export function EditedFileDiffPreview({
         key: "",
         map: new Map(),
     });
-    const [panelHeight, setPanelHeight] = useState(DIFF_PANEL_MAX_HEIGHT);
-    const isDraggingRef = useRef(false);
-    const dragStartYRef = useRef(0);
-    const dragStartHeightRef = useRef(0);
     const autoResolvedSignatureRef = useRef<string | null>(null);
 
-    const onResizeMouseDown = useCallback(
-        (e: React.MouseEvent) => {
-            e.preventDefault();
-            isDraggingRef.current = true;
-            dragStartYRef.current = e.clientY;
-            dragStartHeightRef.current = panelHeight;
-
-            const onMouseMove = (ev: MouseEvent) => {
-                if (!isDraggingRef.current) return;
-                const delta = ev.clientY - dragStartYRef.current;
-                setPanelHeight(
-                    Math.max(80, dragStartHeightRef.current + delta),
-                );
-            };
-            const onMouseUp = () => {
-                isDraggingRef.current = false;
-                window.removeEventListener("mousemove", onMouseMove);
-                window.removeEventListener("mouseup", onMouseUp);
-            };
-            window.addEventListener("mousemove", onMouseMove);
-            window.addEventListener("mouseup", onMouseUp);
-        },
-        [panelHeight],
-    );
     const lines = useMemo(
         () => (expanded ? computeDiffLines(diff) : []),
         [diff, expanded],
@@ -584,8 +555,6 @@ export function EditedFileDiffPreview({
             <div
                 data-testid={testId}
                 style={{
-                    height: panelHeight,
-                    overflow: "auto",
                     fontSize: `${diffZoom}em`,
                     fontFamily: "var(--font-mono, monospace)",
                     lineHeight: 1.55,
@@ -793,31 +762,6 @@ export function EditedFileDiffPreview({
                         {emptyLabel}
                     </div>
                 )}
-            </div>
-            {/* Resize handle */}
-            <div
-                onMouseDown={onResizeMouseDown}
-                style={{
-                    height: 6,
-                    cursor: "ns-resize",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor:
-                        "color-mix(in srgb, var(--bg-secondary) 80%, transparent)",
-                    borderTop:
-                        "1px solid color-mix(in srgb, var(--border) 30%, transparent)",
-                }}
-            >
-                <div
-                    style={{
-                        width: 28,
-                        height: 2,
-                        borderRadius: 999,
-                        backgroundColor:
-                            "color-mix(in srgb, var(--text-secondary) 25%, transparent)",
-                    }}
-                />
             </div>
         </div>
     );
