@@ -37,6 +37,7 @@ import type {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { openChatNoteById } from "./chatNoteNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
+import { VoiceRecordingOverlay } from "./VoiceRecordingOverlay";
 
 interface AIChatComposerProps {
     parts: AIComposerPart[];
@@ -66,6 +67,7 @@ interface AIChatComposerProps {
     onStop: () => void;
     isRecording?: boolean;
     isTranscribing?: boolean;
+    voiceStream?: MediaStream | null;
     voiceError?: string | null;
     onMicClick?: () => void;
 }
@@ -789,6 +791,7 @@ export function AIChatComposer({
     onStop,
     isRecording,
     isTranscribing,
+    voiceStream,
     voiceError,
     onMicClick,
 }: AIChatComposerProps) {
@@ -1400,25 +1403,35 @@ export function AIChatComposer({
                         </svg>
                     )}
                 </button>
-                {isEmpty && (
-                    <div
-                        className="pointer-events-none absolute left-3.5 top-2.5"
-                        style={{
-                            right: 32,
-                            overflow: "hidden",
-                            whiteSpace: "nowrap",
-                            textOverflow: "ellipsis",
-                            color: "var(--text-secondary)",
-                            opacity: 0.6,
-                            fontSize: composerFontSize,
-                            fontFamily: getEditorFontFamily(composerFontFamily),
-                            top: expanded ? 14 : 10,
-                            left: expanded ? 16 : 14,
-                        }}
-                    >
-                        Message {runtimeName} — @ to include context, / for
-                        commands
-                    </div>
+                {isRecording || isTranscribing ? (
+                    <VoiceRecordingOverlay
+                        stream={voiceStream ?? null}
+                        isRecording={!!isRecording}
+                        isTranscribing={!!isTranscribing}
+                        onStop={() => onMicClick?.()}
+                    />
+                ) : (
+                    isEmpty && (
+                        <div
+                            className="pointer-events-none absolute left-3.5 top-2.5"
+                            style={{
+                                right: 32,
+                                overflow: "hidden",
+                                whiteSpace: "nowrap",
+                                textOverflow: "ellipsis",
+                                color: "var(--text-secondary)",
+                                opacity: 0.6,
+                                fontSize: composerFontSize,
+                                fontFamily:
+                                    getEditorFontFamily(composerFontFamily),
+                                top: expanded ? 14 : 10,
+                                left: expanded ? 16 : 14,
+                            }}
+                        >
+                            Message {runtimeName} — @ to include context, / for
+                            commands
+                        </div>
+                    )
                 )}
                 <div
                     ref={bindComposerRef}

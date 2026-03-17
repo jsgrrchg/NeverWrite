@@ -30,12 +30,19 @@ function pickMimeType(): string {
     return "";
 }
 
+const ONSTOP_TIMEOUT_MS = 5_000;
+
 export interface UseVoiceRecorderReturn {
     isRecording: boolean;
     isTranscribing: boolean;
     error: string | null;
+    stream: MediaStream | null;
+    /** Text from auto-stop transcription. Consumer should clear after handling. */
+    autoTranscription: string | null;
     startRecording: () => Promise<void>;
     stopAndTranscribe: () => Promise<string | null>;
+    setError: (error: string | null) => void;
+    clearAutoTranscription: () => void;
 }
 
 const MAX_RECORDING_MS = 2 * 60 * 1000; // 2 minutes
@@ -44,10 +51,27 @@ export function useVoiceRecorder(): UseVoiceRecorderReturn {
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [stream, setStream] = useState<MediaStream | null>(null);
+    const [autoTranscription, setAutoTranscription] = useState<string | null>(
+        null,
+    );
     const recorderRef = useRef<MediaRecorder | null>(null);
     const chunksRef = useRef<Blob[]>([]);
     const streamRef = useRef<MediaStream | null>(null);
     const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    /** Release mic tracks and null out refs. Shared by cleanup & stopAndTranscribe. */
+    const releaseStream = useCallback(() => {
+        if (streamRef.current) {
+            for (const track of streamRef.current.getTracks()) {
+                track.stop();
+            }
+            streamRef.current = null;
+        }
+        setStream(null);
+        recorderRef.current = null;
+        chunksRef.current = [];
+    }, []);
 
     const cleanup = useCallback(() => {
         if (autoStopTimerRef.current) {
@@ -57,63 +81,11 @@ export function useVoiceRecorder(): UseVoiceRecorderReturn {
         if (recorderRef.current && recorderRef.current.state !== "inactive") {
             recorderRef.current.stop();
         }
-        recorderRef.current = null;
-        chunksRef.current = [];
-        if (streamRef.current) {
-            for (const track of streamRef.current.getTracks()) {
-                track.stop();
-            }
-            streamRef.current = null;
-        }
-    }, []);
+        releaseStream();
+    }, [releaseStream]);
 
     // Cleanup on unmount
     useEffect(() => cleanup, [cleanup]);
-
-    const startRecording = useCallback(async () => {
-        setError(null);
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-            });
-            streamRef.current = stream;
-
-            const mimeType = pickMimeType();
-            const recorder = mimeType
-                ? new MediaRecorder(stream, { mimeType })
-                : new MediaRecorder(stream);
-
-            chunksRef.current = [];
-            recorder.ondataavailable = (e) => {
-                if (e.data.size > 0) chunksRef.current.push(e.data);
-            };
-
-            recorderRef.current = recorder;
-            recorder.start();
-            setIsRecording(true);
-
-            // Auto-stop after max duration — safety net, stops recording
-            // but does not transcribe (user must click button while recording)
-            autoStopTimerRef.current = setTimeout(() => {
-                if (
-                    recorderRef.current &&
-                    recorderRef.current.state === "recording"
-                ) {
-                    recorderRef.current.stop();
-                    setIsRecording(false);
-                    setError("Recording stopped — maximum 2 minutes reached.");
-                    cleanup();
-                }
-            }, MAX_RECORDING_MS);
-        } catch (e) {
-            cleanup();
-            setError(
-                e instanceof DOMException && e.name === "NotAllowedError"
-                    ? "Microphone access denied. Check system preferences."
-                    : `Could not access microphone: ${e}`,
-            );
-        }
-    }, [cleanup]);
 
     const stopAndTranscribe = useCallback(async (): Promise<string | null> => {
         if (autoStopTimerRef.current) {
@@ -127,24 +99,32 @@ export function useVoiceRecorder(): UseVoiceRecorderReturn {
             return null;
         }
 
-        // Wait for the recorder to finish producing data
-        const blob = await new Promise<Blob>((resolve) => {
-            recorder.onstop = () => {
-                const mime = recorder.mimeType || "audio/ogg";
-                resolve(new Blob(chunksRef.current, { type: mime }));
-            };
-            recorder.stop();
-        });
-
-        // Release mic
-        if (streamRef.current) {
-            for (const track of streamRef.current.getTracks()) {
-                track.stop();
-            }
-            streamRef.current = null;
+        // Wait for the recorder to finish producing data, with a safety timeout
+        let blob: Blob;
+        try {
+            blob = await Promise.race([
+                new Promise<Blob>((resolve) => {
+                    recorder.onstop = () => {
+                        const mime = recorder.mimeType || "audio/ogg";
+                        resolve(new Blob(chunksRef.current, { type: mime }));
+                    };
+                    recorder.stop();
+                }),
+                new Promise<never>((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error("Recorder onstop timed out")),
+                        ONSTOP_TIMEOUT_MS,
+                    ),
+                ),
+            ]);
+        } catch (e) {
+            releaseStream();
+            setIsRecording(false);
+            setError(`Recording failed: ${e}`);
+            return null;
         }
-        recorderRef.current = null;
-        chunksRef.current = [];
+
+        releaseStream();
         setIsRecording(false);
 
         // Skip very short recordings (<0.5s worth of data, ~1KB)
@@ -164,13 +144,65 @@ export function useVoiceRecorder(): UseVoiceRecorderReturn {
         } finally {
             setIsTranscribing(false);
         }
-    }, [cleanup]);
+    }, [cleanup, releaseStream]);
+
+    const startRecording = useCallback(async () => {
+        setError(null);
+        try {
+            const mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+            });
+            streamRef.current = mediaStream;
+            setStream(mediaStream);
+
+            const mimeType = pickMimeType();
+            const recorder = mimeType
+                ? new MediaRecorder(mediaStream, { mimeType })
+                : new MediaRecorder(mediaStream);
+
+            chunksRef.current = [];
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) chunksRef.current.push(e.data);
+            };
+
+            recorderRef.current = recorder;
+            recorder.start();
+            setIsRecording(true);
+
+            // Auto-stop after max duration — transcribes instead of discarding
+            autoStopTimerRef.current = setTimeout(async () => {
+                if (
+                    recorderRef.current &&
+                    recorderRef.current.state === "recording"
+                ) {
+                    const text = await stopAndTranscribe();
+                    if (text) setAutoTranscription(text);
+                }
+            }, MAX_RECORDING_MS);
+        } catch (e) {
+            cleanup();
+            setError(
+                e instanceof DOMException && e.name === "NotAllowedError"
+                    ? "Microphone access denied. Check system preferences."
+                    : `Could not access microphone: ${e}`,
+            );
+        }
+    }, [cleanup, stopAndTranscribe]);
+
+    const clearAutoTranscription = useCallback(
+        () => setAutoTranscription(null),
+        [],
+    );
 
     return {
         isRecording,
         isTranscribing,
         error,
+        stream,
+        autoTranscription,
         startRecording,
         stopAndTranscribe,
+        setError,
+        clearAutoTranscription,
     };
 }
