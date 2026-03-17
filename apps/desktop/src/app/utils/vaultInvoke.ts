@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useVaultStore } from "../store/vaultStore";
 
+const IPC_DEBUG_ENABLED =
+    import.meta.env.DEV && import.meta.env.VITE_ENABLE_IPC_DEBUG === "true";
+
 let _ipcTracing = false;
 const _ipcStats = new Map<
     string,
@@ -19,7 +22,7 @@ export async function vaultInvoke<T>(
     args?: Record<string, unknown>,
 ): Promise<T> {
     const vaultPath = useVaultStore.getState().vaultPath ?? "";
-    if (!_ipcTracing) {
+    if (!IPC_DEBUG_ENABLED || !_ipcTracing) {
         return invoke<T>(cmd, { ...args, vaultPath });
     }
 
@@ -41,14 +44,14 @@ function recordIpc(cmd: string, ms: number) {
     stats.maxMs = Math.max(stats.maxMs, ms);
     _ipcStats.set(cmd, stats);
 
-    if (ms > 50) {
+    if (IPC_DEBUG_ENABLED && ms > 50) {
         console.warn(`[ipc] ${cmd} took ${ms.toFixed(1)}ms`);
     }
 }
 
 // Expose debug API on window for console use
-if (typeof window !== "undefined") {
-    ((window as unknown) as Record<string, unknown>).__ipcDebug = {
+if (IPC_DEBUG_ENABLED && typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__ipcDebug = {
         enable() {
             _ipcTracing = true;
             // Also enable Rust-side timing

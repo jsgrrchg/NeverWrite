@@ -127,8 +127,9 @@ export function MapsPanel() {
         return () => {
             window.removeEventListener("mousemove", handleMouseMove);
             window.removeEventListener("mouseup", handleMouseUp);
+            resetDrag();
         };
-    }, []);
+    }, [resetDrag]);
 
     const loadMaps = useCallback(() => {
         if (!vaultPath) return;

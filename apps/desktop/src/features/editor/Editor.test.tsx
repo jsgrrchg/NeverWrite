@@ -163,7 +163,7 @@ describe("Editor", () => {
             runtimeDirectory: null,
             lastError: null,
             documentCache: new Map(),
-            ignoredSessionWords: new Map(),
+            ignoredSessionWords: new Set(),
         });
 
         setEditorTabs([
@@ -264,7 +264,7 @@ describe("Editor", () => {
             runtimeDirectory: null,
             lastError: null,
             documentCache: new Map(),
-            ignoredSessionWords: new Map(),
+            ignoredSessionWords: new Set(),
         });
 
         setEditorTabs([
@@ -393,7 +393,7 @@ describe("Editor", () => {
             runtimeDirectory: null,
             lastError: null,
             documentCache: new Map(),
-            ignoredSessionWords: new Map(),
+            ignoredSessionWords: new Set(),
         });
 
         setEditorTabs([
@@ -470,7 +470,7 @@ describe("Editor", () => {
             runtimeDirectory: null,
             lastError: null,
             documentCache: new Map(),
-            ignoredSessionWords: new Map(),
+            ignoredSessionWords: new Set(),
         });
 
         setEditorTabs([

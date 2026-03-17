@@ -223,6 +223,9 @@ impl ToolState {
             &tool_call.tool_call_id.0,
             tool_call.meta.as_ref(),
         );
+        if tool_call.status == ToolCallStatus::Completed {
+            self.advance_baseline_after_success(session_id, tool_call.raw_input.as_ref());
+        }
         tool_call
     }
 
@@ -248,6 +251,9 @@ impl ToolState {
         drop(guard);
         self.cache_content_diffs(session_id, &tool_call);
         self.cache_read_baseline(session_id, &tool_call);
+        if tool_call.status == ToolCallStatus::Completed {
+            self.advance_baseline_after_success(session_id, tool_call.raw_input.as_ref());
+        }
         Some(tool_call)
     }
 
@@ -346,33 +352,18 @@ impl ToolState {
 
         // 1. Try baseline from prior Read (most reliable for auto-approved writes)
         let baseline_diff = self.reconstruct_with_baseline(session_id, raw_input, cwd.as_deref());
-        let source = if baseline_diff.is_some() {
-            "baseline"
-        } else {
-            "fallback"
-        };
         let diff = baseline_diff
             // 2. Fallback: reconstruct from disk
             .or_else(|| reconstruct_write_diff_payload(raw_input, cwd.as_deref()))
             .or_else(|| reconstruct_edit_diff_payload(raw_input, cwd.as_deref()));
 
         let Some(diff) = diff else {
-            eprintln!("[diff-debug] capture_write_diff: no diff produced for tool {tool_call_id}");
             return;
         };
-        eprintln!(
-            "[diff-debug] capture_write_diff: tool={tool_call_id} source={source} path={} has_old_text={} reversible={}",
-            diff.path,
-            diff.old_text.is_some(),
-            diff.reversible,
-        );
         let key = format!("{session_id}::{tool_call_id}");
         if let Ok(mut guard) = self.write_diffs.lock() {
             guard.entry(key).or_insert(vec![diff]);
         }
-
-        // Update baseline to new content for consecutive edits
-        self.update_baseline_after_edit(session_id, raw_input, cwd.as_deref());
     }
 
     fn cache_content_diffs(&self, session_id: &str, tool_call: &ToolCall) {
@@ -394,21 +385,9 @@ impl ToolState {
                 // A baseline reconstruction (reversible + old_text) is already cached.
                 // Don't overwrite it with ACP diffs whose old_text may come from
                 // a different file state (e.g. after a prior edit in the same turn).
-                eprintln!(
-                    "[diff-debug] cache_content_diffs: SKIPPED overwrite for tool={tool_call_id} (reliable baseline exists)"
-                );
                 return;
             }
 
-            let action = if has_old_text {
-                "overwrite"
-            } else {
-                "or_insert"
-            };
-            eprintln!(
-                "[diff-debug] cache_content_diffs: tool={tool_call_id} acp_has_old_text={has_old_text} action={action} n_diffs={}",
-                diffs.len(),
-            );
             if has_old_text {
                 guard.insert(key, diffs);
             } else {
@@ -454,7 +433,7 @@ impl ToolState {
     pub fn store_file_baseline(&self, session_id: &str, display_path: &str, content: String) {
         let key = format!("{session_id}::{display_path}");
         if let Ok(mut guard) = self.file_baselines.lock() {
-            guard.entry(key).or_insert(content);
+            guard.insert(key, content);
         }
     }
 
@@ -497,7 +476,7 @@ impl ToolState {
             });
         }
 
-        // Edit tool — baseline enables reconstruction even if replacen would fail
+        // Edit tool — baseline enables reconstruction only when the target is unique.
         if let Some(input) = edit_tool_input(Some(raw_input)) {
             if input.file_path.trim().is_empty() {
                 return None;
@@ -506,10 +485,7 @@ impl ToolState {
             let display_path = to_display_path(&resolved, cwd);
             let old_text = self.get_file_baseline(session_id, &display_path)?;
 
-            let new_text = old_text.replacen(&input.old_string, &input.new_string, 1);
-            if new_text == old_text {
-                return None; // old_string not found in baseline
-            }
+            let new_text = replace_exactly_once(&old_text, &input.old_string, &input.new_string)?;
 
             return Some(AiFileDiffPayload {
                 path: display_path,
@@ -528,18 +504,22 @@ impl ToolState {
 
     /// After a successful edit, update the baseline to reflect the new content
     /// so that consecutive edits to the same file produce correct diffs.
-    fn update_baseline_after_edit(
+    fn advance_baseline_after_success(
         &self,
         session_id: &str,
-        raw_input: &serde_json::Value,
-        cwd: Option<&Path>,
+        raw_input: Option<&serde_json::Value>,
     ) {
+        let Some(raw_input) = raw_input else {
+            return;
+        };
+        let cwd = self.session_cwd(session_id);
+
         if let Some(input) = write_tool_input(Some(raw_input)) {
             if input.file_path.trim().is_empty() {
                 return;
             }
-            let resolved = resolve_tool_path(&input.file_path, cwd);
-            let display_path = to_display_path(&resolved, cwd);
+            let resolved = resolve_tool_path(&input.file_path, cwd.as_deref());
+            let display_path = to_display_path(&resolved, cwd.as_deref());
             let key = format!("{session_id}::{display_path}");
             if let Ok(mut guard) = self.file_baselines.lock() {
                 guard.insert(key, input.content);
@@ -548,8 +528,8 @@ impl ToolState {
             if input.file_path.trim().is_empty() {
                 return;
             }
-            let resolved = resolve_tool_path(&input.file_path, cwd);
-            let display_path = to_display_path(&resolved, cwd);
+            let resolved = resolve_tool_path(&input.file_path, cwd.as_deref());
+            let display_path = to_display_path(&resolved, cwd.as_deref());
             if let ExistingTextSnapshot::Text(new_content) = read_existing_text_snapshot(&resolved)
             {
                 let key = format!("{session_id}::{display_path}");
@@ -2187,6 +2167,25 @@ fn read_existing_text_snapshot(path: &Path) -> ExistingTextSnapshot {
     }
 }
 
+fn replace_exactly_once(text: &str, needle: &str, replacement: &str) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+
+    let mut matches = text.match_indices(needle);
+    let (first_index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+
+    let mut result =
+        String::with_capacity(text.len() + replacement.len().saturating_sub(needle.len()));
+    result.push_str(&text[..first_index]);
+    result.push_str(replacement);
+    result.push_str(&text[first_index + needle.len()..]);
+    Some(result)
+}
+
 fn reconstruct_write_diff_payload(
     raw_input: &serde_json::Value,
     cwd: Option<&Path>,
@@ -2271,12 +2270,10 @@ fn reconstruct_edit_diff_payload(
         _ => return None,
     };
 
-    // Reconstruct old_text by reversing the edit
-    let old_text = current_text.replacen(&input.new_string, &input.old_string, 1);
-
-    if old_text == current_text {
-        return None; // replacen didn't find new_string; reconstruction unreliable
-    }
+    // Reconstruct old_text by reversing the edit only when the inserted text
+    // is unique and non-empty. Empty new_string (deletions) cannot be
+    // reversed reliably from disk alone.
+    let old_text = replace_exactly_once(&current_text, &input.new_string, &input.old_string)?;
 
     Some(AiFileDiffPayload {
         path: display_path,
@@ -3163,6 +3160,101 @@ mod tests {
     }
 
     #[test]
+    fn store_file_baseline_overwrites_with_newer_editor_content() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("refresh.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        tool_state.store_file_baseline("session-1", "notes/refresh.md", "editor v1".into());
+        tool_state.store_file_baseline("session-1", "notes/refresh.md", "editor v2".into());
+
+        fs::write(&file_path, "claude content").unwrap();
+        let write_call = ToolCall::new(ToolCallId::from("tool-write-refresh"), "Write refresh.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "claude content",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", write_call);
+
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs[0].old_text.as_deref(), Some("editor v2"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("claude content"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pending_write_does_not_advance_baseline() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("pending_write.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        tool_state.store_file_baseline("session-1", "notes/pending_write.md", "version 1".into());
+
+        let write_call = ToolCall::new(
+            ToolCallId::from("tool-pending-write"),
+            "Write pending_write.md",
+        )
+        .kind(ToolKind::Edit)
+        .status(ToolCallStatus::Pending)
+        .raw_input(serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "content": "version 2",
+        }));
+        let _ = tool_state.upsert_tool_call("session-1", write_call);
+
+        let baseline = tool_state.get_file_baseline("session-1", "notes/pending_write.md");
+        assert_eq!(baseline.as_deref(), Some("version 1"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn failed_write_does_not_advance_baseline() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("failed_write.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        tool_state.store_file_baseline("session-1", "notes/failed_write.md", "version 1".into());
+
+        let initial = ToolCall::new(
+            ToolCallId::from("tool-failed-write"),
+            "Write failed_write.md",
+        )
+        .kind(ToolKind::Edit)
+        .status(ToolCallStatus::Pending)
+        .raw_input(serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "content": "version 2",
+        }));
+        let _ = tool_state.upsert_tool_call("session-1", initial);
+
+        let _ = tool_state.apply_tool_update(
+            "session-1",
+            agent_client_protocol::ToolCallUpdate::new(
+                "tool-failed-write",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Failed)
+                    .content(vec![ToolCallContent::Content(Content::new("Write failed"))]),
+            ),
+        );
+
+        let baseline = tool_state.get_file_baseline("session-1", "notes/failed_write.md");
+        assert_eq!(baseline.as_deref(), Some("version 1"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn pending_read_does_not_cache_baseline() {
         let tool_state = ToolState::default();
         let temp_dir = unique_temp_dir();
@@ -3182,6 +3274,105 @@ mod tests {
 
         let baseline = tool_state.get_file_baseline("session-1", "notes/pending.md");
         assert!(baseline.is_none(), "pending read should not cache baseline");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn ambiguous_edit_with_multiple_old_string_occurrences_is_not_reconstructed() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("ambiguous_baseline.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "still unrelated").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        tool_state.store_file_baseline(
+            "session-1",
+            "src/ambiguous_baseline.rs",
+            "old_code();\nold_code();".into(),
+        );
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("tool-edit-ambiguous-old"),
+            "Edit ambiguous_baseline.rs",
+        )
+        .kind(ToolKind::Edit)
+        .status(ToolCallStatus::Completed)
+        .raw_input(serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "old_string": "old_code()",
+            "new_string": "new_code()",
+        }));
+        let _ = tool_state.upsert_tool_call("session-1", tool_call);
+
+        let cached = tool_state.cached_diffs("session-1", "tool-edit-ambiguous-old");
+        assert!(
+            cached.is_none(),
+            "ambiguous baseline edit should not be reconstructed"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn ambiguous_edit_with_multiple_new_string_occurrences_is_not_reconstructed() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("ambiguous_current.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "new_code();\nnew_code();").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("tool-edit-ambiguous-new"),
+            "Edit ambiguous_current.rs",
+        )
+        .kind(ToolKind::Edit)
+        .status(ToolCallStatus::Completed)
+        .raw_input(serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "old_string": "old_code()",
+            "new_string": "new_code()",
+        }));
+        let _ = tool_state.upsert_tool_call("session-1", tool_call);
+
+        let cached = tool_state.cached_diffs("session-1", "tool-edit-ambiguous-new");
+        assert!(
+            cached.is_none(),
+            "ambiguous reverse edit should not be reconstructed"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn edit_delete_without_baseline_does_not_invent_old_text() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("delete_without_baseline.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "prefix\nsuffix\n").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("tool-edit-delete"),
+            "Edit delete_without_baseline.rs",
+        )
+        .kind(ToolKind::Edit)
+        .status(ToolCallStatus::Completed)
+        .raw_input(serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "old_string": "deleted_line\n",
+            "new_string": "",
+        }));
+        let _ = tool_state.upsert_tool_call("session-1", tool_call);
+
+        let cached = tool_state.cached_diffs("session-1", "tool-edit-delete");
+        assert!(
+            cached.is_none(),
+            "delete fallback without baseline should not invent old_text"
+        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }

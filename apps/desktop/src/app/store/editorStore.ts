@@ -1589,7 +1589,7 @@ async function loadNoteHistoryEntryContent(
                         ? ensureFileTabDefaults(t)
                         : null;
                 if (!tab) return t;
-                const history = [...t.history];
+                const history = [...tab.history];
                 if (
                     history[historyIndex]?.kind === "note" &&
                     history[historyIndex].noteId === noteId
@@ -1630,7 +1630,7 @@ async function loadFileHistoryEntryContent(
                         ? ensureFileTabDefaults(t)
                         : null;
                 if (!tab) return t;
-                const history = [...t.history];
+                const history = [...tab.history];
                 if (
                     history[historyIndex]?.kind === "file" &&
                     history[historyIndex].relativePath === relativePath

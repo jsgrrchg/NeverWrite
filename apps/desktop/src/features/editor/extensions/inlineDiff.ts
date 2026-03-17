@@ -77,13 +77,22 @@ const modifiedLineDeco = Decoration.line({ class: "cm-diff-modified" });
 // ---------------------------------------------------------------------------
 
 class HunkControlsWidget extends WidgetType {
+    private sessionId: string;
+    private identityKey: string;
+    private newStart: number;
+    private newEnd: number;
+
     constructor(
-        private sessionId: string,
-        private identityKey: string,
-        private newStart: number,
-        private newEnd: number,
+        sessionId: string,
+        identityKey: string,
+        newStart: number,
+        newEnd: number,
     ) {
         super();
+        this.sessionId = sessionId;
+        this.identityKey = identityKey;
+        this.newStart = newStart;
+        this.newEnd = newEnd;
     }
 
     toDOM() {
@@ -147,14 +156,25 @@ class HunkControlsWidget extends WidgetType {
 }
 
 class DeletedBlockWidget extends WidgetType {
+    private deletedLines: string[];
+    private sessionId: string;
+    private identityKey: string;
+    private newStart: number;
+    private newEnd: number;
+
     constructor(
-        private deletedLines: string[],
-        private sessionId: string,
-        private identityKey: string,
-        private newStart: number,
-        private newEnd: number,
+        deletedLines: string[],
+        sessionId: string,
+        identityKey: string,
+        newStart: number,
+        newEnd: number,
     ) {
         super();
+        this.deletedLines = deletedLines;
+        this.sessionId = sessionId;
+        this.identityKey = identityKey;
+        this.newStart = newStart;
+        this.newEnd = newEnd;
     }
 
     toDOM() {
