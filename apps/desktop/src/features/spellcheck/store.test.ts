@@ -123,6 +123,7 @@ describe("spellcheck frontend store", () => {
                         documentId: "note:1",
                         version: "v1",
                         language: "en-US",
+                        secondaryLanguage: null,
                         diagnostics: [
                             { start_utf16: 0, end_utf16: 4, word: "wrld" },
                         ],

@@ -1599,6 +1599,7 @@ export function Editor({
     }, [
         activeTabId,
         activeNoteId,
+        activeTab?.content,
         isTabDirty,
         markTabSaved,
         restoreTabScrollPosition,

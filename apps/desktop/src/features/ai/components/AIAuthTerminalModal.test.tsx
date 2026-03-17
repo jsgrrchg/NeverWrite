@@ -32,7 +32,9 @@ describe("AIAuthTerminalModal", () => {
             errorMessage: null,
         };
         apiMocks.aiStartAuthTerminalSession.mockResolvedValue(snapshot);
-        apiMocks.aiResizeAuthTerminalSession.mockResolvedValue(snapshot);
+        apiMocks.aiResizeAuthTerminalSession.mockResolvedValue(
+            snapshot as never,
+        );
 
         renderComponent(
             <AIAuthTerminalModal

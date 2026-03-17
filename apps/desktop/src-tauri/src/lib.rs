@@ -35,8 +35,10 @@ const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
 const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
 
 // --- Debug timing ---
+#[cfg(feature = "debug-logs")]
 static DEBUG_TIMING: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "debug-logs")]
 macro_rules! dbg_log {
     ($($arg:tt)*) => {
         if DEBUG_TIMING.load(Ordering::Relaxed) {
@@ -45,8 +47,19 @@ macro_rules! dbg_log {
     };
 }
 
+#[cfg(not(feature = "debug-logs"))]
+macro_rules! dbg_log {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(feature = "debug-logs")]
 fn debug_timing_enabled() -> bool {
     DEBUG_TIMING.load(Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "debug-logs"))]
+fn debug_timing_enabled() -> bool {
+    false
 }
 
 fn serialized_payload_bytes<T: Serialize>(value: &T) -> Option<usize> {
@@ -3595,10 +3608,19 @@ fn get_note_outline(content: String) -> Result<Vec<OutlineHeadingDto>, String> {
 
 #[tauri::command]
 fn debug_set_timing(enabled: bool) -> String {
-    DEBUG_TIMING.store(enabled, Ordering::Relaxed);
-    let status = if enabled { "ON" } else { "OFF" };
-    eprintln!("[perf] Debug timing {status}");
-    format!("Debug timing {status}")
+    #[cfg(feature = "debug-logs")]
+    {
+        DEBUG_TIMING.store(enabled, Ordering::Relaxed);
+        let status = if enabled { "ON" } else { "OFF" };
+        eprintln!("[perf] Debug timing {status}");
+        return format!("Debug timing {status}");
+    }
+
+    #[cfg(not(feature = "debug-logs"))]
+    {
+        let _ = enabled;
+        "Debug timing unavailable in this build".to_string()
+    }
 }
 
 #[tauri::command]

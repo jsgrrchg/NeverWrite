@@ -134,10 +134,7 @@ interface MapEntry {
     path: string;
 }
 
-export async function openChatMapByReference(
-    reference: string,
-    options?: { newTab?: boolean },
-) {
+export async function openChatMapByReference(reference: string) {
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath) return false;
 

@@ -166,14 +166,6 @@ pub fn resolve_binary_command(
     bundled_path: PathBuf,
     vendor_path: PathBuf,
 ) -> ResolvedBinary {
-    eprintln!(
-        "[claude-setup] resolve_binary_command: bundled={} (exists={}), vendor={} (exists={})",
-        bundled_path.display(),
-        bundled_path.exists(),
-        vendor_path.display(),
-        vendor_path.exists(),
-    );
-
     if let Ok(raw) = env::var("VAULTAI_CLAUDE_ACP_BIN") {
         let resolved = resolve_command_candidate(raw.trim(), AiRuntimeBinarySource::Env);
         if resolved.display.is_some() {
@@ -404,11 +396,6 @@ fn command_from_existing_path(path: PathBuf, source: AiRuntimeBinarySource) -> R
 
     if is_js_path(&path) {
         if let Some(node_path) = find_program("node") {
-            eprintln!(
-                "[claude-setup] JS path found: {} → using node at {}",
-                display,
-                node_path.display()
-            );
             return ResolvedBinary {
                 program: Some(node_path.display().to_string()),
                 args: vec![display.clone()],
@@ -417,10 +404,6 @@ fn command_from_existing_path(path: PathBuf, source: AiRuntimeBinarySource) -> R
             };
         }
 
-        eprintln!(
-            "[claude-setup] JS path found but node NOT in PATH: {}",
-            display
-        );
         return ResolvedBinary {
             program: None,
             args: Vec::new(),

@@ -207,14 +207,7 @@ export function readPersistedTerminalWorkspace(
     }
 }
 
-async function closeSessionIds(sessionIds: string[], reason?: string) {
-    console.log(
-        "[terminal] closeSessionIds",
-        sessionIds,
-        "reason:",
-        reason ?? "unknown",
-        new Error().stack?.split("\n").slice(1, 4).join(" | "),
-    );
+async function closeSessionIds(sessionIds: string[], _reason?: string) {
     await Promise.all(
         sessionIds.map((sessionId) =>
             Promise.resolve(
@@ -335,16 +328,6 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             const bufferedRaw =
                 pendingOutputRef.current.get(nextSnapshot.sessionId) ?? "";
             pendingOutputRef.current.delete(nextSnapshot.sessionId);
-            console.log(
-                "[terminal] attachSession",
-                tabId,
-                "→ sessionId:",
-                nextSnapshot.sessionId,
-                "| status:",
-                nextSnapshot.status,
-                "| bufferedRaw.length:",
-                bufferedRaw.length,
-            );
 
             let attached = false;
             const nextTabs = tabsRef.current.map((tab) => {
@@ -729,14 +712,6 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                     if (cancelled) return;
                     const { sessionId, chunk } = event.payload;
                     if (retiredSessionIdsRef.current.has(sessionId)) return;
-                    console.log(
-                        "[terminal] output event",
-                        sessionId,
-                        "| chunk.length:",
-                        chunk.length,
-                        "| first50:",
-                        JSON.stringify(chunk.slice(0, 50)),
-                    );
                     setTabs((current) => {
                         const matched = current.some(
                             (tab) => tab.sessionId === sessionId,

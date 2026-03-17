@@ -1902,8 +1902,6 @@ describe("chatStore", () => {
             ],
         });
 
-        let session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const workCycleId = session.activeWorkCycleId!;
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
 
         useChatStore.getState().applyToolActivity({
@@ -1924,7 +1922,6 @@ describe("chatStore", () => {
             ],
         });
 
-        session = useChatStore.getState().sessionsById[activeSessionId]!;
         expect(getVisibleBuffer(activeSessionId)).toMatchObject([
             {
                 identityKey: "/vault/src/watcher.rs",
@@ -1960,9 +1957,6 @@ describe("chatStore", () => {
                 },
             ],
         });
-
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const workCycleId = session.activeWorkCycleId!;
 
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
@@ -2008,8 +2002,6 @@ describe("chatStore", () => {
             ],
         });
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const workCycleId = session.activeWorkCycleId!;
         const buffer = getVisibleBuffer(activeSessionId);
 
         expect(buffer).toHaveLength(1);
@@ -2063,9 +2055,6 @@ describe("chatStore", () => {
                 },
             ],
         });
-
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const workCycleId = session.activeWorkCycleId!;
 
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
@@ -2130,10 +2119,6 @@ describe("chatStore", () => {
             summary: "file.rs",
         });
 
-        const workCycleId =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .activeWorkCycleId!;
-
         // Now send a permission request with diffs
         useChatStore.getState().applyPermissionRequest({
             session_id: activeSessionId,
@@ -2152,7 +2137,6 @@ describe("chatStore", () => {
             ],
         });
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
         expect(getVisibleBuffer(activeSessionId)).toMatchObject([
             {
                 identityKey: "/vault/src/watcher.rs",
@@ -2178,12 +2162,6 @@ describe("chatStore", () => {
         });
 
         const activeSessionId = getActiveSessionId();
-        const oldEntry = createTrackedFile(
-            "/vault/src/old.rs",
-            "old base",
-            "old applied",
-        );
-
         useChatStore.setState((state) => ({
             sessionsById: {
                 ...state.sessionsById,
@@ -2327,8 +2305,6 @@ describe("chatStore", () => {
             ],
         });
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
-
         // Should have one merged entry: diffBase from cycle A, currentText from cycle B
         const mergedBuf = getVisibleBuffer(activeSessionId);
         expect(mergedBuf).toHaveLength(1);
@@ -2392,8 +2368,6 @@ describe("chatStore", () => {
             ],
         });
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
-
         // Entry should be auto-removed since diffBase === currentText
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
@@ -2440,8 +2414,6 @@ describe("chatStore", () => {
             ],
         });
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const workCycleId = session.activeWorkCycleId!;
         const buffer = getVisibleBuffer(activeSessionId);
 
         expect(buffer).toHaveLength(1);
@@ -2489,7 +2461,9 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
-    function getEditedBufferEntry(sessionId: string, _workCycleId: string) {
+    function getEditedBufferEntry(sessionId: string, workCycleId: string) {
+        const session = useChatStore.getState().sessionsById[sessionId]!;
+        expect(session.visibleWorkCycleId).toBe(workCycleId);
         const entries = getVisibleBuffer(sessionId);
         expect(entries).toHaveLength(1);
         return entries[0];
@@ -2612,7 +2586,6 @@ describe("chatStore", () => {
             .getState()
             .rejectEditedFile(activeSessionId, entry.identityKey);
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
 
         expect(remainingEntry).toMatchObject({
@@ -2686,7 +2659,6 @@ describe("chatStore", () => {
             .getState()
             .rejectEditedFile(activeSessionId, entry.identityKey);
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
 
         expect(remainingEntry).toMatchObject({
@@ -2826,7 +2798,6 @@ describe("chatStore", () => {
                 "merged line",
             );
 
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
 
         expect(remainingEntry).toMatchObject({

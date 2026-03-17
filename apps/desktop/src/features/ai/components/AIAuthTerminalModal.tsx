@@ -37,11 +37,17 @@ function buildInitialSnapshot(
     vaultPath: string | null,
 ): AIAuthTerminalSessionSnapshot {
     return {
-        ...EMPTY_TERMINAL_SNAPSHOT,
+        sessionId: EMPTY_TERMINAL_SNAPSHOT.sessionId,
+        program: EMPTY_TERMINAL_SNAPSHOT.program,
         runtimeId,
         displayName: `${runtimeName} sign-in`,
         cwd: vaultPath ?? "",
+        cols: EMPTY_TERMINAL_SNAPSHOT.cols,
+        rows: EMPTY_TERMINAL_SNAPSHOT.rows,
         buffer: "",
+        status: "starting",
+        exitCode: EMPTY_TERMINAL_SNAPSHOT.exitCode,
+        errorMessage: EMPTY_TERMINAL_SNAPSHOT.errorMessage,
     };
 }
 
