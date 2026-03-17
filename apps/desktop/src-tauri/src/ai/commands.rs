@@ -65,10 +65,10 @@ pub struct AiRuntimeSessionInput {
 }
 
 #[tauri::command]
-pub fn ai_get_setup_status(
+pub async fn ai_get_setup_status(
     runtime_id: Option<String>,
     app: AppHandle,
-    state: State<Mutex<AiManager>>,
+    state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiRuntimeSetupStatus, String> {
     let runtime_id = require_runtime_id(runtime_id, "ai_get_setup_status")?;
     let state = state
@@ -78,11 +78,11 @@ pub fn ai_get_setup_status(
 }
 
 #[tauri::command]
-pub fn ai_update_setup(
+pub async fn ai_update_setup(
     input: AiRuntimeSetupPayload,
     runtime_id: Option<String>,
     app: AppHandle,
-    state: State<Mutex<AiManager>>,
+    state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiRuntimeSetupStatus, String> {
     let runtime_id = require_runtime_id(runtime_id, "ai_update_setup")?;
     let mut state = state
@@ -92,11 +92,11 @@ pub fn ai_update_setup(
 }
 
 #[tauri::command]
-pub fn ai_start_auth(
+pub async fn ai_start_auth(
     input: AiStartAuthInput,
     vault_path: Option<String>,
     app: AppHandle,
-    state: State<Mutex<AiManager>>,
+    state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiRuntimeSetupStatus, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let runtime_id = require_runtime_id(input.runtime_id, "ai_start_auth")?;
@@ -127,8 +127,8 @@ fn map_setup_input(
 }
 
 #[tauri::command]
-pub fn ai_list_runtimes(
-    state: State<Mutex<AiManager>>,
+pub async fn ai_list_runtimes(
+    state: State<'_, Mutex<AiManager>>,
 ) -> Result<Vec<AiRuntimeDescriptor>, String> {
     let state = state
         .lock()
@@ -137,11 +137,11 @@ pub fn ai_list_runtimes(
 }
 
 #[tauri::command]
-pub fn ai_list_runtime_sessions(
+pub async fn ai_list_runtime_sessions(
     runtime_id: String,
     vault_path: Option<String>,
     app: AppHandle,
-    state: State<Mutex<AiManager>>,
+    state: State<'_, Mutex<AiManager>>,
 ) -> Result<Vec<AiRuntimeSessionSummary>, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut state = state
@@ -151,9 +151,9 @@ pub fn ai_list_runtime_sessions(
 }
 
 #[tauri::command]
-pub fn ai_list_sessions(
+pub async fn ai_list_sessions(
     vault_path: Option<String>,
-    state: State<Mutex<AiManager>>,
+    state: State<'_, Mutex<AiManager>>,
 ) -> Result<Vec<AiSession>, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut state = state
@@ -163,10 +163,10 @@ pub fn ai_list_sessions(
 }
 
 #[tauri::command]
-pub fn ai_load_session(
+pub async fn ai_load_session(
     session_id: String,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -177,11 +177,11 @@ pub fn ai_load_session(
 }
 
 #[tauri::command]
-pub fn ai_load_runtime_session(
+pub async fn ai_load_runtime_session(
     input: AiRuntimeSessionInput,
     vault_path: Option<String>,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut ai_state = ai_state
@@ -194,11 +194,11 @@ pub fn ai_load_runtime_session(
 }
 
 #[tauri::command]
-pub fn ai_resume_runtime_session(
+pub async fn ai_resume_runtime_session(
     input: AiRuntimeSessionInput,
     vault_path: Option<String>,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut ai_state = ai_state
@@ -211,11 +211,11 @@ pub fn ai_resume_runtime_session(
 }
 
 #[tauri::command]
-pub fn ai_fork_runtime_session(
+pub async fn ai_fork_runtime_session(
     input: AiRuntimeSessionInput,
     vault_path: Option<String>,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut ai_state = ai_state
@@ -228,11 +228,11 @@ pub fn ai_fork_runtime_session(
 }
 
 #[tauri::command]
-pub fn ai_create_session(
+pub async fn ai_create_session(
     runtime_id: String,
     vault_path: Option<String>,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut ai_state = ai_state
@@ -244,11 +244,11 @@ pub fn ai_create_session(
 }
 
 #[tauri::command]
-pub fn ai_set_model(
+pub async fn ai_set_model(
     session_id: String,
     model_id: String,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -259,11 +259,11 @@ pub fn ai_set_model(
 }
 
 #[tauri::command]
-pub fn ai_set_mode(
+pub async fn ai_set_mode(
     session_id: String,
     mode_id: String,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -274,10 +274,10 @@ pub fn ai_set_mode(
 }
 
 #[tauri::command]
-pub fn ai_set_config_option(
+pub async fn ai_set_config_option(
     input: AiSetConfigOptionInput,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -288,10 +288,10 @@ pub fn ai_set_config_option(
 }
 
 #[tauri::command]
-pub fn ai_cancel_turn(
+pub async fn ai_cancel_turn(
     session_id: String,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -302,12 +302,12 @@ pub fn ai_cancel_turn(
 }
 
 #[tauri::command]
-pub fn ai_send_message(
+pub async fn ai_send_message(
     session_id: String,
     content: String,
     attachments: Vec<AiAttachmentInput>,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -325,10 +325,10 @@ pub fn ai_send_message(
 }
 
 #[tauri::command]
-pub fn ai_respond_permission(
+pub async fn ai_respond_permission(
     input: AiRespondPermissionInput,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -343,10 +343,10 @@ pub fn ai_respond_permission(
 }
 
 #[tauri::command]
-pub fn ai_respond_user_input(
+pub async fn ai_respond_user_input(
     input: AiRespondUserInputInput,
     app: AppHandle,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<AiSession, String> {
     let mut ai_state = ai_state
         .lock()
@@ -383,9 +383,9 @@ pub fn ai_delete_all_session_histories(vault_path: String) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn ai_delete_runtime_session(
+pub async fn ai_delete_runtime_session(
     session_id: String,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<(), String> {
     let mut ai_state = ai_state
         .lock()
@@ -394,9 +394,9 @@ pub fn ai_delete_runtime_session(
 }
 
 #[tauri::command]
-pub fn ai_delete_runtime_sessions_for_vault(
+pub async fn ai_delete_runtime_sessions_for_vault(
     vault_path: Option<String>,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<(), String> {
     let vault_root = vault_path.map(PathBuf::from);
     let mut ai_state = ai_state
@@ -412,11 +412,11 @@ pub fn ai_prune_session_histories(vault_path: String, max_age_days: u32) -> Resu
 }
 
 #[tauri::command]
-pub fn ai_register_file_baseline(
+pub async fn ai_register_file_baseline(
     session_id: String,
     display_path: String,
     content: String,
-    ai_state: State<Mutex<AiManager>>,
+    ai_state: State<'_, Mutex<AiManager>>,
 ) -> Result<(), String> {
     let mut ai_state = ai_state
         .lock()
