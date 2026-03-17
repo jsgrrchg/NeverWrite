@@ -26,6 +26,49 @@ import type {
     PersistedSessionHistory,
 } from "./types";
 
+const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] = [
+    {
+        runtime: {
+            id: "codex-acp",
+            name: "Codex ACP",
+            description: "Codex runtime embedded as an ACP sidecar.",
+            capabilities: [
+                "attachments",
+                "permissions",
+                "reasoning",
+                "create_session",
+                "list_sessions",
+                "user_input",
+            ],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
+    {
+        runtime: {
+            id: "claude-acp",
+            name: "Claude ACP",
+            description:
+                "Claude runtime exposed through the upstream ACP adapter.",
+            capabilities: [
+                "attachments",
+                "permissions",
+                "plans",
+                "terminal_output",
+                "create_session",
+                "fork_session",
+                "resume_session",
+                "list_sessions",
+                "prompt_queueing",
+            ],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
+];
+
 export const AI_SESSION_CREATED_EVENT = "ai://session-created";
 export const AI_SESSION_UPDATED_EVENT = "ai://session-updated";
 export const AI_SESSION_ERROR_EVENT = "ai://session-error";
@@ -148,9 +191,20 @@ function normalizeRuntimeSetupStatus(
 }
 
 export async function aiListRuntimes() {
-    const descriptors =
-        await invoke<AIBackendRuntimeDescriptorPayload[]>("ai_list_runtimes");
-    return descriptors.map(normalizeRuntimeDescriptor);
+    try {
+        const descriptors =
+            await invoke<AIBackendRuntimeDescriptorPayload[]>(
+                "ai_list_runtimes",
+            );
+        const normalized = descriptors.map(normalizeRuntimeDescriptor);
+        return normalized.length > 0 ? normalized : FALLBACK_RUNTIMES;
+    } catch (error) {
+        console.warn(
+            "Failed to load AI runtimes from backend; using fallback descriptors.",
+            error,
+        );
+        return FALLBACK_RUNTIMES;
+    }
 }
 
 export async function aiListSessions(vaultPath: string | null) {
