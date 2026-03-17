@@ -105,62 +105,87 @@ export function AIChatPanel() {
         isRecording,
         isTranscribing: isVoiceTranscribing,
         error: voiceError,
+        stream: voiceStream,
+        autoTranscription,
         startRecording,
         stopAndTranscribe,
+        setError: setVoiceError,
+        clearAutoTranscription,
     } = useVoiceRecorder();
+
+    const insertTranscription = useCallback(
+        (text: string) => {
+            const sessionId = useChatStore.getState().activeSessionId;
+            if (!sessionId) return;
+            const currentParts =
+                useChatStore.getState().composerPartsBySessionId[sessionId] ??
+                createEmptyComposerParts();
+            const hasContent = currentParts.some(
+                (p) => p.type === "text" && p.text.length > 0,
+            );
+            if (hasContent) {
+                chatActions.setComposerParts([
+                    ...currentParts,
+                    {
+                        id: crypto.randomUUID(),
+                        type: "text" as const,
+                        text: " " + text,
+                    },
+                ]);
+            } else {
+                chatActions.setComposerParts([
+                    {
+                        id: crypto.randomUUID(),
+                        type: "text" as const,
+                        text,
+                    },
+                ]);
+            }
+        },
+        [chatActions],
+    );
+
+    // Handle auto-stop transcription (2-min limit)
+    useEffect(() => {
+        if (autoTranscription) {
+            insertTranscription(autoTranscription);
+            clearAutoTranscription();
+        }
+    }, [autoTranscription, insertTranscription, clearAutoTranscription]);
 
     const handleMicClick = useCallback(async () => {
         if (isRecording) {
             const text = await stopAndTranscribe();
-            if (text) {
-                const sessionId = useChatStore.getState().activeSessionId;
-                if (sessionId) {
-                    const currentParts =
-                        useChatStore.getState().composerPartsBySessionId[
-                            sessionId
-                        ] ?? createEmptyComposerParts();
-                    // Replace the empty text part or append
-                    const hasContent = currentParts.some(
-                        (p) => p.type === "text" && p.text.length > 0,
-                    );
-                    if (hasContent) {
-                        // Append with a space
-                        const newParts = [
-                            ...currentParts,
-                            {
-                                id: crypto.randomUUID(),
-                                type: "text" as const,
-                                text: " " + text,
-                            },
-                        ];
-                        chatActions.setComposerParts(newParts);
-                    } else {
-                        // Replace the empty part with the transcription
-                        chatActions.setComposerParts([
-                            {
-                                id: crypto.randomUUID(),
-                                type: "text" as const,
-                                text,
-                            },
-                        ]);
-                    }
-                }
-            }
+            if (text) insertTranscription(text);
         } else {
             // Check if whisper is set up
             try {
                 const status = await whisperGetStatus();
-                if (!status.enabled) return;
+                if (!status.enabled) {
+                    setVoiceError(
+                        "Whisper is disabled. Enable it in Settings.",
+                    );
+                    return;
+                }
                 if (status.downloadedModels.length === 0) {
                     setWhisperSetupOpen(true);
                     return;
                 }
-            } catch {
-                // If we can't check, try anyway
+            } catch (e) {
+                setVoiceError(
+                    `Could not check Whisper status: ${e instanceof Error ? e.message : e}`,
+                );
+                return;
             }
             await startRecording();
         }
-    }, [isRecording, stopAndTranscribe, startRecording, chatActions]);
+    }, [
+        isRecording,
+        stopAndTranscribe,
+        startRecording,
+        insertTranscription,
+        setVoiceError,
+    ]);
 
     const processTranscriptionQueue = useCallback(async () => {
         if (isTranscribingRef.current) return;
@@ -890,10 +915,10 @@ export function AIChatPanel() {
                                     });
                             }}
                             onAuthenticate={(input) => {
-                                const shouldUseIntegratedAuthTerminal =
+                                if (
                                     input.runtimeId === "claude-acp" &&
-                                    input.methodId === "claude-login";
-                                if (shouldUseIntegratedAuthTerminal) {
+                                    input.methodId === "claude-login"
+                                ) {
                                     setAuthTerminalRequest({
                                         runtimeId: input.runtimeId,
                                         runtimeName:
@@ -1068,6 +1093,7 @@ export function AIChatPanel() {
                     onStop={chatActions.stopStreaming}
                     isRecording={isRecording}
                     isTranscribing={isVoiceTranscribing}
+                    voiceStream={voiceStream}
                     voiceError={voiceError}
                     onMicClick={handleMicClick}
                 />
