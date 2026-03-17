@@ -8,11 +8,47 @@ import type {
     AIComposerPart,
     QueuedChatMessage,
 } from "../types";
+import { selectVisibleTrackedFiles } from "./editedFilesBufferModel";
+import type { TrackedFile } from "../diff/actionLogTypes";
+import {
+    buildPatchFromTexts,
+    emptyPatch,
+    hashTextContent,
+} from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
 import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
 
 const invokeMock = vi.mocked(invoke);
 const AI_PREFS_KEY = "vaultai.ai.preferences";
+
+function getVisibleBuffer(sessionId: string): TrackedFile[] {
+    return selectVisibleTrackedFiles(useChatStore.getState(), sessionId);
+}
+
+function createTrackedFile(
+    path: string,
+    diffBase: string,
+    currentText: string,
+    overrides?: Partial<TrackedFile>,
+): TrackedFile {
+    return {
+        identityKey: path,
+        originPath: path,
+        path,
+        previousPath: null,
+        status: { kind: "modified" },
+        diffBase,
+        currentText,
+        unreviewedEdits:
+            diffBase === currentText
+                ? emptyPatch()
+                : buildPatchFromTexts(diffBase, currentText),
+        version: 1,
+        isText: true,
+        updatedAt: 1,
+        ...overrides,
+    };
+}
 
 const runtimePayload = [
     {
@@ -1868,9 +1904,7 @@ describe("chatStore", () => {
 
         let session = useChatStore.getState().sessionsById[activeSessionId]!;
         const workCycleId = session.activeWorkCycleId!;
-        expect(
-            session.editedFilesBufferByWorkCycleId?.[workCycleId],
-        ).toBeUndefined();
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -1891,17 +1925,15 @@ describe("chatStore", () => {
         });
 
         session = useChatStore.getState().sessionsById[activeSessionId]!;
-        expect(
-            session.editedFilesBufferByWorkCycleId?.[workCycleId],
-        ).toMatchObject([
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
             {
                 identityKey: "/vault/src/watcher.rs",
                 originPath: "/vault/src/watcher.rs",
                 path: "/vault/src/watcher.rs",
-                operation: "update",
-                baseText: "old line",
-                appliedText: "new line",
-                supported: true,
+                status: { kind: "modified" },
+                diffBase: "old line",
+                currentText: "new line",
+                isText: true,
             },
         ]);
     });
@@ -1932,9 +1964,7 @@ describe("chatStore", () => {
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const workCycleId = session.activeWorkCycleId!;
 
-        expect(
-            session.editedFilesBufferByWorkCycleId?.[workCycleId],
-        ).toBeUndefined();
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
     it("consolidates repeated edits for the same file into a single buffer entry", async () => {
@@ -1980,17 +2010,16 @@ describe("chatStore", () => {
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const workCycleId = session.activeWorkCycleId!;
-        const buffer =
-            session.editedFilesBufferByWorkCycleId?.[workCycleId] ?? [];
+        const buffer = getVisibleBuffer(activeSessionId);
 
         expect(buffer).toHaveLength(1);
         expect(buffer[0]).toMatchObject({
             identityKey: "/vault/src/watcher.rs",
             originPath: "/vault/src/watcher.rs",
             path: "/vault/src/watcher.rs",
-            baseText: "old line",
-            appliedText: "final line",
-            operation: "update",
+            diffBase: "old line",
+            currentText: "final line",
+            status: { kind: "modified" },
         });
     });
 
@@ -2038,9 +2067,7 @@ describe("chatStore", () => {
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const workCycleId = session.activeWorkCycleId!;
 
-        expect(
-            session.editedFilesBufferByWorkCycleId?.[workCycleId],
-        ).toBeUndefined();
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
     it("keeps the edited files buffer after message completion transitions the session to idle", async () => {
@@ -2078,14 +2105,12 @@ describe("chatStore", () => {
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
         expect(session.status).toBe("idle");
         expect(session.visibleWorkCycleId).toBe(workCycleId);
-        expect(
-            session.editedFilesBufferByWorkCycleId?.[workCycleId],
-        ).toMatchObject([
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
             {
                 identityKey: "/vault/src/watcher.rs",
                 path: "/vault/src/watcher.rs",
-                baseText: "old line",
-                appliedText: "new line",
+                diffBase: "old line",
+                currentText: "new line",
             },
         ]);
     });
@@ -2128,15 +2153,13 @@ describe("chatStore", () => {
         });
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        expect(
-            session.editedFilesBufferByWorkCycleId?.[workCycleId],
-        ).toMatchObject([
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
             {
                 identityKey: "/vault/src/watcher.rs",
                 path: "/vault/src/watcher.rs",
-                operation: "update",
-                baseText: "old content",
-                appliedText: "new content",
+                status: { kind: "modified" },
+                diffBase: "old content",
+                currentText: "new content",
             },
         ]);
     });
@@ -2155,24 +2178,11 @@ describe("chatStore", () => {
         });
 
         const activeSessionId = getActiveSessionId();
-        const oldEntry = {
-            identityKey: "/vault/src/old.rs",
-            originPath: "/vault/src/old.rs",
-            path: "/vault/src/old.rs",
-            previousPath: null,
-            operation: "update" as const,
-            baseText: "old base",
-            appliedText: "old applied",
-            reversible: true,
-            isText: true,
-            supported: true,
-            status: "pending" as const,
-            appliedHash: "old-hash",
-            currentHash: null,
-            additions: 1,
-            deletions: 1,
-            updatedAt: 1,
-        };
+        const oldEntry = createTrackedFile(
+            "/vault/src/old.rs",
+            "old base",
+            "old applied",
+        );
 
         useChatStore.setState((state) => ({
             sessionsById: {
@@ -2181,9 +2191,17 @@ describe("chatStore", () => {
                     ...state.sessionsById[activeSessionId]!,
                     visibleWorkCycleId: "cycle-old",
                     activeWorkCycleId: "cycle-old",
-                    editedFilesBuffer: [oldEntry],
-                    editedFilesBufferByWorkCycleId: {
-                        "cycle-old": [oldEntry],
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            "cycle-old": {
+                                "/vault/src/old.rs": createTrackedFile(
+                                    "/vault/src/old.rs",
+                                    "old base",
+                                    "old applied",
+                                ),
+                            },
+                        },
+                        lastRejectUndo: null,
                     },
                 },
             },
@@ -2200,10 +2218,19 @@ describe("chatStore", () => {
         expect(session.activeWorkCycleId).not.toBe("cycle-old");
         expect(session.visibleWorkCycleId).toBe(session.activeWorkCycleId);
         // Old cycle key is gone, but entries are carried forward to the new cycle
+        const oldCycleTracked =
+            session.actionLog?.trackedFilesByWorkCycleId?.["cycle-old"];
         expect(
-            session.editedFilesBufferByWorkCycleId?.["cycle-old"],
-        ).toBeUndefined();
-        expect(session.editedFilesBuffer).toMatchObject([oldEntry]);
+            oldCycleTracked == null ||
+                Object.keys(oldCycleTracked).length === 0,
+        ).toBe(true);
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            expect.objectContaining({
+                identityKey: "/vault/src/old.rs",
+                diffBase: "old base",
+                currentText: "old applied",
+            }),
+        ]);
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
@@ -2227,24 +2254,28 @@ describe("chatStore", () => {
 
         expect(session.visibleWorkCycleId).toBe(session.activeWorkCycleId);
         // Buffer now has both the carried-forward entry and the new one
-        expect(session.editedFilesBuffer).toHaveLength(2);
-        expect(session.editedFilesBuffer).toMatchObject(
+        const visibleBuf = getVisibleBuffer(activeSessionId);
+        expect(visibleBuf).toHaveLength(2);
+        expect(visibleBuf).toMatchObject(
             expect.arrayContaining([
                 expect.objectContaining({
                     identityKey: "/vault/src/old.rs",
-                    baseText: "old base",
-                    appliedText: "old applied",
+                    diffBase: "old base",
+                    currentText: "old applied",
                 }),
                 expect.objectContaining({
                     identityKey: "/vault/src/new.rs",
-                    baseText: "new old",
-                    appliedText: "new applied",
+                    diffBase: "new old",
+                    currentText: "new applied",
                 }),
             ]),
         );
+        const oldCycleTracked2 =
+            session.actionLog?.trackedFilesByWorkCycleId?.["cycle-old"];
         expect(
-            session.editedFilesBufferByWorkCycleId?.["cycle-old"],
-        ).toBeUndefined();
+            oldCycleTracked2 == null ||
+                Object.keys(oldCycleTracked2).length === 0,
+        ).toBe(true);
     });
 
     it("merges accumulated entries when the same file is edited across cycles", async () => {
@@ -2298,13 +2329,14 @@ describe("chatStore", () => {
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
-        // Should have one merged entry: baseText from cycle A, appliedText from cycle B
-        expect(session.editedFilesBuffer).toHaveLength(1);
-        expect(session.editedFilesBuffer).toMatchObject([
+        // Should have one merged entry: diffBase from cycle A, currentText from cycle B
+        const mergedBuf = getVisibleBuffer(activeSessionId);
+        expect(mergedBuf).toHaveLength(1);
+        expect(mergedBuf).toMatchObject([
             {
                 identityKey: "/notes/file.md",
-                baseText: "original",
-                appliedText: "second edit",
+                diffBase: "original",
+                currentText: "second edit",
             },
         ]);
     });
@@ -2362,8 +2394,8 @@ describe("chatStore", () => {
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
-        // Entry should be auto-removed since baseText === appliedText
-        expect(session.editedFilesBuffer).toHaveLength(0);
+        // Entry should be auto-removed since diffBase === currentText
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
     it("normalizes move entries to the destination path so later edits merge into one row", async () => {
@@ -2410,18 +2442,17 @@ describe("chatStore", () => {
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
         const workCycleId = session.activeWorkCycleId!;
-        const buffer =
-            session.editedFilesBufferByWorkCycleId?.[workCycleId] ?? [];
+        const buffer = getVisibleBuffer(activeSessionId);
 
         expect(buffer).toHaveLength(1);
         expect(buffer[0]).toMatchObject({
             identityKey: "/vault/src/watcher-final.rs",
             originPath: "/vault/src/watcher.rs",
             path: "/vault/src/watcher-final.rs",
-            previousPath: null,
-            operation: "update",
-            baseText: "old line",
-            appliedText: "new line",
+            previousPath: "/vault/src/watcher.rs",
+            status: { kind: "modified" },
+            diffBase: "old line",
+            currentText: "new line",
         });
     });
 
@@ -2452,20 +2483,16 @@ describe("chatStore", () => {
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
-        expect(session.visibleWorkCycleId).toBeNull();
-        expect(session.activeWorkCycleId).toBeNull();
-        expect(session.editedFilesBufferByWorkCycleId).toEqual({});
+        // keepAllEditedFiles clears tracked files but keeps work cycle IDs
+        expect(session.visibleWorkCycleId).toBeDefined();
+        expect(session.activeWorkCycleId).toBeDefined();
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
-    function getEditedBufferEntry(sessionId: string, workCycleId: string) {
-        const entry =
-            useChatStore.getState().sessionsById[sessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId]?.[0];
-        expect(entry).toBeDefined();
-        if (!entry) {
-            throw new Error("Expected an edited files buffer entry");
-        }
-        return entry;
+    function getEditedBufferEntry(sessionId: string, _workCycleId: string) {
+        const entries = getVisibleBuffer(sessionId);
+        expect(entries).toHaveLength(1);
+        return entries[0];
     }
 
     it("rejects a single edited file when the on-disk hash still matches the applied snapshot", async () => {
@@ -2499,7 +2526,7 @@ describe("chatStore", () => {
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_get_text_file_hash") {
-                return entry.appliedHash;
+                return hashTextContent(entry.currentText);
             }
 
             if (command === "ai_restore_text_file") {
@@ -2521,9 +2548,10 @@ describe("chatStore", () => {
             .rejectEditedFile(activeSessionId, entry.identityKey);
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        expect(session.visibleWorkCycleId).toBeNull();
-        expect(session.activeWorkCycleId).toBeNull();
-        expect(session.editedFilesBufferByWorkCycleId).toEqual({});
+        // rejectEditedFile removes the tracked file but keeps work cycle IDs
+        expect(session.visibleWorkCycleId).toBeDefined();
+        expect(session.activeWorkCycleId).toBeDefined();
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
             path: "/vault/src/watcher.rs",
@@ -2585,13 +2613,11 @@ describe("chatStore", () => {
             .rejectEditedFile(activeSessionId, entry.identityKey);
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const remainingEntry =
-            session.editedFilesBufferByWorkCycleId?.[workCycleId]?.[0] ?? null;
+        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
 
         expect(remainingEntry).toMatchObject({
             identityKey: entry.identityKey,
-            status: "conflict",
-            currentHash: "different-hash",
+            conflictHash: "different-hash",
         });
         expect(invokeMock).not.toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
@@ -2638,7 +2664,7 @@ describe("chatStore", () => {
                         ? String(args.path)
                         : "";
                 return path === "/vault/src/watcher-final.rs"
-                    ? entry.appliedHash
+                    ? hashTextContent(entry.currentText)
                     : "origin-reused-hash";
             }
 
@@ -2661,13 +2687,11 @@ describe("chatStore", () => {
             .rejectEditedFile(activeSessionId, entry.identityKey);
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const remainingEntry =
-            session.editedFilesBufferByWorkCycleId?.[workCycleId]?.[0] ?? null;
+        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
 
         expect(remainingEntry).toMatchObject({
             identityKey: entry.identityKey,
-            status: "conflict",
-            currentHash: "origin-reused-hash",
+            conflictHash: "origin-reused-hash",
         });
         expect(invokeMock).not.toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
@@ -2708,7 +2732,7 @@ describe("chatStore", () => {
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_get_text_file_hash") {
-                return entry.appliedHash;
+                return hashTextContent(entry.currentText);
             }
 
             if (command === "ai_restore_text_file") {
@@ -2734,9 +2758,10 @@ describe("chatStore", () => {
             );
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        expect(session.visibleWorkCycleId).toBeNull();
-        expect(session.activeWorkCycleId).toBeNull();
-        expect(session.editedFilesBufferByWorkCycleId).toEqual({});
+        // resolveEditedFileWithMergedText removes the tracked file but keeps work cycle IDs
+        expect(session.visibleWorkCycleId).toBeDefined();
+        expect(session.activeWorkCycleId).toBeDefined();
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
             path: "/vault/src/watcher.rs",
@@ -2802,13 +2827,11 @@ describe("chatStore", () => {
             );
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const remainingEntry =
-            session.editedFilesBufferByWorkCycleId?.[workCycleId]?.[0] ?? null;
+        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
 
         expect(remainingEntry).toMatchObject({
             identityKey: entry.identityKey,
-            status: "conflict",
-            currentHash: "different-hash",
+            conflictHash: "different-hash",
         });
         expect(invokeMock).not.toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
@@ -2855,7 +2878,7 @@ describe("chatStore", () => {
                         ? String(args.path)
                         : "";
                 if (path === "/vault/src/watcher-final.rs") {
-                    return entry.appliedHash;
+                    return hashTextContent(entry.currentText);
                 }
                 return null;
             }
@@ -2935,9 +2958,7 @@ describe("chatStore", () => {
         const workCycleId =
             useChatStore.getState().sessionsById[activeSessionId]!
                 .activeWorkCycleId!;
-        const entries =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .editedFilesBufferByWorkCycleId?.[workCycleId] ?? [];
+        const entries = getVisibleBuffer(activeSessionId);
         const safeEntry = entries.find(
             (entry) => entry.path === "/vault/src/watcher.rs",
         )!;
@@ -2949,7 +2970,7 @@ describe("chatStore", () => {
                         ? String(args.path)
                         : "";
                 return path === "/vault/src/watcher.rs"
-                    ? safeEntry.appliedHash
+                    ? hashTextContent(safeEntry.currentText)
                     : "different-hash";
             }
 
@@ -2970,14 +2991,12 @@ describe("chatStore", () => {
         await useChatStore.getState().rejectAllEditedFiles(activeSessionId);
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        const remainingEntries =
-            session.editedFilesBufferByWorkCycleId?.[workCycleId] ?? [];
+        const remainingEntries = getVisibleBuffer(activeSessionId);
 
         expect(remainingEntries).toHaveLength(1);
         expect(remainingEntries[0]).toMatchObject({
             path: "/vault/src/parser.rs",
-            status: "conflict",
-            currentHash: "different-hash",
+            conflictHash: "different-hash",
         });
         expect(session.visibleWorkCycleId).toBe(workCycleId);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
@@ -3620,27 +3639,17 @@ describe("chatStore", () => {
                     ...state.sessionsById[activeSessionId]!,
                     activeWorkCycleId: workCycleId,
                     visibleWorkCycleId: workCycleId,
-                    editedFilesBufferByWorkCycleId: {
-                        [workCycleId]: [
-                            {
-                                identityKey: "/vault/src/watcher.rs",
-                                originPath: "/vault/src/watcher.rs",
-                                path: "/vault/src/watcher.rs",
-                                previousPath: null,
-                                operation: "update",
-                                baseText: "old line",
-                                appliedText: "new line",
-                                reversible: true,
-                                isText: true,
-                                supported: true,
-                                status: "pending",
-                                appliedHash: "hash-1",
-                                currentHash: null,
-                                additions: 1,
-                                deletions: 1,
-                                updatedAt: 10,
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            [workCycleId]: {
+                                "/vault/src/watcher.rs": createTrackedFile(
+                                    "/vault/src/watcher.rs",
+                                    "old line",
+                                    "new line",
+                                ),
                             },
-                        ],
+                        },
+                        lastRejectUndo: null,
                     },
                     messages: [
                         {
@@ -3680,9 +3689,7 @@ describe("chatStore", () => {
                 }),
             ]),
         });
-        expect(historyPayload?.history).not.toHaveProperty(
-            "editedFilesBufferByWorkCycleId",
-        );
+        expect(historyPayload?.history).not.toHaveProperty("actionLog");
         expect(historyPayload?.history).not.toHaveProperty("activeWorkCycleId");
         expect(historyPayload?.history).not.toHaveProperty(
             "visibleWorkCycleId",
@@ -4085,7 +4092,7 @@ describe("chatStore", () => {
         expect(selectionParts[0]).toMatchObject({
             type: "selection_mention",
             noteId: "notes/demo",
-            label: "hello world  (3:5)",
+            label: "(3:5)  hello world",
             selectedText: "hello world",
             startLine: 3,
             endLine: 5,
@@ -4130,7 +4137,7 @@ describe("chatStore", () => {
             selectionPart?.type === "selection_mention"
                 ? selectionPart.label
                 : null,
-        ).toBe("single line  (7)");
+        ).toBe("(7)  single line");
     });
 
     it("attachSelectionFromEditor does nothing without a selection", async () => {

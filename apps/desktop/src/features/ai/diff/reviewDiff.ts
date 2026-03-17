@@ -1,8 +1,9 @@
-import type {
-    AIEditedFileBufferEntry,
-    AIFileDiff,
-    AIFileDiffHunk,
-} from "../types";
+import type { TrackedFile } from "./actionLogTypes";
+import {
+    getFileOperation,
+    unreviewedEditsToHunks,
+} from "../store/actionLogModel";
+import type { AIFileDiff, AIFileDiffHunk } from "../types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -821,28 +822,22 @@ export function getCompactPath(path: string, tailSegments = 3) {
     return `.../${parts.slice(-tailSegments).join("/")}`;
 }
 
-export function createDiffFromEditedFileEntry(
-    entry: AIEditedFileBufferEntry,
-): AIFileDiff {
+export function createDiffFromTrackedFile(file: TrackedFile): AIFileDiff {
     const previousPath =
-        entry.previousPath ??
-        (entry.originPath !== entry.path ? entry.originPath : null);
+        file.previousPath ??
+        (file.originPath !== file.path ? file.originPath : null);
+    const op = getFileOperation(file);
+    const kind = previousPath && op !== "add" && op !== "delete" ? "move" : op;
+    const hunks = unreviewedEditsToHunks(file);
 
     return {
-        path: entry.path,
-        kind:
-            previousPath &&
-            entry.operation !== "add" &&
-            entry.operation !== "delete"
-                ? "move"
-                : entry.operation,
+        path: file.path,
+        kind,
         previous_path: previousPath,
-        reversible: entry.reversible,
-        is_text: entry.isText,
-        old_text: entry.baseText ?? null,
-        new_text: entry.appliedText ?? null,
-        ...(entry.hunks && entry.hunks.length > 0
-            ? { hunks: entry.hunks }
-            : {}),
+        reversible: true,
+        is_text: file.isText,
+        old_text: file.diffBase,
+        new_text: file.currentText,
+        ...(hunks.length > 0 ? { hunks } : {}),
     };
 }

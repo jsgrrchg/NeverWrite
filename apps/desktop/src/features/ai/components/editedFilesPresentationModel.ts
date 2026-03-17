@@ -1,17 +1,20 @@
+import type { TrackedFile } from "../diff/actionLogTypes";
 import {
     computeDecisionHunks,
     computeDiffLines,
     computeDiffStats,
-    createDiffFromEditedFileEntry,
+    createDiffFromTrackedFile,
     getFileNameFromPath,
     type DiffLine,
 } from "../diff/reviewDiff";
-import type { AIEditedFileBufferEntry, AIFileDiff } from "../types";
+import type { AIFileDiff } from "../types";
+import { getFileOperation } from "../store/actionLogModel";
 
 export interface ReviewFileItem {
-    entry: AIEditedFileBufferEntry;
+    file: TrackedFile;
     diff: AIFileDiff;
     lines: DiffLine[];
+    stats: { additions: number; deletions: number; approximate: boolean };
     tone: { accent: string; badge: string | null };
     summary: string;
     canOpen: boolean;
@@ -28,17 +31,18 @@ export interface ReviewSummary {
     partialCount: number;
 }
 
-export function getEntryTone(entry: AIEditedFileBufferEntry) {
-    if (entry.status === "conflict") {
+export function getFileTone(file: TrackedFile) {
+    if (file.conflictHash != null) {
         return { accent: "var(--diff-warn)", badge: "Conflict" };
     }
-    if (!entry.supported) {
+    if (!file.isText) {
         return { accent: "var(--diff-warn)", badge: "Partial" };
     }
-    if (entry.originPath !== entry.path || entry.operation === "move") {
+    const op = getFileOperation(file);
+    if (op === "move") {
         return { accent: "var(--diff-move)", badge: null };
     }
-    switch (entry.operation) {
+    switch (op) {
         case "add":
             return { accent: "var(--diff-add)", badge: null };
         case "delete":
@@ -48,11 +52,12 @@ export function getEntryTone(entry: AIEditedFileBufferEntry) {
     }
 }
 
-export function getEntrySummary(entry: AIEditedFileBufferEntry) {
-    if (entry.originPath !== entry.path || entry.operation === "move") {
-        return `Moved from ${getFileNameFromPath(entry.originPath)}`;
+export function getFileSummary(file: TrackedFile) {
+    const op = getFileOperation(file);
+    if (op === "move") {
+        return `Moved from ${getFileNameFromPath(file.originPath)}`;
     }
-    switch (entry.operation) {
+    switch (op) {
         case "add":
             return "New file";
         case "delete":
@@ -62,40 +67,42 @@ export function getEntrySummary(entry: AIEditedFileBufferEntry) {
     }
 }
 
-export function canResolveEntryHunks(
-    entry: AIEditedFileBufferEntry,
-    diff?: AIFileDiff,
-) {
-    const candidateDiff = diff ?? createDiffFromEditedFileEntry(entry);
+export function canResolveFileHunks(file: TrackedFile, diff?: AIFileDiff) {
+    const candidateDiff = diff ?? createDiffFromTrackedFile(file);
+    const op = getFileOperation(file);
     return (
-        entry.supported &&
-        entry.status !== "conflict" &&
-        entry.baseText != null &&
-        entry.appliedText != null &&
-        entry.operation !== "add" &&
-        entry.operation !== "delete" &&
+        file.isText &&
+        file.conflictHash == null &&
+        op !== "add" &&
+        op !== "delete" &&
         computeDecisionHunks(candidateDiff).length > 0
     );
 }
 
 export function deriveReviewItems(
-    entries: AIEditedFileBufferEntry[],
+    files: TrackedFile[],
     canOpenByPath: Set<string>,
 ): ReviewFileItem[] {
-    return entries
+    return files
         .slice()
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .map((entry) => {
-            const diff = createDiffFromEditedFileEntry(entry);
-            const canResolveHunks = canResolveEntryHunks(entry, diff);
+        .map((file) => {
+            const diff = createDiffFromTrackedFile(file);
+            const canResolveHunks = canResolveFileHunks(file, diff);
+            const stats = computeDiffStats([diff]);
             return {
-                entry,
+                file,
                 diff,
                 lines: computeDiffLines(diff),
-                tone: getEntryTone(entry),
-                summary: getEntrySummary(entry),
-                canOpen: canOpenByPath.has(entry.path),
-                canReject: entry.supported && entry.status !== "conflict",
+                stats: {
+                    additions: stats.additions,
+                    deletions: stats.deletions,
+                    approximate: stats.approximate === true,
+                },
+                tone: getFileTone(file),
+                summary: getFileSummary(file),
+                canOpen: canOpenByPath.has(file.path),
+                canReject: file.isText && file.conflictHash == null,
                 canResolveHunks,
             };
         });
@@ -109,8 +116,8 @@ export function deriveReviewSummary(items: ReviewFileItem[]): ReviewSummary {
         additions: stats.additions,
         deletions: stats.deletions,
         approximate: stats.approximate === true,
-        conflictCount: items.filter((item) => item.entry.status === "conflict")
+        conflictCount: items.filter((item) => item.file.conflictHash != null)
             .length,
-        partialCount: items.filter((item) => !item.entry.supported).length,
+        partialCount: items.filter((item) => !item.file.isText).length,
     };
 }

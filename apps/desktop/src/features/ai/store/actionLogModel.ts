@@ -13,12 +13,7 @@ import type {
     TrackedFile,
     TrackedFileStatus,
 } from "../diff/actionLogTypes";
-import type {
-    AIEditedFileBufferEntry,
-    AIFileDiff,
-    AIFileDiffHunk,
-    AIFileDiffHunkLine,
-} from "../types";
+import type { AIFileDiff, AIFileDiffHunk, AIFileDiffHunkLine } from "../types";
 
 // ---------------------------------------------------------------------------
 // Patch primitives
@@ -46,6 +41,9 @@ export function rangesOverlap(
     bStart: number,
     bEnd: number,
 ): boolean {
+    // Two empty (point) ranges at the same position overlap — needed for
+    // pure deletions where newStart === newEnd.
+    if (aStart === aEnd && bStart === bEnd) return aStart === bStart;
     return aStart < bEnd && bStart < aEnd;
 }
 
@@ -202,6 +200,20 @@ export function createTrackedFileFromDiff(
     };
 }
 
+/**
+ * Whether a TrackedFile has reliable enough data to show inline
+ * decorations in the editor.  When `diffBase` is empty for a
+ * non-created file it means `old_text` was missing from the agent
+ * diff, so the computed line positions would be wrong (everything
+ * at line 0).
+ */
+export function shouldShowInlineDiff(tracked: TrackedFile): boolean {
+    if (tracked.unreviewedEdits.edits.length === 0) return false;
+    if (tracked.diffBase === "" && tracked.status.kind !== "created")
+        return false;
+    return true;
+}
+
 export function updateTrackedFileWithDiff(
     file: TrackedFile,
     diff: AIFileDiff,
@@ -306,7 +318,11 @@ export function consolidateTrackedFiles(
             }
         } else {
             const tracked = createTrackedFileFromDiff(diff, timestamp);
-            if (!patchIsEmpty(tracked.unreviewedEdits)) {
+            // Track if there are text changes, or if this is a move (path changed)
+            if (
+                !patchIsEmpty(tracked.unreviewedEdits) ||
+                tracked.path !== tracked.originPath
+            ) {
                 next[tracked.identityKey] = tracked;
             }
         }
@@ -628,48 +644,12 @@ export function applyRejectUndo(
 }
 
 // ---------------------------------------------------------------------------
-// Migration: legacy AIEditedFileBufferEntry ↔ TrackedFile
+// Hashing
 // ---------------------------------------------------------------------------
 
-export function trackedFileFromLegacyEntry(
-    entry: AIEditedFileBufferEntry,
-): TrackedFile {
-    const diffBase = entry.baseText ?? "";
-    const currentText = entry.appliedText ?? "";
-
-    let status: TrackedFileStatus;
-    switch (entry.operation) {
-        case "add":
-            status = { kind: "created", existingFileContent: null };
-            break;
-        case "delete":
-            status = { kind: "deleted" };
-            break;
-        default:
-            status = { kind: "modified" };
-    }
-
-    const unreviewedEdits =
-        diffBase === currentText
-            ? emptyPatch()
-            : buildPatchFromTexts(diffBase, currentText);
-
-    return {
-        identityKey: entry.identityKey,
-        originPath: entry.originPath,
-        path: entry.path,
-        previousPath: entry.previousPath ?? null,
-        status,
-        diffBase,
-        currentText,
-        unreviewedEdits,
-        version: 1,
-        isText: entry.isText,
-        updatedAt: entry.updatedAt,
-    };
-}
-
-function hashTextContent(text: string | null | undefined): string | null {
+export function hashTextContent(
+    text: string | null | undefined,
+): string | null {
     if (text == null) return null;
     const bytes = new TextEncoder().encode(text);
     let hash = 0xcbf29ce484222325n;
@@ -680,21 +660,14 @@ function hashTextContent(text: string | null | undefined): string | null {
     return hash.toString(16).padStart(16, "0");
 }
 
-function statusToOperation(
-    status: TrackedFileStatus,
-): AIEditedFileBufferEntry["operation"] {
-    switch (status.kind) {
-        case "created":
-            return "add";
-        case "deleted":
-            return "delete";
-        case "modified":
-            return "update";
-        default: {
-            const _exhaustive: never = status.kind;
-            return _exhaustive;
-        }
-    }
+/** Derive the display operation from a TrackedFile's status and paths. */
+export function getFileOperation(
+    file: TrackedFile,
+): "add" | "delete" | "move" | "update" {
+    if (file.status.kind === "created") return "add";
+    if (file.status.kind === "deleted") return "delete";
+    if (file.originPath !== file.path) return "move";
+    return "update";
 }
 
 /**
@@ -702,7 +675,7 @@ function statusToOperation(
  * the diff display can use the exact hunk path (buildExactHunkData)
  * instead of recomputing LCS. This bypasses the 700-line limit.
  */
-function unreviewedEditsToHunks(file: TrackedFile): AIFileDiffHunk[] {
+export function unreviewedEditsToHunks(file: TrackedFile): AIFileDiffHunk[] {
     if (patchIsEmpty(file.unreviewedEdits)) return [];
 
     const baseLines = file.diffBase.split("\n");
@@ -726,38 +699,6 @@ function unreviewedEditsToHunks(file: TrackedFile): AIFileDiffHunk[] {
             lines,
         };
     });
-}
-
-export function trackedFileToLegacyEntry(
-    file: TrackedFile,
-): AIEditedFileBufferEntry {
-    const hunks = unreviewedEditsToHunks(file);
-
-    return {
-        identityKey: file.identityKey,
-        originPath: file.originPath,
-        path: file.path,
-        previousPath: file.previousPath,
-        operation: statusToOperation(file.status),
-        baseText: file.diffBase,
-        appliedText: file.currentText,
-        reversible: true,
-        isText: file.isText,
-        supported: file.isText,
-        status: "pending",
-        appliedHash: hashTextContent(file.currentText),
-        currentHash: null,
-        additions: hunks.reduce(
-            (sum, h) => sum + h.lines.filter((l) => l.type === "add").length,
-            0,
-        ),
-        deletions: hunks.reduce(
-            (sum, h) => sum + h.lines.filter((l) => l.type === "remove").length,
-            0,
-        ),
-        ...(hunks.length > 0 ? { hunks } : {}),
-        updatedAt: file.updatedAt,
-    };
 }
 
 // ---------------------------------------------------------------------------
@@ -791,13 +732,4 @@ export function setTrackedFilesForWorkCycle(
         next[workCycleId] = files;
     }
     return { ...state, trackedFilesByWorkCycleId: next };
-}
-
-/** Convert all tracked files in a work cycle to legacy entries for the UI. */
-export function trackedFilesToLegacyEntries(
-    files: Record<string, TrackedFile>,
-): AIEditedFileBufferEntry[] {
-    return Object.values(files)
-        .sort((a, b) => a.updatedAt - b.updatedAt)
-        .map(trackedFileToLegacyEntry);
 }

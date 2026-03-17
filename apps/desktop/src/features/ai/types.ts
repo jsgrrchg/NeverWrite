@@ -145,7 +145,7 @@ export function buildSelectionLabel(
         preview.length > 20 ? `${preview.slice(0, 20).trimEnd()}...` : preview;
     const range =
         startLine === endLine ? `(${startLine})` : `(${startLine}:${endLine})`;
-    return `${truncated}  ${range}`;
+    return `${range}  ${truncated}`;
 }
 
 export type QueuedChatMessageStatus = "queued" | "sending" | "failed";
@@ -248,9 +248,7 @@ export interface AIChatSession {
     status: AIChatSessionStatus;
     activeWorkCycleId?: string | null;
     visibleWorkCycleId?: string | null;
-    editedFilesBuffer?: AIEditedFileBufferEntry[];
-    editedFilesBufferByWorkCycleId?: Record<string, AIEditedFileBufferEntry[]>;
-    /** ActionLog state — when present, this is the source of truth for tracked files. */
+    /** ActionLog state — source of truth for tracked files. */
     actionLog?: import("./diff/actionLogTypes").ActionLogState;
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
@@ -407,27 +405,6 @@ export interface AIFileDiff {
     old_text?: string | null;
     new_text?: string | null;
     hunks?: AIFileDiffHunk[];
-}
-
-export interface AIEditedFileBufferEntry {
-    identityKey: string;
-    originPath: string;
-    path: string;
-    previousPath?: string | null;
-    operation: AIFileDiff["kind"];
-    baseText?: string | null;
-    appliedText?: string | null;
-    reversible: boolean;
-    isText: boolean;
-    hunks?: AIFileDiffHunk[];
-    supported: boolean;
-    status: "pending" | "conflict";
-    appliedHash: string | null;
-    currentHash?: string | null;
-    additions: number;
-    deletions: number;
-    approximate?: boolean;
-    updatedAt: number;
 }
 
 export interface AIPermissionRequestPayload {

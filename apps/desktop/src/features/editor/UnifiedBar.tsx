@@ -208,6 +208,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         (s) => s.navigateToHistoryIndex,
     );
     const tabOpenBehavior = useSettingsStore((s) => s.tabOpenBehavior);
+    const fileTreeShowExtensions = useSettingsStore(
+        (s) => s.fileTreeShowExtensions,
+    );
     // Primitive selectors — stable when values don't change
     const canGoBack = useEditorStore((s) => {
         if (tabOpenBehavior === "history") {
@@ -1337,7 +1340,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             >
                                                 {renderTabLeadingIcon(tab)}
                                                 <span className="flex-1 truncate text-[12.5px] font-medium">
-                                                    {tab.title}
+                                                    {fileTreeShowExtensions &&
+                                                    isNoteTab(tab)
+                                                        ? (tab.noteId
+                                                              .split("/")
+                                                              .pop() ??
+                                                              tab.title) + ".md"
+                                                        : tab.title}
                                                 </span>
                                                 <button
                                                     onClick={(event) => {

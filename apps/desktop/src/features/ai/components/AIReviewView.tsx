@@ -21,7 +21,7 @@ import { formatDiffStat } from "../diff/reviewDiff";
 import { useChatStore } from "../store/chatStore";
 import {
     selectHasUndoReject,
-    selectVisibleEditedFilesBuffer,
+    selectVisibleTrackedFiles,
 } from "../store/editedFilesBufferModel";
 import { canOpenAiEditedFileEntry } from "./chatFileNavigation";
 
@@ -185,7 +185,7 @@ export function AIReviewView() {
 
 function ReviewContent({ tab }: { tab: ReviewTab }) {
     const visibleEntries = useChatStore((state) =>
-        selectVisibleEditedFilesBuffer(state, tab.sessionId),
+        selectVisibleTrackedFiles(state, tab.sessionId),
     );
     const rejectEditedFile = useChatStore((state) => state.rejectEditedFile);
     const keepEditedFile = useChatStore((state) => state.keepEditedFile);

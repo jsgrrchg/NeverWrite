@@ -188,6 +188,13 @@ pub fn resolve_binary_command(
         }
     }
 
+    // In debug builds prefer vendor JS (node) over the Bun-compiled binary.
+    // Bun binaries are unreliable when spawned as child processes by Tauri.
+    // Release builds use the compiled binary (signed inside the .app bundle).
+    if cfg!(debug_assertions) && vendor_path.exists() {
+        return command_from_existing_path(vendor_path, AiRuntimeBinarySource::Vendor);
+    }
+
     if bundled_path.exists() {
         return command_from_existing_path(bundled_path, AiRuntimeBinarySource::Bundled);
     }

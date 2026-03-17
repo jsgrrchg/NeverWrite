@@ -154,6 +154,9 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
 
     fn remove_session(&mut self, session_id: &str) {
         self.sessions.remove(session_id);
+        if let Some(handle) = self.handle.as_ref() {
+            handle.clear_session_baselines(session_id);
+        }
     }
 
     fn list_runtime_sessions(
@@ -440,6 +443,16 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         _answers: HashMap<String, Vec<String>>,
     ) -> Result<AiSession, String> {
         Err("Claude does not support user input requests in this build.".to_string())
+    }
+
+    fn register_file_baseline(
+        &mut self,
+        session_id: &str,
+        display_path: &str,
+        content: String,
+    ) -> Result<(), String> {
+        self.handle_from_session(session_id)?
+            .register_file_baseline(session_id, display_path, content)
     }
 }
 

@@ -622,6 +622,18 @@ export async function aiPruneSessionHistories(
     });
 }
 
+export async function aiRegisterFileBaseline(
+    sessionId: string,
+    displayPath: string,
+    content: string,
+): Promise<void> {
+    await invoke("ai_register_file_baseline", {
+        sessionId,
+        displayPath,
+        content,
+    });
+}
+
 export async function listenToAiPermissionRequest(
     callback: (payload: AIPermissionRequestPayload) => void,
 ): Promise<UnlistenFn> {

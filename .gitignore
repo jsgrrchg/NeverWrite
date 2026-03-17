@@ -10,7 +10,6 @@ apps/desktop/src-tauri/binaries/codex-acp
 apps/desktop/src-tauri/binaries/codex-acp.exe
 apps/desktop/src-tauri/binaries/claude-agent-acp
 apps/desktop/src-tauri/binaries/claude-agent-acp.exe
-apps/desktop/src-tauri/binaries/claude-agent-acp.broken
 vendor/
 apps/desktop/dist/
 apps/desktop/node_modules/

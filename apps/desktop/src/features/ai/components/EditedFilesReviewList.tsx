@@ -38,14 +38,14 @@ function FullRowActions({
         hunkNewEnd: number,
     ) => void;
 }) {
-    const { entry, canResolveHunks, diff } = item;
+    const { file, canResolveHunks, diff } = item;
 
     return (
         <EditedFileDiffPreview
             diff={diff}
             expanded={expanded}
             diffZoom={diffZoom}
-            entry={entry}
+            file={file}
             onKeep={onKeep}
             onReject={onReject}
             onResolveHunks={
@@ -54,12 +54,12 @@ function FullRowActions({
                     : undefined
             }
             onResolveHunk={
-                onResolveHunk
+                canResolveHunks && onResolveHunk
                     ? (_, decision, hunkNewStart, hunkNewEnd) =>
                           onResolveHunk(decision, hunkNewStart, hunkNewEnd)
                     : undefined
             }
-            testId={`edited-buffer-diff:${entry.identityKey}`}
+            testId={`edited-buffer-diff:${file.identityKey}`}
         />
     );
 }
@@ -87,8 +87,8 @@ function FullRow({
         hunkNewEnd: number,
     ) => void;
 }) {
-    const { entry, tone, summary, canOpen, canReject } = item;
-    const compactPath = getCompactPath(entry.path);
+    const { file, tone, summary, canOpen, canReject, stats } = item;
+    const compactPath = getCompactPath(file.path);
 
     return (
         <div
@@ -158,7 +158,7 @@ function FullRow({
                                 color: "var(--text-primary)",
                             }}
                         >
-                            {getFileNameFromPath(entry.path)}
+                            {getFileNameFromPath(file.path)}
                         </span>
                         {tone.badge ? (
                             <span
@@ -193,7 +193,7 @@ function FullRow({
                     className="flex shrink-0 items-center gap-1.5"
                     style={{ fontSize: "0.76em" }}
                 >
-                    {entry.additions > 0 ? (
+                    {stats.additions > 0 ? (
                         <span
                             style={{
                                 color: "var(--diff-add)",
@@ -201,10 +201,10 @@ function FullRow({
                             }}
                         >
                             +
-                            {formatDiffStat(entry.additions, entry.approximate)}
+                            {formatDiffStat(stats.additions, stats.approximate)}
                         </span>
                     ) : null}
-                    {entry.deletions > 0 ? (
+                    {stats.deletions > 0 ? (
                         <span
                             style={{
                                 color: "var(--diff-remove)",
@@ -212,7 +212,7 @@ function FullRow({
                             }}
                         >
                             -
-                            {formatDiffStat(entry.deletions, entry.approximate)}
+                            {formatDiffStat(stats.deletions, stats.approximate)}
                         </span>
                     ) : null}
                 </div>
@@ -224,7 +224,7 @@ function FullRow({
                             type="button"
                             title="Open File"
                             onClick={() =>
-                                void openAiEditedFileByAbsolutePath(entry.path)
+                                void openAiEditedFileByAbsolutePath(file.path)
                             }
                             className="shrink-0 rounded-md p-1"
                             style={getNeutralButtonStyle()}
@@ -331,7 +331,8 @@ function CompactRow({
     ) => void;
 }) {
     const [expanded, setExpanded] = useState(false);
-    const { entry, tone, canOpen, canReject, canResolveHunks, diff } = item;
+    const { file, tone, canOpen, canReject, canResolveHunks, diff, stats } =
+        item;
 
     return (
         <div
@@ -354,7 +355,7 @@ function CompactRow({
                         color: "var(--text-primary)",
                     }}
                 >
-                    {getFileNameFromPath(entry.path)}
+                    {getFileNameFromPath(file.path)}
                     {tone.badge ? (
                         <span
                             className="ml-1.5 rounded-full px-1.5 py-0.5"
@@ -375,7 +376,7 @@ function CompactRow({
                     className="flex shrink-0 items-center gap-1 text-right"
                     style={{ fontSize: "0.76em" }}
                 >
-                    {entry.additions > 0 ? (
+                    {stats.additions > 0 ? (
                         <div
                             style={{
                                 color: "var(--diff-add)",
@@ -383,10 +384,10 @@ function CompactRow({
                             }}
                         >
                             +
-                            {formatDiffStat(entry.additions, entry.approximate)}
+                            {formatDiffStat(stats.additions, stats.approximate)}
                         </div>
                     ) : null}
-                    {entry.deletions > 0 ? (
+                    {stats.deletions > 0 ? (
                         <div
                             style={{
                                 color: "var(--diff-remove)",
@@ -394,7 +395,7 @@ function CompactRow({
                             }}
                         >
                             -
-                            {formatDiffStat(entry.deletions, entry.approximate)}
+                            {formatDiffStat(stats.deletions, stats.approximate)}
                         </div>
                     ) : null}
                 </div>
@@ -404,7 +405,7 @@ function CompactRow({
                     title="Open File"
                     onClick={() => {
                         if (!canOpen) return;
-                        void openAiEditedFileByAbsolutePath(entry.path);
+                        void openAiEditedFileByAbsolutePath(file.path);
                     }}
                     disabled={!canOpen}
                     className="shrink-0 rounded-md p-1"
@@ -503,7 +504,7 @@ function CompactRow({
                 diff={diff}
                 expanded={expanded}
                 diffZoom={diffZoom}
-                entry={entry}
+                file={file}
                 onKeep={onKeep}
                 onReject={onReject}
                 onResolveHunks={
@@ -512,12 +513,12 @@ function CompactRow({
                         : undefined
                 }
                 onResolveHunk={
-                    onResolveHunk
+                    canResolveHunks && onResolveHunk
                         ? (_, decision, hunkNewStart, hunkNewEnd) =>
                               onResolveHunk(decision, hunkNewStart, hunkNewEnd)
                         : undefined
                 }
-                testId={`edited-buffer-diff:${entry.identityKey}`}
+                testId={`edited-buffer-diff:${file.identityKey}`}
             />
         </div>
     );
@@ -558,19 +559,19 @@ export function EditedFilesReviewList({
             <>
                 {items.map((item) => (
                     <CompactRow
-                        key={item.entry.identityKey}
+                        key={item.file.identityKey}
                         item={item}
                         diffZoom={diffZoom}
-                        onKeep={() => onKeepItem?.(item.entry.identityKey)}
-                        onReject={() => onRejectItem(item.entry.identityKey)}
+                        onKeep={() => onKeepItem?.(item.file.identityKey)}
+                        onReject={() => onRejectItem(item.file.identityKey)}
                         onResolveHunks={(mergedText) =>
-                            onResolveHunks?.(item.entry.identityKey, mergedText)
+                            onResolveHunks?.(item.file.identityKey, mergedText)
                         }
                         onResolveHunk={
                             onResolveHunk
                                 ? (decision, s, e) =>
                                       onResolveHunk(
-                                          item.entry.identityKey,
+                                          item.file.identityKey,
                                           decision,
                                           s,
                                           e,
@@ -587,23 +588,21 @@ export function EditedFilesReviewList({
         <>
             {items.map((item) => (
                 <FullRow
-                    key={item.entry.identityKey}
+                    key={item.file.identityKey}
                     item={item}
-                    expanded={
-                        expandedKeys?.has(item.entry.identityKey) ?? false
-                    }
+                    expanded={expandedKeys?.has(item.file.identityKey) ?? false}
                     diffZoom={diffZoom}
-                    onToggle={() => onToggleItem?.(item.entry.identityKey)}
-                    onKeep={() => onKeepItem?.(item.entry.identityKey)}
-                    onReject={() => onRejectItem(item.entry.identityKey)}
+                    onToggle={() => onToggleItem?.(item.file.identityKey)}
+                    onKeep={() => onKeepItem?.(item.file.identityKey)}
+                    onReject={() => onRejectItem(item.file.identityKey)}
                     onResolveHunks={(mergedText) =>
-                        onResolveHunks?.(item.entry.identityKey, mergedText)
+                        onResolveHunks?.(item.file.identityKey, mergedText)
                     }
                     onResolveHunk={
                         onResolveHunk
                             ? (decision, s, e) =>
                                   onResolveHunk(
-                                      item.entry.identityKey,
+                                      item.file.identityKey,
                                       decision,
                                       s,
                                       e,

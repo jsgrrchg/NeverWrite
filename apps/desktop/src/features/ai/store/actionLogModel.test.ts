@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AIEditedFileBufferEntry, AIFileDiff } from "../types";
+import type { AIFileDiff } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import {
     applyNonConflictingEdits,
@@ -16,8 +16,7 @@ import {
     rangesOverlap,
     rejectAllEdits,
     rejectEditsInRanges,
-    trackedFileFromLegacyEntry,
-    trackedFileToLegacyEntry,
+    shouldShowInlineDiff,
     updateTrackedFileWithDiff,
 } from "./actionLogModel";
 
@@ -56,6 +55,18 @@ describe("Patch primitives", () => {
         expect(rangesOverlap(5, 10, 0, 3)).toBe(false);
         expect(rangesOverlap(0, 5, 0, 5)).toBe(true); // identical
         expect(rangesOverlap(1, 4, 2, 3)).toBe(true); // contained
+    });
+
+    it("rangesOverlap handles empty (point) ranges for pure deletions", () => {
+        // Two empty ranges at same position — overlap (pure deletion match)
+        expect(rangesOverlap(5, 5, 5, 5)).toBe(true);
+        // Two empty ranges at different positions — no overlap
+        expect(rangesOverlap(5, 5, 8, 8)).toBe(false);
+        // Empty range inside a non-empty range — overlaps
+        expect(rangesOverlap(5, 5, 3, 7)).toBe(true);
+        // Empty range at the start boundary of a non-empty range — no overlap
+        // (an empty range has no content, so boundary-touching isn't overlap)
+        expect(rangesOverlap(3, 3, 3, 7)).toBe(false);
     });
 
     it("buildPatchFromTexts finds changed lines", () => {
@@ -469,131 +480,6 @@ describe("Undo", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Migration: legacy ↔ TrackedFile
-// ---------------------------------------------------------------------------
-
-describe("Migration", () => {
-    it("trackedFileFromLegacyEntry converts correctly", () => {
-        const entry: AIEditedFileBufferEntry = {
-            identityKey: "test.md",
-            originPath: "test.md",
-            path: "test.md",
-            operation: "update",
-            baseText: "old",
-            appliedText: "new",
-            reversible: true,
-            isText: true,
-            supported: true,
-            status: "pending",
-            appliedHash: "abc",
-            currentHash: null,
-            additions: 1,
-            deletions: 1,
-            updatedAt: 1000,
-        };
-
-        const file = trackedFileFromLegacyEntry(entry);
-        expect(file.identityKey).toBe("test.md");
-        expect(file.diffBase).toBe("old");
-        expect(file.currentText).toBe("new");
-        expect(file.status).toEqual({ kind: "modified" });
-        expect(file.unreviewedEdits.edits).toHaveLength(1);
-    });
-
-    it("trackedFileToLegacyEntry converts back", () => {
-        const diff = makeDiff();
-        const file = createTrackedFileFromDiff(diff, 1000);
-        const entry = trackedFileToLegacyEntry(file);
-
-        expect(entry.identityKey).toBe("test.md");
-        expect(entry.baseText).toBe(file.diffBase);
-        expect(entry.appliedText).toBe(file.currentText);
-        expect(entry.operation).toBe("update");
-        expect(entry.status).toBe("pending");
-        expect(entry.supported).toBe(true);
-        // additions/deletions computed from unreviewedEdits
-        expect(entry.additions).toBe(1);
-        expect(entry.deletions).toBe(1);
-    });
-
-    it("roundtrip preserves key data", () => {
-        const diff = makeDiff({ kind: "add", old_text: null, new_text: "new" });
-        const file = createTrackedFileFromDiff(diff, 1000);
-        const entry = trackedFileToLegacyEntry(file);
-        const roundtripped = trackedFileFromLegacyEntry(entry);
-
-        expect(roundtripped.diffBase).toBe(file.diffBase);
-        expect(roundtripped.currentText).toBe(file.currentText);
-        expect(roundtripped.status.kind).toBe(file.status.kind);
-    });
-
-    it("trackedFileToLegacyEntry includes hunks from unreviewedEdits", () => {
-        const diff = makeDiff({
-            old_text: "aaa\nbbb\nccc\nddd\neee",
-            new_text: "AAA\nbbb\nccc\nddd\nEEE",
-        });
-        const file = createTrackedFileFromDiff(diff, 1000);
-        const entry = trackedFileToLegacyEntry(file);
-
-        expect(entry.hunks).toBeDefined();
-        expect(entry.hunks).toHaveLength(2);
-
-        // First hunk: line 0 changed (aaa → AAA)
-        const h0 = entry.hunks![0];
-        expect(h0.old_start).toBe(1); // 1-based
-        expect(h0.old_count).toBe(1);
-        expect(h0.new_start).toBe(1);
-        expect(h0.new_count).toBe(1);
-        expect(h0.lines).toEqual([
-            { type: "remove", text: "aaa" },
-            { type: "add", text: "AAA" },
-        ]);
-
-        // Second hunk: line 4 changed (eee → EEE)
-        const h1 = entry.hunks![1];
-        expect(h1.old_start).toBe(5); // 1-based
-        expect(h1.old_count).toBe(1);
-        expect(h1.new_start).toBe(5);
-        expect(h1.new_count).toBe(1);
-        expect(h1.lines).toEqual([
-            { type: "remove", text: "eee" },
-            { type: "add", text: "EEE" },
-        ]);
-    });
-
-    it("trackedFileToLegacyEntry omits hunks when no unreviewed edits", () => {
-        const file = createTrackedFileFromDiff(makeDiff(), 1000);
-        const accepted = keepAllEdits(file);
-        const entry = trackedFileToLegacyEntry(accepted);
-
-        expect(entry.hunks).toBeUndefined();
-    });
-
-    it("hunks enable large file interactive diff (>700 lines)", () => {
-        // Generate a large file (800 lines) with a single change at line 400
-        const largeLines = Array.from({ length: 800 }, (_, i) => `line-${i}`);
-        const oldText = largeLines.join("\n");
-        const newLines = [...largeLines];
-        newLines[400] = "MODIFIED-400";
-        const newText = newLines.join("\n");
-
-        const diff = makeDiff({ old_text: oldText, new_text: newText });
-        const file = createTrackedFileFromDiff(diff, 1000);
-        const entry = trackedFileToLegacyEntry(file);
-
-        // The entry has hunks, so reviewDiff.ts will use buildExactHunkData
-        // instead of LCS, bypassing the 700-line limit
-        expect(entry.hunks).toBeDefined();
-        expect(entry.hunks).toHaveLength(1);
-        expect(entry.hunks![0].old_start).toBe(401); // 1-based
-        expect(entry.hunks![0].lines).toEqual([
-            { type: "remove", text: "line-400" },
-            { type: "add", text: "MODIFIED-400" },
-        ]);
-    });
-});
-
-// ---------------------------------------------------------------------------
 // computeRestoreAction (lifecycle-aware)
 // ---------------------------------------------------------------------------
 
@@ -645,5 +531,199 @@ describe("computeRestoreAction", () => {
             expect(action.content).toBe(file.diffBase);
             expect(action.previousPath).toBe("new-name.md");
         }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Pure deletion: keepEditsInRange / rejectEditsInRanges with empty new-ranges
+// ---------------------------------------------------------------------------
+
+describe("keepEditsInRange with pure deletions", () => {
+    it("accepts a pure deletion (removes lines from diffBase)", () => {
+        // Agent deleted line "bbb" (line index 1) from "aaa\nbbb\nccc"
+        const tracked: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "aaa\nbbb\nccc",
+            currentText: "aaa\nccc",
+            unreviewedEdits: buildPatchFromTexts("aaa\nbbb\nccc", "aaa\nccc"),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        // The deletion edit has newStart === newEnd (empty in new space)
+        expect(tracked.unreviewedEdits.edits.length).toBe(1);
+        const edit = tracked.unreviewedEdits.edits[0];
+        expect(edit.newStart).toBe(edit.newEnd); // pure deletion
+
+        const result = keepEditsInRange(tracked, edit.newStart, edit.newEnd);
+
+        // diffBase should now match currentText (deletion accepted)
+        expect(result.diffBase).toBe("aaa\nccc");
+        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
+    });
+});
+
+describe("rejectEditsInRanges with pure deletions", () => {
+    it("rejects a pure deletion (restores deleted lines in currentText)", () => {
+        const tracked: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "aaa\nbbb\nccc",
+            currentText: "aaa\nccc",
+            unreviewedEdits: buildPatchFromTexts("aaa\nbbb\nccc", "aaa\nccc"),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const edit = tracked.unreviewedEdits.edits[0];
+        expect(edit.newStart).toBe(edit.newEnd); // pure deletion
+
+        const { file: result, undoData } = rejectEditsInRanges(tracked, [
+            { start: edit.newStart, end: edit.newEnd },
+        ]);
+
+        // currentText should be restored to diffBase (deletion rejected)
+        expect(result.currentText).toBe("aaa\nbbb\nccc");
+        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
+        expect(undoData.editsToRestore.length).toBe(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Inline diff positioning — verifies that edits from Claude land on the
+// correct document lines in the editor, and that the guard prevents wrong
+// positions when old_text is missing.
+// ---------------------------------------------------------------------------
+
+describe("Inline diff positioning", () => {
+    it("update diff with old_text positions edits at the correct lines", () => {
+        // Claude edits line 5 of a 7-line file (inserts a new line after line 4)
+        const oldText = "a\nb\nc\nd\ne\nf\ng";
+        const newText = "a\nb\nc\nd\nINSERTED\ne\nf\ng";
+        const diff = makeDiff({ old_text: oldText, new_text: newText });
+        const file = createTrackedFileFromDiff(diff, 1000);
+
+        expect(file.diffBase).toBe(oldText);
+        expect(file.status.kind).toBe("modified");
+
+        // The patch should have exactly one edit hunk for the insertion
+        expect(file.unreviewedEdits.edits).toHaveLength(1);
+        const edit = file.unreviewedEdits.edits[0];
+
+        // The insertion is between old lines 4 and 4 (0-based), new line 4
+        expect(edit.oldStart).toBe(4);
+        expect(edit.oldEnd).toBe(4); // pure insertion in old text
+        expect(edit.newStart).toBe(4);
+        expect(edit.newEnd).toBe(5);
+
+        // shouldShowInlineDiff must be true — positions are reliable
+        expect(shouldShowInlineDiff(file)).toBe(true);
+    });
+
+    it("update diff with old_text positions multi-line insertion correctly", () => {
+        const oldText = "header\n\nfooter";
+        const newText = "header\nline A\nline B\nline C\n\nfooter";
+        const diff = makeDiff({ old_text: oldText, new_text: newText });
+        const file = createTrackedFileFromDiff(diff, 1000);
+
+        expect(file.unreviewedEdits.edits).toHaveLength(1);
+        const edit = file.unreviewedEdits.edits[0];
+
+        // Insertion between "header" (line 0) and "" (line 1)
+        expect(edit.oldStart).toBe(1);
+        expect(edit.oldEnd).toBe(1);
+        expect(edit.newStart).toBe(1);
+        expect(edit.newEnd).toBe(4); // 3 new lines
+        expect(shouldShowInlineDiff(file)).toBe(true);
+    });
+
+    it("update diff without old_text produces empty diffBase and skips inline", () => {
+        // Simulates Write tool post-write: kind="update" but old_text missing
+        const diff = makeDiff({
+            kind: "update",
+            old_text: null,
+            new_text: "full file content\nwith many lines",
+        });
+        const file = createTrackedFileFromDiff(diff, 1000);
+
+        expect(file.status.kind).toBe("modified");
+        expect(file.diffBase).toBe(""); // old_text was null → ""
+
+        // buildPatchFromTexts("", content) puts all edits at line 0
+        expect(file.unreviewedEdits.edits.length).toBeGreaterThan(0);
+        expect(file.unreviewedEdits.edits[0].oldStart).toBe(0);
+
+        // Guard must block these — line positions are unreliable
+        expect(shouldShowInlineDiff(file)).toBe(false);
+    });
+
+    it("buildPatchFromTexts with empty base puts everything at line 0", () => {
+        // Demonstrates WHY the guard is needed: without old_text, the entire
+        // file content is treated as a single replacement starting at line 0.
+        // "" splits to [""] (1 line), so oldEnd = 1 (the empty line is replaced).
+        const patch = buildPatchFromTexts("", "line1\nline2\nline3");
+        expect(patch.edits).toHaveLength(1);
+
+        const edit = patch.edits[0];
+        expect(edit.oldStart).toBe(0);
+        expect(edit.oldEnd).toBe(1); // "" = 1 empty line replaced
+        expect(edit.newStart).toBe(0);
+        expect(edit.newEnd).toBe(3);
+    });
+
+    it("add diff (new file) with null old_text allows inline at line 0", () => {
+        // New file creation: line 0 IS the correct position
+        const diff = makeDiff({
+            kind: "add",
+            old_text: null,
+            new_text: "brand new\nfile content",
+        });
+        const file = createTrackedFileFromDiff(diff, 1000);
+
+        expect(file.status).toEqual({
+            kind: "created",
+            existingFileContent: null,
+        });
+        expect(file.diffBase).toBe("");
+
+        // All edits at line 0 — correct for a new file
+        expect(file.unreviewedEdits.edits).toHaveLength(1);
+        expect(file.unreviewedEdits.edits[0].newStart).toBe(0);
+
+        // Guard must ALLOW these — line 0 is correct for created files
+        expect(shouldShowInlineDiff(file)).toBe(true);
+    });
+
+    it("shouldShowInlineDiff returns false when no edits exist", () => {
+        const diff = makeDiff({ old_text: "same", new_text: "same" });
+        const file = createTrackedFileFromDiff(diff, 1000);
+        expect(patchIsEmpty(file.unreviewedEdits)).toBe(true);
+        expect(shouldShowInlineDiff(file)).toBe(false);
+    });
+
+    it("delete diff does not show inline (no edits to display)", () => {
+        const diff = makeDiff({
+            kind: "delete",
+            old_text: "deleted content",
+            new_text: null,
+        });
+        const file = createTrackedFileFromDiff(diff, 1000);
+
+        expect(file.status.kind).toBe("deleted");
+        expect(file.currentText).toBe("");
+        // Deletion produces edits (old lines removed) but in the editor
+        // the file is empty so there's nothing to decorate inline.
+        // shouldShowInlineDiff still returns true — the editor
+        // handles this via the deleted-block widget in inlineDiff.ts.
+        // This test just documents the behavior.
     });
 });

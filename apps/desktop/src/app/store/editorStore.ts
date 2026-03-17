@@ -806,6 +806,7 @@ interface EditorStore {
     pendingReveal: PendingReveal | null;
     pendingSelectionReveal: PendingSelectionReveal | null;
     currentSelection: EditorSelectionContext | null;
+    _pendingForceReloads: Set<string>;
     openNote: (noteId: string, title: string, content: string) => void;
     openPdf: (entryId: string, title: string, path: string) => void;
     openFile: (
@@ -843,6 +844,11 @@ interface EditorStore {
     setCurrentSelection: (selection: EditorSelectionContext) => void;
     clearCurrentSelection: () => void;
     reloadNoteContent: (noteId: string, detail: ReloadedNoteDetail) => void;
+    forceReloadNoteContent: (
+        noteId: string,
+        detail: ReloadedNoteDetail,
+    ) => void;
+    clearForceReload: (noteId: string) => void;
     handleNoteDeleted: (noteId: string) => void;
     handleNoteRenamed: (
         oldNoteId: string,
@@ -860,6 +866,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     pendingReveal: null,
     pendingSelectionReveal: null,
     currentSelection: null,
+    _pendingForceReloads: new Set<string>(),
 
     openNote: (noteId, title, content) => {
         set((state) => {
@@ -1507,6 +1514,39 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 return { ...t, content: detail.content, title: detail.title };
             }),
         }));
+    },
+
+    forceReloadNoteContent: (noteId, detail) => {
+        set((state) => {
+            const next = new Set(state._pendingForceReloads);
+            next.add(noteId);
+            return {
+                _pendingForceReloads: next,
+                tabs: state.tabs.map((t) => {
+                    if (!isNoteTab(t) || t.noteId !== noteId) return t;
+                    if (
+                        t.content === detail.content &&
+                        t.title === detail.title
+                    ) {
+                        return t;
+                    }
+                    return {
+                        ...t,
+                        content: detail.content,
+                        title: detail.title,
+                    };
+                }),
+            };
+        });
+    },
+
+    clearForceReload: (noteId) => {
+        set((state) => {
+            if (!state._pendingForceReloads.has(noteId)) return state;
+            const next = new Set(state._pendingForceReloads);
+            next.delete(noteId);
+            return { _pendingForceReloads: next };
+        });
     },
 
     handleNoteDeleted: (noteId) => {

@@ -3704,6 +3704,7 @@ pub fn run() {
             ai::commands::ai_delete_runtime_session,
             ai::commands::ai_delete_runtime_sessions_for_vault,
             ai::commands::ai_prune_session_histories,
+            ai::commands::ai_register_file_baseline,
             ai::whisper::whisper_list_models,
             ai::whisper::whisper_get_status,
             ai::whisper::whisper_download_model,

@@ -491,6 +491,17 @@ impl AiManager {
         }
     }
 
+    pub fn register_file_baseline(
+        &mut self,
+        session_id: &str,
+        display_path: &str,
+        content: String,
+    ) -> Result<(), String> {
+        let runtime_id = self.session_runtime_id(session_id)?;
+        self.runtime_mut(&runtime_id)?
+            .register_file_baseline(session_id, display_path, content)
+    }
+
     fn session_runtime_id(&self, session_id: &str) -> Result<String, String> {
         self.sessions
             .get(session_id)

@@ -129,6 +129,14 @@ pub trait AiRuntimeAdapter: Send {
         request_id: &str,
         answers: HashMap<String, Vec<String>>,
     ) -> Result<AiSession, String>;
+    fn register_file_baseline(
+        &mut self,
+        _session_id: &str,
+        _display_path: &str,
+        _content: String,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub fn merge_runtime_capabilities(
