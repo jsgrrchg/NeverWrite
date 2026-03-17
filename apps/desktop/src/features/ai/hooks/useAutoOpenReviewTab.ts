@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useChatStore } from "../store/chatStore";
 import { getReviewTabTitle } from "../reviewTabTitle";
-import { selectVisibleEditedFilesBufferCount } from "../store/editedFilesBufferModel";
+import { selectVisibleTrackedFilesCount } from "../store/editedFilesBufferModel";
 
 export function useAutoOpenReviewTab() {
     const prevCountsRef = useRef<Map<string, number>>(new Map());
@@ -12,7 +12,7 @@ export function useAutoOpenReviewTab() {
         prevCountsRef.current = new Map(
             Object.keys(initialState.sessionsById).map((sessionId) => [
                 sessionId,
-                selectVisibleEditedFilesBufferCount(initialState, sessionId),
+                selectVisibleTrackedFilesCount(initialState, sessionId),
             ]),
         );
 
@@ -20,10 +20,7 @@ export function useAutoOpenReviewTab() {
             const nextSessionIds = new Set(Object.keys(state.sessionsById));
 
             for (const sessionId of nextSessionIds) {
-                const count = selectVisibleEditedFilesBufferCount(
-                    state,
-                    sessionId,
-                );
+                const count = selectVisibleTrackedFilesCount(state, sessionId);
                 const prev = prevCountsRef.current.get(sessionId) ?? 0;
                 prevCountsRef.current.set(sessionId, count);
 

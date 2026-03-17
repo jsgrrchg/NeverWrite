@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AIEditedFileBufferEntry, AIFileDiff } from "../types";
+import type { TrackedFile } from "../diff/actionLogTypes";
+import type { AIFileDiff } from "../types";
 import {
     computeDecisionHunks,
     computeDiffLines,
@@ -401,7 +402,7 @@ export function EditedFileDiffPreview({
     testId,
     emptyLabel = "Path-only change",
     showWhenEmpty = true,
-    entry,
+    file,
     onKeep,
     onReject,
     onResolveHunks,
@@ -413,7 +414,7 @@ export function EditedFileDiffPreview({
     testId?: string;
     emptyLabel?: string;
     showWhenEmpty?: boolean;
-    entry?: AIEditedFileBufferEntry;
+    file?: TrackedFile;
     onKeep?: (identityKey: string) => void | Promise<void>;
     onReject?: (identityKey: string) => void | Promise<void>;
     onResolveHunks?: (
@@ -441,23 +442,20 @@ export function EditedFileDiffPreview({
         [diff, expanded],
     );
     const visualBlocks = useMemo(
-        () => (expanded && entry ? computeVisualDiffBlocks(diff) : []),
-        [diff, entry, expanded],
+        () => (expanded && file ? computeVisualDiffBlocks(diff) : []),
+        [diff, file, expanded],
     );
     const decisionHunks = useMemo(
-        () => (expanded && entry ? computeDecisionHunks(diff) : []),
-        [diff, entry, expanded],
+        () => (expanded && file ? computeDecisionHunks(diff) : []),
+        [diff, file, expanded],
     );
-    const decisionStateKey = `${entry?.identityKey ?? ""}:${decisionHunks.length}`;
+    const decisionStateKey = `${file?.identityKey ?? ""}:${decisionHunks.length}`;
     const immediateHunkMode = !!onResolveHunk;
     const interactiveHunksEnabled =
         expanded &&
-        !!entry &&
-        entry.supported &&
-        entry.status === "pending" &&
-        entry.isText &&
-        entry.baseText != null &&
-        entry.appliedText != null &&
+        !!file &&
+        file.isText &&
+        file.conflictHash == null &&
         visualBlocks.length > 0 &&
         decisionHunks.length > 0 &&
         (immediateHunkMode || (!!onKeep && !!onReject && !!onResolveHunks));
@@ -480,11 +478,11 @@ export function EditedFileDiffPreview({
 
     const handleHunkDecision = useCallback(
         (hunkIndex: number, decision: HunkDecision) => {
-            if (immediateHunkMode && entry) {
+            if (immediateHunkMode && file) {
                 const hunk = decisionHunks.find((h) => h.index === hunkIndex);
                 if (hunk) {
                     void onResolveHunk?.(
-                        entry.identityKey,
+                        file.identityKey,
                         decision,
                         hunk.newStart,
                         hunk.newEnd,
@@ -508,7 +506,7 @@ export function EditedFileDiffPreview({
         [
             decisionHunks,
             decisionStateKey,
-            entry,
+            file,
             immediateHunkMode,
             onResolveHunk,
         ],
@@ -517,7 +515,7 @@ export function EditedFileDiffPreview({
     // Auto-resolve: only in accumulation mode (no onResolveHunk)
     useEffect(() => {
         if (immediateHunkMode) return;
-        if (!interactiveHunksEnabled || !entry || decisionHunks.length === 0) {
+        if (!interactiveHunksEnabled || !file || decisionHunks.length === 0) {
             return;
         }
 
@@ -537,7 +535,7 @@ export function EditedFileDiffPreview({
         }
         autoResolvedSignatureRef.current = signature;
 
-        const identityKey = entry.identityKey;
+        const identityKey = file.identityKey;
         const decisions = decisionHunks.map((hunk) =>
             hunkDecisions.get(hunk.index),
         );
@@ -553,14 +551,14 @@ export function EditedFileDiffPreview({
         }
 
         const mergedText = computeMergedText(
-            entry.baseText ?? "",
-            entry.appliedText ?? "",
+            file.diffBase,
+            file.currentText,
             decisionHunks,
             hunkDecisions,
         );
         void onResolveHunks?.(identityKey, mergedText);
     }, [
-        entry,
+        file,
         decisionHunks,
         hunkDecisions,
         immediateHunkMode,
@@ -619,7 +617,7 @@ export function EditedFileDiffPreview({
                                 );
                             }
 
-                            if (!interactiveHunksEnabled || !entry) {
+                            if (!interactiveHunksEnabled || !file) {
                                 return (
                                     <div key={block.key}>
                                         {block.lines.map((line, idx) => (

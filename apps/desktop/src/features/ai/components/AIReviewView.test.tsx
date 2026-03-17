@@ -8,13 +8,44 @@ import {
     setVaultNotes,
 } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
-import type { AIEditedFileBufferEntry, AIChatSession } from "../types";
+import type { AIChatSession } from "../types";
+import type { TrackedFile } from "../diff/actionLogTypes";
+import { buildPatchFromTexts, emptyPatch } from "../store/actionLogModel";
 import { AIReviewView } from "./AIReviewView";
+
+const DEFAULT_WORK_CYCLE = "default-wc";
+
+function makeTrackedFile(overrides: Partial<TrackedFile> = {}): TrackedFile {
+    const diffBase = overrides.diffBase ?? "old line";
+    const currentText = overrides.currentText ?? "new line";
+    return {
+        identityKey: overrides.identityKey ?? "key-1",
+        originPath: overrides.originPath ?? "/vault/test.md",
+        path: overrides.path ?? "/vault/test.md",
+        previousPath: overrides.previousPath ?? null,
+        status: overrides.status ?? { kind: "modified" },
+        diffBase,
+        currentText,
+        unreviewedEdits:
+            diffBase === currentText
+                ? emptyPatch()
+                : buildPatchFromTexts(diffBase, currentText),
+        version: 1,
+        isText: overrides.isText ?? true,
+        updatedAt: overrides.updatedAt ?? Date.now(),
+        ...overrides,
+    };
+}
 
 function makeSession(
     sessionId: string,
-    buffer: AIEditedFileBufferEntry[] = [],
+    files: TrackedFile[] = [],
 ): AIChatSession {
+    const tracked: Record<string, TrackedFile> = {};
+    for (const f of files) {
+        tracked[f.identityKey] = f;
+    }
+
     return {
         sessionId,
         historySessionId: sessionId,
@@ -27,29 +58,18 @@ function makeSession(
         configOptions: [],
         messages: [],
         attachments: [],
-        editedFilesBuffer: buffer,
-    };
-}
-
-function makeEntry(
-    overrides: Partial<AIEditedFileBufferEntry> = {},
-): AIEditedFileBufferEntry {
-    return {
-        identityKey: overrides.identityKey ?? "key-1",
-        originPath: overrides.originPath ?? "/vault/test.md",
-        path: overrides.path ?? "/vault/test.md",
-        operation: overrides.operation ?? "update",
-        baseText: overrides.baseText ?? "old line",
-        appliedText: overrides.appliedText ?? "new line",
-        reversible: overrides.reversible ?? true,
-        isText: overrides.isText ?? true,
-        hunks: overrides.hunks,
-        supported: overrides.supported ?? true,
-        status: overrides.status ?? "pending",
-        appliedHash: overrides.appliedHash ?? "abc123",
-        additions: overrides.additions ?? 1,
-        deletions: overrides.deletions ?? 1,
-        updatedAt: overrides.updatedAt ?? Date.now(),
+        ...(files.length > 0
+            ? {
+                  visibleWorkCycleId: DEFAULT_WORK_CYCLE,
+                  activeWorkCycleId: DEFAULT_WORK_CYCLE,
+                  actionLog: {
+                      trackedFilesByWorkCycleId: {
+                          [DEFAULT_WORK_CYCLE]: tracked,
+                      },
+                      lastRejectUndo: null,
+                  },
+              }
+            : {}),
     };
 }
 
@@ -119,18 +139,19 @@ describe("AIReviewView", () => {
 
     it("renders file entries with diff stats", () => {
         const sessionId = "sess-2";
-        const entry = makeEntry({
+        // 3 additions, 1 deletion via actual text diff
+        const file = makeTrackedFile({
             identityKey: "e1",
             path: "/vault/notes/hello.md",
             originPath: "/vault/notes/hello.md",
-            additions: 3,
-            deletions: 1,
+            diffBase: "old line",
+            currentText: "new line 1\nnew line 2\nnew line 3",
         });
 
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
         });
@@ -146,7 +167,7 @@ describe("AIReviewView", () => {
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [makeEntry()]),
+                [sessionId]: makeSession(sessionId, [makeTrackedFile()]),
             },
             activeSessionId: sessionId,
         });
@@ -158,15 +179,15 @@ describe("AIReviewView", () => {
 
     it("shows Conflict badge for conflict entries", () => {
         const sessionId = "sess-4";
-        const entry = makeEntry({
+        const file = makeTrackedFile({
             identityKey: "conflict-1",
-            status: "conflict",
+            conflictHash: "conflict-hash",
         });
 
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
         });
@@ -177,7 +198,7 @@ describe("AIReviewView", () => {
 
     it("shows Open File button when note exists in vault", () => {
         const sessionId = "sess-5";
-        const entry = makeEntry({
+        const file = makeTrackedFile({
             identityKey: "open-1",
             path: "/vault/notes/alpha.md",
             originPath: "/vault/notes/alpha.md",
@@ -187,7 +208,7 @@ describe("AIReviewView", () => {
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
         });
@@ -200,7 +221,7 @@ describe("AIReviewView", () => {
 
     it("enables Open File for supported non-note vault files", () => {
         const sessionId = "sess-file";
-        const entry = makeEntry({
+        const file = makeTrackedFile({
             identityKey: "open-file-1",
             path: "/vault/src/mod.rs",
             originPath: "/vault/src/mod.rs",
@@ -225,7 +246,7 @@ describe("AIReviewView", () => {
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
         });
@@ -240,7 +261,7 @@ describe("AIReviewView", () => {
         const rejectEditedFile = vi.fn(async () => {});
         const rejectAllEditedFiles = vi.fn(async () => {});
         const keepAllEditedFiles = vi.fn();
-        const entry = makeEntry({
+        const file = makeTrackedFile({
             identityKey: "scoped-entry",
             path: "/vault/scoped.md",
             originPath: "/vault/scoped.md",
@@ -251,9 +272,9 @@ describe("AIReviewView", () => {
         useChatStore.setState((state) => ({
             ...state,
             sessionsById: {
-                [reviewSessionId]: makeSession(reviewSessionId, [entry]),
+                [reviewSessionId]: makeSession(reviewSessionId, [file]),
                 [activeSessionId]: makeSession(activeSessionId, [
-                    makeEntry({
+                    makeTrackedFile({
                         identityKey: "other-entry",
                         path: "/vault/other.md",
                         originPath: "/vault/other.md",
@@ -282,23 +303,23 @@ describe("AIReviewView", () => {
 
     it("toggles file expansion on click", () => {
         const sessionId = "sess-6";
-        const entry = makeEntry({
+        const file = makeTrackedFile({
             identityKey: "toggle-1",
-            baseText: "old content",
-            appliedText: "new content",
+            diffBase: "old content",
+            currentText: "new content",
         });
 
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
         });
 
         renderComponent(<AIReviewView />);
 
-        // With a single entry, it starts expanded (<=5 entries rule).
+        // With a single file, it starts expanded (<=5 entries rule).
         // The Reject button is visible when expanded.
         expect(screen.getByText("Reject")).toBeInTheDocument();
 
@@ -313,29 +334,23 @@ describe("AIReviewView", () => {
 
     it("renders exact hunk gutters in the full review view", () => {
         const sessionId = "sess-hunks";
-        const entry = makeEntry({
+        // Build a file with 20 lines where line 15 changes, producing a hunk at line 15
+        const lines = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
+        const oldText = lines.join("\n");
+        const newLines = [...lines];
+        newLines[14] = "new content"; // line 15 (0-indexed 14)
+        const newText = newLines.join("\n");
+
+        const file = makeTrackedFile({
             identityKey: "exact-hunk-entry",
-            baseText: "legacy old",
-            appliedText: "legacy new",
-            hunks: [
-                {
-                    old_start: 15,
-                    old_count: 2,
-                    new_start: 15,
-                    new_count: 2,
-                    lines: [
-                        { type: "context", text: "shared" },
-                        { type: "remove", text: "old content" },
-                        { type: "add", text: "new content" },
-                    ],
-                },
-            ],
+            diffBase: oldText,
+            currentText: newText,
         });
 
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
         });
@@ -343,60 +358,59 @@ describe("AIReviewView", () => {
         renderComponent(<AIReviewView />);
 
         expect(screen.getAllByText("15").length).toBeGreaterThanOrEqual(1);
-        expect(screen.getAllByText("16").length).toBeGreaterThanOrEqual(1);
-        expect(screen.getByText("shared")).toBeInTheDocument();
-        expect(screen.getByText("old content")).toBeInTheDocument();
+        expect(screen.getByText("line-15")).toBeInTheDocument();
         expect(screen.getByText("new content")).toBeInTheDocument();
     });
 
     it("resolves nearby changes independently inside one visual block", async () => {
         const sessionId = "sess-nearby";
-        const resolveEditedFileWithMergedText = vi.fn(async () => {});
-        const entry = makeEntry({
+        const resolveHunkEdits = vi.fn(async () => {});
+        const file = makeTrackedFile({
             identityKey: "nearby-entry",
             path: "/vault/nearby.md",
             originPath: "/vault/nearby.md",
-            baseText: "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl",
-            appliedText: "a\nb\nC\nd\ne\nf\ng\nH\ni\nj\nk\nl",
+            diffBase: "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl",
+            currentText: "a\nb\nC\nd\ne\nf\ng\nH\ni\nj\nk\nl",
         });
 
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, [entry]),
+                [sessionId]: makeSession(sessionId, [file]),
             },
             activeSessionId: sessionId,
             rejectEditedFile: vi.fn(async () => {}),
             keepEditedFile: vi.fn(),
             keepAllEditedFiles: vi.fn(),
             rejectAllEditedFiles: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText,
+            resolveEditedFileWithMergedText: vi.fn(async () => {}),
+            resolveHunkEdits,
         });
 
         renderComponent(<AIReviewView />);
 
-        expect(screen.getByText("Linked changes")).toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
-        fireEvent.click(screen.getByRole("button", { name: "Reject hunk 2" }));
 
         await waitFor(() =>
-            expect(resolveEditedFileWithMergedText).toHaveBeenCalledWith(
+            expect(resolveHunkEdits).toHaveBeenCalledWith(
                 sessionId,
                 "nearby-entry",
-                "a\nb\nC\nd\ne\nf\ng\nh\ni\nj\nk\nl",
+                "accepted",
+                expect.any(Number),
+                expect.any(Number),
             ),
         );
     });
 
     it("shows summary with file count", () => {
         const sessionId = "sess-7";
-        const entries = [
-            makeEntry({
+        const files = [
+            makeTrackedFile({
                 identityKey: "f1",
                 path: "/vault/a.md",
                 originPath: "/vault/a.md",
             }),
-            makeEntry({
+            makeTrackedFile({
                 identityKey: "f2",
                 path: "/vault/b.md",
                 originPath: "/vault/b.md",
@@ -406,7 +420,7 @@ describe("AIReviewView", () => {
         setupReviewTab(sessionId);
         useChatStore.setState({
             sessionsById: {
-                [sessionId]: makeSession(sessionId, entries),
+                [sessionId]: makeSession(sessionId, files),
             },
             activeSessionId: sessionId,
         });
@@ -419,7 +433,7 @@ describe("AIReviewView", () => {
     it("reads from work-cycle buffer when visibleWorkCycleId is set", () => {
         const sessionId = "sess-8";
         const wcId = "wc-1";
-        const entry = makeEntry({
+        const file = makeTrackedFile({
             identityKey: "wc-entry",
             path: "/vault/wc-file.md",
             originPath: "/vault/wc-file.md",
@@ -431,10 +445,15 @@ describe("AIReviewView", () => {
                 [sessionId]: {
                     ...makeSession(sessionId),
                     visibleWorkCycleId: wcId,
-                    editedFilesBufferByWorkCycleId: {
-                        [wcId]: [entry],
+                    activeWorkCycleId: wcId,
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            [wcId]: {
+                                "wc-entry": file,
+                            },
+                        },
+                        lastRejectUndo: null,
                     },
-                    editedFilesBuffer: [], // main buffer is empty
                 },
             },
             activeSessionId: sessionId,

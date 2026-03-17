@@ -108,6 +108,7 @@ import {
     type WikilinkSuggesterState,
 } from "./WikilinkSuggester";
 import { useChatStore } from "../ai/store/chatStore";
+import { aiRegisterFileBaseline } from "../ai/api";
 import {
     changeAuthorAnnotation,
     userEditNotifier,
@@ -121,7 +122,10 @@ import {
     setInlineDiff,
     clearInlineDiff,
 } from "./extensions/inlineDiff";
-import { getTrackedFilesForWorkCycle } from "../ai/store/actionLogModel";
+import {
+    getTrackedFilesForWorkCycle,
+    shouldShowInlineDiff,
+} from "../ai/store/actionLogModel";
 import {
     buildSpellcheckContextMenuEntries,
     findTextInputWordRange,
@@ -1574,6 +1578,23 @@ export function Editor({
                 ],
             });
         }
+        // Register file baseline for active AI sessions (pre-write snapshot)
+        if (activeTab.content != null) {
+            const sessions = useChatStore.getState().sessionsById;
+            const fileId = `${activeNoteId}.md`;
+            for (const [sid, session] of Object.entries(sessions)) {
+                if (
+                    session.status === "streaming" ||
+                    session.status === "idle"
+                ) {
+                    aiRegisterFileBaseline(
+                        sid,
+                        fileId,
+                        activeTab.content,
+                    ).catch(() => {});
+                }
+            }
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTabId,
@@ -1701,6 +1722,8 @@ export function Editor({
                 lastSavedContentByTabId.current.get(tab.noteId) ?? null;
             const hasLocalUnsavedChanges =
                 lastSaved !== null && currentSerialized !== lastSaved;
+            const isForced =
+                state._pendingForceReloads?.has(tab.noteId) ?? false;
             const incoming = stripFrontmatter(tab.noteId, tab.content);
             const nextFrontmatter =
                 frontmatterByTabId.current.get(tab.noteId) ?? null;
@@ -1710,8 +1733,11 @@ export function Editor({
                 tab.title,
             );
 
-            if (hasLocalUnsavedChanges) {
+            if (hasLocalUnsavedChanges && !isForced) {
                 return;
+            }
+            if (isForced) {
+                useEditorStore.getState().clearForceReload(tab.noteId);
             }
 
             if (activeTabRef.current?.id === tabId) {
@@ -1795,7 +1821,7 @@ export function Editor({
                         }
                     }
                 }
-                if (tracked && tracked.unreviewedEdits.edits.length > 0) {
+                if (tracked && shouldShowInlineDiff(tracked)) {
                     foundEdits = tracked.unreviewedEdits.edits;
                     foundSessionId = sid;
                     foundIdentityKey = tracked.identityKey;

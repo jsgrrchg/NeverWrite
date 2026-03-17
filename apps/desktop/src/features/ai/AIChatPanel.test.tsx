@@ -8,7 +8,6 @@ import type {
     AIChatAttachment,
     AIChatSession,
     AIComposerPart,
-    AIEditedFileBufferEntry,
     AIRuntimeDescriptor,
 } from "./types";
 import { AIChatPanel } from "./AIChatPanel";
@@ -51,8 +50,7 @@ function createSession(
         attachments: overrides.attachments ?? [],
         activeWorkCycleId: overrides.activeWorkCycleId ?? null,
         visibleWorkCycleId: overrides.visibleWorkCycleId ?? null,
-        editedFilesBufferByWorkCycleId:
-            overrides.editedFilesBufferByWorkCycleId ?? {},
+        actionLog: overrides.actionLog,
         isPersistedSession: overrides.isPersistedSession,
         isResumingSession: overrides.isResumingSession,
         resumeContextPending: overrides.resumeContextPending,
@@ -948,29 +946,28 @@ describe("AIChatPanel tabs lifecycle", () => {
         const rejectAllEditedFiles = vi.fn(async () => {});
         const keepAllEditedFiles = vi.fn();
         const workCycleId = "cycle-1";
-        const entry: AIEditedFileBufferEntry = {
-            identityKey: "/vault/src/watcher.rs",
-            originPath: "/vault/src/watcher.rs",
-            path: "/vault/src/watcher.rs",
-            previousPath: null,
-            operation: "update",
-            baseText: "old line",
-            appliedText: "new line",
-            reversible: true,
-            isText: true,
-            supported: true,
-            status: "pending",
-            appliedHash: "hash-1",
-            currentHash: null,
-            additions: 1,
-            deletions: 1,
-            updatedAt: 10,
-        };
         const session = createSession("session-a", "Edit review", "idle", {
             visibleWorkCycleId: workCycleId,
             activeWorkCycleId: workCycleId,
-            editedFilesBufferByWorkCycleId: {
-                [workCycleId]: [entry],
+            actionLog: {
+                trackedFilesByWorkCycleId: {
+                    [workCycleId]: {
+                        "/vault/src/watcher.rs": {
+                            identityKey: "/vault/src/watcher.rs",
+                            originPath: "/vault/src/watcher.rs",
+                            path: "/vault/src/watcher.rs",
+                            previousPath: null,
+                            status: { kind: "modified" },
+                            diffBase: "old line",
+                            currentText: "new line",
+                            unreviewedEdits: { edits: [] },
+                            version: 1,
+                            isText: true,
+                            updatedAt: 10,
+                        },
+                    },
+                },
+                lastRejectUndo: null,
             },
         });
 
@@ -1060,29 +1057,28 @@ describe("AIChatPanel tabs lifecycle", () => {
 
     it("disables Open File for unsupported entries while keeping Review Diff inline", async () => {
         const workCycleId = "cycle-unsupported";
-        const entry: AIEditedFileBufferEntry = {
-            identityKey: "/vault/tmp/result.txt",
-            originPath: "/vault/tmp/result.txt",
-            path: "/vault/tmp/result.txt",
-            previousPath: null,
-            operation: "update",
-            baseText: "alpha",
-            appliedText: "beta",
-            reversible: true,
-            isText: true,
-            supported: true,
-            status: "pending",
-            appliedHash: "hash-2",
-            currentHash: null,
-            additions: 1,
-            deletions: 1,
-            updatedAt: 20,
-        };
         const session = createSession("session-b", "Unsupported edit", "idle", {
             visibleWorkCycleId: workCycleId,
             activeWorkCycleId: workCycleId,
-            editedFilesBufferByWorkCycleId: {
-                [workCycleId]: [entry],
+            actionLog: {
+                trackedFilesByWorkCycleId: {
+                    [workCycleId]: {
+                        "/vault/tmp/result.txt": {
+                            identityKey: "/vault/tmp/result.txt",
+                            originPath: "/vault/tmp/result.txt",
+                            path: "/vault/tmp/result.txt",
+                            previousPath: null,
+                            status: { kind: "modified" },
+                            diffBase: "alpha",
+                            currentText: "beta",
+                            unreviewedEdits: { edits: [] },
+                            version: 1,
+                            isText: true,
+                            updatedAt: 20,
+                        },
+                    },
+                },
+                lastRejectUndo: null,
             },
         });
 
@@ -1129,8 +1125,8 @@ describe("AIChatPanel tabs lifecycle", () => {
             expect(
                 screen.getByTestId("edited-buffer-diff:/vault/tmp/result.txt"),
             ).toBeTruthy();
-            expect(screen.getByText("+ beta")).toBeTruthy();
-            expect(screen.getByText("- alpha")).toBeTruthy();
+            expect(screen.getByText("beta")).toBeTruthy();
+            expect(screen.getByText("alpha")).toBeTruthy();
         });
     });
 });

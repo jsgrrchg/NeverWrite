@@ -3,7 +3,7 @@ import type { ReviewFileItem } from "./editedFilesPresentationModel";
 
 export function useEditedFilesReviewExpansion(items: ReviewFileItem[]) {
     const initialExpanded = useMemo(
-        () => new Set(items.map((item) => item.entry.identityKey)),
+        () => new Set(items.map((item) => item.file.identityKey)),
         [items],
     );
     const [expandedKeys, setExpandedKeys] = useState(initialExpanded);
@@ -25,7 +25,7 @@ export function useEditedFilesReviewExpansion(items: ReviewFileItem[]) {
     }, []);
 
     const expandAll = useCallback(() => {
-        setExpandedKeys(new Set(items.map((item) => item.entry.identityKey)));
+        setExpandedKeys(new Set(items.map((item) => item.file.identityKey)));
     }, [items]);
 
     const collapseAll = useCallback(() => {

@@ -68,6 +68,8 @@ export interface TrackedFile {
     isText: boolean;
     /** Timestamp of last modification. */
     updatedAt: number;
+    /** Non-null when a conflict was detected during reject. */
+    conflictHash?: string | null;
 }
 
 // ---------------------------------------------------------------------------

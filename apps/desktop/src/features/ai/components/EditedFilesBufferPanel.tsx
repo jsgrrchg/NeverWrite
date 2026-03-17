@@ -6,7 +6,7 @@ import { getReviewTabTitle } from "../reviewTabTitle";
 import { useChatStore } from "../store/chatStore";
 import {
     selectHasUndoReject,
-    selectVisibleEditedFilesBuffer,
+    selectVisibleTrackedFiles,
 } from "../store/editedFilesBufferModel";
 import { EditedFilesReviewList } from "./EditedFilesReviewList";
 import {
@@ -68,7 +68,7 @@ export function EditedFilesBufferPanel() {
     const runtimes = useChatStore((state) => state.runtimes);
     const openReview = useEditorStore((state) => state.openReview);
     const visibleEntries = useChatStore((state) =>
-        selectVisibleEditedFilesBuffer(state, activeSessionId),
+        selectVisibleTrackedFiles(state, activeSessionId),
     );
     const keepEditedFile = useChatStore((state) => state.keepEditedFile);
     const rejectEditedFile = useChatStore((state) => state.rejectEditedFile);

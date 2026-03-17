@@ -1,44 +1,42 @@
 import { describe, expect, it } from "vitest";
-import type { AIEditedFileBufferEntry } from "../types";
+import type { TrackedFile } from "../diff/actionLogTypes";
+import { emptyPatch, buildPatchFromTexts } from "../store/actionLogModel";
 import {
-    canResolveEntryHunks,
+    canResolveFileHunks,
     deriveReviewItems,
 } from "./editedFilesPresentationModel";
 
-function makeEntry(
-    overrides: Partial<AIEditedFileBufferEntry> = {},
-): AIEditedFileBufferEntry {
+function makeFile(overrides: Partial<TrackedFile> = {}): TrackedFile {
+    const diffBase = overrides.diffBase ?? "old";
+    const currentText = overrides.currentText ?? "new";
     return {
         identityKey: "/vault/test.md",
         originPath: "/vault/test.md",
         path: "/vault/test.md",
         previousPath: null,
-        operation: "update",
-        baseText: "old",
-        appliedText: "new",
-        reversible: true,
+        status: { kind: "modified" },
+        diffBase,
+        currentText,
+        unreviewedEdits:
+            diffBase === currentText
+                ? emptyPatch()
+                : buildPatchFromTexts(diffBase, currentText),
+        version: 1,
         isText: true,
-        supported: true,
-        status: "pending",
-        appliedHash: "hash-1",
-        currentHash: null,
-        additions: 1,
-        deletions: 1,
         updatedAt: 1,
         ...overrides,
     };
 }
 
 describe("editedFilesPresentationModel", () => {
-    it("marks update entries with both snapshots as hunk-resolvable", () => {
-        expect(canResolveEntryHunks(makeEntry())).toBe(true);
+    it("marks update files with both snapshots as hunk-resolvable", () => {
+        expect(canResolveFileHunks(makeFile())).toBe(true);
     });
 
-    it("marks move entries with content changes as hunk-resolvable", () => {
+    it("marks move files with content changes as hunk-resolvable", () => {
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    operation: "move",
+            canResolveFileHunks(
+                makeFile({
                     originPath: "/vault/old.md",
                     path: "/vault/new.md",
                 }),
@@ -48,106 +46,62 @@ describe("editedFilesPresentationModel", () => {
 
     it("does not mark pure moves without content changes as hunk-resolvable", () => {
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    operation: "move",
+            canResolveFileHunks(
+                makeFile({
                     originPath: "/vault/old.md",
                     path: "/vault/new.md",
-                    baseText: "same",
-                    appliedText: "same",
+                    diffBase: "same",
+                    currentText: "same",
                 }),
             ),
         ).toBe(false);
     });
 
-    it("does not allow per-hunk resolution for add, delete, partial or conflict entries", () => {
+    it("does not allow per-hunk resolution for add, delete, partial or conflict files", () => {
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    operation: "add",
-                    baseText: null,
+            canResolveFileHunks(
+                makeFile({
+                    status: { kind: "created", existingFileContent: null },
                 }),
             ),
         ).toBe(false);
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    operation: "delete",
-                    appliedText: null,
+            canResolveFileHunks(
+                makeFile({
+                    status: { kind: "deleted" },
                 }),
             ),
         ).toBe(false);
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    supported: false,
+            canResolveFileHunks(
+                makeFile({
+                    isText: false,
                 }),
             ),
         ).toBe(false);
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    status: "conflict",
-                }),
-            ),
-        ).toBe(false);
-    });
-
-    it("does not allow per-hunk resolution for large previews without exact hunks", () => {
-        const baseText = Array.from(
-            { length: 701 },
-            (_, index) => `old-${index}`,
-        ).join("\n");
-        const appliedText = Array.from({ length: 701 }, (_, index) =>
-            index === 350 ? "changed" : `old-${index}`,
-        ).join("\n");
-
-        expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    baseText,
-                    appliedText,
+            canResolveFileHunks(
+                makeFile({
+                    conflictHash: "abc",
                 }),
             ),
         ).toBe(false);
     });
 
-    it("allows per-hunk resolution for large files when exact hunks are available", () => {
-        const baseText = Array.from(
+    it("allows per-hunk resolution for large files (unreviewedEdits always provides exact hunks)", () => {
+        const diffBase = Array.from(
             { length: 900 },
             (_, index) => `old-${index}`,
         ).join("\n");
-        const appliedText = Array.from({ length: 900 }, (_, index) =>
+        const currentText = Array.from({ length: 900 }, (_, index) =>
             index === 350 ? "changed-350" : `old-${index}`,
         ).join("\n");
 
         expect(
-            canResolveEntryHunks(
-                makeEntry({
-                    baseText,
-                    appliedText,
-                    hunks: [
-                        {
-                            old_start: 346,
-                            old_count: 11,
-                            new_start: 346,
-                            new_count: 11,
-                            lines: [
-                                { type: "context", text: "old-345" },
-                                { type: "context", text: "old-346" },
-                                { type: "context", text: "old-347" },
-                                { type: "context", text: "old-348" },
-                                { type: "context", text: "old-349" },
-                                { type: "remove", text: "old-350" },
-                                { type: "add", text: "changed-350" },
-                                { type: "context", text: "old-351" },
-                                { type: "context", text: "old-352" },
-                                { type: "context", text: "old-353" },
-                                { type: "context", text: "old-354" },
-                                { type: "context", text: "old-355" },
-                            ],
-                        },
-                    ],
+            canResolveFileHunks(
+                makeFile({
+                    diffBase,
+                    currentText,
                 }),
             ),
         ).toBe(true);
@@ -156,13 +110,12 @@ describe("editedFilesPresentationModel", () => {
     it("adds canResolveHunks to derived review items", () => {
         const items = deriveReviewItems(
             [
-                makeEntry(),
-                makeEntry({
+                makeFile(),
+                makeFile({
                     identityKey: "/vault/add.md",
                     path: "/vault/add.md",
                     originPath: "/vault/add.md",
-                    operation: "add",
-                    baseText: null,
+                    status: { kind: "created", existingFileContent: null },
                 }),
             ],
             new Set<string>(),

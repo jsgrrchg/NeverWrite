@@ -28,6 +28,7 @@ import {
     aiSetMode,
     aiSetModel,
     aiUpdateSetup,
+    aiRegisterFileBaseline,
 } from "../api";
 import { useEditorStore, isNoteTab } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -38,19 +39,8 @@ import {
     serializeComposerPartsForAI,
 } from "../composerParts";
 import {
-    clearVisibleEditedFilesBuffer,
-    consolidateEditedFilesBuffer,
-    deriveEditedFilesBufferFromLegacy,
     ensureSessionWorkCycle,
-    getActiveEditedFilesBuffer,
-    getSessionEditedFilesBuffer,
-    markEditedFileEntryConflict,
-    removeEditedFilesBufferEntry,
-    setActiveEditedFilesBuffer,
-    setVisibleEditedFilesBuffer,
     startNewWorkCycle,
-    syncEditedFilesBufferState,
-    updateVisibleEditedFilesBufferEntry,
 } from "./editedFilesBufferModel";
 import {
     applyNonConflictingEdits,
@@ -58,12 +48,12 @@ import {
     consolidateTrackedFiles,
     emptyActionLogState,
     getTrackedFilesForWorkCycle,
+    hashTextContent,
     keepEditsInRange,
     patchIsEmpty,
     rejectAllEdits as actionLogRejectAll,
     rejectEditsInRanges,
     setTrackedFilesForWorkCycle,
-    trackedFileToLegacyEntry,
 } from "./actionLogModel";
 import type { LastRejectUndo, TrackedFile } from "../diff/actionLogTypes";
 import { useChatTabsStore } from "./chatTabsStore";
@@ -77,7 +67,6 @@ import {
     type AIChatRole,
     type AIChatSession,
     type AIComposerPart,
-    type AIEditedFileBufferEntry,
     type AIPermissionRequestPayload,
     type AIPlanUpdatePayload,
     type AIStatusEventPayload,
@@ -1107,44 +1096,52 @@ interface RestoreConflictCheckResult {
     currentHash: string | null;
 }
 
-async function hasSafeRestoreTarget(
+async function hasConflict(
     vaultPath: string,
-    entry: AIEditedFileBufferEntry,
-) {
-    const currentHash = await aiGetTextFileHash(vaultPath, entry.path);
-    if (currentHash !== entry.appliedHash) {
-        return {
-            conflict: true,
-            currentHash,
-        } satisfies RestoreConflictCheckResult;
+    tracked: TrackedFile,
+): Promise<RestoreConflictCheckResult> {
+    const currentHash = await aiGetTextFileHash(vaultPath, tracked.path);
+    const appliedHash = hashTextContent(tracked.currentText);
+
+    if (currentHash !== appliedHash) {
+        return { conflict: true, currentHash };
     }
 
-    if (entry.originPath !== entry.path) {
-        const originHash = await aiGetTextFileHash(vaultPath, entry.originPath);
+    if (tracked.originPath !== tracked.path) {
+        const originHash = await aiGetTextFileHash(
+            vaultPath,
+            tracked.originPath,
+        );
         if (originHash !== null) {
-            return {
-                conflict: true,
-                currentHash: originHash,
-            } satisfies RestoreConflictCheckResult;
+            return { conflict: true, currentHash: originHash };
         }
     }
 
-    return {
-        conflict: false,
-        currentHash,
-    } satisfies RestoreConflictCheckResult;
+    return { conflict: false, currentHash };
 }
 
-async function restoreEditedFileEntry(
-    vaultPath: string,
-    entry: AIEditedFileBufferEntry,
-) {
-    await aiRestoreTextFile({
-        vaultPath,
-        path: entry.path,
-        previousPath: entry.originPath !== entry.path ? entry.originPath : null,
-        content: entry.baseText ?? null,
-    });
+/**
+ * Mark a tracked file as conflicted in the ActionLog.
+ */
+function markTrackedConflict(
+    session: AIChatSession,
+    identityKey: string,
+    currentHash: string | null,
+): AIChatSession {
+    const actionLog = session.actionLog;
+    if (!actionLog) return session;
+    const workCycleId = session.visibleWorkCycleId ?? session.activeWorkCycleId;
+    if (!workCycleId) return session;
+    const files = getTrackedFilesForWorkCycle(actionLog, workCycleId);
+    const file = files[identityKey];
+    if (!file) return session;
+    return {
+        ...session,
+        actionLog: setTrackedFilesForWorkCycle(actionLog, workCycleId, {
+            ...files,
+            [identityKey]: { ...file, conflictHash: currentHash },
+        }),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1232,6 +1229,35 @@ async function executeRestoreAction(vaultPath: string, tracked: TrackedFile) {
     }
 }
 
+/**
+ * After a reject/undo writes content to disk, force-reload the open editor tab
+ * so CodeMirror reflects the new content immediately.
+ */
+function reloadOpenEditorContent(noteId: string, content: string) {
+    const { tabs } = useEditorStore.getState();
+    const openTab = tabs.find((t) => isNoteTab(t) && t.noteId === noteId);
+    if (openTab) {
+        useEditorStore.getState().forceReloadNoteContent(noteId, {
+            content,
+            title: (openTab as { title?: string }).title ?? noteId,
+        });
+    }
+}
+
+/**
+ * After rejecting a tracked file, reload the editor (or close the tab if the
+ * file was deleted).
+ */
+function reloadEditorAfterRestore(tracked: TrackedFile) {
+    const action = computeRestoreAction(tracked);
+    const noteId = tracked.path.replace(/\.md$/, "");
+    if (action.kind === "delete") {
+        useEditorStore.getState().handleNoteDeleted(noteId);
+    } else {
+        reloadOpenEditorContent(noteId, action.content);
+    }
+}
+
 function createPersistedSession(
     history: PersistedSessionHistory,
     runtimes: AIRuntimeDescriptor[],
@@ -1254,8 +1280,6 @@ function createPersistedSession(
         status: "idle",
         activeWorkCycleId: null,
         visibleWorkCycleId: null,
-        editedFilesBuffer: [],
-        editedFilesBufferByWorkCycleId: {},
         isResumingSession: false,
         effortsByModel: {},
         models: runtime.models,
@@ -1296,16 +1320,13 @@ function mergeSession(
     incoming: AIChatSession,
 ): AIChatSession {
     if (!existing) {
-        return normalizeSessionState({
+        return {
             ...incoming,
             historySessionId: incoming.historySessionId ?? incoming.sessionId,
             isPersistedSession: incoming.isPersistedSession ?? false,
             resumeContextPending: incoming.resumeContextPending ?? false,
             activeWorkCycleId: incoming.activeWorkCycleId ?? null,
             visibleWorkCycleId: incoming.visibleWorkCycleId ?? null,
-            editedFilesBuffer: incoming.editedFilesBuffer ?? [],
-            editedFilesBufferByWorkCycleId:
-                incoming.editedFilesBufferByWorkCycleId ?? {},
             // The backend never resets session status to "idle" after streaming,
             // so cap stale "streaming" for freshly loaded sessions.
             status: incoming.status === "streaming" ? "idle" : incoming.status,
@@ -1314,7 +1335,7 @@ function mergeSession(
             runtimeState:
                 incoming.runtimeState ??
                 (incoming.isPersistedSession ? "persisted_only" : "live"),
-        });
+        };
     }
 
     // Never let upsertSession set status to "streaming".
@@ -1326,7 +1347,7 @@ function mergeSession(
     const status =
         incoming.status === "streaming" ? existing.status : incoming.status;
 
-    return normalizeSessionState({
+    return {
         ...existing,
         ...incoming,
         historySessionId:
@@ -1339,12 +1360,6 @@ function mergeSession(
             incoming.activeWorkCycleId ?? existing.activeWorkCycleId ?? null,
         visibleWorkCycleId:
             incoming.visibleWorkCycleId ?? existing.visibleWorkCycleId ?? null,
-        editedFilesBuffer:
-            incoming.editedFilesBuffer ?? existing.editedFilesBuffer ?? [],
-        editedFilesBufferByWorkCycleId:
-            incoming.editedFilesBufferByWorkCycleId ??
-            existing.editedFilesBufferByWorkCycleId ??
-            {},
         effortsByModel:
             incoming.effortsByModel &&
             Object.keys(incoming.effortsByModel).length > 0
@@ -1358,27 +1373,7 @@ function mergeSession(
         status,
         messages: existing.messages,
         attachments: existing.attachments,
-    });
-}
-
-function normalizeSessionState(session: AIChatSession): AIChatSession {
-    // Only applyMessageCompleted should transition streaming → idle.
-    // This function now just passes through; the stale-streaming timer
-    // acts as the safety net for truly stuck sessions.
-    const editedFilesBufferByWorkCycleId =
-        session.editedFilesBufferByWorkCycleId ??
-        (session.editedFilesBuffer?.length
-            ? {
-                  [session.visibleWorkCycleId ??
-                  session.activeWorkCycleId ??
-                  "legacy"]: session.editedFilesBuffer,
-              }
-            : {});
-
-    return syncEditedFilesBufferState({
-        ...session,
-        editedFilesBufferByWorkCycleId,
-    });
+    };
 }
 
 function getDefaultRuntimeId(runtimes: AIRuntimeDescriptor[]) {
@@ -2935,19 +2930,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     (message) => message.id === messageId,
                 );
 
-                // Consolidate both legacy buffer and ActionLog
-                let consolidated = shouldConsolidate
-                    ? setActiveEditedFilesBuffer(
-                          nextSession,
-                          consolidateEditedFilesBuffer(
-                              getActiveEditedFilesBuffer(nextSession),
-                              payload.diffs ?? [],
-                              Date.now(),
-                          ),
-                      )
-                    : nextSession;
-
-                // Also update ActionLog (new system)
+                // Consolidate diffs into ActionLog
+                let consolidated = nextSession;
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
                     consolidated = consolidateActionLogDiffs(
@@ -3094,22 +3078,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (!session) return state;
                 const nextSession = ensureSessionWorkCycle(session);
 
-                // Consolidate buffer when diffs arrive with the permission request
+                // Consolidate diffs into ActionLog
                 const workCycleId = nextSession.activeWorkCycleId;
                 const hasDiffs =
                     payload.diffs.length > 0 && Boolean(workCycleId);
-                let sessionWithBuffer = hasDiffs
-                    ? setActiveEditedFilesBuffer(
-                          nextSession,
-                          consolidateEditedFilesBuffer(
-                              getActiveEditedFilesBuffer(nextSession),
-                              payload.diffs,
-                              Date.now(),
-                          ),
-                      )
-                    : nextSession;
-
-                // Also update ActionLog (new system)
+                let sessionWithBuffer = nextSession;
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
                     sessionWithBuffer = consolidateActionLogDiffs(
@@ -3347,16 +3320,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     resumeContextPending = latestSession.messages.length > 0;
                 }
 
+                // Register baselines for all open editor tabs
+                const resumedTabs = useEditorStore.getState().tabs;
+                for (const tab of resumedTabs) {
+                    if (isNoteTab(tab) && tab.content != null) {
+                        aiRegisterFileBaseline(
+                            resumedSession.sessionId,
+                            `${tab.noteId}.md`,
+                            tab.content,
+                        ).catch(() => {});
+                    }
+                }
+
                 const migratedSession = startNewWorkCycle({
                     ...resumedSession,
                     historySessionId,
                     messages: latestSession.messages,
                     attachments: latestSession.attachments,
-                    editedFilesBuffer:
-                        latestSession.editedFilesBuffer ??
-                        deriveEditedFilesBufferFromLegacy(latestSession),
-                    editedFilesBufferByWorkCycleId:
-                        latestSession.editedFilesBufferByWorkCycleId ?? {},
                     effortsByModel:
                         resumedSession.effortsByModel ??
                         latestSession.effortsByModel ??
@@ -4420,15 +4400,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const session = sessionsById[sessionId];
             if (!session) return;
 
-            const entry =
-                getSessionEditedFilesBuffer(session).find(
-                    (item) => item.identityKey === identityKey,
-                ) ?? null;
-            if (!entry || !entry.supported) {
-                return;
-            }
-
-            // Resolve the TrackedFile for lifecycle-aware restore
             const wc = session.visibleWorkCycleId ?? session.activeWorkCycleId;
             const tracked =
                 wc && session.actionLog
@@ -4436,12 +4407,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                           identityKey
                       ] ?? null)
                     : null;
+            if (!tracked || !tracked.isText) return;
 
             try {
-                const restoreCheck = await hasSafeRestoreTarget(
-                    vaultPath,
-                    entry,
-                );
+                const restoreCheck = await hasConflict(vaultPath, tracked);
 
                 if (restoreCheck.conflict) {
                     set((state) => {
@@ -4451,7 +4420,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         return {
                             sessionsById: {
                                 ...state.sessionsById,
-                                [sessionId]: markEditedFileEntryConflict(
+                                [sessionId]: markTrackedConflict(
                                     currentSession,
                                     identityKey,
                                     restoreCheck.currentHash,
@@ -4467,37 +4436,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
-                // Lifecycle-aware restore when TrackedFile exists
-                if (tracked) {
-                    await executeRestoreAction(vaultPath, tracked);
-                } else {
-                    await restoreEditedFileEntry(vaultPath, entry);
-                }
+                await executeRestoreAction(vaultPath, tracked);
+                reloadEditorAfterRestore(tracked);
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
 
-                    let sessionAfterRemove = removeEditedFilesBufferEntry(
-                        currentSession,
-                        identityKey,
+                    const { undoData } = actionLogRejectAll(tracked);
+                    const sessionAfterRemove = setActionLogUndo(
+                        removeTrackedFileFromActionLog(
+                            currentSession,
+                            identityKey,
+                        ),
+                        {
+                            buffers: [undoData],
+                            snapshots: { [identityKey]: tracked },
+                            timestamp: Date.now(),
+                        },
                     );
-
-                    // Remove from ActionLog + store undo with snapshot
-                    if (tracked && sessionAfterRemove.actionLog) {
-                        const { undoData } = actionLogRejectAll(tracked);
-                        sessionAfterRemove = setActionLogUndo(
-                            removeTrackedFileFromActionLog(
-                                sessionAfterRemove,
-                                identityKey,
-                            ),
-                            {
-                                buffers: [undoData],
-                                snapshots: { [identityKey]: tracked },
-                                timestamp: Date.now(),
-                            },
-                        );
-                    }
 
                     return {
                         sessionsById: {
@@ -4534,19 +4491,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const session = sessionsById[sessionId];
             if (!session) return;
 
-            const entry =
-                getSessionEditedFilesBuffer(session).find(
-                    (item) => item.identityKey === identityKey,
-                ) ?? null;
-            if (!entry || !entry.supported || entry.isText === false) {
+            const wc = session.visibleWorkCycleId ?? session.activeWorkCycleId;
+            const tracked =
+                wc && session.actionLog
+                    ? (getTrackedFilesForWorkCycle(session.actionLog, wc)[
+                          identityKey
+                      ] ?? null)
+                    : null;
+            if (!tracked || !tracked.isText) {
                 return;
             }
 
             try {
-                const restoreCheck = await hasSafeRestoreTarget(
-                    vaultPath,
-                    entry,
-                );
+                const restoreCheck = await hasConflict(vaultPath, tracked);
 
                 if (restoreCheck.conflict) {
                     set((state) => {
@@ -4556,7 +4513,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         return {
                             sessionsById: {
                                 ...state.sessionsById,
-                                [sessionId]: markEditedFileEntryConflict(
+                                [sessionId]: markTrackedConflict(
                                     currentSession,
                                     identityKey,
                                     restoreCheck.currentHash,
@@ -4574,10 +4531,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 await aiRestoreTextFile({
                     vaultPath,
-                    path: entry.path,
+                    path: tracked.path,
                     previousPath:
-                        entry.originPath !== entry.path
-                            ? entry.originPath
+                        tracked.originPath !== tracked.path
+                            ? tracked.originPath
                             : null,
                     content: mergedText,
                 });
@@ -4586,13 +4543,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
 
-                    let updated = removeEditedFilesBufferEntry(
+                    const updated = removeTrackedFileFromActionLog(
                         currentSession,
-                        identityKey,
-                    );
-                    // Also remove from ActionLog (resolved = no longer tracked)
-                    updated = removeTrackedFileFromActionLog(
-                        updated,
                         identityKey,
                     );
 
@@ -4627,7 +4579,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const session = sessionsById[sessionId];
             if (!session) return;
 
-            const entries = getSessionEditedFilesBuffer(session);
             const wc = session.visibleWorkCycleId ?? session.activeWorkCycleId;
             const trackedFiles =
                 wc && session.actionLog
@@ -4639,18 +4590,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 [];
             const undoSnapshots: Record<string, TrackedFile> = {};
 
-            for (const entry of entries) {
-                if (!entry.supported) {
+            for (const [identityKey, tracked] of Object.entries(trackedFiles)) {
+                if (!tracked.isText) {
                     continue;
                 }
 
-                const tracked = trackedFiles[entry.identityKey] ?? null;
-
                 try {
-                    const restoreCheck = await hasSafeRestoreTarget(
-                        vaultPath,
-                        entry,
-                    );
+                    const restoreCheck = await hasConflict(vaultPath, tracked);
 
                     if (restoreCheck.conflict) {
                         set((state) => {
@@ -4661,9 +4607,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             return {
                                 sessionsById: {
                                     ...state.sessionsById,
-                                    [sessionId]: markEditedFileEntryConflict(
+                                    [sessionId]: markTrackedConflict(
                                         currentSession,
-                                        entry.identityKey,
+                                        identityKey,
                                         restoreCheck.currentHash,
                                     ),
                                 },
@@ -4672,30 +4618,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         continue;
                     }
 
-                    // Lifecycle-aware restore
-                    if (tracked) {
-                        await executeRestoreAction(vaultPath, tracked);
-                        const { undoData } = actionLogRejectAll(tracked);
-                        undoBuffers.push(undoData);
-                        undoSnapshots[entry.identityKey] = tracked;
-                    } else {
-                        await restoreEditedFileEntry(vaultPath, entry);
-                    }
-
-                    set((state) => {
-                        const currentSession = state.sessionsById[sessionId];
-                        if (!currentSession) return state;
-
-                        return {
-                            sessionsById: {
-                                ...state.sessionsById,
-                                [sessionId]: removeEditedFilesBufferEntry(
-                                    currentSession,
-                                    entry.identityKey,
-                                ),
-                            },
-                        };
-                    });
+                    await executeRestoreAction(vaultPath, tracked);
+                    reloadEditorAfterRestore(tracked);
+                    const { undoData } = actionLogRejectAll(tracked);
+                    undoBuffers.push(undoData);
+                    undoSnapshots[identityKey] = tracked;
                 } catch (error) {
                     get().applySessionError({
                         session_id: sessionId,
@@ -4708,17 +4635,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
             }
 
-            // Store combined undo and clear ActionLog tracked files
+            // Store combined undo and remove successfully-rejected files,
+            // keeping conflict files visible.
             set((state) => {
                 const currentSession = state.sessionsById[sessionId];
                 if (!currentSession?.actionLog || !wc) return state;
+
+                // Keep only files that weren't rejected (i.e. conflict files)
+                const current = getTrackedFilesForWorkCycle(
+                    currentSession.actionLog,
+                    wc,
+                );
+                const remaining: Record<string, TrackedFile> = {};
+                for (const [key, file] of Object.entries(current)) {
+                    if (!undoSnapshots[key]) {
+                        remaining[key] = file;
+                    }
+                }
 
                 let updated: AIChatSession = {
                     ...currentSession,
                     actionLog: setTrackedFilesForWorkCycle(
                         currentSession.actionLog,
                         wc,
-                        {},
+                        remaining,
                     ),
                 };
 
@@ -4749,12 +4689,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = state.sessionsById[sessionId];
                 if (!session) return state;
 
-                let updated = removeEditedFilesBufferEntry(
+                const updated = removeTrackedFileFromActionLog(
                     session,
                     identityKey,
                 );
-                // Also remove from ActionLog (accepted = no longer tracked)
-                updated = removeTrackedFileFromActionLog(updated, identityKey);
 
                 return {
                     sessionsById: {
@@ -4775,21 +4713,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = state.sessionsById[sessionId];
                 if (!session) return state;
 
-                let updated = clearVisibleEditedFilesBuffer(session);
-                // Also clear ActionLog tracked files for this cycle
-                if (updated.actionLog) {
-                    const wc =
-                        session.visibleWorkCycleId ?? session.activeWorkCycleId;
-                    if (wc) {
-                        updated = {
-                            ...updated,
-                            actionLog: setTrackedFilesForWorkCycle(
-                                updated.actionLog,
-                                wc,
-                                {},
-                            ),
-                        };
-                    }
+                const wc =
+                    session.visibleWorkCycleId ?? session.activeWorkCycleId;
+                let updated = session;
+                if (wc && session.actionLog) {
+                    updated = {
+                        ...session,
+                        actionLog: setTrackedFilesForWorkCycle(
+                            session.actionLog,
+                            wc,
+                            {},
+                        ),
+                    };
                 }
 
                 return {
@@ -4859,6 +4794,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 : null,
                         content: updatedFile.currentText,
                     });
+                    const noteId = tracked.path.replace(/\.md$/, "");
+                    reloadOpenEditorContent(noteId, updatedFile.currentText);
                 }
             }
 
@@ -4869,10 +4806,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (patchIsEmpty(updatedFile.unreviewedEdits)) {
                     // All hunks resolved — remove from tracking
                     let cleaned = removeTrackedFileFromActionLog(
-                        removeEditedFilesBufferEntry(
-                            currentSession,
-                            identityKey,
-                        ),
+                        currentSession,
                         identityKey,
                     );
                     if (hunkUndoSnapshot) {
@@ -4893,7 +4827,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     };
                 }
 
-                // Partial resolution — update TrackedFile and legacy entry
+                // Partial resolution — update TrackedFile in ActionLog
                 const files = {
                     ...getTrackedFilesForWorkCycle(
                         currentSession.actionLog,
@@ -4910,12 +4844,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         files,
                     ),
                 };
-
-                updated = updateVisibleEditedFilesBufferEntry(
-                    updated,
-                    identityKey,
-                    () => trackedFileToLegacyEntry(updatedFile),
-                );
 
                 if (hunkUndoSnapshot) {
                     updated = setActionLogUndo(updated, {
@@ -4978,6 +4906,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             content: snapshot.currentText,
                         });
                     }
+                    const noteId = snapshot.path.replace(/\.md$/, "");
+                    reloadOpenEditorContent(noteId, snapshot.currentText);
                 }
 
                 // Re-track files in ActionLog + legacy buffer, clear undo
@@ -5004,14 +4934,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             restoredFiles,
                         ),
                     };
-
-                    // Re-add to legacy buffer
-                    const legacyEntries = Object.values(snapshots).map(
-                        trackedFileToLegacyEntry,
-                    );
-                    const existingBuffer = getSessionEditedFilesBuffer(updated);
-                    const nextBuffer = [...existingBuffer, ...legacyEntries];
-                    updated = setVisibleEditedFilesBuffer(updated, nextBuffer);
 
                     // Clear undo state
                     updated = setActionLogUndo(updated, null);
@@ -5085,22 +5007,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         nextFiles,
                     );
 
-                    // Keep legacy buffer entry in sync so hasSafeRestoreTarget
-                    // sees the current appliedHash after user edits.
-                    let updatedSession: AIChatSession = {
-                        ...session,
-                        actionLog: nextActionLog,
-                    };
-                    updatedSession = updateVisibleEditedFilesBufferEntry(
-                        updatedSession,
-                        trackedKey,
-                        () => trackedFileToLegacyEntry(updated),
-                    );
-
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [sessionId]: updatedSession,
+                            [sessionId]: {
+                                ...session,
+                                actionLog: nextActionLog,
+                            },
                         },
                     };
                 }
@@ -5156,6 +5069,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
                 get().upsertSession(session, true);
                 await persistSession(session);
+
+                // Register baselines for all open editor tabs
+                const tabs = useEditorStore.getState().tabs;
+                for (const tab of tabs) {
+                    if (isNoteTab(tab) && tab.content != null) {
+                        aiRegisterFileBaseline(
+                            session.sessionId,
+                            `${tab.noteId}.md`,
+                            tab.content,
+                        ).catch(() => {});
+                    }
+                }
 
                 // Restore saved preferences
                 const prefs = loadAiPreferences();
@@ -5375,7 +5300,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!note) return;
 
             const state = get();
-            const activeSessionId = state.activeSessionId;
+            const { tabs, activeTabId } = useChatTabsStore.getState();
+            const activeSessionId =
+                tabs.find((t) => t.id === activeTabId)?.sessionId ??
+                state.activeSessionId;
             if (!activeSessionId) return;
 
             const { startLine, endLine } = currentSelection;

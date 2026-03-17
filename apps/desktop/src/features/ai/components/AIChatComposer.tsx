@@ -872,6 +872,14 @@ export function AIChatComposer({
         }, 0);
     };
 
+    const prevPartsCountRef = useRef(parts.length);
+    useEffect(() => {
+        if (parts.length > prevPartsCountRef.current) {
+            focusComposerAtEnd();
+        }
+        prevPartsCountRef.current = parts.length;
+    }, [parts.length]);
+
     const updateMentionPicker = () => {
         const composer = composerRef.current;
         if (!composer) {

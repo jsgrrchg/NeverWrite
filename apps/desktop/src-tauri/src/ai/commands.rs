@@ -410,3 +410,16 @@ pub fn ai_delete_runtime_sessions_for_vault(
 pub fn ai_prune_session_histories(vault_path: String, max_age_days: u32) -> Result<usize, String> {
     persistence::prune_expired_session_histories(&PathBuf::from(vault_path), max_age_days)
 }
+
+#[tauri::command]
+pub fn ai_register_file_baseline(
+    session_id: String,
+    display_path: String,
+    content: String,
+    ai_state: State<Mutex<AiManager>>,
+) -> Result<(), String> {
+    let mut ai_state = ai_state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    ai_state.register_file_baseline(&session_id, &display_path, content)
+}

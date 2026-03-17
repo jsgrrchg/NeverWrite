@@ -1,12 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { isReviewTab, useEditorStore } from "../../../app/store/editorStore";
 import { renderComponent } from "../../../test/test-utils";
-import type {
-    AIEditedFileBufferEntry,
-    AIChatSession,
-    AIRuntimeDescriptor,
-} from "../types";
+import type { AIChatSession, AIRuntimeDescriptor } from "../types";
+import type { TrackedFile } from "../diff/actionLogTypes";
 import { resetChatStore, useChatStore } from "../store/chatStore";
+import { buildPatchFromTexts } from "../store/actionLogModel";
 import { useAutoOpenReviewTab } from "./useAutoOpenReviewTab";
 
 function AutoOpenReviewHarness() {
@@ -14,33 +12,32 @@ function AutoOpenReviewHarness() {
     return null;
 }
 
-function createEntry(path: string): AIEditedFileBufferEntry {
+function createTrackedFile(path: string): TrackedFile {
     return {
         identityKey: path,
         originPath: path,
         path,
         previousPath: null,
-        operation: "update",
-        baseText: "old line",
-        appliedText: "new line",
-        reversible: true,
+        status: { kind: "modified" },
+        diffBase: "old line",
+        currentText: "new line",
+        unreviewedEdits: buildPatchFromTexts("old line", "new line"),
+        version: 1,
         isText: true,
-        supported: true,
-        status: "pending",
-        appliedHash: "hash-1",
-        currentHash: null,
-        additions: 1,
-        deletions: 1,
         updatedAt: 10,
     };
 }
 
 function createSession(
     sessionId: string,
-    entries: AIEditedFileBufferEntry[],
+    paths: string[],
     runtimeId = "codex-acp",
 ): AIChatSession {
     const workCycleId = `${sessionId}-cycle`;
+    const tracked: Record<string, TrackedFile> = {};
+    for (const p of paths) {
+        tracked[p] = createTrackedFile(p);
+    }
 
     return {
         sessionId,
@@ -48,8 +45,9 @@ function createSession(
         status: "idle",
         activeWorkCycleId: workCycleId,
         visibleWorkCycleId: workCycleId,
-        editedFilesBufferByWorkCycleId: {
-            [workCycleId]: entries,
+        actionLog: {
+            trackedFilesByWorkCycleId: { [workCycleId]: tracked },
+            lastRejectUndo: null,
         },
         runtimeId,
         modelId: "test-model",
@@ -86,9 +84,7 @@ describe("useAutoOpenReviewTab", () => {
     it("opens a background review tab when another session starts surfacing edits", () => {
         renderComponent(<AutoOpenReviewHarness />);
 
-        const sessionA = createSession("session-a", [
-            createEntry("/vault/a.ts"),
-        ]);
+        const sessionA = createSession("session-a", ["/vault/a.ts"]);
         useChatStore.setState((state) => ({
             ...state,
             runtimes,
@@ -105,9 +101,7 @@ describe("useAutoOpenReviewTab", () => {
         expect(reviewTabs[0]?.sessionId).toBe("session-a");
         expect(reviewTabs[0]?.title).toBe("Review Codex");
 
-        const sessionB = createSession("session-b", [
-            createEntry("/vault/b.ts"),
-        ]);
+        const sessionB = createSession("session-b", ["/vault/b.ts"]);
         useChatStore.setState((state) => ({
             ...state,
             sessionsById: {
@@ -129,9 +123,7 @@ describe("useAutoOpenReviewTab", () => {
     it("does not create duplicate review tabs for the same session", () => {
         renderComponent(<AutoOpenReviewHarness />);
 
-        const session = createSession("session-a", [
-            createEntry("/vault/a.ts"),
-        ]);
+        const session = createSession("session-a", ["/vault/a.ts"]);
         useChatStore.setState((state) => ({
             ...state,
             runtimes,
@@ -141,16 +133,20 @@ describe("useAutoOpenReviewTab", () => {
             },
         }));
 
+        // Add more tracked files to simulate additional edits
         useChatStore.setState((state) => ({
             ...state,
             sessionsById: {
                 [session.sessionId]: {
                     ...session,
-                    editedFilesBufferByWorkCycleId: {
-                        [`${session.sessionId}-cycle`]: [
-                            createEntry("/vault/a.ts"),
-                            createEntry("/vault/b.ts"),
-                        ],
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            [`${session.sessionId}-cycle`]: {
+                                "/vault/a.ts": createTrackedFile("/vault/a.ts"),
+                                "/vault/b.ts": createTrackedFile("/vault/b.ts"),
+                            },
+                        },
+                        lastRejectUndo: null,
                     },
                 },
             },

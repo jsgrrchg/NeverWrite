@@ -18,7 +18,7 @@ use agent_client_protocol::{
     ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     Result as AcpResult, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -110,6 +110,14 @@ enum RuntimeCommand {
     CheckHealth {
         response_tx: mpsc::Sender<Result<(), String>>,
     },
+    RegisterFileBaseline {
+        session_id: String,
+        display_path: String,
+        content: String,
+    },
+    ClearSessionBaselines {
+        session_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +194,9 @@ struct ToolState {
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
     session_cwds: Arc<Mutex<HashMap<String, PathBuf>>>,
     write_diffs: Arc<Mutex<HashMap<String, Vec<AiFileDiffPayload>>>>,
+    /// Pre-write file baselines captured when Claude reads a file.
+    /// Key: "session_id::display_path", Value: file content at read time.
+    file_baselines: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl ToolState {
@@ -200,6 +211,7 @@ impl ToolState {
         if let Ok(mut guard) = self.calls.lock() {
             guard.insert(key, tool_call.clone());
         }
+        self.cache_read_baseline(session_id, &tool_call);
         self.capture_write_diff(
             session_id,
             &tool_call.tool_call_id.0,
@@ -224,13 +236,18 @@ impl ToolState {
         let key = format!("{session_id}::{}", update.tool_call_id.0);
         let mut guard = self.calls.lock().ok()?;
 
-        if let Some(existing) = guard.get_mut(&key) {
+        let tool_call = if let Some(existing) = guard.get_mut(&key) {
             existing.update(update.fields);
-            return Some(existing.clone());
-        }
+            existing.clone()
+        } else {
+            let tool_call = ToolCall::try_from(update).ok()?;
+            guard.insert(key, tool_call.clone());
+            tool_call
+        };
 
-        let tool_call = ToolCall::try_from(update).ok()?;
-        guard.insert(key, tool_call.clone());
+        drop(guard);
+        self.cache_content_diffs(session_id, &tool_call);
+        self.cache_read_baseline(session_id, &tool_call);
         Some(tool_call)
     }
 
@@ -326,15 +343,36 @@ impl ToolState {
             return;
         };
         let cwd = self.session_cwd(session_id);
-        let diff = reconstruct_write_diff_payload(raw_input, cwd.as_deref())
+
+        // 1. Try baseline from prior Read (most reliable for auto-approved writes)
+        let baseline_diff = self.reconstruct_with_baseline(session_id, raw_input, cwd.as_deref());
+        let source = if baseline_diff.is_some() {
+            "baseline"
+        } else {
+            "fallback"
+        };
+        let diff = baseline_diff
+            // 2. Fallback: reconstruct from disk
+            .or_else(|| reconstruct_write_diff_payload(raw_input, cwd.as_deref()))
             .or_else(|| reconstruct_edit_diff_payload(raw_input, cwd.as_deref()));
+
         let Some(diff) = diff else {
+            eprintln!("[diff-debug] capture_write_diff: no diff produced for tool {tool_call_id}");
             return;
         };
+        eprintln!(
+            "[diff-debug] capture_write_diff: tool={tool_call_id} source={source} path={} has_old_text={} reversible={}",
+            diff.path,
+            diff.old_text.is_some(),
+            diff.reversible,
+        );
         let key = format!("{session_id}::{tool_call_id}");
         if let Ok(mut guard) = self.write_diffs.lock() {
-            guard.insert(key, vec![diff]);
+            guard.entry(key).or_insert(vec![diff]);
         }
+
+        // Update baseline to new content for consecutive edits
+        self.update_baseline_after_edit(session_id, raw_input, cwd.as_deref());
     }
 
     fn cache_content_diffs(&self, session_id: &str, tool_call: &ToolCall) {
@@ -343,9 +381,182 @@ impl ToolState {
         if diffs.is_empty() {
             return;
         }
-        let key = format!("{session_id}::{}", tool_call.tool_call_id.0);
+        let tool_call_id = &tool_call.tool_call_id.0;
+        let key = format!("{session_id}::{tool_call_id}");
         if let Ok(mut guard) = self.write_diffs.lock() {
-            guard.entry(key).or_insert(diffs);
+            let has_old_text = diffs.iter().any(|d| d.old_text.is_some());
+            let existing_is_reliable = guard
+                .get(&key)
+                .map(|cached| cached.iter().any(|d| d.old_text.is_some() && d.reversible))
+                .unwrap_or(false);
+
+            if existing_is_reliable {
+                // A baseline reconstruction (reversible + old_text) is already cached.
+                // Don't overwrite it with ACP diffs whose old_text may come from
+                // a different file state (e.g. after a prior edit in the same turn).
+                eprintln!(
+                    "[diff-debug] cache_content_diffs: SKIPPED overwrite for tool={tool_call_id} (reliable baseline exists)"
+                );
+                return;
+            }
+
+            let action = if has_old_text {
+                "overwrite"
+            } else {
+                "or_insert"
+            };
+            eprintln!(
+                "[diff-debug] cache_content_diffs: tool={tool_call_id} acp_has_old_text={has_old_text} action={action} n_diffs={}",
+                diffs.len(),
+            );
+            if has_old_text {
+                guard.insert(key, diffs);
+            } else {
+                guard.entry(key).or_insert(diffs);
+            }
+        }
+    }
+
+    // -- File baseline cache (Read-before-edit pattern) ----------------------
+
+    /// Cache the original file content when Claude reads a file.
+    /// At Read time the file is still unmodified, so disk content = baseline.
+    fn cache_read_baseline(&self, session_id: &str, tool_call: &ToolCall) {
+        if tool_call.kind != ToolKind::Read || tool_call.status != ToolCallStatus::Completed {
+            return;
+        }
+        let Some(input) = read_tool_input(tool_call.raw_input.as_ref()) else {
+            return;
+        };
+        if input.file_path.trim().is_empty() {
+            return;
+        }
+        let cwd = self.session_cwd(session_id);
+        let resolved = resolve_tool_path(&input.file_path, cwd.as_deref());
+        let display_path = to_display_path(&resolved, cwd.as_deref());
+
+        let content = match read_existing_text_snapshot(&resolved) {
+            ExistingTextSnapshot::Text(text) => text,
+            _ => return,
+        };
+
+        let key = format!("{session_id}::{display_path}");
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.entry(key).or_insert(content);
+        }
+    }
+
+    fn get_file_baseline(&self, session_id: &str, display_path: &str) -> Option<String> {
+        let key = format!("{session_id}::{display_path}");
+        self.file_baselines.lock().ok()?.get(&key).cloned()
+    }
+
+    pub fn store_file_baseline(&self, session_id: &str, display_path: &str, content: String) {
+        let key = format!("{session_id}::{display_path}");
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.entry(key).or_insert(content);
+        }
+    }
+
+    fn clear_session_baselines(&self, session_id: &str) {
+        let prefix = format!("{session_id}::");
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+    }
+
+    /// Reconstruct a diff using a cached baseline instead of reading from disk.
+    fn reconstruct_with_baseline(
+        &self,
+        session_id: &str,
+        raw_input: &serde_json::Value,
+        cwd: Option<&Path>,
+    ) -> Option<AiFileDiffPayload> {
+        // Write tool
+        if let Some(input) = write_tool_input(Some(raw_input)) {
+            if input.file_path.trim().is_empty() {
+                return None;
+            }
+            let resolved = resolve_tool_path(&input.file_path, cwd);
+            let display_path = to_display_path(&resolved, cwd);
+            let old_text = self.get_file_baseline(session_id, &display_path)?;
+
+            if old_text == input.content {
+                return None; // No real change
+            }
+
+            return Some(AiFileDiffPayload {
+                path: display_path,
+                kind: "update".to_string(),
+                previous_path: None,
+                reversible: true,
+                is_text: true,
+                old_text: Some(old_text),
+                new_text: Some(input.content),
+                hunks: None,
+            });
+        }
+
+        // Edit tool — baseline enables reconstruction even if replacen would fail
+        if let Some(input) = edit_tool_input(Some(raw_input)) {
+            if input.file_path.trim().is_empty() {
+                return None;
+            }
+            let resolved = resolve_tool_path(&input.file_path, cwd);
+            let display_path = to_display_path(&resolved, cwd);
+            let old_text = self.get_file_baseline(session_id, &display_path)?;
+
+            let new_text = old_text.replacen(&input.old_string, &input.new_string, 1);
+            if new_text == old_text {
+                return None; // old_string not found in baseline
+            }
+
+            return Some(AiFileDiffPayload {
+                path: display_path,
+                kind: "update".to_string(),
+                previous_path: None,
+                reversible: true,
+                is_text: true,
+                old_text: Some(old_text),
+                new_text: Some(new_text),
+                hunks: None,
+            });
+        }
+
+        None
+    }
+
+    /// After a successful edit, update the baseline to reflect the new content
+    /// so that consecutive edits to the same file produce correct diffs.
+    fn update_baseline_after_edit(
+        &self,
+        session_id: &str,
+        raw_input: &serde_json::Value,
+        cwd: Option<&Path>,
+    ) {
+        if let Some(input) = write_tool_input(Some(raw_input)) {
+            if input.file_path.trim().is_empty() {
+                return;
+            }
+            let resolved = resolve_tool_path(&input.file_path, cwd);
+            let display_path = to_display_path(&resolved, cwd);
+            let key = format!("{session_id}::{display_path}");
+            if let Ok(mut guard) = self.file_baselines.lock() {
+                guard.insert(key, input.content);
+            }
+        } else if let Some(input) = edit_tool_input(Some(raw_input)) {
+            if input.file_path.trim().is_empty() {
+                return;
+            }
+            let resolved = resolve_tool_path(&input.file_path, cwd);
+            let display_path = to_display_path(&resolved, cwd);
+            if let ExistingTextSnapshot::Text(new_content) = read_existing_text_snapshot(&resolved)
+            {
+                let key = format!("{session_id}::{display_path}");
+                if let Ok(mut guard) = self.file_baselines.lock() {
+                    guard.insert(key, new_content);
+                }
+            }
         }
     }
 }
@@ -367,6 +578,11 @@ struct EditToolInput {
     file_path: String,
     old_string: String,
     new_string: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadToolInput {
+    file_path: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -826,6 +1042,27 @@ impl ClaudeRuntimeHandle {
             .map_err(|error| error.to_string())?;
         response_rx.recv().map_err(|error| error.to_string())?
     }
+
+    pub fn register_file_baseline(
+        &self,
+        session_id: &str,
+        display_path: &str,
+        content: String,
+    ) -> Result<(), String> {
+        self.command_tx
+            .send(RuntimeCommand::RegisterFileBaseline {
+                session_id: session_id.to_string(),
+                display_path: display_path.to_string(),
+                content,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn clear_session_baselines(&self, session_id: &str) {
+        let _ = self.command_tx.send(RuntimeCommand::ClearSessionBaselines {
+            session_id: session_id.to_string(),
+        });
+    }
 }
 
 async fn run_actor(
@@ -980,6 +1217,17 @@ impl RuntimeActor {
             }
             RuntimeCommand::CheckHealth { response_tx } => {
                 let _ = response_tx.send(self.poll_connection_health());
+            }
+            RuntimeCommand::RegisterFileBaseline {
+                session_id,
+                display_path,
+                content,
+            } => {
+                self.tools
+                    .store_file_baseline(&session_id, &display_path, content);
+            }
+            RuntimeCommand::ClearSessionBaselines { session_id } => {
+                self.tools.clear_session_baselines(&session_id);
             }
         }
     }
@@ -1882,6 +2130,10 @@ fn edit_tool_input(raw_input: Option<&serde_json::Value>) -> Option<EditToolInpu
     serde_json::from_value(raw_input?.clone()).ok()
 }
 
+fn read_tool_input(raw_input: Option<&serde_json::Value>) -> Option<ReadToolInput> {
+    serde_json::from_value(raw_input?.clone()).ok()
+}
+
 fn is_edit_tool_input(raw_input: Option<&serde_json::Value>) -> bool {
     let Some(raw_input) = raw_input else {
         return false;
@@ -1958,16 +2210,34 @@ fn reconstruct_write_diff_payload(
             new_text: Some(input.content),
             hunks: None,
         },
-        ExistingTextSnapshot::Text(old_text) => AiFileDiffPayload {
-            path: display_path,
-            kind: "update".to_string(),
-            previous_path: None,
-            reversible: true,
-            is_text: true,
-            old_text: Some(old_text),
-            new_text: Some(input.content),
-            hunks: None,
-        },
+        ExistingTextSnapshot::Text(old_text) => {
+            if old_text == input.content {
+                // File already written — can't compute meaningful diff, but
+                // we know it's an update (file existed). Cache this marker to
+                // prevent the ACP fallback from misclassifying as "add".
+                AiFileDiffPayload {
+                    path: display_path,
+                    kind: "update".to_string(),
+                    previous_path: None,
+                    reversible: false,
+                    is_text: true,
+                    old_text: None,
+                    new_text: Some(input.content),
+                    hunks: None,
+                }
+            } else {
+                AiFileDiffPayload {
+                    path: display_path,
+                    kind: "update".to_string(),
+                    previous_path: None,
+                    reversible: true,
+                    is_text: true,
+                    old_text: Some(old_text),
+                    new_text: Some(input.content),
+                    hunks: None,
+                }
+            }
+        }
         ExistingTextSnapshot::Unavailable => AiFileDiffPayload {
             path: display_path,
             kind: "update".to_string(),
@@ -2003,6 +2273,10 @@ fn reconstruct_edit_diff_payload(
 
     // Reconstruct old_text by reversing the edit
     let old_text = current_text.replacen(&input.new_string, &input.old_string, 1);
+
+    if old_text == current_text {
+        return None; // replacen didn't find new_string; reconstruction unreliable
+    }
 
     Some(AiFileDiffPayload {
         path: display_path,
@@ -2045,7 +2319,11 @@ fn classify_diff_kind(
     if previous_path.is_some() {
         return "move";
     }
-    if write_tool_input(raw_input).is_some() || is_edit_tool_input(raw_input) {
+    if is_edit_tool_input(raw_input) {
+        // Edit tool always operates on existing files — never "add"
+        return "update";
+    }
+    if write_tool_input(raw_input).is_some() {
         return if diff.old_text.is_none() {
             "add"
         } else {
@@ -2545,5 +2823,417 @@ mod tests {
         assert_eq!(diff.kind, "update");
         assert_eq!(diff.old_text.as_deref(), Some("before"));
         assert_eq!(diff.new_text.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn write_diff_caches_update_marker_when_file_already_written() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("already_written.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+        // File already contains the content Claude wants to write (post-write state)
+        fs::write(&file_path, "new content").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // Simulate auto-approved tool: only SessionUpdate::ToolCall arrives (post-write)
+        let tool_call = ToolCall::new(ToolCallId::from("tool-auto"), "Write already_written.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", tool_call);
+
+        // Since old_text == new_text, capture_write_diff caches a marker with kind="update"
+        let cached = tool_state.cached_diffs("session-1", "tool-auto");
+        assert!(cached.is_some(), "update marker should be cached");
+        let diffs = cached.unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].kind, "update",
+            "post-write marker must be 'update' not 'add'"
+        );
+        assert!(diffs[0].old_text.is_none(), "old_text unknown post-write");
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new content"));
+        assert!(!diffs[0].reversible, "not reversible without old_text");
+
+        // normalized_diffs_for_tool_call should return the cached marker
+        let normalized = tool_state.normalized_diffs_for_tool_call("session-1", &registered);
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].kind, "update");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn acp_diffs_used_as_fallback_when_reconstruction_fails() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("fallback.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        // File already contains post-write content → reconstruction returns None (old == new)
+        fs::write(&file_path, "new content via raw_input").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // ToolCall with raw_input (reconstruction will fail) AND Diff content (from ACP)
+        let tool_call = ToolCall::new(ToolCallId::from("tool-fallback"), "Write fallback.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content via raw_input",
+            }))
+            .content(vec![ToolCallContent::Diff(
+                Diff::new(file_path.display().to_string(), "new via ACP").old_text("old via ACP"),
+            )]);
+        let registered = tool_state.upsert_tool_call("session-1", tool_call);
+
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs.len(), 1);
+        // ACP diff with old_text overwrites the post-write reconstruction marker
+        assert_eq!(diffs[0].old_text.as_deref(), Some("old via ACP"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new via ACP"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn edit_diff_returns_none_when_replacen_finds_nothing() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("no_match.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+        // File content does NOT contain new_string (simulates race condition)
+        fs::write(&file_path, "fn main() { totally_different(); }").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        let tool_call = ToolCall::new(ToolCallId::from("tool-edit-nomatch"), "Edit no_match.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "old_string": "old_code()",
+                "new_string": "new_code()",
+            }));
+        let _ = tool_state.upsert_tool_call("session-1", tool_call);
+
+        // Since new_string is not in the file, reconstruction should fail gracefully
+        let cached = tool_state.cached_diffs("session-1", "tool-edit-nomatch");
+        assert!(
+            cached.is_none(),
+            "unreliable reconstruction should not be cached"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn apply_tool_update_caches_content_diffs() {
+        let tool_state = ToolState::default();
+
+        // First, register a tool call with no diffs
+        let initial = ToolCall::new(ToolCallId::from("tool-update-diffs"), "Edit file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::InProgress);
+        let _ = tool_state.upsert_tool_call("session-1", initial);
+
+        // Update arrives with Diff content
+        let updated = tool_state
+            .apply_tool_update(
+                "session-1",
+                agent_client_protocol::ToolCallUpdate::new(
+                    "tool-update-diffs",
+                    ToolCallUpdateFields::new()
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![ToolCallContent::Diff(
+                            Diff::new("/tmp/updated.rs", "new code").old_text("old code"),
+                        )]),
+                ),
+            )
+            .unwrap();
+
+        let diffs = tool_state.normalized_diffs_for_tool_call("session-1", &updated);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].old_text.as_deref(), Some("old code"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new code"));
+    }
+
+    #[test]
+    fn second_upsert_does_not_overwrite_first_cached_diff() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("overwrite_test.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "original content").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // First upsert (pre-write): disk has "original content", raw_input has "new content"
+        let first = ToolCall::new(ToolCallId::from("tool-ow"), "Write overwrite_test.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Pending)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content",
+            }));
+        let _ = tool_state.upsert_tool_call("session-1", first);
+
+        // Simulate Claude writing the file
+        fs::write(&file_path, "new content").unwrap();
+
+        // Second upsert (post-write): disk now has "new content"
+        let second = ToolCall::new(ToolCallId::from("tool-ow"), "Write overwrite_test.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", second);
+
+        // The first (pre-write) diff should be preserved, not overwritten
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs[0].old_text.as_deref(), Some("original content"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new content"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    // -- File baseline cache tests -------------------------------------------
+
+    #[test]
+    fn read_tool_caches_baseline_for_subsequent_write() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("hello.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "original content").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // Simulate Claude reading the file (completed Read tool)
+        let read_call = ToolCall::new(ToolCallId::from("tool-read"), "Read hello.md")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+            }))
+            .content(vec![ToolCallContent::Content(Content::new(
+                "original content",
+            ))]);
+        let _ = tool_state.upsert_tool_call("session-1", read_call);
+
+        // Now Claude writes the file (auto-approved, file already written)
+        fs::write(&file_path, "new content").unwrap();
+
+        let write_call = ToolCall::new(ToolCallId::from("tool-write"), "Write hello.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", write_call);
+
+        // Baseline should produce a proper diff with old_text
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].kind, "update");
+        assert_eq!(diffs[0].old_text.as_deref(), Some("original content"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new content"));
+        assert!(diffs[0].reversible);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn consecutive_edits_use_updated_baseline() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("app.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "version 1").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // Claude reads file
+        let read_call = ToolCall::new(ToolCallId::from("tool-read-1"), "Read app.rs")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+            }))
+            .content(vec![ToolCallContent::Content(Content::new("version 1"))]);
+        let _ = tool_state.upsert_tool_call("session-1", read_call);
+
+        // First write (auto-approved)
+        fs::write(&file_path, "version 2").unwrap();
+        let write1 = ToolCall::new(ToolCallId::from("tool-write-1"), "Write app.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "version 2",
+            }));
+        let reg1 = tool_state.upsert_tool_call("session-1", write1);
+
+        let payload1 = map_with_tool_state(&tool_state, "session-1", &reg1);
+        let diffs1 = payload1.diffs.as_ref().unwrap();
+        assert_eq!(diffs1[0].old_text.as_deref(), Some("version 1"));
+        assert_eq!(diffs1[0].new_text.as_deref(), Some("version 2"));
+
+        // Second write (auto-approved, baseline should be "version 2" now)
+        fs::write(&file_path, "version 3").unwrap();
+        let write2 = ToolCall::new(ToolCallId::from("tool-write-2"), "Write app.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "version 3",
+            }));
+        let reg2 = tool_state.upsert_tool_call("session-1", write2);
+
+        let payload2 = map_with_tool_state(&tool_state, "session-1", &reg2);
+        let diffs2 = payload2.diffs.as_ref().unwrap();
+        assert_eq!(diffs2[0].old_text.as_deref(), Some("version 2"));
+        assert_eq!(diffs2[0].new_text.as_deref(), Some("version 3"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn write_without_prior_read_falls_back_to_disk() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("src").join("no_read.rs");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "disk content").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // No prior Read — baseline not available, falls back to disk
+        let write_call = ToolCall::new(ToolCallId::from("tool-write-nr"), "Write no_read.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Pending)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "new content",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", write_call);
+
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs[0].old_text.as_deref(), Some("disk content"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("new content"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn store_file_baseline_from_external_source() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("external.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // Simulate frontend sending baseline via Tauri command
+        tool_state.store_file_baseline("session-1", "notes/external.md", "editor content".into());
+
+        // Claude writes the file (already written to disk)
+        fs::write(&file_path, "claude content").unwrap();
+        let write_call = ToolCall::new(ToolCallId::from("tool-write-ext"), "Write external.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "claude content",
+            }));
+        let registered = tool_state.upsert_tool_call("session-1", write_call);
+
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs[0].old_text.as_deref(), Some("editor content"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("claude content"));
+        assert!(diffs[0].reversible);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pending_read_does_not_cache_baseline() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("pending.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "some content").unwrap();
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // Read tool still in progress (not completed yet)
+        let read_call = ToolCall::new(ToolCallId::from("tool-read-p"), "Read pending.md")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+            }));
+        let _ = tool_state.upsert_tool_call("session-1", read_call);
+
+        let baseline = tool_state.get_file_baseline("session-1", "notes/pending.md");
+        assert!(baseline.is_none(), "pending read should not cache baseline");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn acp_diffs_do_not_overwrite_reliable_baseline_reconstruction() {
+        let tool_state = ToolState::default();
+        let temp_dir = unique_temp_dir();
+        let file_path = temp_dir.join("notes").join("baseline_priority.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+        let original = "line 1\nline 2\noriginal line 60\nline 61";
+        let edited = "line 1\nline 2\nedited line 60\nline 61";
+        fs::write(&file_path, edited).unwrap(); // post-write state on disk
+
+        tool_state.register_session_cwd("session-1", temp_dir.clone());
+
+        // Register baseline (simulates prior Read or frontend registration)
+        tool_state.store_file_baseline(
+            "session-1",
+            "notes/baseline_priority.md",
+            original.to_string(),
+        );
+
+        // ToolCall with BOTH raw_input AND ACP Diff content (with wrong old_text)
+        let tool_call = ToolCall::new(ToolCallId::from("tool-bl"), "Write baseline_priority.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": edited,
+            }))
+            .content(vec![ToolCallContent::Diff(
+                Diff::new(file_path.display().to_string(), edited)
+                    .old_text("wrong old text from ACP"),
+            )]);
+        let registered = tool_state.upsert_tool_call("session-1", tool_call);
+
+        // The baseline reconstruction (with correct old_text) should NOT be overwritten
+        let payload = map_with_tool_state(&tool_state, "session-1", &registered);
+        let diffs = payload.diffs.as_ref().expect("diffs should exist");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some(original),
+            "baseline old_text must be preserved, not overwritten by ACP"
+        );
+        assert!(
+            diffs[0].reversible,
+            "baseline reconstruction must be reversible"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

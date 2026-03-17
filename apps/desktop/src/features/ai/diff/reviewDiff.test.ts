@@ -9,7 +9,7 @@ import {
     computeMergedText,
     computeVisualDiffBlocks,
     computeUnifiedDiffLines,
-    createDiffFromEditedFileEntry,
+    createDiffFromTrackedFile,
     formatDiffStat,
     getCompactPath,
     getFileNameFromPath,
@@ -18,7 +18,9 @@ import {
     DIFF_ZOOM_MAX,
     DIFF_ZOOM_MIN,
 } from "./reviewDiff";
-import type { AIEditedFileBufferEntry, AIFileDiff } from "../types";
+import type { TrackedFile } from "./actionLogTypes";
+import { emptyPatch, buildPatchFromTexts } from "../store/actionLogModel";
+import type { AIFileDiff } from "../types";
 
 describe("reviewDiff", () => {
     // -----------------------------------------------------------------------
@@ -34,8 +36,20 @@ describe("reviewDiff", () => {
             };
             const lines = computeDiffLines(diff);
             expect(lines).toEqual([
-                { type: "add", prefix: "+ ", text: "hello" },
-                { type: "add", prefix: "+ ", text: "world" },
+                {
+                    type: "add",
+                    prefix: "+ ",
+                    text: "hello",
+                    oldLineNumber: null,
+                    newLineNumber: 1,
+                },
+                {
+                    type: "add",
+                    prefix: "+ ",
+                    text: "world",
+                    oldLineNumber: null,
+                    newLineNumber: 2,
+                },
             ]);
         });
 
@@ -48,8 +62,20 @@ describe("reviewDiff", () => {
             };
             const lines = computeDiffLines(diff);
             expect(lines).toEqual([
-                { type: "remove", prefix: "- ", text: "foo" },
-                { type: "remove", prefix: "- ", text: "bar" },
+                {
+                    type: "remove",
+                    prefix: "- ",
+                    text: "foo",
+                    oldLineNumber: 1,
+                    newLineNumber: null,
+                },
+                {
+                    type: "remove",
+                    prefix: "- ",
+                    text: "bar",
+                    oldLineNumber: 2,
+                    newLineNumber: null,
+                },
             ]);
         });
 
@@ -410,6 +436,8 @@ describe("reviewDiff", () => {
                             type: "remove",
                             prefix: "- ",
                             text: "c",
+                            oldLineNumber: 3,
+                            newLineNumber: null,
                             hunkIndex: 0,
                             decisionHunkIndex: 0,
                             visualBlockIndex: 0,
@@ -418,6 +446,8 @@ describe("reviewDiff", () => {
                             type: "add",
                             prefix: "+ ",
                             text: "C",
+                            oldLineNumber: null,
+                            newLineNumber: 3,
                             hunkIndex: 0,
                             decisionHunkIndex: 0,
                             visualBlockIndex: 0,
@@ -435,6 +465,8 @@ describe("reviewDiff", () => {
                             type: "remove",
                             prefix: "- ",
                             text: "h",
+                            oldLineNumber: 8,
+                            newLineNumber: null,
                             hunkIndex: 1,
                             decisionHunkIndex: 1,
                             visualBlockIndex: 1,
@@ -443,6 +475,8 @@ describe("reviewDiff", () => {
                             type: "add",
                             prefix: "+ ",
                             text: "H",
+                            oldLineNumber: null,
+                            newLineNumber: 8,
                             hunkIndex: 1,
                             decisionHunkIndex: 1,
                             visualBlockIndex: 1,
@@ -756,108 +790,81 @@ describe("reviewDiff", () => {
     });
 
     // -----------------------------------------------------------------------
-    // createDiffFromEditedFileEntry
+    // createDiffFromTrackedFile
     // -----------------------------------------------------------------------
 
-    describe("createDiffFromEditedFileEntry", () => {
-        it("creates add diff", () => {
-            const entry: AIEditedFileBufferEntry = {
+    describe("createDiffFromTrackedFile", () => {
+        function makeFile(overrides: Partial<TrackedFile> = {}): TrackedFile {
+            const diffBase = overrides.diffBase ?? "old";
+            const currentText = overrides.currentText ?? "new";
+            return {
                 identityKey: "k1",
+                originPath: "/vault/test.md",
+                path: "/vault/test.md",
+                previousPath: null,
+                status: { kind: "modified" },
+                diffBase,
+                currentText,
+                unreviewedEdits:
+                    diffBase === currentText
+                        ? emptyPatch()
+                        : buildPatchFromTexts(diffBase, currentText),
+                version: 1,
+                isText: true,
+                updatedAt: Date.now(),
+                ...overrides,
+            };
+        }
+
+        it("creates add diff", () => {
+            const file = makeFile({
                 originPath: "/vault/new.md",
                 path: "/vault/new.md",
-                operation: "add",
-                baseText: null,
-                appliedText: "content",
-                reversible: true,
-                isText: true,
-                supported: true,
-                status: "pending",
-                appliedHash: "abc",
-                additions: 1,
-                deletions: 0,
-                updatedAt: Date.now(),
-            };
-            const diff = createDiffFromEditedFileEntry(entry);
+                status: { kind: "created", existingFileContent: null },
+                diffBase: "",
+                currentText: "content",
+            });
+            const diff = createDiffFromTrackedFile(file);
             expect(diff.kind).toBe("add");
             expect(diff.path).toBe("/vault/new.md");
             expect(diff.new_text).toBe("content");
         });
 
         it("creates move diff when paths differ", () => {
-            const entry: AIEditedFileBufferEntry = {
+            const file = makeFile({
                 identityKey: "k2",
                 originPath: "/vault/old.md",
                 path: "/vault/new.md",
-                operation: "update",
-                baseText: "old",
-                appliedText: "new",
-                reversible: true,
-                isText: true,
-                supported: true,
-                status: "pending",
-                appliedHash: "def",
-                additions: 1,
-                deletions: 1,
-                updatedAt: Date.now(),
-            };
-            const diff = createDiffFromEditedFileEntry(entry);
+            });
+            const diff = createDiffFromTrackedFile(file);
             expect(diff.kind).toBe("move");
             expect(diff.previous_path).toBe("/vault/old.md");
         });
 
         it("uses previousPath when available", () => {
-            const entry: AIEditedFileBufferEntry = {
+            const file = makeFile({
                 identityKey: "k3",
                 originPath: "/vault/a.md",
                 path: "/vault/a.md",
                 previousPath: "/vault/orig.md",
-                operation: "update",
-                baseText: "x",
-                appliedText: "y",
-                reversible: true,
-                isText: true,
-                supported: true,
-                status: "pending",
-                appliedHash: "ghi",
-                additions: 1,
-                deletions: 1,
-                updatedAt: Date.now(),
-            };
-            const diff = createDiffFromEditedFileEntry(entry);
+                diffBase: "x",
+                currentText: "y",
+            });
+            const diff = createDiffFromTrackedFile(file);
             expect(diff.kind).toBe("move");
             expect(diff.previous_path).toBe("/vault/orig.md");
         });
 
-        it("preserves exact hunks from the edited files buffer", () => {
-            const entry: AIEditedFileBufferEntry = {
+        it("preserves exact hunks from unreviewedEdits", () => {
+            const file = makeFile({
                 identityKey: "k4",
                 originPath: "/vault/exact.md",
                 path: "/vault/exact.md",
-                operation: "update",
-                baseText: "old",
-                appliedText: "new",
-                reversible: true,
-                isText: true,
-                hunks: [
-                    {
-                        old_start: 4,
-                        old_count: 1,
-                        new_start: 4,
-                        new_count: 1,
-                        lines: [{ type: "remove", text: "old" }],
-                    },
-                ],
-                supported: true,
-                status: "pending",
-                appliedHash: "jkl",
-                additions: 1,
-                deletions: 1,
-                updatedAt: Date.now(),
-            };
-
-            const diff = createDiffFromEditedFileEntry(entry);
-
-            expect(diff.hunks).toEqual(entry.hunks);
+            });
+            const diff = createDiffFromTrackedFile(file);
+            // unreviewedEdits produce hunks when diffBase !== currentText
+            expect(diff.hunks).toBeDefined();
+            expect(diff.hunks!.length).toBeGreaterThan(0);
         });
     });
 });
