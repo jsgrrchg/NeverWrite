@@ -5,6 +5,12 @@ export type SpellcheckWordRange = {
     to: number;
 };
 
+export type SpellcheckGrammarContextDiagnostic = {
+    message: string;
+    replacements: string[];
+    range: SpellcheckWordRange;
+};
+
 export type SpellcheckContextMenuPayload = {
     hasSelection: boolean;
     spellingWord: string | null;
@@ -16,6 +22,7 @@ export type SpellcheckContextMenuPayload = {
         id: string;
         label: string;
     }>;
+    grammarDiagnostics: SpellcheckGrammarContextDiagnostic[];
 };
 
 type BuildSpellcheckContextMenuEntriesOptions = {
@@ -24,6 +31,7 @@ type BuildSpellcheckContextMenuEntriesOptions = {
     addToDictionary: (word: string) => void;
     ignoreForSession: (word: string) => void;
     setSecondaryLanguage: (language: string | null) => void;
+    spellcheckAction?: ContextMenuEntry | null;
     trailingEntries: ContextMenuEntry[];
 };
 
@@ -33,9 +41,62 @@ export function buildSpellcheckContextMenuEntries({
     addToDictionary,
     ignoreForSession,
     setSecondaryLanguage,
+    spellcheckAction,
     trailingEntries,
 }: BuildSpellcheckContextMenuEntriesOptions): ContextMenuEntry[] {
+    const grammarDiagnostics = payload?.grammarDiagnostics ?? [];
+
+    // Grammar suggestions (higher priority — shown first)
+    const grammarEntries: ContextMenuEntry[] = [];
+    if (grammarDiagnostics.length > 0) {
+        const seenSuggestions = new Set<string>();
+
+        for (const diagnostic of grammarDiagnostics) {
+            grammarEntries.push({
+                label: diagnostic.message,
+                action: () => {},
+                disabled: true,
+            });
+
+            for (const replacement of diagnostic.replacements) {
+                const suggestionKey = [
+                    diagnostic.range.from,
+                    diagnostic.range.to,
+                    replacement,
+                ].join(":");
+                if (seenSuggestions.has(suggestionKey)) {
+                    continue;
+                }
+                seenSuggestions.add(suggestionKey);
+                grammarEntries.push({
+                    label: replacement,
+                    action: () =>
+                        applySuggestion(replacement, diagnostic.range),
+                });
+            }
+
+            grammarEntries.push({ type: "separator" as const });
+        }
+
+        if (grammarEntries.at(-1)?.type === "separator") {
+            grammarEntries.pop();
+        }
+        if (grammarEntries.length > 0) {
+            grammarEntries.push({ type: "separator" as const });
+        }
+    }
+
+    // Spelling suggestions (skip if grammar already covers the same range)
+    const hasGrammarAtSameRange =
+        payload?.wordRange &&
+        grammarDiagnostics.some(
+            (diagnostic) =>
+                diagnostic.range.from === payload.wordRange!.from &&
+                diagnostic.range.to === payload.wordRange!.to,
+        );
+
     const suggestionEntries =
+        !hasGrammarAtSameRange &&
         payload &&
         payload.spellingCorrect === false &&
         payload.wordRange &&
@@ -51,7 +112,10 @@ export function buildSpellcheckContextMenuEntries({
             : [];
 
     const dictionaryEntries =
-        payload && payload.spellingCorrect === false && payload.spellingWord
+        !hasGrammarAtSameRange &&
+        payload &&
+        payload.spellingCorrect === false &&
+        payload.spellingWord
             ? [
                   {
                       label: "Add to Dictionary",
@@ -89,11 +153,21 @@ export function buildSpellcheckContextMenuEntries({
                   { type: "separator" as const },
               ]
             : [];
+    const actionEntries = spellcheckAction
+        ? [
+              spellcheckAction,
+              ...(trailingEntries.length > 0
+                  ? [{ type: "separator" as const }]
+                  : []),
+          ]
+        : [];
 
     return [
+        ...grammarEntries,
         ...suggestionEntries,
         ...dictionaryEntries,
         ...secondaryLanguageEntries,
+        ...actionEntries,
         ...trailingEntries,
     ];
 }

@@ -17,6 +17,8 @@ export interface Settings {
     editorSpellcheck: boolean;
     spellcheckPrimaryLanguage: SpellcheckLanguage;
     spellcheckSecondaryLanguage: SpellcheckSecondaryLanguage;
+    grammarCheckEnabled: boolean;
+    grammarCheckServerUrl: string;
 
     // Navigation
     fileTreeScale: number; // 90–140
@@ -36,10 +38,6 @@ interface SettingsStore extends Settings {
 
 const SETTINGS_KEY_PREFIX = "vaultai:settings:";
 const SETTINGS_KEY_FALLBACK = "vaultai:settings";
-const GLOBAL_SPELLCHECK_KEYS = [
-    "spellcheckPrimaryLanguage",
-    "spellcheckSecondaryLanguage",
-] as const;
 const LAST_VAULT_KEY = "vaultai:lastVaultPath";
 
 export type EditorFontFamily =
@@ -106,6 +104,8 @@ const defaults: Settings = {
     editorSpellcheck: true,
     spellcheckPrimaryLanguage: "system",
     spellcheckSecondaryLanguage: null,
+    grammarCheckEnabled: false,
+    grammarCheckServerUrl: "",
     fileTreeScale: 100,
     tabOpenBehavior: "history",
     developerModeEnabled: false,
@@ -281,6 +281,13 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             spellcheckPrimaryLanguage: normalizedSpellcheckLanguages.primary,
             spellcheckSecondaryLanguage:
                 normalizedSpellcheckLanguages.secondary,
+            grammarCheckEnabled:
+                parsed.state.grammarCheckEnabled ??
+                defaults.grammarCheckEnabled,
+            grammarCheckServerUrl:
+                typeof parsed.state.grammarCheckServerUrl === "string"
+                    ? parsed.state.grammarCheckServerUrl.trim()
+                    : defaults.grammarCheckServerUrl,
             fileTreeScale: normalizeIntInRange(
                 parsed.state.fileTreeScale,
                 defaults.fileTreeScale,
@@ -308,6 +315,39 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
     }
 }
 
+function hasStoredSpellcheckSettings(raw: string | null) {
+    if (!raw) return false;
+
+    try {
+        const parsed = JSON.parse(raw) as {
+            state?: Partial<Settings> & {
+                spellcheckLanguage?: SpellcheckLanguage;
+            };
+        };
+
+        if (!parsed?.state || typeof parsed.state !== "object") {
+            return false;
+        }
+
+        return (
+            Object.prototype.hasOwnProperty.call(
+                parsed.state,
+                "spellcheckPrimaryLanguage",
+            ) ||
+            Object.prototype.hasOwnProperty.call(
+                parsed.state,
+                "spellcheckSecondaryLanguage",
+            ) ||
+            Object.prototype.hasOwnProperty.call(
+                parsed.state,
+                "spellcheckLanguage",
+            )
+        );
+    } catch {
+        return false;
+    }
+}
+
 function pickSettings(state: SettingsStore): Settings {
     return {
         openLastVaultOnLaunch: state.openLastVaultOnLaunch,
@@ -322,45 +362,14 @@ function pickSettings(state: SettingsStore): Settings {
         editorSpellcheck: state.editorSpellcheck,
         spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,
         spellcheckSecondaryLanguage: state.spellcheckSecondaryLanguage,
+        grammarCheckEnabled: state.grammarCheckEnabled,
+        grammarCheckServerUrl: state.grammarCheckServerUrl,
         fileTreeScale: state.fileTreeScale,
         tabOpenBehavior: state.tabOpenBehavior,
         developerModeEnabled: state.developerModeEnabled,
         developerTerminalEnabled: state.developerTerminalEnabled,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
-    };
-}
-
-function pickGlobalSpellcheckSettings(
-    state: Pick<
-        Settings,
-        "spellcheckPrimaryLanguage" | "spellcheckSecondaryLanguage"
-    >,
-) {
-    return {
-        spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,
-        spellcheckSecondaryLanguage: state.spellcheckSecondaryLanguage,
-    };
-}
-
-function mergeGlobalSpellcheckSettings(settings: Settings): Settings {
-    const global = extractSettingsFromStorage(
-        localStorage.getItem(SETTINGS_KEY_FALLBACK),
-    );
-
-    if (!global) {
-        return settings;
-    }
-
-    const normalizedSpellcheckLanguages = normalizeSpellcheckLanguagePair(
-        global.spellcheckPrimaryLanguage,
-        global.spellcheckSecondaryLanguage,
-    );
-
-    return {
-        ...settings,
-        spellcheckPrimaryLanguage: normalizedSpellcheckLanguages.primary,
-        spellcheckSecondaryLanguage: normalizedSpellcheckLanguages.secondary,
     };
 }
 
@@ -384,12 +393,46 @@ function migrateGlobalSettings(vaultPath: string) {
     }
 }
 
+/**
+ * Migrate spellcheck language settings from the global storage key into
+ * the per-vault key. Previously these two settings were kept only in the
+ * global fallback and stripped from vault storage. This one-time migration
+ * copies them into the vault entry so each vault can diverge independently.
+ */
+function migrateGlobalSpellcheckToVault(vaultPath: string) {
+    try {
+        const vaultKey = getStorageKey(vaultPath);
+        const vaultRaw = localStorage.getItem(vaultKey);
+        if (hasStoredSpellcheckSettings(vaultRaw)) return;
+
+        const vaultSettings = extractSettingsFromStorage(vaultRaw);
+
+        const globalRaw = localStorage.getItem(SETTINGS_KEY_FALLBACK);
+        if (!hasStoredSpellcheckSettings(globalRaw)) return;
+
+        const globalSettings = extractSettingsFromStorage(globalRaw);
+        if (!globalSettings) return;
+
+        const merged = {
+            ...vaultSettings,
+            spellcheckPrimaryLanguage: globalSettings.spellcheckPrimaryLanguage,
+            spellcheckSecondaryLanguage:
+                globalSettings.spellcheckSecondaryLanguage,
+        };
+        localStorage.setItem(vaultKey, JSON.stringify({ state: merged }));
+    } catch {
+        // localStorage unavailable
+    }
+}
+
 function loadSettings(vaultPath: string | null): Settings {
     try {
-        if (vaultPath) migrateGlobalSettings(vaultPath);
+        if (vaultPath) {
+            migrateGlobalSettings(vaultPath);
+            migrateGlobalSpellcheckToVault(vaultPath);
+        }
         const raw = localStorage.getItem(getStorageKey(vaultPath));
-        const loaded = extractSettingsFromStorage(raw) ?? defaults;
-        return mergeGlobalSpellcheckSettings(loaded);
+        return extractSettingsFromStorage(raw) ?? defaults;
     } catch {
         return defaults;
     }
@@ -405,36 +448,9 @@ function getEffectiveVaultPath(
 
 function saveSettings(vaultPath: string | null, settings: Settings) {
     try {
-        const nextState = pickSettings(useSettingsStore.getState());
-        const currentGlobal =
-            extractSettingsFromStorage(
-                localStorage.getItem(SETTINGS_KEY_FALLBACK),
-            ) ?? defaults;
-        localStorage.setItem(
-            SETTINGS_KEY_FALLBACK,
-            JSON.stringify({
-                state: {
-                    ...currentGlobal,
-                    ...pickGlobalSpellcheckSettings(settings),
-                },
-            }),
-        );
-
-        if (vaultPath) {
-            const scopedSettings = { ...settings };
-            for (const key of GLOBAL_SPELLCHECK_KEYS) {
-                delete (scopedSettings as Record<string, unknown>)[key];
-            }
-            localStorage.setItem(
-                getStorageKey(vaultPath),
-                JSON.stringify({ state: scopedSettings }),
-            );
-            return;
-        }
-
         localStorage.setItem(
             getStorageKey(vaultPath),
-            JSON.stringify({ state: nextState }),
+            JSON.stringify({ state: settings }),
         );
     } catch {
         // localStorage unavailable (e.g. during test module init)

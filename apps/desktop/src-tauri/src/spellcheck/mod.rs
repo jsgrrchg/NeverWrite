@@ -1,6 +1,7 @@
 mod bundled;
 mod catalog;
 mod engine;
+pub mod grammar;
 mod language;
 mod storage;
 mod types;
@@ -307,6 +308,18 @@ pub fn spellcheck_remove_installed_dictionary(
     let response = remove_catalog_dictionary(&app, &language)?;
     invalidate_dictionary_cache(&state, &language)?;
     Ok(response)
+}
+
+#[tauri::command]
+pub async fn spellcheck_check_grammar(
+    text: String,
+    language: Option<String>,
+    server_url: Option<String>,
+    app: AppHandle,
+) -> Result<grammar::GrammarCheckResponse, String> {
+    let resolved = resolve_language_selection(&app, language, None)?.primary;
+    let url = grammar::resolve_server_url(server_url.as_deref());
+    grammar::check_grammar(&text, &resolved, url).await
 }
 
 fn record_metrics(

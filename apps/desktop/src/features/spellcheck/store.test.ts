@@ -34,7 +34,7 @@ describe("spellcheck frontend store", () => {
             configurable: true,
         });
 
-        expect(resolveFrontendSpellcheckLanguage("system")).toBe("es-ES");
+        expect(resolveFrontendSpellcheckLanguage("system")).toBe("es-CL");
         expect(resolveFrontendSpellcheckLanguage("en-GB")).toBe("en-GB");
         expect(resolveFrontendSpellcheckLanguage("es-MX")).toBe("es-MX");
         expect(resolveFrontendSpellcheckLanguage("en_us")).toBe("en-US");
@@ -166,6 +166,8 @@ describe("spellcheck frontend store", () => {
                         homepage: "https://github.com/LibreOffice/dictionaries",
                         bundled: false,
                         size_bytes: 868261,
+                        size_known: true,
+                        integrity_available: true,
                         installed: true,
                         update_available: false,
                         install_status: "installed",

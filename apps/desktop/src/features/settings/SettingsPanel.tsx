@@ -652,7 +652,11 @@ function SectionLabel({ children }: { children: string }) {
     );
 }
 
-function formatSpellcheckCatalogSize(sizeBytes: number) {
+function formatSpellcheckCatalogSize(sizeBytes: number, sizeKnown: boolean) {
+    if (!sizeKnown || sizeBytes <= 0) {
+        return "Size unknown";
+    }
+
     if (sizeBytes >= 1024 * 1024) {
         return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
     }
@@ -753,9 +757,117 @@ function EditorSettings() {
         lineWrapping,
         justifyText,
         tabSize,
+        setSetting,
+    } = useSettingsStore();
+
+    return (
+        <div>
+            <SectionLabel>Typography</SectionLabel>
+            <Row
+                label="Font size"
+                description="Text size in the editor, in pixels."
+                control={
+                    <NumberStepper
+                        value={editorFontSize}
+                        min={10}
+                        max={24}
+                        onChange={(v) => setSetting("editorFontSize", v)}
+                    />
+                }
+            />
+            <Row
+                label="Font family"
+                description="Font used in the editor."
+                control={
+                    <SelectField
+                        value={editorFontFamily}
+                        options={EDITOR_FONT_FAMILY_OPTIONS}
+                        onChange={(v) =>
+                            setSetting(
+                                "editorFontFamily",
+                                v as EditorFontFamily,
+                            )
+                        }
+                    />
+                }
+            />
+            <Row
+                label="Line spacing"
+                description="Line height in the editor. 150 means 1.5×."
+                control={
+                    <SliderField
+                        value={editorLineHeight}
+                        min={120}
+                        max={220}
+                        step={5}
+                        onChange={(v) => setSetting("editorLineHeight", v)}
+                        formatValue={(value) => `${value}%`}
+                    />
+                }
+            />
+
+            <SectionLabel>Formatting</SectionLabel>
+            <Row
+                label="Line wrapping"
+                description="Wrap long lines to fit the editor width."
+                control={
+                    <Toggle
+                        value={lineWrapping}
+                        onChange={(v) => setSetting("lineWrapping", v)}
+                    />
+                }
+            />
+            <Row
+                label="Justify text"
+                description="Distribute wrapped lines evenly across the editor width."
+                control={
+                    <Toggle
+                        value={justifyText}
+                        onChange={(v) => setSetting("justifyText", v)}
+                    />
+                }
+            />
+            <Row
+                label="Tab size"
+                description="Number of spaces inserted when pressing Tab."
+                control={
+                    <SegmentedControl
+                        value={tabSize}
+                        options={[
+                            { value: 2, label: "2" },
+                            { value: 4, label: "4" },
+                        ]}
+                        onChange={(v) => setSetting("tabSize", v as 2 | 4)}
+                    />
+                }
+            />
+
+            <SectionLabel>Layout</SectionLabel>
+            <Row
+                label="Text width"
+                description="Maximum width of the editor content, in pixels."
+                control={
+                    <SliderField
+                        value={editorContentWidth}
+                        min={600}
+                        max={1200}
+                        step={10}
+                        onChange={(v) => setSetting("editorContentWidth", v)}
+                        formatValue={(value) => `${value}px`}
+                    />
+                }
+            />
+        </div>
+    );
+}
+
+function SpellcheckSettings() {
+    const {
         editorSpellcheck,
         spellcheckPrimaryLanguage,
         spellcheckSecondaryLanguage,
+        grammarCheckEnabled,
+        grammarCheckServerUrl,
         setSetting,
     } = useSettingsStore();
     const spellcheckLanguages = useSpellcheckStore((s) => s.languages);
@@ -775,6 +887,7 @@ function EditorSettings() {
     const removeInstalledCatalogDictionary = useSpellcheckStore(
         (s) => s.removeInstalledCatalogDictionary,
     );
+    const [catalogSearch, setCatalogSearch] = useState("");
     const [pendingCatalogAction, setPendingCatalogAction] = useState<
         string | null
     >(null);
@@ -822,6 +935,15 @@ function EditorSettings() {
     const downloadableCatalogEntries = spellcheckCatalog.filter(
         (entry) => !entry.bundled,
     );
+    const filteredCatalogEntries = catalogSearch
+        ? downloadableCatalogEntries.filter(
+              (entry) =>
+                  entry.label
+                      .toLowerCase()
+                      .includes(catalogSearch.toLowerCase()) ||
+                  entry.id.toLowerCase().includes(catalogSearch.toLowerCase()),
+          )
+        : downloadableCatalogEntries;
     const spellcheckPacksDirectory = spellcheckRuntimeDirectory
         ? `${spellcheckRuntimeDirectory}/packs`
         : null;
@@ -894,61 +1016,17 @@ function EditorSettings() {
 
     return (
         <div>
-            <SectionLabel>Typography</SectionLabel>
-            <Row
-                label="Font size"
-                description="Text size in the editor, in pixels."
-                control={
-                    <NumberStepper
-                        value={editorFontSize}
-                        min={10}
-                        max={24}
-                        onChange={(v) => setSetting("editorFontSize", v)}
-                    />
-                }
-            />
-            <Row
-                label="Font family"
-                description="Font used in the editor."
-                control={
-                    <SelectField
-                        value={editorFontFamily}
-                        options={EDITOR_FONT_FAMILY_OPTIONS}
-                        onChange={(v) =>
-                            setSetting(
-                                "editorFontFamily",
-                                v as EditorFontFamily,
-                            )
-                        }
-                    />
-                }
-            />
-            <Row
-                label="Line spacing"
-                description="Line height in the editor. 150 means 1.5×."
-                control={
-                    <SliderField
-                        value={editorLineHeight}
-                        min={120}
-                        max={220}
-                        step={5}
-                        onChange={(v) => setSetting("editorLineHeight", v)}
-                        formatValue={(value) => `${value}%`}
-                    />
-                }
-            />
-
-            <SectionLabel>Formatting</SectionLabel>
-            <Row
-                label="Line wrapping"
-                description="Wrap long lines to fit the editor width."
-                control={
-                    <Toggle
-                        value={lineWrapping}
-                        onChange={(v) => setSetting("lineWrapping", v)}
-                    />
-                }
-            />
+            <SectionLabel>Languages</SectionLabel>
+            <p
+                style={{
+                    fontSize: 11,
+                    color: "var(--text-secondary)",
+                    margin: "0 0 6px 0",
+                    fontStyle: "italic",
+                }}
+            >
+                These settings apply to the current vault only.
+            </p>
             <Row
                 label="Spellcheck"
                 description="Use the app spellcheck engine in Markdown notes and note titles."
@@ -995,6 +1073,77 @@ function EditorSettings() {
                     />
                 }
             />
+            <SectionLabel>Grammar Check</SectionLabel>
+            <Row
+                label="Grammar check"
+                description="Check grammar and style using LanguageTool. Uses the spellcheck primary language."
+                control={
+                    <Toggle
+                        value={grammarCheckEnabled}
+                        onChange={(v) => setSetting("grammarCheckEnabled", v)}
+                    />
+                }
+            />
+            <Row
+                label="Server URL"
+                description="Leave empty to use the public LanguageTool API. For privacy, run a local server (e.g. localhost:8081)."
+                disabled={!grammarCheckEnabled}
+                control={
+                    <input
+                        type="text"
+                        placeholder="https://api.languagetool.org"
+                        value={grammarCheckServerUrl}
+                        disabled={!grammarCheckEnabled}
+                        onChange={(e) =>
+                            setSetting("grammarCheckServerUrl", e.target.value)
+                        }
+                        style={{
+                            width: 200,
+                            padding: "6px 8px",
+                            fontSize: 12,
+                            fontFamily: "inherit",
+                            borderRadius: 6,
+                            border: "1px solid var(--border)",
+                            backgroundColor: grammarCheckEnabled
+                                ? "var(--bg-tertiary)"
+                                : "var(--bg-secondary)",
+                            color: grammarCheckEnabled
+                                ? "var(--text-primary)"
+                                : "var(--text-secondary)",
+                            outline: "none",
+                            boxSizing: "border-box",
+                            opacity: grammarCheckEnabled ? 1 : 0.5,
+                        }}
+                    />
+                }
+            />
+            {grammarCheckEnabled && !grammarCheckServerUrl && (
+                <p
+                    style={{
+                        fontSize: 11,
+                        color: "var(--text-secondary)",
+                        margin: "4px 0 8px 0",
+                        lineHeight: 1.5,
+                        fontStyle: "italic",
+                    }}
+                >
+                    The public API sends text to languagetool.org for
+                    processing. For sensitive content, consider a{" "}
+                    <a
+                        href="https://dev.languagetool.org/http-server"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                            color: "var(--accent)",
+                            textDecoration: "underline",
+                        }}
+                    >
+                        local server
+                    </a>
+                    .
+                </p>
+            )}
+            <SectionLabel>Dictionaries</SectionLabel>
             <Row
                 label="Spellcheck dictionaries"
                 description="Bundled dictionaries are ready immediately. Downloadable Hunspell packs live in the app spellcheck folder and can be managed even while spellcheck is off."
@@ -1084,7 +1233,27 @@ function EditorSettings() {
             {downloadableCatalogEntries.length > 0 && (
                 <>
                     <SectionLabel>Dictionary Catalog</SectionLabel>
-                    {downloadableCatalogEntries.map((entry) => {
+                    <div style={{ marginBottom: 8 }}>
+                        <input
+                            type="text"
+                            placeholder="Search languages..."
+                            value={catalogSearch}
+                            onChange={(e) => setCatalogSearch(e.target.value)}
+                            style={{
+                                width: "100%",
+                                padding: "7px 10px",
+                                fontSize: 12,
+                                fontFamily: "inherit",
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-tertiary)",
+                                color: "var(--text-primary)",
+                                outline: "none",
+                                boxSizing: "border-box",
+                            }}
+                        />
+                    </div>
+                    {filteredCatalogEntries.map((entry) => {
                         const pendingInstall =
                             pendingCatalogAction === `${entry.id}:install`;
                         const pendingRemove =
@@ -1100,8 +1269,14 @@ function EditorSettings() {
                             entry.installed_version !== entry.version
                                 ? `Installed ${entry.installed_version}`
                                 : null,
-                            formatSpellcheckCatalogSize(entry.size_bytes),
+                            formatSpellcheckCatalogSize(
+                                entry.size_bytes,
+                                entry.size_known,
+                            ),
                             entry.license,
+                            !entry.bundled && !entry.integrity_available
+                                ? "Checksum unavailable"
+                                : null,
                         ]
                             .filter(Boolean)
                             .join(" · ");
@@ -1292,46 +1467,6 @@ function EditorSettings() {
                     {spellcheckCatalogNotice.message}
                 </div>
             )}
-            <Row
-                label="Justify text"
-                description="Distribute wrapped lines evenly across the editor width."
-                control={
-                    <Toggle
-                        value={justifyText}
-                        onChange={(v) => setSetting("justifyText", v)}
-                    />
-                }
-            />
-            <Row
-                label="Tab size"
-                description="Number of spaces inserted when pressing Tab."
-                control={
-                    <SegmentedControl
-                        value={tabSize}
-                        options={[
-                            { value: 2, label: "2" },
-                            { value: 4, label: "4" },
-                        ]}
-                        onChange={(v) => setSetting("tabSize", v as 2 | 4)}
-                    />
-                }
-            />
-
-            <SectionLabel>Layout</SectionLabel>
-            <Row
-                label="Text width"
-                description="Maximum width of the editor content, in pixels."
-                control={
-                    <SliderField
-                        value={editorContentWidth}
-                        min={600}
-                        max={1200}
-                        step={10}
-                        onChange={(v) => setSetting("editorContentWidth", v)}
-                        formatValue={(value) => `${value}px`}
-                    />
-                }
-            />
         </div>
     );
 }
@@ -2071,6 +2206,7 @@ type Category =
     | "general"
     | "appearance"
     | "editor"
+    | "spellcheck"
     | "developers"
     | "vault"
     | "shortcuts"
@@ -2128,6 +2264,21 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
                     stroke="currentColor"
                     strokeWidth="1.2"
                     strokeLinecap="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "spellcheck",
+        label: "Spellcheck",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M2 12h5M4.5 4v8M3 4h3M9 12l1.5-3M14 12l-1.5-3M9 12l2.5-7h.5l2.5 7M10.5 9h2.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                 />
             </svg>
         ),
@@ -2221,6 +2372,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     general: "Saving, startup, and general behavior",
     appearance: "Themes and visual preferences",
     editor: "Typography and text editing behavior",
+    spellcheck: "Languages and dictionary management",
     developers: "Advanced developer-facing file tree options",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
@@ -2505,6 +2657,7 @@ export function SettingsPanel({
                         {active === "general" && <GeneralSettings />}
                         {active === "appearance" && <AppearanceSettings />}
                         {active === "editor" && <EditorSettings />}
+                        {active === "spellcheck" && <SpellcheckSettings />}
                         {active === "developers" && <DevelopersSettings />}
                         {active === "vault" && <VaultSettings />}
                         {active === "shortcuts" && <ShortcutsSettings />}

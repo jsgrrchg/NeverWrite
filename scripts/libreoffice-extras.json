@@ -1,0 +1,188 @@
+[
+    {
+        "id": "bs",
+        "label": "Bosnian",
+        "folder": "bs_BA",
+        "locale": "bs_BA",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "sq",
+        "label": "Albanian",
+        "folder": "sq_AL",
+        "locale": "sq_AL",
+        "license": "GPL-2.0+"
+    },
+    {
+        "id": "be",
+        "label": "Belarusian",
+        "folder": "be_BY",
+        "locale": "be_BY",
+        "aff_file": "be-official.aff",
+        "dic_file": "be-official.dic",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "ar",
+        "label": "Arabic",
+        "folder": "ar",
+        "locale": "ar",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "ckb",
+        "label": "Central Kurdish (Sorani)",
+        "folder": "ckb",
+        "locale": "ckb",
+        "aff_file": "dictionaries/ckb.aff",
+        "dic_file": "dictionaries/ckb.dic",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "kmr-Latn",
+        "label": "Northern Kurdish (Kurmanji)",
+        "folder": "kmr_Latn",
+        "locale": "kmr_Latn",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "hi",
+        "label": "Hindi",
+        "folder": "hi_IN",
+        "locale": "hi_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "bn",
+        "label": "Bengali",
+        "folder": "bn_BD",
+        "locale": "bn_BD",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "ta",
+        "label": "Tamil",
+        "folder": "ta_IN",
+        "locale": "ta_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "te",
+        "label": "Telugu",
+        "folder": "te_IN",
+        "locale": "te_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "gu",
+        "label": "Gujarati",
+        "folder": "gu_IN",
+        "locale": "gu_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "kn",
+        "label": "Kannada",
+        "folder": "kn_IN",
+        "locale": "kn_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "mr",
+        "label": "Marathi",
+        "folder": "mr_IN",
+        "locale": "mr_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "pa",
+        "label": "Punjabi",
+        "folder": "pa_IN",
+        "locale": "pa_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "or",
+        "label": "Odia",
+        "folder": "or_IN",
+        "locale": "or_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "as",
+        "label": "Assamese",
+        "folder": "as_IN",
+        "locale": "as_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "si",
+        "label": "Sinhala",
+        "folder": "si_LK",
+        "locale": "si_LK",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "sa",
+        "label": "Sanskrit",
+        "folder": "sa_IN",
+        "locale": "sa_IN",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "id",
+        "label": "Indonesian",
+        "folder": "id",
+        "locale": "id_ID",
+        "license": "GPL-2.0+"
+    },
+    {
+        "id": "th",
+        "label": "Thai",
+        "folder": "th_TH",
+        "locale": "th_TH",
+        "license": "GPL-2.0+"
+    },
+    {
+        "id": "lo",
+        "label": "Lao",
+        "folder": "lo_LA",
+        "locale": "lo_LA",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "bo",
+        "label": "Tibetan",
+        "folder": "bo",
+        "locale": "bo",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "af",
+        "label": "Afrikaans",
+        "folder": "af_ZA",
+        "locale": "af_ZA",
+        "license": "LGPL-3.0"
+    },
+    {
+        "id": "sw",
+        "label": "Swahili",
+        "folder": "sw_TZ",
+        "locale": "sw_TZ",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "gug",
+        "label": "Guaraní (Paraguay)",
+        "folder": "gug",
+        "locale": "gug",
+        "license": "GPL-3.0+"
+    },
+    {
+        "id": "an",
+        "label": "Aragonese",
+        "folder": "an_ES",
+        "locale": "an_ES",
+        "license": "GPL-3.0+"
+    }
+]

@@ -55,6 +55,8 @@ export interface SpellcheckCatalogEntry {
     homepage: string;
     bundled: boolean;
     size_bytes: number;
+    size_known: boolean;
+    integrity_available: boolean;
     installed: boolean;
     update_available: boolean;
     install_status: string;
@@ -86,4 +88,24 @@ export interface SpellcheckCheckDocumentInput {
 export interface SpellcheckSuggestInput {
     word: string;
     language?: SpellcheckLanguage;
+}
+
+// --- Grammar checking (LanguageTool) ---
+
+export interface GrammarDiagnostic {
+    start_utf16: number;
+    end_utf16: number;
+    message: string;
+    short_message: string | null;
+    replacements: string[];
+    rule_id: string;
+    rule_description: string;
+    issue_type: string;
+    category_id: string;
+    category_name: string;
+}
+
+export interface GrammarCheckResponse {
+    language: string;
+    diagnostics: GrammarDiagnostic[];
 }
