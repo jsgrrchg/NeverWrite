@@ -12,7 +12,7 @@ const { getDocumentMock } = vi.hoisted(() => ({
     getDocumentMock: vi.fn(),
 }));
 
-vi.mock("pdfjs-dist/legacy/build/pdf", () => {
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => {
     class RenderingCancelledException extends Error {}
     class TextLayer {
         container: HTMLElement;
@@ -115,16 +115,18 @@ describe("PdfTabView", () => {
         });
 
         expect(
-            screen.getByText("An unexpected error occurred while loading this PDF."),
+            screen.getByText(
+                "An unexpected error occurred while loading this PDF.",
+            ),
         ).toBeInTheDocument();
     });
 
-    it("toggles into continuous mode and renders every page", async () => {
+    it("toggles into continuous mode and only renders the visible pages", async () => {
         const user = userEvent.setup();
         const pdfDocument = {
             destroy: vi.fn(),
             getPage: vi.fn().mockImplementation(async () => createMockPage()),
-            numPages: 3,
+            numPages: 10,
         };
 
         getDocumentMock.mockReturnValue({
@@ -155,8 +157,11 @@ describe("PdfTabView", () => {
 
         await waitFor(() => {
             expect(screen.getByText("Continuous")).toBeInTheDocument();
-            expect(container.querySelectorAll("canvas")).toHaveLength(3);
-            expect(container.querySelectorAll(".textLayer")).toHaveLength(3);
+            const canvases = container.querySelectorAll("canvas");
+            const textLayers = container.querySelectorAll(".textLayer");
+            expect(canvases.length).toBeGreaterThan(0);
+            expect(canvases.length).toBeLessThan(pdfDocument.numPages);
+            expect(textLayers.length).toBe(canvases.length);
         });
     });
 
@@ -229,7 +234,9 @@ describe("PdfTabView", () => {
         const scrollSurface = container.querySelector(
             "div[class*='overflow-auto']",
         ) as HTMLDivElement | null;
-        const canvas = container.querySelector("canvas") as HTMLCanvasElement | null;
+        const canvas = container.querySelector(
+            "canvas",
+        ) as HTMLCanvasElement | null;
 
         expect(scrollSurface?.style.touchAction).toBe("none");
         expect(canvas?.style.touchAction).toBe("none");

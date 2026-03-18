@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+} from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -24,6 +31,9 @@ const MAX_ZOOM = 4;
 const PIXEL_RATIO = window.devicePixelRatio || 1;
 const PINCH_SENSITIVITY = 0.0025;
 const PINCH_COMMIT_DELAY = 150;
+const CONTINUOUS_PAGE_GAP = 20;
+const CONTINUOUS_OVERSCAN_PX = 1200;
+const VIEWPORT_HEIGHT_FALLBACK = 800;
 const PDF_TEXT_CONTENT_OPTIONS = {
     includeMarkedContent: true,
     disableNormalization: true,
@@ -92,6 +102,92 @@ type PdfErrorState = {
     message: string;
 };
 
+type PdfPageMetric = {
+    pageNumber: number;
+    width: number;
+    height: number;
+};
+
+type PdfPageLayout = PdfPageMetric & {
+    offsetTop: number;
+    bottom: number;
+};
+
+function buildPageLayouts(
+    metrics: PdfPageMetric[],
+    zoom: number,
+): PdfPageLayout[] {
+    let offsetTop = 0;
+    return metrics.map((metric) => {
+        const width = metric.width * zoom;
+        const height = metric.height * zoom;
+        const layout = {
+            ...metric,
+            width,
+            height,
+            offsetTop,
+            bottom: offsetTop + height,
+        };
+        offsetTop = layout.bottom + CONTINUOUS_PAGE_GAP;
+        return layout;
+    });
+}
+
+function findFirstLayoutEndingAfter(
+    layouts: PdfPageLayout[],
+    offset: number,
+): number {
+    let low = 0;
+    let high = layouts.length - 1;
+    let result = layouts.length - 1;
+
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        if (layouts[mid].bottom >= offset) {
+            result = mid;
+            high = mid - 1;
+        } else {
+            low = mid + 1;
+        }
+    }
+
+    return result;
+}
+
+function findLastLayoutStartingBefore(
+    layouts: PdfPageLayout[],
+    offset: number,
+): number {
+    let low = 0;
+    let high = layouts.length - 1;
+    let result = 0;
+
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        if (layouts[mid].offsetTop <= offset) {
+            result = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    return result;
+}
+
+function findClosestLayoutIndex(
+    layouts: PdfPageLayout[],
+    probeY: number,
+): number {
+    const currentIndex = findLastLayoutStartingBefore(layouts, probeY);
+    const nextIndex = Math.min(currentIndex + 1, layouts.length - 1);
+
+    const currentDistance = Math.abs(layouts[currentIndex].offsetTop - probeY);
+    const nextDistance = Math.abs(layouts[nextIndex].offsetTop - probeY);
+
+    return nextDistance < currentDistance ? nextIndex : currentIndex;
+}
+
 export function PdfTabView() {
     const tab = useEditorStore((s) => {
         const current = s.tabs.find(
@@ -119,6 +215,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const contentRef = useRef<HTMLDivElement>(null);
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const previousViewModeRef = useRef(tab.viewMode);
+    const pendingProgrammaticPageRef = useRef<number | null>(null);
     const pinchZoomRef = useRef(tab.zoom);
     const pinchTimerRef = useRef(0);
     const wheelZoomModifierRef = useWheelZoomModifier();
@@ -126,7 +223,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const [pdfFilter, setPdfFilter] = useState<PdfFilter>("none");
     const [loadedPdf, setLoadedPdf] = useState<LoadedPdfState | null>(null);
     const [errorState, setErrorState] = useState<PdfErrorState | null>(null);
+    const [pageMetrics, setPageMetrics] = useState<PdfPageMetric[] | null>(
+        null,
+    );
     const [retryCount, setRetryCount] = useState(0);
+    const [scrollTop, setScrollTop] = useState(0);
+    const [viewportHeight, setViewportHeight] = useState(
+        VIEWPORT_HEIGHT_FALLBACK,
+    );
 
     const updatePdfPage = useEditorStore((s) => s.updatePdfPage);
     const updatePdfZoom = useEditorStore((s) => s.updatePdfZoom);
@@ -143,6 +247,38 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const loading = !error && !activePdf;
     const pdf = activePdf?.pdf ?? null;
     const numPages = activePdf?.numPages ?? 0;
+    const continuousLayouts = useMemo(
+        () => (pageMetrics ? buildPageLayouts(pageMetrics, tab.zoom) : []),
+        [pageMetrics, tab.zoom],
+    );
+    const effectiveViewportHeight = Math.max(
+        viewportHeight,
+        VIEWPORT_HEIGHT_FALLBACK,
+    );
+    const visibleContinuousLayouts = useMemo(() => {
+        if (tab.viewMode !== "continuous" || continuousLayouts.length === 0) {
+            return [];
+        }
+
+        const overscan = Math.max(
+            CONTINUOUS_OVERSCAN_PX,
+            effectiveViewportHeight,
+        );
+        const visibleStart = Math.max(0, scrollTop - overscan);
+        const visibleEnd = scrollTop + effectiveViewportHeight + overscan;
+        const startIndex = findFirstLayoutEndingAfter(
+            continuousLayouts,
+            visibleStart,
+        );
+        const endIndex =
+            findLastLayoutStartingBefore(continuousLayouts, visibleEnd) + 1;
+
+        return continuousLayouts.slice(startIndex, endIndex);
+    }, [continuousLayouts, effectiveViewportHeight, scrollTop, tab.viewMode]);
+    const totalContinuousHeight =
+        continuousLayouts.length > 0
+            ? continuousLayouts[continuousLayouts.length - 1].bottom
+            : 0;
 
     const setPdfError = useCallback(
         (message: string) => {
@@ -169,20 +305,38 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const scrollToPage = useCallback(
         (pageNumber: number, behavior: ScrollBehavior) => {
             const container = containerRef.current;
+            if (!container) return;
+
+            if (tab.viewMode === "continuous") {
+                const layout = continuousLayouts[pageNumber - 1];
+                if (!layout) return;
+                pendingProgrammaticPageRef.current = pageNumber;
+
+                container.scrollTo({
+                    top: Math.max(layout.offsetTop, 0),
+                    behavior,
+                });
+                return;
+            }
+
             const element = pageRefs.current[pageNumber];
-            if (!container || !element) return;
+            if (!element) return;
 
             container.scrollTo({
                 top: Math.max(element.offsetTop - 24, 0),
                 behavior,
             });
         },
-        [],
+        [continuousLayouts, tab.viewMode],
     );
 
     useEffect(() => {
         pageRefs.current = {};
     }, [tab.path, tab.viewMode, tab.zoom, retryCount]);
+
+    useEffect(() => {
+        setPageMetrics(null);
+    }, [retryCount, tab.path]);
 
     useEffect(() => {
         let cancelled = false;
@@ -226,7 +380,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         const previousViewMode = previousViewModeRef.current;
         previousViewModeRef.current = tab.viewMode;
 
-        if (tab.viewMode !== "continuous" || loading || error || !numPages) {
+        if (
+            tab.viewMode !== "continuous" ||
+            loading ||
+            error ||
+            !numPages ||
+            continuousLayouts.length === 0
+        ) {
             return;
         }
         if (
@@ -240,62 +400,123 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             scrollToPage(Math.max(1, Math.min(tab.page, numPages)), "auto");
         });
         return () => window.cancelAnimationFrame(frame);
-    }, [error, loading, numPages, scrollToPage, tab.page, tab.viewMode]);
-
-    const syncVisiblePage = useCallback(() => {
-        if (tab.viewMode !== "continuous" || !numPages) return;
-
-        const container = containerRef.current;
-        if (!container) return;
-
-        const containerRect = container.getBoundingClientRect();
-        const probeY =
-            containerRect.top + Math.min(container.clientHeight * 0.35, 240);
-
-        let closestPage = tab.page;
-        let closestDistance = Number.POSITIVE_INFINITY;
-
-        for (let pageNumber = 1; pageNumber <= numPages; pageNumber++) {
-            const element = pageRefs.current[pageNumber];
-            if (!element) continue;
-
-            const rect = element.getBoundingClientRect();
-            const visible =
-                rect.bottom >= containerRect.top &&
-                rect.top <= containerRect.bottom;
-            if (!visible) continue;
-
-            const distance = Math.abs(rect.top - probeY);
-            if (distance < closestDistance) {
-                closestDistance = distance;
-                closestPage = pageNumber;
-            }
-        }
-
-        if (closestPage !== tab.page) {
-            updatePdfPage(tab.id, closestPage);
-        }
-    }, [numPages, tab.id, tab.page, tab.viewMode, updatePdfPage]);
+    }, [
+        continuousLayouts.length,
+        error,
+        loading,
+        numPages,
+        scrollToPage,
+        tab.page,
+        tab.viewMode,
+    ]);
 
     useEffect(() => {
-        if (tab.viewMode !== "continuous" || !numPages) return;
-
         const container = containerRef.current;
         if (!container) return;
 
         let frame = 0;
-        const handleScroll = () => {
+        const syncViewportMetrics = () => {
+            setViewportHeight(
+                container.clientHeight || VIEWPORT_HEIGHT_FALLBACK,
+            );
+            setScrollTop(container.scrollTop);
+        };
+        const scheduleSync = () => {
             window.cancelAnimationFrame(frame);
-            frame = window.requestAnimationFrame(syncVisiblePage);
+            frame = window.requestAnimationFrame(syncViewportMetrics);
         };
 
-        handleScroll();
-        container.addEventListener("scroll", handleScroll, { passive: true });
+        syncViewportMetrics();
+        container.addEventListener("scroll", scheduleSync, { passive: true });
+        window.addEventListener("resize", scheduleSync);
         return () => {
             window.cancelAnimationFrame(frame);
-            container.removeEventListener("scroll", handleScroll);
+            container.removeEventListener("scroll", scheduleSync);
+            window.removeEventListener("resize", scheduleSync);
         };
-    }, [numPages, syncVisiblePage, tab.viewMode]);
+    }, []);
+
+    useEffect(() => {
+        if (tab.viewMode !== "continuous" || !pdf || pageMetrics) return;
+
+        let cancelled = false;
+
+        const loadPageMetrics = async () => {
+            const nextMetrics: PdfPageMetric[] = [];
+
+            for (
+                let pageNumber = 1;
+                pageNumber <= pdf.numPages;
+                pageNumber += 1
+            ) {
+                const page = await pdf.getPage(pageNumber);
+                const viewport = page.getViewport({ scale: 1 });
+                page.cleanup?.();
+
+                if (cancelled) {
+                    return;
+                }
+
+                nextMetrics.push({
+                    pageNumber,
+                    width: viewport.width,
+                    height: viewport.height,
+                });
+            }
+
+            if (!cancelled) {
+                setPageMetrics(nextMetrics);
+            }
+        };
+
+        loadPageMetrics().catch((err: unknown) => {
+            if (!cancelled) {
+                setPdfError(String(err));
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [pageMetrics, pdf, setPdfError, tab.viewMode]);
+
+    useEffect(() => {
+        if (tab.viewMode !== "continuous" || continuousLayouts.length === 0) {
+            return;
+        }
+
+        const pendingPageNumber = pendingProgrammaticPageRef.current;
+        if (pendingPageNumber !== null) {
+            const pendingLayout = continuousLayouts[pendingPageNumber - 1];
+            if (!pendingLayout) {
+                pendingProgrammaticPageRef.current = null;
+                return;
+            }
+
+            if (Math.abs(scrollTop - pendingLayout.offsetTop) > 2) {
+                return;
+            }
+
+            pendingProgrammaticPageRef.current = null;
+        }
+
+        const probeY =
+            scrollTop + Math.min(effectiveViewportHeight * 0.35, 240);
+        const closestIndex = findClosestLayoutIndex(continuousLayouts, probeY);
+        const closestPage = continuousLayouts[closestIndex]?.pageNumber;
+
+        if (closestPage && closestPage !== tab.page) {
+            updatePdfPage(tab.id, closestPage);
+        }
+    }, [
+        continuousLayouts,
+        effectiveViewportHeight,
+        scrollTop,
+        tab.id,
+        tab.page,
+        tab.viewMode,
+        updatePdfPage,
+    ]);
 
     const goToPreviousPage = useCallback(() => {
         const targetPage = Math.max(1, tab.page - 1);
@@ -636,23 +857,44 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 {tab.viewMode === "continuous" ? (
                     <div
                         ref={contentRef}
-                        className="w-full flex flex-col items-center"
+                        className="w-full"
                         style={{
-                            gap: 20,
                             willChange: "transform",
                             filter: activeFilter.css,
+                            position:
+                                continuousLayouts.length > 0
+                                    ? "relative"
+                                    : "static",
+                            height:
+                                continuousLayouts.length > 0
+                                    ? `${totalContinuousHeight}px`
+                                    : undefined,
                         }}
                     >
-                        {Array.from({ length: numPages }, (_, index) => (
-                            <PdfPageCanvas
-                                key={`${tab.path}:${retryCount}:${index + 1}:${tab.zoom}`}
-                                pdf={pdf}
-                                pageNumber={index + 1}
-                                zoom={tab.zoom}
-                                onRenderError={setPdfError}
-                                registerElement={registerPageElement}
-                            />
-                        ))}
+                        {continuousLayouts.length === 0 ? (
+                            <div
+                                className="flex items-center justify-center py-10 text-[12px]"
+                                style={{ color: "var(--text-secondary)" }}
+                            >
+                                Preparing pages...
+                            </div>
+                        ) : (
+                            visibleContinuousLayouts.map((layout) => (
+                                <PdfPageCanvas
+                                    key={`${tab.path}:${retryCount}:${layout.pageNumber}:${tab.zoom}`}
+                                    pdf={pdf}
+                                    pageNumber={layout.pageNumber}
+                                    zoom={tab.zoom}
+                                    onRenderError={setPdfError}
+                                    registerElement={registerPageElement}
+                                    wrapperStyle={{
+                                        position: "absolute",
+                                        insetInline: 0,
+                                        top: `${layout.offsetTop}px`,
+                                    }}
+                                />
+                            ))
+                        )}
                     </div>
                 ) : (
                     <div
@@ -683,6 +925,7 @@ function PdfPageCanvas({
     zoom,
     onRenderError,
     registerElement,
+    wrapperStyle,
 }: {
     pdf: pdfjsLib.PDFDocumentProxy;
     pageNumber: number;
@@ -692,6 +935,7 @@ function PdfPageCanvas({
         pageNumber: number,
         element: HTMLDivElement | null,
     ) => void;
+    wrapperStyle?: CSSProperties;
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const pageShellRef = useRef<HTMLDivElement>(null);
@@ -805,6 +1049,7 @@ function PdfPageCanvas({
             ref={(element) => registerElement?.(pageNumber, element)}
             className="flex justify-center w-full"
             data-page-number={pageNumber}
+            style={wrapperStyle}
         >
             <div ref={pageShellRef} className="pdf-page-shell">
                 <canvas
