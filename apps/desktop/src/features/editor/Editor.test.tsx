@@ -104,6 +104,52 @@ describe("Editor", () => {
         expect(document.querySelector(".cm-spellcheck-error")).toBeNull();
     });
 
+    it("offers a quick action to disable spellcheck from the editor context menu", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "spellcheck_suggest") {
+                return {
+                    language: "en-US",
+                    word: "hello",
+                    correct: true,
+                    suggestions: [],
+                };
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "hello world",
+            },
+        ]);
+
+        useSettingsStore.getState().setSetting("editorSpellcheck", true);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        vi.spyOn(view, "posAtCoords").mockReturnValue(1);
+
+        await act(async () => {
+            fireEvent.contextMenu(view.dom, {
+                clientX: 24,
+                clientY: 32,
+            });
+            await flushPromises();
+        });
+
+        await act(async () => {
+            fireEvent.click(await screen.findByText("Disable Spellcheck"));
+            await flushPromises();
+        });
+
+        expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
+    });
+
     it("shows line numbers when live preview is disabled", async () => {
         setEditorTabs([
             {
@@ -322,6 +368,73 @@ describe("Editor", () => {
             word: "Curent",
             language: "en-US",
         });
+    });
+
+    it("offers grammar suggestions from the title context menu", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "spellcheck_check_grammar") {
+                return {
+                    language: "en-US",
+                    diagnostics: [
+                        {
+                            start_utf16: 0,
+                            end_utf16: 3,
+                            message: "Possible typo",
+                            short_message: null,
+                            replacements: ["The"],
+                            rule_id: "EN_A_VS_AN",
+                            rule_description: "Possible typo",
+                            issue_type: "misspelling",
+                            category_id: "TYPOS",
+                            category_name: "Typos",
+                        },
+                    ],
+                };
+            }
+
+            return undefined;
+        });
+
+        useSettingsStore.getState().setSetting("editorSpellcheck", false);
+        useSettingsStore.getState().setSetting("grammarCheckEnabled", true);
+        useSettingsStore
+            .getState()
+            .setSetting("spellcheckPrimaryLanguage", "en-US");
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Teh title",
+                content: "Body",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const titleInput = screen.getByDisplayValue(
+            "Teh title",
+        ) as HTMLTextAreaElement;
+
+        await act(async () => {
+            titleInput.focus();
+            titleInput.setSelectionRange(1, 1);
+            fireEvent.contextMenu(titleInput, {
+                clientX: 24,
+                clientY: 32,
+            });
+            await flushPromises();
+        });
+
+        expect(await screen.findByText("Possible typo")).toBeInTheDocument();
+        const suggestion = await screen.findByText("The");
+
+        await act(async () => {
+            fireEvent.click(suggestion);
+            await flushPromises();
+        });
+
+        expect(screen.getByDisplayValue("The title")).toBeInTheDocument();
     });
 
     it("can set the secondary language from the shared spellcheck menu", async () => {
