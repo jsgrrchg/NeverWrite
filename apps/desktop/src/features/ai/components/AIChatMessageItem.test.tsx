@@ -473,6 +473,49 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(diffContent).toHaveStyle({ fontSize: "0.72em" });
     });
 
+    it("renders exact hunk diffs with a single line-number column in chat cards", () => {
+        renderMessage({
+            id: "tool:exact-hunks",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit file",
+            content: "Updated exact.md",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: "/vault/exact.md",
+                    kind: "update",
+                    old_text: "alpha\nbefore",
+                    new_text: "alpha\nafter",
+                    hunks: [
+                        {
+                            old_start: 101,
+                            old_count: 2,
+                            new_start: 101,
+                            new_count: 2,
+                            lines: [
+                                { type: "context", text: "alpha" },
+                                { type: "remove", text: "before" },
+                                { type: "add", text: "after" },
+                            ],
+                        },
+                    ],
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/exact.md",
+            },
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: /exact.md/i }));
+
+        expect(screen.getAllByText("101")).toHaveLength(1);
+        expect(screen.getByText("before")).toBeInTheDocument();
+        expect(screen.getByText("after")).toBeInTheDocument();
+    });
+
     it("disables zoom controls at the configured min and max", () => {
         act(() => {
             useChatStore.setState({ editDiffZoom: 0.64 });

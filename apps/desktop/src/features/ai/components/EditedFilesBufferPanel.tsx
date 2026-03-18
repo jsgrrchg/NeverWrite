@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { formatDiffStat } from "../diff/reviewDiff";
-import { getReviewTabTitle } from "../reviewTabTitle";
+import { getReviewTabTitle } from "../sessionPresentation";
 import { useChatStore } from "../store/chatStore";
 import {
     selectHasUndoReject,
@@ -17,8 +17,8 @@ import {
 import {
     deriveReviewItems,
     deriveReviewSummary,
-} from "./editedFilesPresentationModel";
-import { canOpenAiEditedFileEntry } from "./chatFileNavigation";
+} from "../diff/editedFilesPresentationModel";
+import { canOpenAiEditedFileEntry } from "../chatFileNavigation";
 
 const COMPACT_MAX_LIST_HEIGHT = "208px";
 

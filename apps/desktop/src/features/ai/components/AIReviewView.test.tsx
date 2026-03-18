@@ -116,6 +116,7 @@ function setOpenableNoteEntry(path: string, title = "Alpha") {
 
 describe("AIReviewView", () => {
     beforeEach(() => {
+        localStorage.clear();
         resetChatStore();
         vi.clearAllMocks();
     });
@@ -332,7 +333,46 @@ describe("AIReviewView", () => {
         expect(screen.getByText("Reject")).toBeInTheDocument();
     });
 
-    it("renders exact hunk gutters in the full review view", () => {
+    it("renders persistent diff zoom controls in the review header", () => {
+        const sessionId = "sess-zoom";
+        const file = makeTrackedFile({
+            identityKey: "zoom-entry",
+            diffBase: "old line",
+            currentText: "new line",
+        });
+
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        renderComponent(<AIReviewView />);
+
+        const diffContent = screen.getByTestId("edited-buffer-diff:zoom-entry");
+        expect(diffContent).toHaveStyle({ fontSize: "0.72em" });
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Increase diff zoom" }),
+        );
+
+        expect(diffContent).toHaveStyle({ fontSize: "0.76em" });
+        expect(
+            JSON.parse(localStorage.getItem("vaultai.ai.preferences") ?? "{}"),
+        ).toMatchObject({
+            editDiffZoom: 0.76,
+        });
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Decrease diff zoom" }),
+        );
+
+        expect(diffContent).toHaveStyle({ fontSize: "0.72em" });
+    });
+
+    it("renders exact hunk diffs with a single line-number column in the full review view", () => {
         const sessionId = "sess-hunks";
         // Build a file with 20 lines where line 15 changes, producing a hunk at line 15
         const lines = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
@@ -357,7 +397,19 @@ describe("AIReviewView", () => {
 
         renderComponent(<AIReviewView />);
 
-        expect(screen.getAllByText("15").length).toBeGreaterThanOrEqual(1);
+        const diffContent = screen.getByTestId(
+            "edited-buffer-diff:exact-hunk-entry",
+        );
+        expect(
+            diffContent.querySelector(
+                'div[style*="grid-template-columns: 56px 56px minmax(0, 1fr)"]',
+            ),
+        ).toBeNull();
+        expect(
+            diffContent.querySelector(
+                'div[style*="grid-template-columns: 44px minmax(0, 1fr)"]',
+            ),
+        ).not.toBeNull();
         expect(screen.getByText("line-15")).toBeInTheDocument();
         expect(screen.getByText("new content")).toBeInTheDocument();
     });

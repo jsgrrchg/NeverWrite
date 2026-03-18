@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useChatStore } from "../store/chatStore";
-import { getReviewTabTitle } from "../reviewTabTitle";
+import { getReviewTabTitle } from "../sessionPresentation";
 import { selectVisibleTrackedFilesCount } from "../store/editedFilesBufferModel";
 
 export function useAutoOpenReviewTab() {

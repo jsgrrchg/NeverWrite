@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { openAiEditedFileByAbsolutePath } from "./chatFileNavigation";
+import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
 import {
     formatDiffStat,
     getCompactPath,
     getFileNameFromPath,
 } from "../diff/reviewDiff";
-import type { ReviewFileItem } from "./editedFilesPresentationModel";
+import type { ReviewFileItem } from "../diff/editedFilesPresentationModel";
 import {
     getAccentButtonStyle,
     getDangerButtonStyle,
@@ -45,6 +45,7 @@ function FullRowActions({
             diff={diff}
             expanded={expanded}
             diffZoom={diffZoom}
+            compactLineNumbers
             file={file}
             onKeep={onKeep}
             onReject={onReject}

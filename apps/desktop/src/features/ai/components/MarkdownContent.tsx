@@ -19,8 +19,8 @@ import type { ChatPillMetrics } from "./chatPillMetrics";
 import {
     openChatNoteByReference,
     openChatMapByReference,
-} from "./chatNoteNavigation";
-import { openChatPdfByReference } from "./chatFileNavigation";
+} from "../chatNoteNavigation";
+import { openChatPdfByReference } from "../chatFileNavigation";
 import { DiffLineView } from "./editedFilesPresentation";
 
 interface MarkdownContentProps {

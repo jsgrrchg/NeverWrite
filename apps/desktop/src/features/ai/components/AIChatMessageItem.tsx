@@ -31,7 +31,7 @@ import { EditedFileDiffPreview } from "./editedFilesPresentation";
 import {
     openChatNoteByAbsolutePath,
     openChatNoteByReference,
-} from "./chatNoteNavigation";
+} from "../chatNoteNavigation";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
 interface UserMentionContextMenuPayload {
@@ -1316,6 +1316,7 @@ function ChangeReviewFileRow({
                         diffZoom={diffZoom}
                         testId={`diff-content:${diff.path}`}
                         showWhenEmpty={false}
+                        compactLineNumbers
                     />
                 </ResizableDiffContainer>
             )}

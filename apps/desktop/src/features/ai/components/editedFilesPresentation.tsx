@@ -248,7 +248,17 @@ function HunkActionBar({
     );
 }
 
-export function DiffLineView({ line }: { line: DiffLine }) {
+function getDisplayedLineNumber(line: DiffLine) {
+    return line.oldLineNumber ?? line.newLineNumber ?? "";
+}
+
+export function DiffLineView({
+    line,
+    compactLineNumbers = false,
+}: {
+    line: DiffLine;
+    compactLineNumbers?: boolean;
+}) {
     const isExact = line.exact === true;
 
     if (isExact) {
@@ -257,15 +267,65 @@ export function DiffLineView({ line }: { line: DiffLine }) {
                 <div
                     style={{
                         display: "grid",
-                        gridTemplateColumns: "56px 56px minmax(0, 1fr)",
+                        gridTemplateColumns: compactLineNumbers
+                            ? "44px minmax(0, 1fr)"
+                            : "56px 56px minmax(0, 1fr)",
                         padding: "2px 8px",
                         opacity: 0.5,
                         color: "var(--text-secondary)",
                     }}
                 >
                     <div />
-                    <div />
+                    {!compactLineNumbers ? <div /> : null}
                     <div style={{ textAlign: "center" }}>{line.text}</div>
+                </div>
+            );
+        }
+
+        if (compactLineNumbers) {
+            return (
+                <div
+                    style={{
+                        display: "grid",
+                        gridTemplateColumns: "44px minmax(0, 1fr)",
+                        alignItems: "stretch",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all",
+                        backgroundColor:
+                            line.type === "add"
+                                ? "color-mix(in srgb, var(--diff-add) 5%, transparent)"
+                                : line.type === "remove"
+                                  ? "color-mix(in srgb, var(--diff-remove) 5%, transparent)"
+                                  : "transparent",
+                        color:
+                            line.type === "add"
+                                ? "var(--diff-add)"
+                                : line.type === "remove"
+                                  ? "var(--diff-remove)"
+                                  : "var(--text-secondary)",
+                        borderLeft:
+                            line.type === "add"
+                                ? "2px solid color-mix(in srgb, var(--diff-add) 45%, transparent)"
+                                : line.type === "remove"
+                                  ? "2px solid color-mix(in srgb, var(--diff-remove) 45%, transparent)"
+                                  : "2px solid transparent",
+                    }}
+                >
+                    <div
+                        style={{
+                            padding: "0 6px 0 4px",
+                            textAlign: "right",
+                            color: "var(--text-secondary)",
+                            opacity: 0.55,
+                            borderRight:
+                                "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                            userSelect: "none",
+                            fontSize: "0.85em",
+                        }}
+                    >
+                        {getDisplayedLineNumber(line)}
+                    </div>
+                    <div style={{ padding: "0 10px" }}>{line.text}</div>
                 </div>
             );
         }
@@ -346,7 +406,7 @@ export function DiffLineView({ line }: { line: DiffLine }) {
         );
     }
 
-    const lineNumber = line.oldLineNumber ?? line.newLineNumber ?? "";
+    const lineNumber = getDisplayedLineNumber(line);
 
     return (
         <div
@@ -402,6 +462,7 @@ export function EditedFileDiffPreview({
     testId,
     emptyLabel = "Path-only change",
     showWhenEmpty = true,
+    compactLineNumbers = false,
     file,
     onKeep,
     onReject,
@@ -414,6 +475,7 @@ export function EditedFileDiffPreview({
     testId?: string;
     emptyLabel?: string;
     showWhenEmpty?: boolean;
+    compactLineNumbers?: boolean;
     file?: TrackedFile;
     onKeep?: (identityKey: string) => void | Promise<void>;
     onReject?: (identityKey: string) => void | Promise<void>;
@@ -600,6 +662,7 @@ export function EditedFileDiffPreview({
                                     <DiffLineView
                                         key={block.key}
                                         line={block.line}
+                                        compactLineNumbers={compactLineNumbers}
                                     />
                                 );
                             }
@@ -611,6 +674,9 @@ export function EditedFileDiffPreview({
                                             <DiffLineView
                                                 key={`${block.key}:${idx}`}
                                                 line={line}
+                                                compactLineNumbers={
+                                                    compactLineNumbers
+                                                }
                                             />
                                         ))}
                                     </div>
@@ -624,6 +690,9 @@ export function EditedFileDiffPreview({
                                             <DiffLineView
                                                 key={`${block.key}:${idx}`}
                                                 line={line}
+                                                compactLineNumbers={
+                                                    compactLineNumbers
+                                                }
                                             />
                                         ))}
                                     </div>
@@ -675,6 +744,9 @@ export function EditedFileDiffPreview({
                                                                 <DiffLineView
                                                                     key={`${segment.key}:${idx}`}
                                                                     line={line}
+                                                                    compactLineNumbers={
+                                                                        compactLineNumbers
+                                                                    }
                                                                 />
                                                             ),
                                                         )}
@@ -768,6 +840,9 @@ export function EditedFileDiffPreview({
                                                                 <DiffLineView
                                                                     key={`${segment.key}:${idx}`}
                                                                     line={line}
+                                                                    compactLineNumbers={
+                                                                        compactLineNumbers
+                                                                    }
                                                                 />
                                                             ),
                                                         )}
