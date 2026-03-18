@@ -14,11 +14,11 @@ use agent_client_protocol::{
     PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigSelectOption, SessionConfigValueId, SessionId,
-    SessionInfoUpdate, SessionMode, SessionModeId, SessionModeState, SessionModelState,
-    SessionNotification, SessionUpdate, StopReason, Terminal, TextResourceContents, ToolCall,
-    ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
+    SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
+    SessionModeState, SessionModelState, SessionNotification, SessionUpdate, StopReason, Terminal,
+    TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
 };
 use codex_apply_patch::parse_patch;
 use codex_core::{
@@ -32,16 +32,16 @@ use codex_core::{
 use codex_protocol::protocol::{
     AgentMessageContentDeltaEvent, AgentMessageEvent, AgentReasoningEvent,
     AgentReasoningRawContentEvent, AgentReasoningSectionBreakEvent, ApplyPatchApprovalRequestEvent,
-    ElicitationAction, ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent,
+    AskForApproval, ElicitationAction, ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent,
     ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecCommandStatus,
     ExitedReviewModeEvent, FileChange, ItemCompletedEvent, ItemStartedEvent,
     ListCustomPromptsResponseEvent, McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent,
     McpToolCallBeginEvent, McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent,
     PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent,
-    ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget,
-    SandboxPolicy, StreamErrorEvent, TerminalInteractionEvent, TokenCountEvent, TurnAbortedEvent,
-    TurnCompleteEvent, TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent,
-    WebSearchBeginEvent, WebSearchEndEvent,
+    ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest,
+    ReviewTarget, SandboxPolicy, StreamErrorEvent, TerminalInteractionEvent, TokenCountEvent,
+    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
+    ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
 };
 use codex_protocol::{
     approvals::ElicitationRequestEvent,
@@ -50,12 +50,18 @@ use codex_protocol::{
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
     items::TurnItem,
     mcp::CallToolResult,
-    models::{ResponseItem, WebSearchAction},
+    models::{
+        FileSystemPermissions, MacOsAutomationPermission, MacOsContactsPermission,
+        MacOsPreferencesPermission, PermissionProfile, ResponseItem, WebSearchAction,
+    },
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
     protocol::{
         DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyAmendment, RolloutItem,
+    },
+    request_permissions::{
+        PermissionGrantScope, RequestPermissionsEvent, RequestPermissionsResponse,
     },
     user_input::UserInput,
 };
@@ -85,6 +91,52 @@ const VAULTAI_PLAN_DETAIL_KEY: &str = "vaultaiPlanDetail";
 const VAULTAI_DIFF_PREVIOUS_PATH_KEY: &str = "vaultaiPreviousPath";
 const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
+
+fn approval_preset_matches_config(
+    preset: &ApprovalPreset,
+    approval_policy: &AskForApproval,
+    sandbox_policy: &SandboxPolicy,
+) -> bool {
+    if &preset.approval != approval_policy {
+        return false;
+    }
+
+    match (&preset.sandbox, sandbox_policy) {
+        (
+            SandboxPolicy::ReadOnly {
+                access: preset_access,
+                network_access: preset_network_access,
+            },
+            SandboxPolicy::ReadOnly {
+                access,
+                network_access,
+            },
+        ) => preset_access == access && preset_network_access == network_access,
+        (
+            SandboxPolicy::WorkspaceWrite {
+                read_only_access: preset_read_only_access,
+                network_access: preset_network_access,
+                exclude_tmpdir_env_var: preset_exclude_tmpdir_env_var,
+                exclude_slash_tmp: preset_exclude_slash_tmp,
+                ..
+            },
+            SandboxPolicy::WorkspaceWrite {
+                read_only_access,
+                network_access,
+                exclude_tmpdir_env_var,
+                exclude_slash_tmp,
+                ..
+            },
+        ) => {
+            preset_read_only_access == read_only_access
+                && preset_network_access == network_access
+                && preset_exclude_tmpdir_env_var == exclude_tmpdir_env_var
+                && preset_exclude_slash_tmp == exclude_slash_tmp
+        }
+        (SandboxPolicy::DangerFullAccess, SandboxPolicy::DangerFullAccess) => true,
+        _ => &preset.sandbox == sandbox_policy,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VaultAiDiffHunk {
@@ -170,7 +222,7 @@ enum ThreadMessage {
     },
     SetConfigOption {
         config_id: SessionConfigId,
-        value: SessionConfigValueId,
+        value: SessionConfigOptionValue,
         response_tx: oneshot::Sender<Result<(), Error>>,
     },
     Cancel {
@@ -179,6 +231,11 @@ enum ThreadMessage {
     ReplayHistory {
         history: Vec<RolloutItem>,
         response_tx: oneshot::Sender<Result<(), Error>>,
+    },
+    PermissionRequestResolved {
+        submission_id: String,
+        request_id: String,
+        outcome: Result<RequestPermissionOutcome, Error>,
     },
 }
 
@@ -207,6 +264,7 @@ impl Thread {
             models_manager,
             config,
             message_rx,
+            message_tx.clone(),
         );
         let handle = tokio::task::spawn_local(actor.spawn());
 
@@ -279,7 +337,7 @@ impl Thread {
     pub async fn set_config_option(
         &self,
         config_id: SessionConfigId,
-        value: SessionConfigValueId,
+        value: SessionConfigOptionValue,
     ) -> Result<(), Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -304,6 +362,12 @@ impl Thread {
         response_rx
             .await
             .map_err(|e| Error::internal_error().data(e.to_string()))?
+    }
+
+    pub async fn shutdown(&self) -> Result<(), Error> {
+        drop(self.cancel().await);
+        self._handle.abort();
+        Ok(())
     }
 
     pub async fn replay_history(&self, history: Vec<RolloutItem>) -> Result<(), Error> {
@@ -388,11 +452,33 @@ struct ActiveCommand {
     file_snapshots: HashMap<PathBuf, Option<String>>,
 }
 
+struct PendingPermissionInteraction {
+    request: PendingPermissionRequest,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+enum PendingPermissionRequest {
+    Exec {
+        approval_id: String,
+        turn_id: String,
+    },
+    Patch {
+        call_id: String,
+    },
+    RequestPermissions {
+        call_id: String,
+        permissions: PermissionProfile,
+    },
+}
+
 struct PromptState {
     active_commands: HashMap<String, ActiveCommand>,
     active_web_search: Option<String>,
     active_plan_text: HashMap<String, String>, //Adaptation VaultAI
     thread: Arc<dyn CodexThreadImpl>,
+    message_tx: mpsc::UnboundedSender<ThreadMessage>,
+    submission_id: String,
+    pending_permission_requests: HashMap<String, PendingPermissionInteraction>,
     event_count: usize,
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
@@ -440,6 +526,7 @@ fn turn_item_id(item: &TurnItem) -> &str {
         TurnItem::Plan(item) => &item.id,
         TurnItem::Reasoning(item) => &item.id,
         TurnItem::WebSearch(item) => &item.id,
+        TurnItem::ImageGeneration(item) => &item.id,
         TurnItem::ContextCompaction(item) => &item.id,
     }
 }
@@ -457,7 +544,94 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .or_else(|| item.raw_content.first().cloned()),
         ),
         TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
+        TurnItem::ImageGeneration(item) => (
+            "Generating image",
+            item.saved_path
+                .clone()
+                .or_else(|| Some(item.result.clone())),
+        ),
         TurnItem::ContextCompaction(..) => ("Compacting context", None),
+    }
+}
+
+fn format_permission_rule(permissions: &PermissionProfile) -> Option<String> {
+    let mut parts = Vec::new();
+
+    if permissions
+        .network
+        .as_ref()
+        .and_then(|network| network.enabled)
+        .unwrap_or(false)
+    {
+        parts.push("network".to_string());
+    }
+
+    if let Some(FileSystemPermissions { read, write }) = permissions.file_system.as_ref() {
+        if let Some(read) = read.as_ref().filter(|paths| !paths.is_empty()) {
+            parts.push(format!(
+                "read {}",
+                read.iter()
+                    .map(|path| format!("`{}`", path.display()))
+                    .join(", ")
+            ));
+        }
+        if let Some(write) = write.as_ref().filter(|paths| !paths.is_empty()) {
+            parts.push(format!(
+                "write {}",
+                write
+                    .iter()
+                    .map(|path| format!("`{}`", path.display()))
+                    .join(", ")
+            ));
+        }
+    }
+
+    if let Some(macos) = permissions.macos.as_ref() {
+        if !matches!(
+            macos.macos_preferences,
+            MacOsPreferencesPermission::ReadOnly
+        ) {
+            let value = match macos.macos_preferences {
+                MacOsPreferencesPermission::None => "none",
+                MacOsPreferencesPermission::ReadOnly => "readonly",
+                MacOsPreferencesPermission::ReadWrite => "readwrite",
+            };
+            parts.push(format!("macOS preferences {value}"));
+        }
+
+        match &macos.macos_automation {
+            MacOsAutomationPermission::All => {
+                parts.push("macOS automation all".to_string());
+            }
+            MacOsAutomationPermission::BundleIds(bundle_ids) if !bundle_ids.is_empty() => {
+                parts.push(format!("macOS automation {}", bundle_ids.join(", ")));
+            }
+            MacOsAutomationPermission::BundleIds(_) | MacOsAutomationPermission::None => {}
+        }
+
+        if macos.macos_accessibility {
+            parts.push("macOS accessibility".to_string());
+        }
+        if macos.macos_calendar {
+            parts.push("macOS calendar".to_string());
+        }
+        if macos.macos_reminders {
+            parts.push("macOS reminders".to_string());
+        }
+        if !matches!(macos.macos_contacts, MacOsContactsPermission::None) {
+            let value = match macos.macos_contacts {
+                MacOsContactsPermission::None => "none",
+                MacOsContactsPermission::ReadOnly => "readonly",
+                MacOsContactsPermission::ReadWrite => "readwrite",
+            };
+            parts.push(format!("macOS contacts {value}"));
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("Permission rule: {}", parts.join("; ")))
     }
 }
 
@@ -701,6 +875,8 @@ fn extract_user_input_answer_payload(
 impl PromptState {
     fn new(
         thread: Arc<dyn CodexThreadImpl>,
+        message_tx: mpsc::UnboundedSender<ThreadMessage>,
+        submission_id: String,
         response_tx: oneshot::Sender<Result<StopReason, Error>>,
     ) -> Self {
         Self {
@@ -708,6 +884,9 @@ impl PromptState {
             active_web_search: None,
             active_plan_text: HashMap::new(),
             thread,
+            message_tx,
+            submission_id,
+            pending_permission_requests: HashMap::new(),
             event_count: 0,
             response_tx: Some(response_tx),
             seen_message_deltas: false,
@@ -720,6 +899,148 @@ impl PromptState {
             return false;
         };
         !response_tx.is_closed()
+    }
+
+    fn spawn_permission_request(
+        &mut self,
+        client: &SessionClient,
+        request_id: String,
+        request: PendingPermissionRequest,
+        tool_call: ToolCallUpdate,
+        options: Vec<PermissionOption>,
+    ) {
+        let client = client.clone();
+        let message_tx = self.message_tx.clone();
+        let submission_id = self.submission_id.clone();
+        let request_id_for_task = request_id.clone();
+        let handle = tokio::task::spawn_local(async move {
+            let outcome = client
+                .request_permission(tool_call, options)
+                .await
+                .map(|response| response.outcome);
+            drop(message_tx.send(ThreadMessage::PermissionRequestResolved {
+                submission_id,
+                request_id: request_id_for_task,
+                outcome,
+            }));
+        });
+
+        self.pending_permission_requests
+            .insert(request_id, PendingPermissionInteraction { request, handle });
+    }
+
+    fn abort_pending_interactions(&mut self) {
+        for interaction in self
+            .pending_permission_requests
+            .drain()
+            .map(|(_, value)| value)
+        {
+            interaction.handle.abort();
+        }
+    }
+
+    async fn handle_permission_request_resolved(
+        &mut self,
+        request_id: String,
+        outcome: Result<RequestPermissionOutcome, Error>,
+    ) -> Result<(), Error> {
+        let Some(interaction) = self.pending_permission_requests.remove(&request_id) else {
+            return Ok(());
+        };
+
+        let outcome = outcome?;
+        match interaction.request {
+            PendingPermissionRequest::Exec {
+                approval_id,
+                turn_id,
+            } => {
+                let decision = match outcome {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
+                        option_id,
+                        ..
+                    }) => match option_id.0.as_ref() {
+                        "approved-for-session" => ReviewDecision::ApprovedForSession,
+                        "approved" => ReviewDecision::Approved,
+                        _ => ReviewDecision::Abort,
+                    },
+                    RequestPermissionOutcome::Cancelled => ReviewDecision::Abort,
+                    _ => ReviewDecision::Abort,
+                };
+
+                self.thread
+                    .submit(Op::ExecApproval {
+                        id: approval_id,
+                        turn_id: Some(turn_id),
+                        decision,
+                    })
+                    .await
+                    .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+            }
+            PendingPermissionRequest::Patch { call_id } => {
+                let decision = match outcome {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
+                        option_id,
+                        ..
+                    }) => match option_id.0.as_ref() {
+                        "approved-for-session" => ReviewDecision::ApprovedForSession,
+                        "approved" => ReviewDecision::Approved,
+                        _ => ReviewDecision::Abort,
+                    },
+                    RequestPermissionOutcome::Cancelled => ReviewDecision::Abort,
+                    _ => ReviewDecision::Abort,
+                };
+
+                self.thread
+                    .submit(Op::PatchApproval {
+                        id: call_id,
+                        decision,
+                    })
+                    .await
+                    .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+            }
+            PendingPermissionRequest::RequestPermissions {
+                call_id,
+                permissions,
+            } => {
+                let response = match outcome {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
+                        option_id,
+                        ..
+                    }) => match option_id.0.as_ref() {
+                        "approved-for-session" => RequestPermissionsResponse {
+                            permissions,
+                            scope: PermissionGrantScope::Session,
+                        },
+                        "approved" => RequestPermissionsResponse {
+                            permissions,
+                            scope: PermissionGrantScope::Turn,
+                        },
+                        _ => RequestPermissionsResponse {
+                            permissions: PermissionProfile::default(),
+                            scope: PermissionGrantScope::Turn,
+                        },
+                    },
+                    RequestPermissionOutcome::Cancelled => RequestPermissionsResponse {
+                        permissions: PermissionProfile::default(),
+                        scope: PermissionGrantScope::Turn,
+                    },
+                    _ => RequestPermissionsResponse {
+                        permissions: PermissionProfile::default(),
+                        scope: PermissionGrantScope::Turn,
+                    },
+                };
+
+                self.thread
+                    .submit(Op::RequestPermissionsResponse {
+                        id: call_id,
+                        response,
+                    })
+                    .await
+                    .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn send_status_tool_call(
@@ -790,6 +1111,7 @@ impl PromptState {
             | EventMsg::WebSearchBegin(..)
             | EventMsg::UserMessage(..)
             | EventMsg::ExecApprovalRequest(..)
+            | EventMsg::RequestPermissions(..)
             | EventMsg::ExecCommandBegin(..)
             | EventMsg::ExecCommandOutputDelta(..)
             | EventMsg::ExecCommandEnd(..)
@@ -1043,6 +1365,17 @@ impl PromptState {
                     drop(response_tx.send(Err(err)));
                 }
             }
+            EventMsg::RequestPermissions(event) => {
+                info!(
+                    "Request permissions: call_id={}, turn_id={}, reason={:?}",
+                    event.call_id, event.turn_id, event.reason
+                );
+                if let Err(err) = self.request_permissions(client, event).await
+                    && let Some(response_tx) = self.response_tx.take()
+                {
+                    drop(response_tx.send(Err(err)));
+                }
+            }
             EventMsg::PatchApplyBegin(event) => {
                 info!(
                     "Patch apply begin: call_id={}, auto_approved={}",
@@ -1092,6 +1425,7 @@ impl PromptState {
                     "Task {turn_id} completed successfully after {} events. Last agent message: {last_agent_message:?}",
                     self.event_count
                 );
+                self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::EndTurn)).ok();
                 }
@@ -1140,6 +1474,7 @@ impl PromptState {
                 codex_error_info,
             }) => {
                 error!("Unhandled error during turn: {message} {codex_error_info:?}");
+                self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx
                         .send(Err(Error::internal_error().data(
@@ -1150,12 +1485,14 @@ impl PromptState {
             }
             EventMsg::TurnAborted(TurnAbortedEvent { reason, turn_id }) => {
                 info!("Turn {turn_id:?} aborted: {reason:?}");
+                self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
             }
             EventMsg::ShutdownComplete => {
                 info!("Agent shutting down");
+                self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
@@ -1214,7 +1551,12 @@ impl PromptState {
                 );
             }
             EventMsg::ElicitationRequest(event) => {
-                info!("Elicitation request: server={}, id={:?}, message={}", event.server_name, event.id, event.message);
+                info!(
+                    "Elicitation request: server={}, id={:?}, message={}",
+                    event.server_name,
+                    event.id,
+                    event.request.message()
+                );
                 if let Err(err) = self.mcp_elicitation(client, event).await
                     && let Some(response_tx) = self.response_tx.take()
                 {
@@ -1310,7 +1652,11 @@ impl PromptState {
             | EventMsg::CollabResumeBegin(..)
             | EventMsg::CollabResumeEnd(..)
             | EventMsg::CollabCloseBegin(..)
-            | EventMsg::CollabCloseEnd(..) => {}
+            | EventMsg::CollabCloseEnd(..)
+            | EventMsg::ImageGenerationBegin(..)
+            | EventMsg::ImageGenerationEnd(..)
+            | EventMsg::HookStarted(..)
+            | EventMsg::HookCompleted(..) => {}
             e @ (EventMsg::McpListToolsResponse(..)
             // returned from Op::ListCustomPrompts, ignore
             | EventMsg::ListCustomPromptsResponse(..)
@@ -1334,7 +1680,8 @@ impl PromptState {
         let ElicitationRequestEvent {
             server_name,
             id,
-            message,
+            request,
+            ..
         } = event;
         let tool_call_id = ToolCallId::new(match &id {
             codex_protocol::mcp::RequestId::String(s) => s.clone(),
@@ -1347,7 +1694,7 @@ impl PromptState {
                     ToolCallUpdateFields::new()
                         .title(server_name.clone())
                         .status(ToolCallStatus::Pending)
-                        .content(vec![message.into()])
+                        .content(vec![request.message().to_string().into()])
                         .raw_input(raw_input),
                 ),
                 vec![
@@ -1386,6 +1733,8 @@ impl PromptState {
                 server_name,
                 request_id: id,
                 decision,
+                content: None,
+                meta: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -1400,6 +1749,67 @@ impl PromptState {
                 }),
             )))
             .await;
+
+        Ok(())
+    }
+
+    async fn request_permissions(
+        &mut self,
+        client: &SessionClient,
+        event: RequestPermissionsEvent,
+    ) -> Result<(), Error> {
+        let raw_input = serde_json::json!(&event);
+        let RequestPermissionsEvent {
+            call_id,
+            turn_id: _,
+            reason,
+            permissions,
+        } = event;
+
+        let content = vec![
+            reason
+                .filter(|value| !value.trim().is_empty())
+                .map(ToolCallContent::from),
+            format_permission_rule(&permissions).map(ToolCallContent::from),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+        self.spawn_permission_request(
+            client,
+            call_id.clone(),
+            PendingPermissionRequest::RequestPermissions {
+                call_id: call_id.clone(),
+                permissions,
+            },
+            ToolCallUpdate::new(
+                call_id,
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Other)
+                    .status(ToolCallStatus::Pending)
+                    .title("Grant permissions")
+                    .raw_input(raw_input)
+                    .content((!content.is_empty()).then_some(content)),
+            ),
+            vec![
+                PermissionOption::new(
+                    "approved",
+                    "Yes, grant these permissions",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                PermissionOption::new(
+                    "approved-for-session",
+                    "Yes, grant these permissions for this session",
+                    PermissionOptionKind::AllowAlways,
+                ),
+                PermissionOption::new(
+                    "denied",
+                    "No, continue without permissions",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ],
+        );
 
         Ok(())
     }
@@ -1437,7 +1847,7 @@ impl PromptState {
     }
 
     async fn patch_approval(
-        &self,
+        &mut self,
         client: &SessionClient,
         event: ApplyPatchApprovalRequestEvent,
     ) -> Result<(), Error> {
@@ -1451,46 +1861,36 @@ impl PromptState {
             turn_id: _,
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
-        let response = client
-            .request_permission(
-                ToolCallUpdate::new(
-                    call_id.clone(),
-                    ToolCallUpdateFields::new()
-                        .kind(ToolKind::Edit)
-                        .status(ToolCallStatus::Pending)
-                        .title(title)
-                        .locations(locations)
-                        .content(content.chain(reason.map(|r| r.into())).collect::<Vec<_>>())
-                        .raw_input(raw_input),
+        self.spawn_permission_request(
+            client,
+            call_id.clone(),
+            PendingPermissionRequest::Patch {
+                call_id: call_id.clone(),
+            },
+            ToolCallUpdate::new(
+                call_id.clone(),
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Pending)
+                    .title(title)
+                    .locations(locations)
+                    .content(content.chain(reason.map(|r| r.into())).collect::<Vec<_>>())
+                    .raw_input(raw_input),
+            ),
+            vec![
+                PermissionOption::new(
+                    "approved-for-session",
+                    "Always",
+                    PermissionOptionKind::AllowAlways,
                 ),
-                vec![
-                    PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
-                    PermissionOption::new(
-                        "abort",
-                        "No, provide feedback",
-                        PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-            )
-            .await?;
-
-        let decision = match response.outcome {
-            RequestPermissionOutcome::Selected(SelectedPermissionOutcome { option_id, .. }) => {
-                match option_id.0.as_ref() {
-                    "approved" => ReviewDecision::Approved,
-                    _ => ReviewDecision::Abort,
-                }
-            }
-            RequestPermissionOutcome::Cancelled | _ => ReviewDecision::Abort,
-        };
-
-        self.thread
-            .submit(Op::PatchApproval {
-                id: call_id,
-                decision,
-            })
-            .await
-            .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+                PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
+                PermissionOption::new(
+                    "abort",
+                    "No, provide feedback",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ],
+        );
         Ok(())
     }
 
@@ -1697,6 +2097,7 @@ impl PromptState {
             additional_permissions,
             available_decisions,
             proposed_network_policy_amendments,
+            ..
         } = event;
 
         // Create a new tool call for the command execution
@@ -1765,57 +2166,41 @@ impl PromptState {
             Some(vec![content.join("\n").into()])
         };
 
-        let response = client
-            .request_permission(
-                ToolCallUpdate::new(
-                    tool_call_id,
-                    ToolCallUpdateFields::new()
-                        .kind(kind)
-                        .status(ToolCallStatus::Pending)
-                        .title(title)
-                        .raw_input(raw_input)
-                        .content(content)
-                        .locations(if locations.is_empty() {
-                            None
-                        } else {
-                            Some(locations)
-                        }),
+        self.spawn_permission_request(
+            client,
+            call_id.clone(),
+            PendingPermissionRequest::Exec {
+                approval_id: approval_id.unwrap_or(call_id.clone()),
+                turn_id,
+            },
+            ToolCallUpdate::new(
+                tool_call_id,
+                ToolCallUpdateFields::new()
+                    .kind(kind)
+                    .status(ToolCallStatus::Pending)
+                    .title(title)
+                    .raw_input(raw_input)
+                    .content(content)
+                    .locations(if locations.is_empty() {
+                        None
+                    } else {
+                        Some(locations)
+                    }),
+            ),
+            vec![
+                PermissionOption::new(
+                    "approved-for-session",
+                    "Always",
+                    PermissionOptionKind::AllowAlways,
                 ),
-                vec![
-                    PermissionOption::new(
-                        "approved-for-session",
-                        "Always",
-                        PermissionOptionKind::AllowAlways,
-                    ),
-                    PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
-                    PermissionOption::new(
-                        "abort",
-                        "No, provide feedback",
-                        PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-            )
-            .await?;
-
-        let decision = match response.outcome {
-            RequestPermissionOutcome::Selected(SelectedPermissionOutcome { option_id, .. }) => {
-                match option_id.0.as_ref() {
-                    "approved-for-session" => ReviewDecision::ApprovedForSession,
-                    "approved" => ReviewDecision::Approved,
-                    _ => ReviewDecision::Abort,
-                }
-            }
-            RequestPermissionOutcome::Cancelled | _ => ReviewDecision::Abort,
-        };
-
-        self.thread
-            .submit(Op::ExecApproval {
-                id: approval_id.unwrap_or(call_id),
-                turn_id: Some(turn_id),
-                decision,
-            })
-            .await
-            .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+                PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
+                PermissionOption::new(
+                    "abort",
+                    "No, provide feedback",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ],
+        );
 
         Ok(())
     }
@@ -2003,11 +2388,7 @@ impl PromptState {
 
             client
                 .send_tool_call_update(
-                    ToolCallUpdate::new(
-                        active_command.tool_call_id.clone(),
-                        fields,
-                    )
-                    .meta(
+                    ToolCallUpdate::new(active_command.tool_call_id.clone(), fields).meta(
                         client.supports_terminal_output(&active_command).then(|| {
                             Meta::from_iter([(
                                 "terminal_exit".into(),
@@ -2152,7 +2533,10 @@ fn extract_candidate_paths_from_command(command: &[String], cwd: &Path) -> Vec<P
 
     let mut seen = std::collections::HashSet::new();
 
-    let add_candidate = |token: &str, cwd: &Path, seen: &mut std::collections::HashSet<PathBuf>| -> Option<PathBuf> {
+    let add_candidate = |token: &str,
+                         cwd: &Path,
+                         seen: &mut std::collections::HashSet<PathBuf>|
+     -> Option<PathBuf> {
         let token = token.trim();
         if token.is_empty() || token.starts_with('-') {
             return None;
@@ -2162,7 +2546,11 @@ fn extract_candidate_paths_from_command(command: &[String], cwd: &Path) -> Vec<P
             return None;
         }
         let path = Path::new(token);
-        let abs = if path.is_relative() { cwd.join(path) } else { path.to_path_buf() };
+        let abs = if path.is_relative() {
+            cwd.join(path)
+        } else {
+            path.to_path_buf()
+        };
         // Only track files that exist (we want to capture "before" state)
         // or whose parent exists (might be created by the command).
         let dominated = abs.is_file() || abs.parent().is_some_and(|p| p.is_dir());
@@ -2175,7 +2563,10 @@ fn extract_candidate_paths_from_command(command: &[String], cwd: &Path) -> Vec<P
 
     // Detect bash/sh -c "..." pattern
     let is_shell_wrapper = matches!(
-        command.first().and_then(|c| Path::new(c).file_name()).and_then(|n| n.to_str()),
+        command
+            .first()
+            .and_then(|c| Path::new(c).file_name())
+            .and_then(|n| n.to_str()),
         Some("bash" | "sh" | "zsh")
     );
 
@@ -2430,6 +2821,8 @@ struct ThreadActor<A> {
     submissions: HashMap<String, SubmissionState>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
+    /// Sender used to feed internal async results back into the actor loop.
+    message_tx: mpsc::UnboundedSender<ThreadMessage>,
     /// Last config options state we emitted to the client, used for deduping updates.
     last_sent_config_options: Option<Vec<SessionConfigOption>>,
 }
@@ -2442,6 +2835,7 @@ impl<A: Auth> ThreadActor<A> {
         models_manager: Arc<dyn ModelsManagerImpl>,
         config: Config,
         message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
+        message_tx: mpsc::UnboundedSender<ThreadMessage>,
     ) -> Self {
         Self {
             auth,
@@ -2452,6 +2846,7 @@ impl<A: Auth> ThreadActor<A> {
             models_manager,
             submissions: HashMap::new(),
             message_rx,
+            message_tx,
             last_sent_config_options: None,
         }
     }
@@ -2565,6 +2960,23 @@ impl<A: Auth> ThreadActor<A> {
                 let result = self.handle_replay_history(history).await;
                 drop(response_tx.send(result));
             }
+            ThreadMessage::PermissionRequestResolved {
+                submission_id,
+                request_id,
+                outcome,
+            } => {
+                if let Some(SubmissionState::Prompt(state)) =
+                    self.submissions.get_mut(&submission_id)
+                {
+                    if let Err(err) = state
+                        .handle_permission_request_resolved(request_id, outcome)
+                        .await
+                        && let Some(response_tx) = state.response_tx.take()
+                    {
+                        drop(response_tx.send(Err(err)));
+                    }
+                }
+            }
         }
     }
 
@@ -2624,8 +3036,11 @@ impl<A: Auth> ThreadActor<A> {
         let current_mode_id = APPROVAL_PRESETS
             .iter()
             .find(|preset| {
-                &preset.approval == self.config.permissions.approval_policy.get()
-                    && &preset.sandbox == self.config.permissions.sandbox_policy.get()
+                approval_preset_matches_config(
+                    preset,
+                    self.config.permissions.approval_policy.get(),
+                    self.config.permissions.sandbox_policy.get(),
+                )
             })
             .or_else(|| {
                 // When the project is untrusted, the above code won't match
@@ -2804,8 +3219,12 @@ impl<A: Auth> ThreadActor<A> {
     async fn handle_set_config_option(
         &mut self,
         config_id: SessionConfigId,
-        value: SessionConfigValueId,
+        value: SessionConfigOptionValue,
     ) -> Result<(), Error> {
+        let SessionConfigOptionValue::ValueId { value } = value else {
+            return Err(Error::invalid_params().data("Unsupported config value type"));
+        };
+
         match config_id.0.as_ref() {
             "mode" => self.handle_set_mode(SessionModeId::new(value.0)).await,
             "model" => self.handle_set_config_model(value).await,
@@ -2853,6 +3272,7 @@ impl<A: Auth> ThreadActor<A> {
                 model: Some(model_to_use.clone()),
                 effort: Some(effort_to_use),
                 summary: None,
+                service_tier: None,
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
@@ -2898,6 +3318,7 @@ impl<A: Auth> ThreadActor<A> {
                 model: None,
                 effort: Some(Some(effort)),
                 summary: None,
+                service_tier: None,
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
@@ -3063,7 +3484,12 @@ impl<A: Auth> ThreadActor<A> {
         info!("Submitted prompt with submission_id: {submission_id}");
         info!("Starting to wait for conversation events for submission_id: {submission_id}");
 
-        let state = SubmissionState::Prompt(PromptState::new(self.thread.clone(), response_tx));
+        let state = SubmissionState::Prompt(PromptState::new(
+            self.thread.clone(),
+            self.message_tx.clone(),
+            submission_id.clone(),
+            response_tx,
+        ));
 
         self.submissions.insert(submission_id, state);
 
@@ -3084,6 +3510,7 @@ impl<A: Auth> ThreadActor<A> {
                 model: None,
                 effort: None,
                 summary: None,
+                service_tier: None,
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
@@ -3149,6 +3576,7 @@ impl<A: Auth> ThreadActor<A> {
                 model: Some(model_to_use.clone()),
                 effort: Some(effort_to_use),
                 summary: None,
+                service_tier: None,
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
@@ -3303,9 +3731,9 @@ impl<A: Auth> ThreadActor<A> {
                     } else {
                         new_lines.join("\n")
                     };
-                    let hunks = snapshot
-                        .as_deref()
-                        .and_then(|snapshot| compute_update_file_hunks(snapshot, &projected_chunks));
+                    let hunks = snapshot.as_deref().and_then(|snapshot| {
+                        compute_update_file_hunks(snapshot, &projected_chunks)
+                    });
 
                     content.push(ToolCallContent::Diff(with_vaultai_diff_meta(
                         Diff::new(dest_path, new_text).old_text(old_text),
@@ -3474,9 +3902,7 @@ impl<A: Auth> ThreadActor<A> {
             } => {
                 // Check if this is an apply_patch call - show the patch content
                 if name == "apply_patch" {
-                    if let Some((title, locations, content)) =
-                        self.parse_apply_patch_call(input)
-                    {
+                    if let Some((title, locations, content)) = self.parse_apply_patch_call(input) {
                         self.client
                             .send_tool_call(
                                 ToolCall::new(call_id.clone(), title)
@@ -3608,7 +4034,9 @@ fn read_text_snapshot(path: &Path) -> Option<String> {
 
 /// Compare file snapshots taken before an exec command with the current state
 /// on disk and produce `ToolCallContent::Diff` items for any files that changed.
-fn collect_exec_file_diffs(file_snapshots: &HashMap<PathBuf, Option<String>>) -> Vec<ToolCallContent> {
+fn collect_exec_file_diffs(
+    file_snapshots: &HashMap<PathBuf, Option<String>>,
+) -> Vec<ToolCallContent> {
     let mut diffs = Vec::new();
 
     for (path, old_snapshot) in file_snapshots {
@@ -3850,7 +4278,10 @@ fn compute_update_file_hunks(
     Some(hunks)
 }
 
-fn build_single_hunk(old_text: Option<&str>, new_text: Option<&str>) -> Option<Vec<VaultAiDiffHunk>> {
+fn build_single_hunk(
+    old_text: Option<&str>,
+    new_text: Option<&str>,
+) -> Option<Vec<VaultAiDiffHunk>> {
     let old_lines = old_text.map(split_snapshot_lines).unwrap_or_default();
     let new_lines = new_text.map(split_snapshot_lines).unwrap_or_default();
 
@@ -3983,13 +4414,11 @@ fn extract_tool_call_content_from_changes(
                     None,
                     build_single_hunk(None, Some(content.as_str())),
                 ),
-                codex_protocol::protocol::FileChange::Delete { content } => {
-                    with_vaultai_diff_meta(
-                        Diff::new(path, String::new()).old_text(content.clone()),
-                        None,
-                        build_single_hunk(Some(content.as_str()), None),
-                    )
-                }
+                codex_protocol::protocol::FileChange::Delete { content } => with_vaultai_diff_meta(
+                    Diff::new(path, String::new()).old_text(content.clone()),
+                    None,
+                    build_single_hunk(Some(content.as_str()), None),
+                ),
                 codex_protocol::protocol::FileChange::Update {
                     unified_diff,
                     move_path,
@@ -4616,8 +5045,10 @@ mod tests {
         let session_client =
             SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
         let thread = Arc::new(StubCodexThread::new());
+        let (message_tx, _message_rx) = mpsc::unbounded_channel();
         let (response_tx, _response_rx) = oneshot::channel();
-        let mut prompt_state = PromptState::new(thread, response_tx);
+        let mut prompt_state =
+            PromptState::new(thread, message_tx, "submission-1".to_string(), response_tx);
 
         prompt_state
             .handle_event(
@@ -4719,6 +5150,7 @@ mod tests {
             models_manager,
             config,
             message_rx,
+            message_tx.clone(),
         );
         actor.custom_prompts = Rc::new(RefCell::new(custom_prompts));
 

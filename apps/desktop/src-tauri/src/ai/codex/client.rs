@@ -10,11 +10,12 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, AuthenticateRequest, Client, ClientCapabilities, ClientSideConnection, ContentBlock,
-    ContentChunk, FileSystemCapability, Implementation, InitializeRequest, ListSessionsRequest,
-    LoadSessionRequest, NewSessionRequest, PermissionOption, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    Result as AcpResult, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
+    Agent, AuthenticateRequest, Client, ClientCapabilities, ClientSideConnection,
+    CloseSessionRequest, ContentBlock, ContentChunk, FileSystemCapabilities, Implementation,
+    InitializeRequest, ListSessionsRequest, LoadSessionRequest, NewSessionRequest,
+    PermissionOption, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, Result as AcpResult,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest, ToolCall,
     ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
@@ -96,6 +97,10 @@ enum RuntimeCommand {
         session_id: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
+    CloseSession {
+        session_id: String,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
     RespondPermission {
         request_id: String,
         option_id: Option<String>,
@@ -106,6 +111,9 @@ enum RuntimeCommand {
         request_id: String,
         answers: HashMap<String, Vec<String>>,
         response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    ClearSessionState {
+        session_id: String,
     },
     CheckHealth {
         response_tx: mpsc::Sender<Result<(), String>>,
@@ -177,6 +185,24 @@ impl StreamingState {
             .ok()
             .and_then(|mut guard| guard.remove(session_id))
     }
+
+    fn clear_session(&self, session_id: &str) {
+        if let Ok(mut guard) = self.current_message_ids.lock() {
+            guard.remove(session_id);
+        }
+        if let Ok(mut guard) = self.current_thought_ids.lock() {
+            guard.remove(session_id);
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.current_message_ids.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.current_thought_ids.lock() {
+            guard.clear();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -205,6 +231,19 @@ impl ToolState {
         let tool_call = ToolCall::try_from(update).ok()?;
         guard.insert(key, tool_call.clone());
         Some(tool_call)
+    }
+
+    fn clear_session(&self, session_id: &str) {
+        let prefix = format!("{session_id}::");
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.clear();
+        }
     }
 }
 
@@ -242,17 +281,42 @@ impl PermissionState {
             .send(outcome)
             .map_err(|_| "Permission channel closed".to_string())
     }
+
+    fn clear_session(&self, session_id: &str) {
+        let prefix = format!("{session_id}:permission:");
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.retain(|request_id, _| !request_id.starts_with(&prefix));
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.clear();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingUserInput {
+    session_id: String,
+    turn_id: String,
 }
 
 #[derive(Debug, Clone, Default)]
 struct UserInputState {
-    pending: Arc<Mutex<HashMap<String, String>>>,
+    pending: Arc<Mutex<HashMap<String, PendingUserInput>>>,
 }
 
 impl UserInputState {
-    fn register(&self, request_id: String, turn_id: String) {
+    fn register(&self, session_id: &str, request_id: String, turn_id: String) {
         if let Ok(mut guard) = self.pending.lock() {
-            guard.insert(request_id, turn_id);
+            guard.insert(
+                request_id,
+                PendingUserInput {
+                    session_id: session_id.to_string(),
+                    turn_id,
+                },
+            );
         }
     }
 
@@ -261,7 +325,20 @@ impl UserInputState {
             .lock()
             .map_err(|error| error.to_string())?
             .remove(request_id)
+            .map(|entry| entry.turn_id)
             .ok_or_else(|| format!("User input request not found: {request_id}"))
+    }
+
+    fn clear_session(&self, session_id: &str) {
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.retain(|_, entry| entry.session_id != session_id);
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.clear();
+        }
     }
 }
 
@@ -445,8 +522,11 @@ impl Client for VaultAiAcpClient {
                 }
                 let tool_call = self.tools.upsert_tool_call(&session_id, tool_call);
                 if let Some(payload) = map_user_input_request(&session_id, &tool_call) {
-                    self.user_inputs
-                        .register(payload.request_id.clone(), payload.turn_id.clone());
+                    self.user_inputs.register(
+                        &session_id,
+                        payload.request_id.clone(),
+                        payload.turn_id.clone(),
+                    );
                     emit_user_input_request(&self.app, payload.into_emit_payload());
                 } else if let Some(payload) = map_status_event(&session_id, &tool_call) {
                     emit_status_event(&self.app, payload);
@@ -457,8 +537,11 @@ impl Client for VaultAiAcpClient {
             SessionUpdate::ToolCallUpdate(update) => {
                 if let Some(tool_call) = self.tools.apply_tool_update(&session_id, update) {
                     if let Some(payload) = map_user_input_request(&session_id, &tool_call) {
-                        self.user_inputs
-                            .register(payload.request_id.clone(), payload.turn_id.clone());
+                        self.user_inputs.register(
+                            &session_id,
+                            payload.request_id.clone(),
+                            payload.turn_id.clone(),
+                        );
                         emit_user_input_request(&self.app, payload.into_emit_payload());
                     } else if let Some(payload) = map_status_event(&session_id, &tool_call) {
                         emit_status_event(&self.app, payload);
@@ -642,6 +725,17 @@ impl CodexRuntimeHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
+    pub fn close_session(&self, session_id: &str) -> Result<(), String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(RuntimeCommand::CloseSession {
+                session_id: session_id.to_string(),
+                response_tx,
+            })
+            .map_err(|error| error.to_string())?;
+        response_rx.recv().map_err(|error| error.to_string())?
+    }
+
     pub fn respond_permission(
         &self,
         request_id: &str,
@@ -674,6 +768,12 @@ impl CodexRuntimeHandle {
             })
             .map_err(|error| error.to_string())?;
         response_rx.recv().map_err(|error| error.to_string())?
+    }
+
+    pub fn clear_session_state(&self, session_id: &str) {
+        let _ = self.command_tx.send(RuntimeCommand::ClearSessionState {
+            session_id: session_id.to_string(),
+        });
     }
 
     pub fn check_health(&self) -> Result<(), String> {
@@ -725,6 +825,17 @@ impl RuntimeActor {
         self.connection = None;
         self._io_task_done = None;
         self.initialized = false;
+        self.streaming.clear_all();
+        self.tools.clear_all();
+        self.permissions.clear_all();
+        self.user_inputs.clear_all();
+    }
+
+    fn clear_session_state(&mut self, session_id: &str) {
+        self.streaming.clear_session(session_id);
+        self.tools.clear_session(session_id);
+        self.permissions.clear_session(session_id);
+        self.user_inputs.clear_session(session_id);
     }
 
     fn poll_connection_health(&mut self) -> Result<(), String> {
@@ -816,6 +927,13 @@ impl RuntimeActor {
                 let result = self.cancel(session_id).await;
                 let _ = response_tx.send(result);
             }
+            RuntimeCommand::CloseSession {
+                session_id,
+                response_tx,
+            } => {
+                let result = self.close_session(session_id).await;
+                let _ = response_tx.send(result);
+            }
             RuntimeCommand::RespondPermission {
                 request_id,
                 option_id,
@@ -834,6 +952,9 @@ impl RuntimeActor {
                     .respond_user_input(session_id, request_id, answers)
                     .await;
                 let _ = response_tx.send(result);
+            }
+            RuntimeCommand::ClearSessionState { session_id } => {
+                self.clear_session_state(&session_id);
             }
             RuntimeCommand::CheckHealth { response_tx } => {
                 let _ = response_tx.send(self.poll_connection_health());
@@ -944,7 +1065,7 @@ impl RuntimeActor {
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(
                 ClientCapabilities::new()
-                    .fs(FileSystemCapability::default())
+                    .fs(FileSystemCapabilities::new())
                     .terminal(false),
             )
             .client_info(
@@ -1122,7 +1243,7 @@ impl RuntimeActor {
             .set_session_config_option(SetSessionConfigOptionRequest::new(
                 SessionId::new(session_id),
                 option_id,
-                value,
+                value.as_str(),
             ))
             .await
             .map(|_| ())
@@ -1197,6 +1318,21 @@ impl RuntimeActor {
             ))
             .await
             .map_err(|error| error.to_string())
+    }
+
+    async fn close_session(&mut self, session_id: String) -> Result<(), String> {
+        self.poll_connection_health()?;
+        let connection = self
+            .connection
+            .as_ref()
+            .ok_or_else(|| "ACP runtime is not initialized.".to_string())?
+            .clone();
+
+        connection
+            .close_session(CloseSessionRequest::new(SessionId::new(session_id)))
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("Failed to close session: {error}"))
     }
 
     fn respond_permission(

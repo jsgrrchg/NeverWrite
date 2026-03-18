@@ -131,6 +131,10 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
     }
 
     fn remove_session(&mut self, session_id: &str) {
+        if let Some(handle) = self.handle.as_ref() {
+            let _ = handle.close_session(session_id);
+            handle.clear_session_state(session_id);
+        }
         self.sessions.remove(session_id);
     }
 

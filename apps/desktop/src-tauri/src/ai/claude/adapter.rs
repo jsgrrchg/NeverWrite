@@ -155,7 +155,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
     fn remove_session(&mut self, session_id: &str) {
         self.sessions.remove(session_id);
         if let Some(handle) = self.handle.as_ref() {
-            handle.clear_session_baselines(session_id);
+            handle.clear_session_state(session_id);
         }
     }
 
