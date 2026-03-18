@@ -76,18 +76,15 @@ fn path_has_extension(path: &Path, extension: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
 }
 
-fn compute_entry_search_score(query_lower: &str, title: &str, path: &str) -> f64 {
-    let title_lower = title.to_lowercase();
-    let path_lower = path.to_lowercase();
-
-    let title_score = if title_lower.contains(query_lower) {
-        compute_substring_score(query_lower, &title_lower)
+fn compute_non_note_search_score(query_lower: &str, entry: &CachedNonNoteSearchEntry) -> f64 {
+    let title_score = if entry.file_name_lower.contains(query_lower) {
+        compute_substring_score(query_lower, &entry.file_name_lower)
     } else {
         0.0
     };
 
-    let path_score = if path_lower.contains(query_lower) {
-        compute_substring_score(query_lower, &path_lower) * 0.8
+    let path_score = if entry.relative_path_lower.contains(query_lower) {
+        compute_substring_score(query_lower, &entry.relative_path_lower) * 0.8
     } else {
         0.0
     };
@@ -109,6 +106,7 @@ struct VaultInstance {
     vault: Option<Vault>,
     index: Option<VaultIndex>,
     entries: Option<Vec<VaultEntryDto>>,
+    non_note_search_index: Option<Vec<CachedNonNoteSearchEntry>>,
     graph_base_snapshot: Option<CachedGraphBaseSnapshot>,
     graph_revision: u64,
     index_revision: u64,
@@ -125,6 +123,7 @@ impl VaultInstance {
             vault: None,
             index: None,
             entries: None,
+            non_note_search_index: None,
             graph_base_snapshot: None,
             graph_revision: 0,
             index_revision: 0,
@@ -141,6 +140,31 @@ struct AppState {
     vaults: HashMap<String, VaultInstance>,
     write_tracker: WriteTracker,
     next_job_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedNonNoteSearchEntry {
+    id: String,
+    path: String,
+    title: String,
+    kind: String,
+    file_name_lower: String,
+    relative_path_lower: String,
+}
+
+fn build_non_note_search_index(entries: &[VaultEntryDto]) -> Vec<CachedNonNoteSearchEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.kind != "note")
+        .map(|entry| CachedNonNoteSearchEntry {
+            id: entry.id.clone(),
+            path: entry.path.clone(),
+            title: entry.title.clone(),
+            kind: entry.kind.clone(),
+            file_name_lower: entry.file_name.to_lowercase(),
+            relative_path_lower: entry.relative_path.to_lowercase(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -666,13 +690,137 @@ fn save_snapshot(
 fn refresh_entries_cache(instance: &mut VaultInstance) -> Result<(), String> {
     let Some(vault) = instance.vault.as_ref() else {
         instance.entries = None;
+        instance.non_note_search_index = None;
         return Ok(());
     };
 
     let entries = vault
         .discover_vault_entries()
         .map_err(|error| error.to_string())?;
+    let non_note_search_index = build_non_note_search_index(&entries);
     instance.entries = Some(entries);
+    instance.non_note_search_index = Some(non_note_search_index);
+    Ok(())
+}
+
+fn sort_entries_cache(entries: &mut [VaultEntryDto]) {
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn upsert_entry_in_cache(entries: &mut Vec<VaultEntryDto>, entry: VaultEntryDto) {
+    if let Some(existing) = entries
+        .iter_mut()
+        .find(|existing| existing.relative_path == entry.relative_path)
+    {
+        *existing = entry;
+        return;
+    }
+
+    entries.push(entry);
+}
+
+fn remove_entry_from_cache(entries: &mut Vec<VaultEntryDto>, relative_path: &str) {
+    entries.retain(|entry| entry.relative_path != relative_path);
+}
+
+fn remove_subtree_from_cache(entries: &mut Vec<VaultEntryDto>, relative_path: &str) {
+    let prefix = format!("{relative_path}/");
+    entries.retain(|entry| {
+        entry.relative_path != relative_path && !entry.relative_path.starts_with(&prefix)
+    });
+}
+
+fn path_is_hidden_from_entries(vault_root: &Path, path: &Path) -> bool {
+    const HIDDEN_DIR_NAMES: &[&str] = &[
+        ".obsidian",
+        ".git",
+        ".vaultai",
+        ".vaultai-cache",
+        ".trash",
+        "target",
+        "node_modules",
+        "vendor",
+        ".cargo-home",
+        ".claude",
+    ];
+
+    let Ok(relative_path) = path.strip_prefix(vault_root) else {
+        return false;
+    };
+
+    relative_path.components().any(|component| match component {
+        std::path::Component::Normal(name) => {
+            let value = name.to_string_lossy();
+            HIDDEN_DIR_NAMES.contains(&value.as_ref())
+        }
+        _ => false,
+    })
+}
+
+fn relative_path_from_absolute(vault_root: &Path, path: &Path) -> Result<String, String> {
+    path.strip_prefix(vault_root)
+        .map(|value| value.to_string_lossy().to_string())
+        .map_err(|_| "Path fuera del vault".to_string())
+}
+
+fn ensure_parent_folders_in_cache(
+    entries: &mut Vec<VaultEntryDto>,
+    vault: &Vault,
+    relative_path: &str,
+) -> Result<(), String> {
+    let absolute_path = vault
+        .resolve_relative_path(relative_path)
+        .map_err(|error| error.to_string())?;
+    let mut current = absolute_path.parent();
+
+    while let Some(parent) = current {
+        if parent == vault.root {
+            break;
+        }
+        if path_is_hidden_from_entries(&vault.root, parent) {
+            current = parent.parent();
+            continue;
+        }
+
+        let parent_relative_path = vault.path_to_relative_path(parent);
+        if !entries
+            .iter()
+            .any(|entry| entry.relative_path == parent_relative_path)
+        {
+            let parent_entry = vault
+                .read_vault_entry_from_path(parent)
+                .map_err(|error| error.to_string())?;
+            entries.push(parent_entry);
+        }
+
+        current = parent.parent();
+    }
+
+    Ok(())
+}
+
+fn mutate_entries_cache(
+    instance: &mut VaultInstance,
+    mutate: impl FnOnce(&Vault, &mut Vec<VaultEntryDto>) -> Result<(), String>,
+) -> Result<(), String> {
+    if instance.vault.is_none() {
+        instance.entries = None;
+        instance.non_note_search_index = None;
+        return Ok(());
+    }
+
+    if instance.entries.is_none() {
+        refresh_entries_cache(instance)?;
+    }
+
+    let non_note_search_index = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let entries = instance.entries.as_mut().ok_or("No hay vault abierto")?;
+        mutate(vault, entries)?;
+        sort_entries_cache(entries);
+        build_non_note_search_index(entries)
+    };
+    instance.non_note_search_index = Some(non_note_search_index);
     Ok(())
 }
 
@@ -925,7 +1073,7 @@ fn start_index_watcher(
 }
 
 fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEvent) {
-    let event_label = match &event {
+    let _event_label = match &event {
         VaultEvent::FileCreated(p) | VaultEvent::FileModified(p) => {
             format!(
                 "watcher.upsert({})",
@@ -947,7 +1095,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
         }
     };
 
-    let watcher_start = Instant::now();
+    let _watcher_start = Instant::now();
     let change = {
         let state = app.state::<Mutex<AppState>>();
         let lock_start = Instant::now();
@@ -955,7 +1103,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
             Ok(g) => g,
             Err(_) => return,
         };
-        let lock_wait = lock_start.elapsed();
+        let _lock_wait = lock_start.elapsed();
         let Some(instance) = guard.vaults.get_mut(vault_path) else {
             return;
         };
@@ -965,7 +1113,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
         let Some(index) = instance.index.as_mut() else {
             return;
         };
-        dbg_log!("{event_label} mutex wait: {lock_wait:.2?}");
+        dbg_log!("{_event_label} mutex wait: {_lock_wait:.2?}");
 
         let mut graph_changed = false;
         let mut search_changed = false;
@@ -1175,7 +1323,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
         change
     };
 
-    dbg_log!("{event_label} total: {:.2?}", watcher_start.elapsed());
+    dbg_log!("{_event_label} total: {:.2?}", _watcher_start.elapsed());
 
     if let Some(change) = change {
         let _ = app.emit(VAULT_NOTE_CHANGED_EVENT, change);
@@ -1512,6 +1660,7 @@ fn start_open_vault_inner(
         instance.vault = None;
         instance.index = None;
         instance.entries = None;
+        instance.non_note_search_index = None;
         instance.graph_base_snapshot = None;
         instance.graph_revision = 0;
         instance.index_revision = 0;
@@ -1556,9 +1705,11 @@ fn start_open_vault_inner(
                     }
 
                     let note_count = result.index.metadata.len();
+                    let non_note_search_index = build_non_note_search_index(&result.entries);
                     instance.vault = Some(result.vault);
                     instance.index = Some(result.index);
                     instance.entries = Some(result.entries);
+                    instance.non_note_search_index = Some(non_note_search_index);
                     reset_graph_cache(instance);
                     reset_graph_query_cache(instance);
                     instance.watcher = Some(watcher);
@@ -1782,24 +1933,34 @@ fn save_vault_file(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let abs_path = {
+    let (entry, detail) = {
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        vault
+        let abs_path = vault
             .resolve_relative_path(&relative_path)
-            .map_err(|e| e.to_string())?
-    };
+            .map_err(|e| e.to_string())?;
+        write_tracker.track_content(abs_path, &content);
 
-    write_tracker.track_content(abs_path, &content);
-    {
-        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        vault
+        let entry = vault
             .save_text_file(&relative_path, &content)
             .map_err(|e| e.to_string())?;
-    }
-    refresh_entries_cache(instance)?;
 
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-    build_vault_file_detail(vault, relative_path, content)
+        let detail = VaultFileDetail {
+            path: entry.path.clone(),
+            relative_path: entry.relative_path.clone(),
+            file_name: entry.file_name.clone(),
+            mime_type: entry.mime_type.clone(),
+            content,
+        };
+
+        (entry, detail)
+    };
+    mutate_entries_cache(instance, |vault, entries| {
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry);
+        Ok(())
+    })?;
+
+    Ok(detail)
 }
 
 #[derive(serde::Serialize)]
@@ -1824,21 +1985,27 @@ fn save_vault_binary_file(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-
-    let (abs_path, entry) = vault
-        .save_binary_file(&relative_dir, &file_name, &bytes)
-        .map_err(|e| e.to_string())?;
+    let (abs_path, entry) = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        vault
+            .save_binary_file(&relative_dir, &file_name, &bytes)
+            .map_err(|e| e.to_string())?
+    };
+    let detail = SavedBinaryFileDetail {
+        path: entry.path.clone(),
+        relative_path: entry.relative_path.clone(),
+        file_name: entry.file_name.clone(),
+        mime_type: entry.mime_type.clone(),
+    };
 
     write_tracker.track_any(abs_path);
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |vault, entries| {
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry.clone());
+        Ok(())
+    })?;
 
-    Ok(SavedBinaryFileDetail {
-        path: entry.path,
-        relative_path: entry.relative_path,
-        file_name: entry.file_name,
-        mime_type: entry.mime_type,
-    })
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -1847,10 +2014,10 @@ fn read_note(
     note_id: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let lock_start = Instant::now();
     let state = lock!(state)?;
-    let lock_wait = lock_start.elapsed();
+    let _lock_wait = lock_start.elapsed();
     let instance = state
         .vaults
         .get(&vault_path)
@@ -1859,8 +2026,8 @@ fn read_note(
     let note = vault.read_note(&note_id).map_err(|e| e.to_string())?;
 
     dbg_log!(
-        "read_note({note_id}) mutex wait: {lock_wait:.2?}, total: {:.2?}",
-        cmd_start.elapsed()
+        "read_note({note_id}) mutex wait: {_lock_wait:.2?}, total: {:.2?}",
+        _cmd_start.elapsed()
     );
     Ok(note_to_detail(&note))
 }
@@ -1872,10 +2039,10 @@ fn save_note(
     content: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let lock_start = Instant::now();
     let state = lock!(state)?;
-    let lock_wait = lock_start.elapsed();
+    let _lock_wait = lock_start.elapsed();
     let instance = state
         .vaults
         .get(&vault_path)
@@ -1895,8 +2062,8 @@ fn save_note(
     // holding the Mutex during the expensive O(n) index update.
 
     dbg_log!(
-        "save_note({note_id}) mutex wait: {lock_wait:.2?}, total: {:.2?}",
-        cmd_start.elapsed()
+        "save_note({note_id}) mutex wait: {_lock_wait:.2?}, total: {:.2?}",
+        _cmd_start.elapsed()
     );
     Ok(dto)
 }
@@ -1914,14 +2081,20 @@ fn create_note(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    let (note, entry) = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let abs_path = vault.root.join(&path);
+        write_tracker.track_content(abs_path, &content);
 
-    let abs_path = vault.root.join(&path);
-    write_tracker.track_content(abs_path, &content);
+        let note = vault
+            .create_note(&path, &content)
+            .map_err(|e| e.to_string())?;
+        let entry = vault
+            .read_vault_entry_from_path(&note.path.0)
+            .map_err(|e| e.to_string())?;
 
-    let note = vault
-        .create_note(&path, &content)
-        .map_err(|e| e.to_string())?;
+        (note, entry)
+    };
 
     let dto = note_to_detail(&note);
 
@@ -1930,7 +2103,11 @@ fn create_note(
     }
     invalidate_graph_query_cache(instance);
     invalidate_graph_cache(instance);
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |vault, entries| {
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry);
+        Ok(())
+    })?;
 
     Ok(dto)
 }
@@ -1947,13 +2124,17 @@ fn create_folder(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-
-    let abs_path = vault.root.join(&path);
-    write_tracker.track_any(abs_path);
-
-    let entry = vault.create_folder(&path).map_err(|e| e.to_string())?;
-    refresh_entries_cache(instance)?;
+    let entry = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let abs_path = vault.root.join(&path);
+        write_tracker.track_any(abs_path);
+        vault.create_folder(&path).map_err(|e| e.to_string())?
+    };
+    mutate_entries_cache(instance, |vault, entries| {
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry.clone());
+        Ok(())
+    })?;
 
     Ok(entry)
 }
@@ -1970,19 +2151,23 @@ fn delete_note(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-
-    let path = vault.id_to_path(&note_id);
-    write_tracker.track_any(path);
-
-    vault.delete_note(&note_id).map_err(|e| e.to_string())?;
+    let removed_relative_path = format!("{note_id}.md");
+    {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let path = vault.id_to_path(&note_id);
+        write_tracker.track_any(path);
+        vault.delete_note(&note_id).map_err(|e| e.to_string())?;
+    }
 
     if let Some(index) = instance.index.as_mut() {
-        index.remove_note(&NoteId(note_id));
+        index.remove_note(&NoteId(note_id.clone()));
     }
     invalidate_graph_query_cache(instance);
     invalidate_graph_cache(instance);
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |_, entries| {
+        remove_entry_from_cache(entries, &removed_relative_path);
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -2005,7 +2190,10 @@ fn delete_folder(
         .map_err(|e| e.to_string())?;
 
     rebuild_index(instance)?;
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |_, entries| {
+        remove_subtree_from_cache(entries, &relative_path);
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -2079,16 +2267,23 @@ fn rename_note(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    let removed_relative_path = format!("{note_id}.md");
+    let (note, entry) = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let old_path = vault.id_to_path(&note_id);
+        let new_abs_path = vault.root.join(&new_path);
+        write_tracker.track_any(old_path);
+        write_tracker.track_any(new_abs_path);
 
-    let old_path = vault.id_to_path(&note_id);
-    let new_abs_path = vault.root.join(&new_path);
-    write_tracker.track_any(old_path);
-    write_tracker.track_any(new_abs_path);
+        let note = vault
+            .rename_note(&note_id, &new_path)
+            .map_err(|e| e.to_string())?;
+        let entry = vault
+            .read_vault_entry_from_path(&note.path.0)
+            .map_err(|e| e.to_string())?;
 
-    let note = vault
-        .rename_note(&note_id, &new_path)
-        .map_err(|e| e.to_string())?;
+        (note, entry)
+    };
 
     let dto = note_to_detail(&note);
 
@@ -2098,7 +2293,12 @@ fn rename_note(
     }
     invalidate_graph_query_cache(instance);
     invalidate_graph_cache(instance);
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |vault, entries| {
+        remove_entry_from_cache(entries, &removed_relative_path);
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry);
+        Ok(())
+    })?;
 
     Ok(dto)
 }
@@ -2127,11 +2327,19 @@ fn move_vault_entry(
         write_tracker.track_any(path);
     }
 
-    let entry = vault
-        .move_vault_entry(&relative_path, &new_relative_path)
-        .map_err(|e| e.to_string())?;
+    let entry = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        vault
+            .move_vault_entry(&relative_path, &new_relative_path)
+            .map_err(|e| e.to_string())?
+    };
 
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |vault, entries| {
+        remove_entry_from_cache(entries, &relative_path);
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry.clone());
+        Ok(())
+    })?;
     Ok(entry)
 }
 
@@ -2173,7 +2381,10 @@ fn move_vault_entry_to_trash(
     write_tracker.track_any(trash_target.clone());
     fs::rename(&source_path, &trash_target).map_err(|error| error.to_string())?;
 
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |_, entries| {
+        remove_entry_from_cache(entries, &relative_path);
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -2243,7 +2454,26 @@ fn ai_restore_text_file(
             .vaults
             .get_mut(&vault_path)
             .ok_or("No hay vault abierto")?;
-        refresh_entries_cache(instance)?;
+        mutate_entries_cache(instance, |vault, entries| {
+            let current_relative_path = relative_path_from_absolute(&vault.root, &current_path)?;
+            remove_entry_from_cache(entries, &current_relative_path);
+
+            if let Some(target_path) = restore_path.as_ref() {
+                let target_relative_path =
+                    relative_path_from_absolute(&vault.root, target_path.as_path())?;
+                remove_entry_from_cache(entries, &target_relative_path);
+            }
+
+            if !path_is_hidden_from_entries(&vault.root, final_path) && final_path.exists() {
+                let entry = vault
+                    .read_vault_entry_from_path(final_path)
+                    .map_err(|error| error.to_string())?;
+                ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+                upsert_entry_in_cache(entries, entry);
+            }
+
+            Ok(())
+        })?;
         return Ok(());
     }
 
@@ -2251,7 +2481,7 @@ fn ai_restore_text_file(
         fs::remove_file(&current_path).map_err(|error| error.to_string())?;
     }
 
-    if let Some(target_path) = restore_path {
+    if let Some(target_path) = restore_path.as_ref() {
         if target_path.exists() {
             fs::remove_file(target_path).map_err(|error| error.to_string())?;
         }
@@ -2262,7 +2492,18 @@ fn ai_restore_text_file(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    refresh_entries_cache(instance)?;
+    mutate_entries_cache(instance, |vault, entries| {
+        let current_relative_path = relative_path_from_absolute(&vault.root, &current_path)?;
+        remove_entry_from_cache(entries, &current_relative_path);
+
+        if let Some(target_path) = restore_path.as_ref() {
+            let target_relative_path =
+                relative_path_from_absolute(&vault.root, target_path.as_path())?;
+            remove_entry_from_cache(entries, &target_relative_path);
+        }
+
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -2282,6 +2523,19 @@ fn search_notes(
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let query_lower = query.to_lowercase();
+    let fallback_non_note_search_index;
+    let non_note_search_index =
+        if let Some(non_note_search_index) = instance.non_note_search_index.as_ref() {
+            non_note_search_index.as_slice()
+        } else {
+            let entries = if let Some(entries) = instance.entries.as_ref() {
+                entries.clone()
+            } else {
+                vault.discover_vault_entries().map_err(|e| e.to_string())?
+            };
+            fallback_non_note_search_index = build_non_note_search_index(&entries);
+            fallback_non_note_search_index.as_slice()
+        };
 
     let mut results: Vec<SearchResultDto> = index
         .search(&query)
@@ -2295,30 +2549,19 @@ fn search_notes(
         })
         .collect();
 
-    results.extend(
-        vault
-            .discover_vault_entries()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|entry| entry.kind != "note")
-            .filter_map(|entry| {
-                let score = compute_entry_search_score(
-                    &query_lower,
-                    &entry.file_name,
-                    &entry.relative_path,
-                );
-                if score <= 0.0 {
-                    return None;
-                }
-                Some(SearchResultDto {
-                    id: entry.id,
-                    path: entry.path,
-                    title: entry.title,
-                    kind: entry.kind,
-                    score,
-                })
-            }),
-    );
+    results.extend(non_note_search_index.into_iter().filter_map(|entry| {
+        let score = compute_non_note_search_score(&query_lower, entry);
+        if score <= 0.0 {
+            return None;
+        }
+        Some(SearchResultDto {
+            id: entry.id.clone(),
+            path: entry.path.clone(),
+            title: entry.title.clone(),
+            kind: entry.kind.clone(),
+            score,
+        })
+    }));
 
     results.sort_by(|left, right| {
         right
@@ -2337,7 +2580,7 @@ fn advanced_search(
     params: AdvancedSearchParams,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<AdvancedSearchResultDto>, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -2347,19 +2590,19 @@ fn advanced_search(
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let results = index.advanced_search(&params, vault);
-    let payload_bytes = serialized_payload_bytes(&results).unwrap_or(0);
+    let _payload_bytes = serialized_payload_bytes(&results).unwrap_or(0);
 
     dbg_log!(
         "advanced_search() → {} results, bytes: {}, terms: {}, tags: {}, paths: {}, files: {}, content: {}, properties: {}, total: {:.2?}",
         results.len(),
-        payload_bytes,
+        _payload_bytes,
         params.terms.len(),
         params.tag_filters.len(),
         params.path_filters.len(),
         params.file_filters.len(),
         params.content_searches.len(),
         params.property_filters.len(),
-        cmd_start.elapsed()
+        _cmd_start.elapsed()
     );
 
     Ok(results)
@@ -2376,7 +2619,7 @@ fn get_tags(
     vault_path: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<TagDto>, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -2394,14 +2637,14 @@ fn get_tags(
         .collect();
 
     tags.sort_by(|a, b| a.tag.cmp(&b.tag));
-    let payload_bytes = serialized_payload_bytes(&tags).unwrap_or(0);
-    let note_refs: usize = tags.iter().map(|tag| tag.note_ids.len()).sum();
+    let _payload_bytes = serialized_payload_bytes(&tags).unwrap_or(0);
+    let _note_refs: usize = tags.iter().map(|tag| tag.note_ids.len()).sum();
     dbg_log!(
         "get_tags() → {} tags, {} note refs, bytes: {}, total: {:.2?}",
         tags.len(),
-        note_refs,
-        payload_bytes,
-        cmd_start.elapsed()
+        _note_refs,
+        _payload_bytes,
+        _cmd_start.elapsed()
     );
     Ok(tags)
 }
@@ -2546,7 +2789,7 @@ fn resolve_graph_query_ids_batch(
             continue;
         }
 
-        let query_start = Instant::now();
+        let _query_start = Instant::now();
         let note_ids = index.advanced_search_note_ids(params, vault);
         let mut sorted_note_ids: Vec<String> = note_ids.into_iter().collect();
         sorted_note_ids.sort();
@@ -2556,7 +2799,7 @@ fn resolve_graph_query_ids_batch(
             expected_kind,
             sorted_note_ids.len(),
             index_revision,
-            query_start.elapsed()
+            _query_start.elapsed()
         );
 
         instance.graph_query_cache.insert(
@@ -2894,7 +3137,7 @@ fn get_graph_snapshot(
     options: GraphSnapshotOptions,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<GraphSnapshotDto, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let mut state = lock!(state)?;
     let instance = state
         .vaults
@@ -2956,7 +3199,7 @@ fn get_graph_snapshot(
             dbg_log!(
                 "get_graph_snapshot(mode=local, missing root) → 0 nodes, 0 links, bytes: {}, total: {:.2?}",
                 serialized_payload_bytes(&response).unwrap_or(0),
-                cmd_start.elapsed()
+                _cmd_start.elapsed()
             );
             return Ok(response);
         };
@@ -3091,7 +3334,7 @@ fn get_graph_snapshot(
             total_links,
             truncated,
             serialized_payload_bytes(&response).unwrap_or(0),
-            cmd_start.elapsed()
+            _cmd_start.elapsed()
         );
 
         return Ok(response);
@@ -3256,7 +3499,7 @@ fn get_graph_snapshot(
         total_links,
         truncated,
         serialized_payload_bytes(&response).unwrap_or(0),
-        cmd_start.elapsed()
+        _cmd_start.elapsed()
     );
 
     Ok(response)
@@ -3280,7 +3523,7 @@ fn get_all_links(
     vault_path: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<GraphDataDto, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -3307,7 +3550,7 @@ fn get_all_links(
         response.nodes.len(),
         response.links.len(),
         serialized_payload_bytes(&response).unwrap_or(0),
-        cmd_start.elapsed()
+        _cmd_start.elapsed()
     );
     Ok(response)
 }
@@ -3319,7 +3562,7 @@ fn get_local_graph(
     max_depth: u32,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<LocalGraphDataDto, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -3354,7 +3597,7 @@ fn get_local_graph(
         response.nodes.len(),
         response.links.len(),
         serialized_payload_bytes(&response).unwrap_or(0),
-        cmd_start.elapsed()
+        _cmd_start.elapsed()
     );
     Ok(response)
 }
@@ -3376,7 +3619,7 @@ fn get_attachment_links(
     vault_path: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<AttachmentLinksDto, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let state = lock!(state)?;
     let instance = state
         .vaults
@@ -3412,7 +3655,7 @@ fn get_attachment_links(
         response.nodes.len(),
         response.links.len(),
         serialized_payload_bytes(&response).unwrap_or(0),
-        cmd_start.elapsed()
+        _cmd_start.elapsed()
     );
 
     Ok(response)
@@ -3424,10 +3667,10 @@ fn get_backlinks(
     note_id: String,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<BacklinkDto>, String> {
-    let cmd_start = Instant::now();
+    let _cmd_start = Instant::now();
     let lock_start = Instant::now();
     let state = lock!(state)?;
-    let lock_wait = lock_start.elapsed();
+    let _lock_wait = lock_start.elapsed();
     let instance = state
         .vaults
         .get(&vault_path)
@@ -3447,9 +3690,9 @@ fn get_backlinks(
         })
         .collect();
     dbg_log!(
-        "get_backlinks({note_id}) → {} results, mutex wait: {lock_wait:.2?}, total: {:.2?}",
+        "get_backlinks({note_id}) → {} results, mutex wait: {_lock_wait:.2?}, total: {:.2?}",
         result.len(),
-        cmd_start.elapsed()
+        _cmd_start.elapsed()
     );
     Ok(result)
 }
@@ -3503,11 +3746,11 @@ fn resolve_wikilinks_batch(
     targets: Vec<String>,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<ResolvedWikilinkDto>, String> {
-    let cmd_start = Instant::now();
-    let target_count = targets.len();
+    let _cmd_start = Instant::now();
+    let _target_count = targets.len();
     let lock_start = Instant::now();
     let state = lock!(state)?;
-    let lock_wait = lock_start.elapsed();
+    let _lock_wait = lock_start.elapsed();
     let instance = state
         .vaults
         .get(&vault_path)
@@ -3537,13 +3780,13 @@ fn resolve_wikilinks_batch(
         })
         .collect();
 
-    let resolved_count = links
+    let _resolved_count = links
         .iter()
         .filter(|l| l.resolved_note_id.is_some())
         .count();
     dbg_log!(
-        "resolve_wikilinks_batch({note_id}, {target_count} targets) → {resolved_count} resolved, mutex wait: {lock_wait:.2?}, total: {:.2?}",
-        cmd_start.elapsed()
+        "resolve_wikilinks_batch({note_id}, {_target_count} targets) → {_resolved_count} resolved, mutex wait: {_lock_wait:.2?}, total: {:.2?}",
+        _cmd_start.elapsed()
     );
     Ok(links)
 }
@@ -3696,6 +3939,7 @@ pub fn run() {
             spellcheck::spellcheck_reset_metrics,
             spellcheck::spellcheck_install_dictionary,
             spellcheck::spellcheck_remove_installed_dictionary,
+            spellcheck::spellcheck_check_grammar,
             ai::commands::ai_list_runtimes,
             ai::commands::ai_get_setup_status,
             ai::commands::ai_update_setup,
@@ -3788,5 +4032,123 @@ mod tests {
 
         assert!(dir.exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_subtree_from_cache_drops_folder_and_descendants() {
+        let mut entries = vec![
+            VaultEntryDto {
+                id: "docs".to_string(),
+                path: "/tmp/docs".to_string(),
+                relative_path: "docs".to_string(),
+                title: "docs".to_string(),
+                file_name: "docs".to_string(),
+                extension: String::new(),
+                kind: "folder".to_string(),
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: None,
+            },
+            VaultEntryDto {
+                id: "docs/file.txt".to_string(),
+                path: "/tmp/docs/file.txt".to_string(),
+                relative_path: "docs/file.txt".to_string(),
+                title: "file".to_string(),
+                file_name: "file.txt".to_string(),
+                extension: "txt".to_string(),
+                kind: "file".to_string(),
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: Some("text/plain".to_string()),
+            },
+            VaultEntryDto {
+                id: "notes/test".to_string(),
+                path: "/tmp/notes/test.md".to_string(),
+                relative_path: "notes/test.md".to_string(),
+                title: "test".to_string(),
+                file_name: "test.md".to_string(),
+                extension: "md".to_string(),
+                kind: "note".to_string(),
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: Some("text/markdown".to_string()),
+            },
+        ];
+
+        remove_subtree_from_cache(&mut entries, "docs");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, "notes/test.md");
+    }
+
+    #[test]
+    fn ensure_parent_folders_in_cache_adds_missing_ancestors() {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-entry-cache-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let nested_dir = dir.join("projects/2026");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(nested_dir.join("plan.md"), b"# Plan").unwrap();
+
+        let vault = Vault::open(dir.clone()).unwrap();
+        let mut entries = Vec::new();
+
+        ensure_parent_folders_in_cache(&mut entries, &vault, "projects/2026/plan.md").unwrap();
+        sort_entries_cache(&mut entries);
+
+        let relative_paths: Vec<String> = entries
+            .iter()
+            .map(|entry| entry.relative_path.clone())
+            .collect();
+        assert_eq!(
+            relative_paths,
+            vec!["projects".to_string(), "projects/2026".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_non_note_search_index_skips_notes_and_normalizes_fields() {
+        let entries = vec![
+            VaultEntryDto {
+                id: "notes/test".to_string(),
+                path: "/tmp/notes/test.md".to_string(),
+                relative_path: "notes/test.md".to_string(),
+                title: "Test".to_string(),
+                file_name: "Test.md".to_string(),
+                extension: "md".to_string(),
+                kind: "note".to_string(),
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: Some("text/markdown".to_string()),
+            },
+            VaultEntryDto {
+                id: "Docs/Guide.pdf".to_string(),
+                path: "/tmp/Docs/Guide.pdf".to_string(),
+                relative_path: "Docs/Guide.pdf".to_string(),
+                title: "Guide".to_string(),
+                file_name: "Guide.pdf".to_string(),
+                extension: "pdf".to_string(),
+                kind: "pdf".to_string(),
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: Some("application/pdf".to_string()),
+            },
+        ];
+
+        let index = build_non_note_search_index(&entries);
+
+        assert_eq!(index.len(), 1);
+        assert_eq!(index[0].id, "Docs/Guide.pdf");
+        assert_eq!(index[0].file_name_lower, "guide.pdf");
+        assert_eq!(index[0].relative_path_lower, "docs/guide.pdf");
     }
 }
