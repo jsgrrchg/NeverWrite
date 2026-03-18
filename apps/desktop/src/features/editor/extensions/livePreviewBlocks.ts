@@ -39,6 +39,7 @@ const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const TABLE_BOLD_RE = /\*\*(?=\S)(.+?\S)\*\*/g;
 const TABLE_HIGHLIGHT_RE = /==(?=\S)(.+?\S)==/g;
 const STANDALONE_URL_RE = /^https?:\/\/[^\s<>()"\]]+$/i;
+const NOTE_PREVIEW_CACHE_LIMIT = 64;
 type TableAlignment = "left" | "center" | "right";
 export interface TableInteractionHandlers {
     resolveWikilink: (target: string) => boolean;
@@ -63,6 +64,19 @@ type ParsedTableRow = {
 
 const notePreviewContentCache = new Map<string, string>();
 const notePreviewRequestCache = new Map<string, Promise<string | null>>();
+
+function rememberNotePreviewContent(noteId: string, content: string) {
+    if (notePreviewContentCache.has(noteId)) {
+        notePreviewContentCache.delete(noteId);
+    }
+    notePreviewContentCache.set(noteId, content);
+
+    while (notePreviewContentCache.size > NOTE_PREVIEW_CACHE_LIMIT) {
+        const oldestKey = notePreviewContentCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        notePreviewContentCache.delete(oldestKey);
+    }
+}
 
 export function invalidateLivePreviewNoteCache(
     noteId: string | null | undefined,
@@ -217,7 +231,7 @@ async function loadNotePreviewContent(noteId: string) {
 
     const request = vaultInvoke<{ content: string }>("read_note", { noteId })
         .then((detail) => {
-            notePreviewContentCache.set(noteId, detail.content);
+            rememberNotePreviewContent(noteId, detail.content);
             notePreviewRequestCache.delete(noteId);
             return detail.content;
         })
@@ -639,7 +653,7 @@ class NoteEmbedWidget extends WidgetType {
             openTab && isNoteTab(openTab) ? openTab.content : null;
         if (fullContent !== null) {
             if (note?.id) {
-                notePreviewContentCache.set(note.id, fullContent);
+                rememberNotePreviewContent(note.id, fullContent);
             }
             renderContent(fullContent);
             outer.appendChild(wrapper);

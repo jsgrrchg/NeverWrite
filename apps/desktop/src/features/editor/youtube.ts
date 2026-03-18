@@ -10,7 +10,24 @@ export interface YouTubePreviewData {
     thumbnailUrl: string | null;
 }
 
+const YOUTUBE_PREVIEW_CACHE_LIMIT = 128;
 const previewCache = new Map<string, Promise<YouTubePreviewData>>();
+
+function rememberPreviewRequest(
+    url: string,
+    request: Promise<YouTubePreviewData>,
+) {
+    if (previewCache.has(url)) {
+        previewCache.delete(url);
+    }
+    previewCache.set(url, request);
+
+    while (previewCache.size > YOUTUBE_PREVIEW_CACHE_LIMIT) {
+        const oldestKey = previewCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        previewCache.delete(oldestKey);
+    }
+}
 
 export function extractYouTubeVideoId(url: string): string | null {
     try {
@@ -78,8 +95,7 @@ export function getYouTubePreview(url: string): Promise<YouTubePreviewData> {
             };
 
             return {
-                title:
-                    typeof payload.title === "string" ? payload.title : null,
+                title: typeof payload.title === "string" ? payload.title : null,
                 thumbnailUrl:
                     typeof payload.thumbnail_url === "string"
                         ? payload.thumbnail_url
@@ -91,7 +107,7 @@ export function getYouTubePreview(url: string): Promise<YouTubePreviewData> {
             thumbnailUrl: fallbackThumbnailUrl,
         }));
 
-    previewCache.set(url, request);
+    rememberPreviewRequest(url, request);
     return request;
 }
 

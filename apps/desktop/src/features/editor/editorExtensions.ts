@@ -134,6 +134,8 @@ export const tabSizeCompartment = new Compartment();
 export const spellcheckCompartment = new Compartment();
 // Compartment for app-owned spellcheck decorations
 export const spellcheckDecorationsCompartment = new Compartment();
+// Compartment for grammar check decorations
+export const grammarDecorationsCompartment = new Compartment();
 
 export function getSyntaxExtension(isDark: boolean) {
     // Only switch syntax highlighting colors, not the full editor theme

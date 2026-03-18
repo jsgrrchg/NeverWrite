@@ -78,6 +78,7 @@ import {
     tabSizeCompartment,
     spellcheckCompartment,
     spellcheckDecorationsCompartment,
+    grammarDecorationsCompartment,
     getSyntaxExtension,
     getLivePreviewExtension,
     getAlignmentExtension,
@@ -113,8 +114,16 @@ import {
     changeAuthorAnnotation,
     userEditNotifier,
 } from "./extensions/changeAuthor";
-import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
+import {
+    resolveFrontendSpellcheckLanguage,
+    resolveFrontendSpellcheckLanguageCandidates,
+    spellcheckCheckGrammar,
+} from "../spellcheck/api";
 import { getSpellcheckEditorExtension } from "./extensions/spellcheck";
+import {
+    getGrammarEditorExtension,
+    findGrammarDiagnosticsAt,
+} from "./extensions/grammar";
 import { useSpellcheckStore } from "../spellcheck/store";
 import {
     getInlineDiffExtension,
@@ -131,6 +140,7 @@ import {
     findTextInputWordRange,
     isSpellcheckCandidate,
     type SpellcheckContextMenuPayload,
+    type SpellcheckGrammarContextDiagnostic,
 } from "../spellcheck/contextMenu";
 
 type SavedNoteDetail = {
@@ -241,6 +251,10 @@ export function Editor({
     );
     const spellcheckSecondaryLanguage = useSettingsStore(
         (s) => s.spellcheckSecondaryLanguage,
+    );
+    const grammarCheckEnabled = useSettingsStore((s) => s.grammarCheckEnabled);
+    const grammarCheckServerUrl = useSettingsStore(
+        (s) => s.grammarCheckServerUrl,
     );
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
@@ -803,6 +817,21 @@ export function Editor({
         [],
     );
 
+    const loadGrammarDiagnostics = useCallback(
+        async (
+            text: string,
+            language = useSettingsStore.getState().spellcheckPrimaryLanguage,
+        ) => {
+            const response = await spellcheckCheckGrammar(
+                text,
+                language,
+                useSettingsStore.getState().grammarCheckServerUrl || undefined,
+            );
+            return response.diagnostics;
+        },
+        [],
+    );
+
     const refreshEditorSpellcheck = useCallback(() => {
         const view = viewRef.current;
         const noteId = activeTabRef.current?.noteId ?? null;
@@ -823,8 +852,15 @@ export function Editor({
     }, []);
 
     const getSecondaryLanguageCandidates = useCallback(() => {
-        const primary = resolveFrontendSpellcheckLanguage(
-            useSettingsStore.getState().spellcheckPrimaryLanguage,
+        const excludedPrimaryLanguages = new Set(
+            resolveFrontendSpellcheckLanguageCandidates(
+                useSettingsStore.getState().spellcheckPrimaryLanguage,
+            ),
+        );
+        const excludedPrimaryFamilies = new Set(
+            [...excludedPrimaryLanguages].map(
+                (language) => language.split("-")[0]?.toLowerCase() ?? language,
+            ),
         );
         const currentSecondary =
             useSettingsStore.getState().spellcheckSecondaryLanguage;
@@ -832,7 +868,12 @@ export function Editor({
         return useSpellcheckStore
             .getState()
             .languages.filter(
-                (language) => language.available && language.id !== primary,
+                (language) =>
+                    language.available &&
+                    !excludedPrimaryLanguages.has(language.id) &&
+                    !excludedPrimaryFamilies.has(
+                        language.id.split("-")[0]?.toLowerCase() ?? language.id,
+                    ),
             )
             .map((language) => ({
                 id: language.id,
@@ -1067,6 +1108,13 @@ export function Editor({
                 return true;
             }
 
+            // Look up grammar diagnostic at click position
+            const grammarNoteId = activeTabRef.current?.noteId ?? "";
+            const grammarDiagnostics =
+                pos !== null && grammarNoteId
+                    ? findGrammarDiagnosticsAt(grammarNoteId, pos)
+                    : [];
+
             setEditorContextMenu({
                 x: event.clientX,
                 y: event.clientY,
@@ -1084,6 +1132,16 @@ export function Editor({
                     secondaryLanguage: spellcheckSecondaryLanguage,
                     secondaryLanguageCandidates:
                         getSecondaryLanguageCandidates(),
+                    grammarDiagnostics: grammarDiagnostics.map(
+                        (diagnostic) => ({
+                            message: diagnostic.message,
+                            replacements: diagnostic.replacements,
+                            range: {
+                                from: diagnostic.from,
+                                to: diagnostic.to,
+                            },
+                        }),
+                    ),
                 },
             });
             return true;
@@ -1150,6 +1208,19 @@ export function Editor({
                             secondaryLanguage:
                                 useSettingsStore.getState()
                                     .spellcheckSecondaryLanguage,
+                            noteId,
+                        }),
+                    ),
+                    grammarDecorationsCompartment.of(
+                        getGrammarEditorExtension({
+                            enabled:
+                                useSettingsStore.getState().grammarCheckEnabled,
+                            primaryLanguage:
+                                useSettingsStore.getState()
+                                    .spellcheckPrimaryLanguage,
+                            serverUrl:
+                                useSettingsStore.getState()
+                                    .grammarCheckServerUrl,
                             noteId,
                         }),
                     ),
@@ -1575,6 +1646,19 @@ export function Editor({
                             noteId: activeNoteId,
                         }),
                     ),
+                    grammarDecorationsCompartment.reconfigure(
+                        getGrammarEditorExtension({
+                            enabled:
+                                useSettingsStore.getState().grammarCheckEnabled,
+                            primaryLanguage:
+                                useSettingsStore.getState()
+                                    .spellcheckPrimaryLanguage,
+                            serverUrl:
+                                useSettingsStore.getState()
+                                    .grammarCheckServerUrl,
+                            noteId: activeNoteId,
+                        }),
+                    ),
                 ],
             });
         }
@@ -1682,6 +1766,14 @@ export function Editor({
                         noteId: activeNoteId,
                     }),
                 ),
+                grammarDecorationsCompartment.reconfigure(
+                    getGrammarEditorExtension({
+                        enabled: grammarCheckEnabled,
+                        primaryLanguage: spellcheckPrimaryLanguage,
+                        serverUrl: grammarCheckServerUrl,
+                        noteId: activeNoteId,
+                    }),
+                ),
             ],
         });
     }, [
@@ -1689,6 +1781,8 @@ export function Editor({
         editorSpellcheck,
         spellcheckPrimaryLanguage,
         spellcheckSecondaryLanguage,
+        grammarCheckEnabled,
+        grammarCheckServerUrl,
     ]);
 
     // Reload editor content when an external process (e.g. AI agent) writes to the file
@@ -2072,6 +2166,16 @@ export function Editor({
                 .setSetting("spellcheckSecondaryLanguage", language);
             refreshEditorSpellcheck();
         },
+        spellcheckAction: editorSpellcheck
+            ? {
+                  label: "Disable Spellcheck",
+                  action: () => {
+                      useSettingsStore
+                          .getState()
+                          .setSetting("editorSpellcheck", false);
+                  },
+              }
+            : null,
         trailingEntries: [
             {
                 label: "Undo",
@@ -2139,6 +2243,7 @@ export function Editor({
                 .setSetting("spellcheckSecondaryLanguage", language);
             refreshEditorSpellcheck();
         },
+        spellcheckAction: null,
         trailingEntries: [
             {
                 label: "Rename Note",
@@ -2265,6 +2370,8 @@ export function Editor({
                                     : null;
                                 let spellingSuggestions: string[] = [];
                                 let spellingCorrect: boolean | null = null;
+                                let grammarDiagnostics: SpellcheckGrammarContextDiagnostic[] =
+                                    [];
 
                                 if (
                                     titleSpellcheckEnabled &&
@@ -2289,6 +2396,51 @@ export function Editor({
                                     }
                                 }
 
+                                if (
+                                    grammarCheckEnabled &&
+                                    target.value.trim().length > 0
+                                ) {
+                                    try {
+                                        const diagnostics =
+                                            await loadGrammarDiagnostics(
+                                                target.value,
+                                                spellcheckPrimaryLanguage,
+                                            );
+                                        const grammarSelectionStart =
+                                            selectionStart;
+                                        const grammarSelectionEnd = hasSelection
+                                            ? selectionEnd
+                                            : selectionStart;
+
+                                        grammarDiagnostics = diagnostics
+                                            .filter((diagnostic) =>
+                                                hasSelection
+                                                    ? diagnostic.start_utf16 <
+                                                          grammarSelectionEnd &&
+                                                      diagnostic.end_utf16 >
+                                                          grammarSelectionStart
+                                                    : grammarSelectionStart >=
+                                                          diagnostic.start_utf16 &&
+                                                      grammarSelectionStart <=
+                                                          diagnostic.end_utf16,
+                                            )
+                                            .map((diagnostic) => ({
+                                                message: diagnostic.message,
+                                                replacements:
+                                                    diagnostic.replacements,
+                                                range: {
+                                                    from: diagnostic.start_utf16,
+                                                    to: diagnostic.end_utf16,
+                                                },
+                                            }));
+                                    } catch (error) {
+                                        console.error(
+                                            "Error loading title grammar suggestions:",
+                                            error,
+                                        );
+                                    }
+                                }
+
                                 setTitleContextMenu({
                                     x: event.clientX,
                                     y: event.clientY,
@@ -2302,6 +2454,7 @@ export function Editor({
                                             spellcheckSecondaryLanguage,
                                         secondaryLanguageCandidates:
                                             getSecondaryLanguageCandidates(),
+                                        grammarDiagnostics,
                                     },
                                 });
                             }}
