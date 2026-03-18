@@ -8,13 +8,12 @@ VaultAI integrates two AI runtimes through the Agent Client Protocol: **Claude**
 
 | | Claude | Codex |
 |---|---|---|
-| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.22.0) | Rust (`codex-acp` v0.9.5) |
+| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.22.2) | Rust (`codex-acp` v0.10.0) |
 | **Release packaging** | Embedded Node runtime + vendor JS | Cargo (`cargo build --release`) |
-| **Binary size** | ~74 MB | ~79 MB |
 | **Auth methods** | `claude-login`, custom gateway | ChatGPT OAuth, API key |
 | **Capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning |
-| **Sessions** | create, resume, fork, list, close | create, list |
-| **ACP SDK version** | `@agentclientprotocol/sdk` 0.16.1 | `agent-client-protocol` 0.9.4 |
+| **Sessions** | create, load, resume, fork, list, close | create, load, list, close |
+| **ACP SDK version** | `@agentclientprotocol/sdk` 0.16.1 | `agent-client-protocol` 0.10.2 |
 | **Vendor dir** | `vendor/Claude-agent-acp-upstream/` | `vendor/codex-acp/` |
 
 ---
@@ -51,7 +50,7 @@ When a `.js` file is resolved, the app wraps it automatically: `node /path/to/in
 
 ## Binary Staging (build-time)
 
-`build.rs` stages binaries into `src-tauri/binaries/` before Tauri bundles the app.
+`build.rs` stages release resources into `src-tauri/binaries/` and `src-tauri/embedded/` before Tauri bundles the app.
 
 ### Candidate sources (checked in order):
 
@@ -78,7 +77,7 @@ Codex does not use Node — it's still a Rust binary built with `cargo build`.
 
 ### Tauri resource bundling
 
-`tauri.conf.json` includes `"resources": ["binaries/*"]`, so everything in `src-tauri/binaries/` is bundled into the `.app`.
+`tauri.conf.json` includes `"resources": ["binaries/*", "embedded/**/*"]`, so both the classic binaries and the embedded Claude runtime are bundled into the `.app`.
 
 ---
 
@@ -86,9 +85,9 @@ Codex does not use Node — it's still a Rust binary built with `cargo build`.
 
 ### Claude
 
-Two methods, configured in `~/Library/Application Support/com.vaultai/ai/setup.json`:
+Two methods, configured in `~/Library/Application Support/com.vaultai/ai/claude-setup.json`:
 
-- **`claude-login`**: Opens a terminal and runs `claude-agent-acp --cli` for interactive login. Stores tokens in `~/.claude.json` (standard Claude CLI auth file). The app detects auth by checking if `~/.claude.json` exists and was modified after any invalidation timestamp.
+- **`claude-login`**: Opens a terminal and runs the resolved Claude runtime in CLI mode. In release that means the embedded Node runtime plus the embedded Claude vendor entry. Stores tokens in `~/.claude.json` (standard Claude CLI auth file). The app detects auth by checking if `~/.claude.json` exists and was modified after any invalidation timestamp.
 
 - **`gateway`**: Custom Anthropic-compatible endpoint. Sets environment variables on the child process:
   - `ANTHROPIC_BASE_URL` — gateway URL
@@ -101,6 +100,8 @@ Auth invalidation: when the runtime returns errors containing "auth_required" or
 
 - **`chatgpt`**: Browser-based OAuth (skipped if `NO_BROWSER` env var is set)
 - **`openai-api-key` / `codex-api-key`**: API key stored in config, passed via `CODEX_API_KEY` or `OPENAI_API_KEY` env vars
+
+VaultAI carries a small local patch on `vendor/codex-acp` `v0.10.0` to preserve `SessionModeState` / `Approval Preset` options when upstream Codex expands a `workspace-write` sandbox with additional writable roots. Without this patch, the runtime can stop emitting `modes` even though the session still has a valid approval+sandbox configuration.
 
 ---
 
@@ -133,6 +134,7 @@ Stderr is captured to an `Arc<Mutex<String>>` ring buffer (8KB) and included in 
 - `initialize` — handshake, exchange protocol version and capabilities
 - `session/new` — create a new conversation session
 - `session/load` — load an existing session by ID
+- `session/close` — close an active session
 - `session/resume` — resume a previous session (Claude only)
 - `session/fork` — fork a session (Claude only)
 - `session/list` — list active sessions
@@ -160,17 +162,17 @@ The Rust backend emits events to the React frontend via Tauri IPC:
 
 | Event | Payload |
 |-------|---------|
-| `ai:session-created` | `AiSession` |
-| `ai:session-updated` | `AiSession` |
-| `ai:session-error` | `{ session_id, runtime_id, message }` |
-| `ai:message-started` | `{ session_id, message_id }` |
-| `ai:message-delta` | `{ session_id, message_id, delta }` |
-| `ai:message-completed` | `{ session_id, message_id }` |
-| `ai:thinking-*` | Same pattern as messages |
-| `ai:tool-activity` | `{ session_id, tool, diffs[], summary }` |
-| `ai:status` | `{ session_id, status }` |
-| `ai:permission-request` | `{ session_id, request_id, diffs[] }` |
-| `ai:runtime-connection` | `{ runtime_id, status, message }` |
+| `ai://session-created` | `AiSession` |
+| `ai://session-updated` | `AiSession` |
+| `ai://session-error` | `{ session_id, runtime_id, message }` |
+| `ai://message-started` | `{ session_id, message_id }` |
+| `ai://message-delta` | `{ session_id, message_id, delta }` |
+| `ai://message-completed` | `{ session_id, message_id }` |
+| `ai://thinking-*` | Same pattern as messages |
+| `ai://tool-activity` | `{ session_id, tool, diffs[], summary }` |
+| `ai://status-event` | `{ session_id, status }` |
+| `ai://permission-request` | `{ session_id, request_id, diffs[] }` |
+| `ai://runtime-connection` | `{ runtime_id, status, message }` |
 
 ---
 
@@ -178,13 +180,13 @@ The Rust backend emits events to the React frontend via Tauri IPC:
 
 ```
 apps/desktop/src-tauri/
-├── build.rs                          # Binary staging + bun auto-compile
-├── tauri.conf.json                   # resources: ["binaries/*"]
+├── build.rs                          # Codex binary staging + embedded Claude runtime staging
+├── tauri.conf.json                   # resources: ["binaries/*", "embedded/**/*"]
 ├── binaries/
-│   ├── embedded/
-│   │   ├── node/                     # Embedded Node runtime (auto-generated, gitignored)
-│   │   └── claude-agent-acp/         # Embedded Claude vendor runtime (auto-generated, gitignored)
 │   └── codex-acp                     # Rust-compiled (gitignored)
+├── embedded/
+│   ├── node/                         # Embedded Node runtime (auto-generated, gitignored)
+│   └── claude-agent-acp/             # Embedded Claude vendor runtime (auto-generated, gitignored)
 ├── src/ai/
 │   ├── mod.rs
 │   ├── runtime.rs                    # AiRuntimeAdapter trait
@@ -203,11 +205,11 @@ apps/desktop/src-tauri/
 │       └── adapter.rs               # CodexRuntimeAdapter impl
 
 vendor/
-├── Claude-agent-acp-upstream/        # @zed-industries/claude-agent-acp v0.22.0
+├── Claude-agent-acp-upstream/        # @zed-industries/claude-agent-acp v0.22.2
 │   ├── dist/index.js                 # JS entry (used in dev via node)
 │   ├── node_modules/                 # Dependencies (claude-agent-sdk, etc.)
 │   └── package.json
-└── codex-acp/                        # Rust crate
+└── codex-acp/                        # Rust crate (v0.10.0)
     ├── src/main.rs
     └── Cargo.toml
 ```
@@ -217,7 +219,8 @@ vendor/
 ```
 ~/Library/Application Support/com.vaultai/
 ├── ai/
-│   └── setup.json                    # Auth config for both runtimes
+│   ├── setup.json                    # Codex auth/setup config
+│   └── claude-setup.json             # Claude auth/setup config
 └── codex/
     ├── sessions/                     # Codex session logs
     ├── config.toml                   # Codex runtime config
@@ -232,6 +235,7 @@ vendor/
 |----------|---------|---------|
 | `VAULTAI_CLAUDE_ACP_BIN` | build.rs, setup.rs | Override Claude binary path |
 | `VAULTAI_CLAUDE_ACP_BUNDLE_BIN` | build.rs | Override Claude bundle binary |
+| `VAULTAI_EMBEDDED_NODE_BIN` | build.rs | Override the Node binary used for the embedded Claude runtime |
 | `VAULTAI_CODEX_ACP_BIN` | build.rs, setup.rs | Override Codex binary path |
 | `VAULTAI_CODEX_ACP_BUNDLE_BIN` | build.rs | Override Codex bundle binary |
 | `ANTHROPIC_BASE_URL` | Claude process | Custom gateway endpoint |
