@@ -12,7 +12,7 @@
     "bundle": {
         "active": true,
         "targets": ["app"],
-        "resources": ["binaries/*"],
+        "resources": ["binaries/*", "embedded/**/*"],
         "macOS": {
             "minimumSystemVersion": "12.0"
         },

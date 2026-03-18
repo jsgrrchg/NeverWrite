@@ -119,10 +119,18 @@ pub fn clear_gateway_settings(app: &AppHandle) -> Result<ClaudeSetupConfig, Stri
 pub fn setup_status(
     app: &AppHandle,
     bundled_path: PathBuf,
+    bundled_node_path: PathBuf,
+    bundled_vendor_path: PathBuf,
     vendor_path: PathBuf,
 ) -> Result<AiRuntimeSetupStatus, String> {
     let config = load_setup_config(app)?;
-    let resolved = resolve_binary_command(&config, bundled_path, vendor_path);
+    let resolved = resolve_binary_command(
+        &config,
+        bundled_path.clone(),
+        bundled_node_path,
+        bundled_vendor_path,
+        vendor_path,
+    );
     let auth_methods = available_auth_methods();
     let auth_method = detect_auth_method(&config);
     let binary_ready = resolved.program.is_some();
@@ -164,6 +172,8 @@ pub fn setup_status(
 pub fn resolve_binary_command(
     config: &ClaudeSetupConfig,
     bundled_path: PathBuf,
+    bundled_node_path: PathBuf,
+    bundled_vendor_path: PathBuf,
     vendor_path: PathBuf,
 ) -> ResolvedBinary {
     if let Ok(raw) = env::var("VAULTAI_CLAUDE_ACP_BIN") {
@@ -187,6 +197,14 @@ pub fn resolve_binary_command(
         return command_from_existing_path(vendor_path, AiRuntimeBinarySource::Vendor);
     }
 
+    if bundled_node_path.exists() && bundled_vendor_path.exists() {
+        return command_from_embedded_node(
+            bundled_node_path,
+            bundled_vendor_path,
+            AiRuntimeBinarySource::Bundled,
+        );
+    }
+
     if bundled_path.exists() {
         return command_from_existing_path(bundled_path, AiRuntimeBinarySource::Bundled);
     }
@@ -204,6 +222,19 @@ pub fn resolve_binary_command(
         args: Vec::new(),
         display: Some(bundled_path.display().to_string()),
         source: AiRuntimeBinarySource::Bundled,
+    }
+}
+
+fn command_from_embedded_node(
+    node_path: PathBuf,
+    entry_path: PathBuf,
+    source: AiRuntimeBinarySource,
+) -> ResolvedBinary {
+    ResolvedBinary {
+        program: Some(node_path.display().to_string()),
+        args: vec![entry_path.display().to_string()],
+        display: Some(format!("{} {}", node_path.display(), entry_path.display())),
+        source,
     }
 }
 

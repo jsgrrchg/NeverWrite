@@ -9,7 +9,7 @@ VaultAI integrates two AI runtimes through the Agent Client Protocol: **Claude**
 | | Claude | Codex |
 |---|---|---|
 | **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.22.0) | Rust (`codex-acp` v0.9.5) |
-| **Compiled with** | Bun (`bun build --compile`) | Cargo (`cargo build --release`) |
+| **Release packaging** | Embedded Node runtime + vendor JS | Cargo (`cargo build --release`) |
 | **Binary size** | ~74 MB | ~79 MB |
 | **Auth methods** | `claude-login`, custom gateway | ChatGPT OAuth, API key |
 | **Capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning |
@@ -28,9 +28,10 @@ When the app needs to spawn a runtime process, it resolves the binary in this or
 1. `VAULTAI_CLAUDE_ACP_BIN` env var
 2. Custom path from setup config
 3. **Debug builds only:** vendor JS at `vendor/Claude-agent-acp-upstream/dist/index.js` (run via `node`)
-4. Bundled binary at `{resource_dir}/binaries/claude-agent-acp`
-5. Vendor JS fallback
-6. `claude-agent-acp` in PATH
+4. Embedded Node runtime + embedded vendor JS at `{resource_dir}/embedded/node/bin/node {resource_dir}/embedded/claude-agent-acp/dist/index.js`
+5. Bundled binary at `{resource_dir}/binaries/claude-agent-acp` (legacy fallback)
+6. Vendor JS fallback
+7. `claude-agent-acp` in PATH
 
 ### Codex (`setup.rs` → `resolve_binary_command`)
 
@@ -42,7 +43,7 @@ When the app needs to spawn a runtime process, it resolves the binary in this or
 
 ### Why vendor JS first in debug for Claude?
 
-Bun-compiled binaries are unreliable when spawned as child processes by Tauri during development (intermittent SIGKILL from macOS, silent crashes). The vendor JS executed via `node` is stable. In release builds, the binary is signed inside the `.app` bundle and works correctly.
+Bun-compiled binaries are unreliable when spawned as child processes by Tauri during development (intermittent SIGKILL from macOS, silent crashes). The vendor JS executed via `node` is stable. Release builds now embed a dedicated Node runtime plus the vendor JS so Claude uses the same stable execution path without requiring Node on the user's machine.
 
 When a `.js` file is resolved, the app wraps it automatically: `node /path/to/index.js`.
 
@@ -60,17 +61,20 @@ When a `.js` file is resolved, the app wraps it automatically: `node /path/to/in
 4. `vendor/{runtime}/target/debug/{binary}`
 5. System PATH
 
-### Auto-compilation with Bun (Claude only)
+### Embedded Claude runtime staging
 
-If no pre-built candidate is found, `build.rs` attempts:
+`build.rs` stages two Claude resources for release:
 
-```sh
-bun build dist/index.js --compile --outfile binaries/claude-agent-acp
-```
+- an embedded Node runtime under `embedded/node/`
+- the vendor Claude ACP project under `embedded/claude-agent-acp/`
 
-This compiles the vendor TypeScript source into a standalone Mach-O binary. Falls back silently if `bun` is not in PATH.
+The staged Claude project includes:
 
-Codex does not use bun — it's a Rust binary built with `cargo build`.
+- `dist/`
+- `package.json`
+- the runtime dependency subset from `node_modules/`
+
+Codex does not use Node — it's still a Rust binary built with `cargo build`.
 
 ### Tauri resource bundling
 
@@ -177,7 +181,9 @@ apps/desktop/src-tauri/
 ├── build.rs                          # Binary staging + bun auto-compile
 ├── tauri.conf.json                   # resources: ["binaries/*"]
 ├── binaries/
-│   ├── claude-agent-acp              # Bun-compiled (auto-generated, gitignored)
+│   ├── embedded/
+│   │   ├── node/                     # Embedded Node runtime (auto-generated, gitignored)
+│   │   └── claude-agent-acp/         # Embedded Claude vendor runtime (auto-generated, gitignored)
 │   └── codex-acp                     # Rust-compiled (gitignored)
 ├── src/ai/
 │   ├── mod.rs
