@@ -27,6 +27,27 @@ fn get_save_slot(path: &str) -> Result<Arc<Mutex<SaveSlot>>, String> {
         .clone())
 }
 
+fn cleanup_save_slot(path: &str, slot: &Arc<Mutex<SaveSlot>>) -> Result<(), String> {
+    let should_remove = {
+        let state = lock_mutex(slot)?;
+        !state.in_progress && state.latest_content.is_none()
+    };
+
+    if !should_remove {
+        return Ok(());
+    }
+
+    let mut slots = lock_mutex(&MAP_SAVE_SLOTS)?;
+    if slots
+        .get(path)
+        .is_some_and(|current| Arc::ptr_eq(current, slot))
+    {
+        slots.remove(path);
+    }
+
+    Ok(())
+}
+
 fn temp_map_path(path: &Path) -> Result<std::path::PathBuf, String> {
     let parent = path
         .parent()
@@ -140,6 +161,8 @@ pub fn save_map(path: String, content: String) -> Result<(), String> {
                 Some(content) => content,
                 None => {
                     state.in_progress = false;
+                    drop(state);
+                    let _ = cleanup_save_slot(&path, &slot);
                     return Ok(());
                 }
             }
