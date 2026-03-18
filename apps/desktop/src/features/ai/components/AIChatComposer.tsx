@@ -35,7 +35,7 @@ import type {
     AIMentionSuggestion,
 } from "../types";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { openChatNoteById } from "./chatNoteNavigation";
+import { openChatNoteById } from "../chatNoteNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import { VoiceRecordingOverlay } from "./VoiceRecordingOverlay";
 

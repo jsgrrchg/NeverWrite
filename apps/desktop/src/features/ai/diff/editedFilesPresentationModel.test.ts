@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TrackedFile } from "../diff/actionLogTypes";
+import type { TrackedFile } from "./actionLogTypes";
 import { emptyPatch, buildPatchFromTexts } from "../store/actionLogModel";
 import {
     canResolveFileHunks,

@@ -15,15 +15,21 @@ import {
 import {
     deriveReviewItems,
     deriveReviewSummary,
-} from "./editedFilesPresentationModel";
+} from "../diff/editedFilesPresentationModel";
 import { useEditedFilesReviewExpansion } from "./useEditedFilesReviewExpansion";
-import { formatDiffStat } from "../diff/reviewDiff";
+import {
+    DIFF_ZOOM_MAX,
+    DIFF_ZOOM_MIN,
+    DIFF_ZOOM_STEP,
+    formatDiffStat,
+    stepDiffZoom,
+} from "../diff/reviewDiff";
 import { useChatStore } from "../store/chatStore";
 import {
     selectHasUndoReject,
     selectVisibleTrackedFiles,
 } from "../store/editedFilesBufferModel";
-import { canOpenAiEditedFileEntry } from "./chatFileNavigation";
+import { canOpenAiEditedFileEntry } from "../chatFileNavigation";
 
 /* ------------------------------------------------------------------ */
 /*  Empty state                                                        */
@@ -208,6 +214,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         selectHasUndoReject(state, tab.sessionId),
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
+    const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
     const entries = useVaultStore((state) => state.entries);
 
     const openablePathSet = useMemo(
@@ -228,6 +235,8 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const rejectableCount = items.filter((item) => item.canReject).length;
     const expansion = useEditedFilesReviewExpansion(items);
     const [wideMode, setWideMode] = useState(false);
+    const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
+    const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
 
     if (items.length === 0) {
         return (
@@ -268,6 +277,71 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
 
                         {/* Global actions */}
                         <div className="flex shrink-0 items-center gap-1.5">
+                            <div
+                                className="flex items-center rounded-md"
+                                style={{
+                                    border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                                    backgroundColor:
+                                        "color-mix(in srgb, var(--bg-primary) 48%, transparent)",
+                                }}
+                            >
+                                <button
+                                    type="button"
+                                    aria-label="Decrease diff zoom"
+                                    title="Decrease diff zoom"
+                                    disabled={!canDecreaseZoom}
+                                    onClick={() =>
+                                        setEditDiffZoom(
+                                            stepDiffZoom(
+                                                editDiffZoom,
+                                                -DIFF_ZOOM_STEP,
+                                            ),
+                                        )
+                                    }
+                                    className="rounded-l-md px-2 py-1 text-xs"
+                                    style={{
+                                        color: canDecreaseZoom
+                                            ? "var(--text-primary)"
+                                            : "var(--text-secondary)",
+                                        opacity: canDecreaseZoom ? 1 : 0.45,
+                                        backgroundColor: "transparent",
+                                        border: "none",
+                                        cursor: canDecreaseZoom
+                                            ? "pointer"
+                                            : "not-allowed",
+                                    }}
+                                >
+                                    -
+                                </button>
+                                <button
+                                    type="button"
+                                    aria-label="Increase diff zoom"
+                                    title="Increase diff zoom"
+                                    disabled={!canIncreaseZoom}
+                                    onClick={() =>
+                                        setEditDiffZoom(
+                                            stepDiffZoom(
+                                                editDiffZoom,
+                                                DIFF_ZOOM_STEP,
+                                            ),
+                                        )
+                                    }
+                                    className="rounded-r-md px-2 py-1 text-xs"
+                                    style={{
+                                        color: canIncreaseZoom
+                                            ? "var(--text-primary)"
+                                            : "var(--text-secondary)",
+                                        opacity: canIncreaseZoom ? 1 : 0.45,
+                                        backgroundColor: "transparent",
+                                        border: "none",
+                                        cursor: canIncreaseZoom
+                                            ? "pointer"
+                                            : "not-allowed",
+                                    }}
+                                >
+                                    +
+                                </button>
+                            </div>
                             {hasUndoReject && (
                                 <button
                                     type="button"

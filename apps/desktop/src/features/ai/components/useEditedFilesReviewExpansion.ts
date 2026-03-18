@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ReviewFileItem } from "./editedFilesPresentationModel";
+import type { ReviewFileItem } from "../diff/editedFilesPresentationModel";
 
 export function useEditedFilesReviewExpansion(items: ReviewFileItem[]) {
     const initialExpanded = useMemo(

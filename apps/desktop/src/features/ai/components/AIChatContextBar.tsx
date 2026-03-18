@@ -4,7 +4,7 @@ import {
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
 import type { AIAttachmentStatus, AIAttachmentType } from "../types";
-import { openChatNoteById } from "./chatNoteNavigation";
+import { openChatNoteById } from "../chatNoteNavigation";
 import { truncatePillLabel } from "./chatPillMetrics";
 import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
 

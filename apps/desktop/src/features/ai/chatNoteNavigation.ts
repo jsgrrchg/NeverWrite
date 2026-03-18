@@ -3,9 +3,9 @@ import {
     useEditorStore,
     isNoteTab,
     type NoteTab,
-} from "../../../app/store/editorStore";
-import { useVaultStore } from "../../../app/store/vaultStore";
-import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+} from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 
 function findNoteByReference(reference: string) {
     const trimmed = reference.trim();

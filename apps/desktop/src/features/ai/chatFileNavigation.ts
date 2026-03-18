@@ -1,13 +1,10 @@
-import { useEditorStore } from "../../../app/store/editorStore";
-import {
-    useVaultStore,
-    type VaultEntryDto,
-} from "../../../app/store/vaultStore";
+import { useEditorStore } from "../../app/store/editorStore";
+import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";
 import {
     isImageLikeVaultEntry,
     isTextLikeVaultEntry,
     openVaultFileEntry,
-} from "../../../app/utils/vaultEntries";
+} from "../../app/utils/vaultEntries";
 import { openChatNoteByAbsolutePath } from "./chatNoteNavigation";
 
 function getVaultEntryByAbsolutePath(absPath: string) {

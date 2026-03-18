@@ -1,4 +1,4 @@
-import type { TrackedFile } from "../diff/actionLogTypes";
+import type { TrackedFile } from "./actionLogTypes";
 import {
     computeDecisionHunks,
     computeDiffLines,
@@ -6,7 +6,7 @@ import {
     createDiffFromTrackedFile,
     getFileNameFromPath,
     type DiffLine,
-} from "../diff/reviewDiff";
+} from "./reviewDiff";
 import type { AIFileDiff } from "../types";
 import { getFileOperation } from "../store/actionLogModel";
 

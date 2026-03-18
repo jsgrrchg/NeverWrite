@@ -1,4 +1,9 @@
-import type { AIChatMessage, AIChatSession, AIRuntimeOption } from "./types";
+import type {
+    AIChatMessage,
+    AIChatSession,
+    AIRuntimeDescriptor,
+    AIRuntimeOption,
+} from "./types";
 
 function truncateText(value: string, maxLength: number) {
     if (value.length <= maxLength) return value;
@@ -94,4 +99,24 @@ export function formatSessionTime(timestamp: number) {
         month: "short",
         day: "numeric",
     }).format(timestamp);
+}
+
+function normalizeReviewAgentName(name?: string | null) {
+    const trimmed = name?.trim();
+    if (!trimmed) {
+        return "Assistant";
+    }
+
+    return trimmed.replace(/ ACP$/, "");
+}
+
+export function getReviewTabTitle(
+    session: Pick<AIChatSession, "runtimeId"> | null | undefined,
+    runtimes: AIRuntimeDescriptor[],
+) {
+    const runtimeName = runtimes.find(
+        (descriptor) => descriptor.runtime.id === session?.runtimeId,
+    )?.runtime.name;
+
+    return `Review ${normalizeReviewAgentName(runtimeName)}`;
 }
