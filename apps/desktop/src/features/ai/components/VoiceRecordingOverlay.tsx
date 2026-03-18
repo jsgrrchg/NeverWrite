@@ -9,6 +9,15 @@ interface VoiceRecordingOverlayProps {
 
 const MAX_SECONDS = 120;
 
+/** Smoothed amplitude with fast attack / slow release for responsive visuals */
+function smoothAmplitude(prev: number, raw: number): number {
+    const attack = 0.6;
+    const release = 0.08;
+    return raw > prev
+        ? prev + (raw - prev) * attack
+        : prev + (raw - prev) * release;
+}
+
 export function VoiceRecordingOverlay({
     stream,
     isRecording,
@@ -19,27 +28,20 @@ export function VoiceRecordingOverlay({
     const analyserRef = useRef<AnalyserNode | null>(null);
     const audioCtxRef = useRef<AudioContext | null>(null);
     const rafRef = useRef<number>(0);
-    const [, setTick] = useState(0);
+    const smoothedRef = useRef(0);
+    const [elapsed, setElapsed] = useState(0);
     const startTimeRef = useRef(0);
-    const wasRecordingRef = useRef(false);
 
-    if (isRecording && !wasRecordingRef.current) {
-        startTimeRef.current = Date.now();
-    }
-    wasRecordingRef.current = isRecording;
-
-    // Timer
     useEffect(() => {
         if (!isRecording) return;
+        startTimeRef.current = Date.now();
         const id = setInterval(() => {
-            setTick((current) => current + 1);
+            setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
         }, 250);
         return () => clearInterval(id);
     }, [isRecording]);
 
-    const elapsed = isRecording
-        ? Math.floor((Date.now() - startTimeRef.current) / 1000)
-        : 0;
+    const displayElapsed = isRecording ? elapsed : 0;
 
     // Audio analyser + canvas waveform
     useEffect(() => {
@@ -80,35 +82,45 @@ export function VoiceRecordingOverlay({
             c.clearRect(0, 0, w, h);
 
             // Get amplitude from analyser (or flat line if transcribing)
-            let amplitude = 0;
+            let rawAmplitude = 0;
             if (analyserRef.current && isRecording) {
                 analyserRef.current.getByteTimeDomainData(dataArray);
-                let sum = 0;
+                let peak = 0;
                 for (let i = 0; i < dataArray.length; i++) {
-                    const v = (dataArray[i] - 128) / 128;
-                    sum += v * v;
+                    const v = Math.abs(dataArray[i] - 128) / 128;
+                    if (v > peak) peak = v;
                 }
-                amplitude = Math.sqrt(sum / dataArray.length);
+                rawAmplitude = peak;
             }
 
-            // Scale amplitude for visual effect (0 → ~0.5 range)
-            const scaledAmp = Math.min(amplitude * 4, 1);
+            // Smooth + scale for responsive, visible feedback
+            const scaled = Math.min(rawAmplitude * 8, 1);
+            smoothedRef.current = smoothAmplitude(smoothedRef.current, scaled);
+            const amp = smoothedRef.current;
 
-            // Draw sine wave
             const accentColor =
                 getComputedStyle(canvas).getPropertyValue("--accent");
             c.strokeStyle = accentColor || "#6366f1";
-            c.globalAlpha = isRecording ? 0.6 : 0.25;
             c.lineWidth = 2;
-            c.beginPath();
 
             const midY = h / 2;
-            const waveHeight = midY * 0.6 * scaledAmp;
             const time = Date.now() / 600;
+
+            // Always draw a baseline
+            c.globalAlpha = 0.15;
+            c.beginPath();
+            c.moveTo(0, midY);
+            c.lineTo(w, midY);
+            c.stroke();
+
+            // Draw sine wave on top
+            const waveHeight = midY * 0.85 * Math.max(amp, 0.05);
+            c.globalAlpha = isRecording ? 0.4 + amp * 0.5 : 0.25;
+            c.lineWidth = 1.5 + amp;
+            c.beginPath();
 
             for (let x = 0; x < w; x++) {
                 const t = x / w;
-                // Taper at edges
                 const envelope = Math.sin(t * Math.PI);
                 const y =
                     midY +
@@ -117,15 +129,6 @@ export function VoiceRecordingOverlay({
                 else c.lineTo(x, y);
             }
             c.stroke();
-
-            // Flat baseline when silent
-            if (scaledAmp < 0.05 || isTranscribing) {
-                c.globalAlpha = 0.15;
-                c.beginPath();
-                c.moveTo(0, midY);
-                c.lineTo(w, midY);
-                c.stroke();
-            }
         };
 
         rafRef.current = requestAnimationFrame(draw);
@@ -160,7 +163,7 @@ export function VoiceRecordingOverlay({
                         opacity: 0.6,
                     }}
                 >
-                    {formatTime(elapsed)} / {formatTime(MAX_SECONDS)}
+                    {formatTime(displayElapsed)} / {formatTime(MAX_SECONDS)}
                 </div>
             )}
 
@@ -174,55 +177,64 @@ export function VoiceRecordingOverlay({
 
             {/* Status text + action */}
             <div
-                className="mt-1 flex items-center gap-2"
+                className="mt-2 flex items-center gap-3"
                 style={{
                     color: "var(--text-secondary)",
-                    opacity: 0.6,
                     fontSize: 12,
                 }}
             >
-                <span>
-                    {isTranscribing ? "Transcribing..." : "Listening..."}
-                </span>
                 {isRecording && (
                     <button
                         type="button"
                         onClick={onStop}
-                        className="flex items-center justify-center rounded"
+                        className="flex items-center gap-1.5 rounded-full"
                         style={{
-                            width: 18,
-                            height: 18,
-                            backgroundColor: "#b91c1c",
+                            padding: "4px 12px",
+                            backgroundColor: "var(--accent)",
                             color: "#fff",
                             border: "none",
                             cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 500,
                         }}
-                        aria-label="Stop recording"
-                        title="Stop recording"
+                        aria-label="Send to transcribe"
+                        title="Send to transcribe"
                     >
-                        <svg width="8" height="8" viewBox="0 0 8 8">
-                            <rect
-                                width="8"
-                                height="8"
-                                rx="1"
-                                fill="currentColor"
-                            />
+                        {/* Arrow-up send icon */}
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M8 14V3M3 7l5-5 5 5" />
                         </svg>
+                        Send
                     </button>
                 )}
                 {isTranscribing && (
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        style={{ animation: "spin 1s linear infinite" }}
+                    <div
+                        className="flex items-center gap-1.5"
+                        style={{ opacity: 0.7 }}
                     >
-                        <path d="M8 1a7 7 0 1 0 7 7" />
-                    </svg>
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            style={{ animation: "spin 1s linear infinite" }}
+                        >
+                            <path d="M8 1a7 7 0 1 0 7 7" />
+                        </svg>
+                        <span>Transcribing...</span>
+                    </div>
                 )}
             </div>
         </div>
