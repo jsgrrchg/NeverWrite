@@ -207,7 +207,7 @@ export function readPersistedTerminalWorkspace(
     }
 }
 
-async function closeSessionIds(sessionIds: string[], _reason?: string) {
+async function closeSessionIds(sessionIds: string[]) {
     await Promise.all(
         sessionIds.map((sessionId) =>
             Promise.resolve(
@@ -300,28 +300,23 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
         [invalidateTabSessionRequest],
     );
 
-    const closeTrackedSessionIds = useCallback(
-        async (sessionIds: string[], reason?: string) => {
-            const nextSessionIds = [...new Set(sessionIds)].filter(
-                (sessionId) => {
-                    if (!sessionId) return false;
-                    if (retiredSessionIdsRef.current.has(sessionId)) {
-                        return false;
-                    }
-                    retiredSessionIdsRef.current.add(sessionId);
-                    pendingOutputRef.current.delete(sessionId);
-                    return true;
-                },
-            );
-
-            if (nextSessionIds.length === 0) {
-                return;
+    const closeTrackedSessionIds = useCallback(async (sessionIds: string[]) => {
+        const nextSessionIds = [...new Set(sessionIds)].filter((sessionId) => {
+            if (!sessionId) return false;
+            if (retiredSessionIdsRef.current.has(sessionId)) {
+                return false;
             }
+            retiredSessionIdsRef.current.add(sessionId);
+            pendingOutputRef.current.delete(sessionId);
+            return true;
+        });
 
-            await closeSessionIds(nextSessionIds, reason);
-        },
-        [],
-    );
+        if (nextSessionIds.length === 0) {
+            return;
+        }
+
+        await closeSessionIds(nextSessionIds);
+    }, []);
 
     const attachSessionToTab = useCallback(
         (tabId: string, nextSnapshot: TerminalSessionSnapshot) => {
@@ -375,18 +370,12 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                 if (
                     tabSessionVersionRef.current.get(tabId) !== requestVersion
                 ) {
-                    await closeTrackedSessionIds(
-                        [next.sessionId],
-                        "stale-create",
-                    );
+                    await closeTrackedSessionIds([next.sessionId]);
                     return next;
                 }
 
                 if (!attachSessionToTab(tabId, next)) {
-                    await closeTrackedSessionIds(
-                        [next.sessionId],
-                        "attach-failed",
-                    );
+                    await closeTrackedSessionIds([next.sessionId]);
                 }
 
                 return next;
@@ -534,10 +523,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             setActiveTabId(nextActiveTabId);
 
             if (closingTab.sessionId) {
-                await closeTrackedSessionIds(
-                    [closingTab.sessionId],
-                    "close-tab",
-                );
+                await closeTrackedSessionIds([closingTab.sessionId]);
             }
 
             if (nextTabs.length === 0) {
@@ -569,10 +555,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             setActiveTabId(tabId);
 
             if (closingSessionIds.length > 0) {
-                await closeTrackedSessionIds(
-                    closingSessionIds,
-                    "close-other-tabs",
-                );
+                await closeTrackedSessionIds(closingSessionIds);
             }
         },
         [closeTrackedSessionIds, invalidateTabSessionRequests],
@@ -828,10 +811,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             invalidateTabSessionRequests(tabsRef.current.map((tab) => tab.id));
 
             if (previousSessionIds.length > 0) {
-                await closeTrackedSessionIds(
-                    previousSessionIds,
-                    "restore-workspace",
-                );
+                await closeTrackedSessionIds(previousSessionIds);
             }
 
             if (cancelled) return;
@@ -943,7 +923,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                 .filter((sessionId): sessionId is string => Boolean(sessionId));
             invalidateTabSessionRequests(tabsRef.current.map((tab) => tab.id));
             if (sessionIds.length > 0) {
-                void closeTrackedSessionIds(sessionIds, "unmount-cleanup");
+                void closeTrackedSessionIds(sessionIds);
             }
         },
         [closeTrackedSessionIds, invalidateTabSessionRequests],
