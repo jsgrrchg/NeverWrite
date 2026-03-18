@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { perfCount } from "./app/utils/perfInstrumentation";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ActivityBar, type SidebarView } from "./components/layout/ActivityBar";
@@ -847,6 +848,36 @@ const LazyGraphTabView = React.lazy(() =>
     })),
 );
 
+const GRAPH_KEEP_ALIVE_MS = 15 * 60 * 1000;
+
+function renderEditorPanelView(
+    view: EditorPanelView,
+    emptyStateMessage?: string,
+) {
+    switch (view) {
+        case "pdf":
+            return <PdfTabView />;
+        case "file":
+            return <FileTabView />;
+        case "ai-review":
+            return <AIReviewView />;
+        case "map":
+            return (
+                <React.Suspense fallback={null}>
+                    <LazyExcalidrawTabView />
+                </React.Suspense>
+            );
+        case "new":
+            return <NewTabView />;
+        case "search":
+            return <SearchView />;
+        case "graph":
+            return null;
+        default:
+            return <Editor emptyStateMessage={emptyStateMessage} />;
+    }
+}
+
 function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
     const view = useEditorStore((s): EditorPanelView => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
@@ -861,32 +892,73 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
         if (tab.noteId === "__search__") return "search";
         return "editor";
     });
-    switch (view) {
-        case "pdf":
-            return <PdfTabView />;
-        case "file":
-            return <FileTabView />;
-        case "ai-review":
-            return <AIReviewView />;
-        case "map":
-            return (
-                <React.Suspense fallback={null}>
-                    <LazyExcalidrawTabView />
-                </React.Suspense>
-            );
-        case "graph":
-            return (
-                <React.Suspense fallback={null}>
-                    <LazyGraphTabView />
-                </React.Suspense>
-            );
-        case "new":
-            return <NewTabView />;
-        case "search":
-            return <SearchView />;
-        default:
-            return <Editor emptyStateMessage={emptyStateMessage} />;
-    }
+    const hasGraphTab = useEditorStore((s) =>
+        s.tabs.some((tab) => isGraphTab(tab)),
+    );
+    const isGraphActive = view === "graph";
+    const [graphKeepAliveUntil, setGraphKeepAliveUntil] = useState<
+        number | null
+    >(isGraphActive ? Date.now() + GRAPH_KEEP_ALIVE_MS : null);
+    const wasGraphActiveRef = useRef(isGraphActive);
+
+    useEffect(() => {
+        const wasGraphActive = wasGraphActiveRef.current;
+        wasGraphActiveRef.current = isGraphActive;
+
+        if (!hasGraphTab) {
+            setGraphKeepAliveUntil(null);
+            return;
+        }
+
+        if (isGraphActive || wasGraphActive) {
+            setGraphKeepAliveUntil(Date.now() + GRAPH_KEEP_ALIVE_MS);
+        }
+    }, [hasGraphTab, isGraphActive]);
+
+    useEffect(() => {
+        if (!hasGraphTab || isGraphActive || graphKeepAliveUntil == null) {
+            return;
+        }
+
+        const remainingMs = graphKeepAliveUntil - Date.now();
+        if (remainingMs <= 0) {
+            setGraphKeepAliveUntil(null);
+            return;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            setGraphKeepAliveUntil((current) => {
+                if (current !== graphKeepAliveUntil) return current;
+                perfCount("graph.lifecycle.keepAliveExpired");
+                return null;
+            });
+        }, remainingMs);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [graphKeepAliveUntil, hasGraphTab, isGraphActive]);
+
+    const keepGraphMounted =
+        hasGraphTab && (isGraphActive || graphKeepAliveUntil != null);
+
+    return (
+        <div className="relative flex-1 min-h-0 w-full">
+            {keepGraphMounted && (
+                <div
+                    style={{
+                        position: "absolute",
+                        inset: 0,
+                        visibility: isGraphActive ? "visible" : "hidden",
+                        pointerEvents: isGraphActive ? "auto" : "none",
+                    }}
+                >
+                    <React.Suspense fallback={null}>
+                        <LazyGraphTabView isVisible={isGraphActive} />
+                    </React.Suspense>
+                </div>
+            )}
+            {!isGraphActive && renderEditorPanelView(view, emptyStateMessage)}
+        </div>
+    );
 }
 
 export default function App() {

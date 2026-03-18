@@ -11,7 +11,6 @@ import {
     graphPayloadBytes,
     graphPerfCount,
     graphPerfMeasure,
-    graphPerfMeasureCompute,
 } from "./graphPerf";
 
 export type GraphNodeType = "note" | "tag" | "attachment" | "cluster";
@@ -47,7 +46,7 @@ export interface GraphData {
     links: GraphLink[];
 }
 
-interface GraphNodeDto {
+export interface GraphNodeDto {
     id: string;
     title: string;
     node_type?: GraphNodeType;
@@ -58,7 +57,7 @@ interface GraphNodeDto {
     cluster_filter?: string;
 }
 
-interface GraphSnapshotDto {
+export interface GraphSnapshotDto {
     version: number;
     mode: "global" | "local" | "overview";
     stats: {
@@ -76,7 +75,7 @@ interface GraphGroupQueryDto {
     params: AdvancedSearchParams;
 }
 
-interface GraphSnapshotOptions {
+export interface GraphSnapshotOptions {
     mode: "global" | "overview" | "local";
     root_note_id?: string;
     local_depth?: number;
@@ -116,45 +115,15 @@ function getGraphLimits(
     }
 }
 
-function transformSnapshot(result: GraphSnapshotDto): GraphData {
-    return graphPerfMeasureCompute(
-        "graph.data.transform.snapshot",
-        () => ({
-            version: result.version,
-            mode: result.mode,
-            stats: {
-                totalNodes: result.stats.total_nodes,
-                totalLinks: result.stats.total_links,
-                truncated: result.stats.truncated,
-                clusterCount: result.stats.cluster_count,
-            },
-            nodes: result.nodes.map((node) => ({
-                id: node.id,
-                title: node.title,
-                nodeType: node.node_type,
-                hopDistance: node.hop_distance,
-                groupColor: node.group_color,
-                isRoot: node.is_root,
-                importance: node.importance,
-                clusterFilter: node.cluster_filter,
-            })),
-            links: result.links,
-        }),
-        (value) => ({
-            mode: value.mode,
-            nodeCount: value.nodes.length,
-            linkCount: value.links.length,
-        }),
-    );
-}
-
 function buildAdvancedParams(query: string): AdvancedSearchParams | undefined {
     const trimmed = query.trim();
     if (!trimmed) return undefined;
     return toAdvancedSearchParams(parseQuery(trimmed));
 }
 
-export function useGraphData(activeNoteId: string | null): GraphData | null {
+export function useGraphData(
+    activeNoteId: string | null,
+): GraphSnapshotDto | null {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const graphRevision = useVaultStore((s) => s.graphRevision);
     const graphMode = useGraphSettingsStore((s) => s.graphMode);
@@ -173,7 +142,7 @@ export function useGraphData(activeNoteId: string | null): GraphData | null {
     const maxLocalNodes = useGraphSettingsStore((s) => s.maxLocalNodes);
     const maxLocalLinks = useGraphSettingsStore((s) => s.maxLocalLinks);
 
-    const [data, setData] = useState<GraphData | null>(null);
+    const [data, setData] = useState<GraphSnapshotDto | null>(null);
     const [debouncedSearchFilter, setDebouncedSearchFilter] = useState("");
     const lastFetchRef = useRef(0);
     const pendingRef = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -281,36 +250,35 @@ export function useGraphData(activeNoteId: string | null): GraphData | null {
                     filtered: Boolean(searchParams),
                 });
 
-                const result = transformSnapshot(snapshot);
                 if (cancelled) return;
 
                 graphPerfMeasure(
-                    "graph.data.pipeline.duration",
+                    "graph.data.fetch.pipeline.duration",
                     pipelineStartMs,
                     {
-                        mode: result.mode,
-                        nodeCount: result.nodes.length,
-                        linkCount: result.links.length,
+                        mode: snapshot.mode,
+                        nodeCount: snapshot.nodes.length,
+                        linkCount: snapshot.links.length,
                         showTagNodes,
                         showAttachmentNodes,
                         localDepth:
-                            result.mode === "local" ? localDepth : undefined,
+                            snapshot.mode === "local" ? localDepth : undefined,
                         groupCount: groupQueries.length,
                         filtered: Boolean(searchParams),
                         showOrphans,
-                        payloadBytes: graphPayloadBytes(result),
+                        payloadBytes: graphPayloadBytes(snapshot),
                     },
                 );
-                graphPerfCount("graph.data.pipeline.completed", {
-                    mode: result.mode,
-                    nodeCount: result.nodes.length,
-                    linkCount: result.links.length,
+                graphPerfCount("graph.data.fetch.completed", {
+                    mode: snapshot.mode,
+                    nodeCount: snapshot.nodes.length,
+                    linkCount: snapshot.links.length,
                     showTagNodes,
                     showAttachmentNodes,
                     groupCount: groupQueries.length,
                     filtered: Boolean(searchParams),
                 });
-                setData(result);
+                setData(snapshot);
             } catch (error) {
                 if (cancelled) return;
                 graphPerfCount("graph.data.pipeline.error", {

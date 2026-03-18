@@ -872,6 +872,7 @@ export function GraphSettingsPanel({
                         max={5}
                         step={0.1}
                     />
+                    <Toggle label="Show titles" settingKey="showTitles" />
                     <Slider
                         label="Text zoom"
                         settingKey="textFadeThreshold"

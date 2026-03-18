@@ -8,6 +8,7 @@ import type {
 
 export interface GraphRendererProps {
     snapshot: GraphRenderSnapshot;
+    isVisible: boolean;
     graphMode: GraphMode;
     localDepth: number;
     qualityProfile: QualityProfile;
@@ -25,6 +26,7 @@ export interface GraphRendererProps {
     linkDistance: number;
     nodeSize: number;
     glowIntensity: number;
+    showTitles: boolean;
     textFadeThreshold: number;
     layoutKey: string;
     restoredFromCache: boolean;
