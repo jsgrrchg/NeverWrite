@@ -86,6 +86,7 @@ fn stage_embedded_claude_runtime() {
         let _ = fs::remove_file(&legacy_binary);
     }
 
+    ensure_npm_dependencies(&vendor_root);
     stage_embedded_node_runtime(&embedded_node_root);
     stage_embedded_claude_project(&vendor_root, &embedded_claude_root);
 }
@@ -184,6 +185,32 @@ fn stage_embedded_node_runtime(destination_root: &Path) {
     }
 
     codesign_tree(destination_root);
+}
+
+fn ensure_npm_dependencies(vendor_root: &Path) {
+    if vendor_root.join("node_modules").exists() {
+        return;
+    }
+
+    println!("cargo:warning=Installing Claude ACP npm dependencies...");
+    let status = Command::new("npm")
+        .args(["install", "--omit=dev"])
+        .current_dir(vendor_root)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to run npm install in {}: {error}",
+                vendor_root.display()
+            )
+        });
+
+    if !status.success() {
+        panic!(
+            "npm install failed in {} with status {}",
+            vendor_root.display(),
+            status
+        );
+    }
 }
 
 fn stage_embedded_claude_project(source_root: &Path, destination_root: &Path) {
