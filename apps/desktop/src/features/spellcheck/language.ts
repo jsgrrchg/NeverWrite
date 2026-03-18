@@ -2,13 +2,22 @@ import type {
     SpellcheckLanguage,
     SpellcheckSecondaryLanguage,
 } from "../../app/store/settingsStore";
-import { resolveFrontendSpellcheckLanguage } from "./api";
+import {
+    resolveFrontendSpellcheckLanguage,
+    resolveFrontendSpellcheckLanguageCandidates,
+} from "./api";
 import type { SpellcheckLanguageInfo } from "./types";
 
 export type SpellcheckLanguageSelectOption = {
     value: string | null;
     label: string;
 };
+
+function getLanguageFamily(languageTag: string) {
+    return (
+        languageTag.split("-")[0]?.toLowerCase() ?? languageTag.toLowerCase()
+    );
+}
 
 function getSystemLanguageTag() {
     if (typeof navigator === "undefined") {
@@ -72,7 +81,9 @@ export function buildSpellcheckLanguageSelectOptions(
     languages: SpellcheckLanguageInfo[],
 ): SpellcheckLanguageSelectOption[] {
     const systemTag = getSystemLanguageTag();
-    const resolvedSystemLanguage = resolveFrontendSpellcheckLanguage("system");
+    const resolvedSystemCandidates =
+        resolveFrontendSpellcheckLanguageCandidates("system");
+    const resolvedSystemLanguage = resolvedSystemCandidates[0] ?? systemTag;
     const systemLabel =
         resolvedSystemLanguage === systemTag
             ? `System (${systemTag})`
@@ -104,12 +115,22 @@ export function buildSpellcheckSecondaryLanguageSelectOptions(
     secondaryLanguage: SpellcheckSecondaryLanguage,
     languages: SpellcheckLanguageInfo[],
 ): SpellcheckLanguageSelectOption[] {
-    const resolvedPrimaryLanguage =
-        resolveFrontendSpellcheckLanguage(primaryLanguage);
+    const excludedPrimaryLanguages = new Set(
+        resolveFrontendSpellcheckLanguageCandidates(primaryLanguage),
+    );
+    const excludedPrimaryFamilies = new Set(
+        [...excludedPrimaryLanguages].map(getLanguageFamily),
+    );
     const options: SpellcheckLanguageSelectOption[] = [
         { value: null, label: "None" },
         ...[...languages]
-            .filter((language) => language.id !== resolvedPrimaryLanguage)
+            .filter(
+                (language) =>
+                    !excludedPrimaryLanguages.has(language.id) &&
+                    !excludedPrimaryFamilies.has(
+                        getLanguageFamily(language.id),
+                    ),
+            )
             .sort(compareSpellcheckLanguages)
             .map((language) => ({
                 value: language.id,
@@ -137,12 +158,21 @@ export function buildSpellcheckLanguageDescription(
 ) {
     if (requestedLanguage === "system") {
         const systemTag = getSystemLanguageTag();
-        const resolvedSystemLanguage =
-            resolveFrontendSpellcheckLanguage(requestedLanguage);
+        const resolvedSystemCandidates =
+            resolveFrontendSpellcheckLanguageCandidates(requestedLanguage);
+        const resolvedSystemLanguage = resolvedSystemCandidates[0] ?? systemTag;
+        const fallbackSuffix =
+            resolvedSystemCandidates.length > 1
+                ? ` Runtime may fall back to ${resolvedSystemCandidates
+                      .slice(1)
+                      .join(
+                          " or ",
+                      )} if a more specific dictionary is unavailable.`
+                : "";
 
         return resolvedSystemLanguage === systemTag
-            ? `Global primary spellcheck language follows your OS language: ${systemTag}.`
-            : `Global primary spellcheck language follows your OS language: ${systemTag}, resolved to ${resolvedSystemLanguage}.`;
+            ? `Primary spellcheck language follows your OS language: ${systemTag}.${fallbackSuffix}`
+            : `Primary spellcheck language follows your OS language: ${systemTag}, resolved to ${resolvedSystemLanguage}.${fallbackSuffix}`;
     }
 
     const selectedLanguage = languages.find(
@@ -161,7 +191,7 @@ export function buildSpellcheckLanguageDescription(
                 : null,
         ].filter(Boolean);
 
-        return `${selectedLanguage.label} is the global primary spellcheck language and is ${status.toLowerCase()}.${
+        return `${selectedLanguage.label} is the primary spellcheck language and is ${status.toLowerCase()}.${
             details.length > 0 ? ` ${details.join(" · ")}.` : ""
         }`;
     }
@@ -172,7 +202,7 @@ export function buildSpellcheckLanguageDescription(
     const systemTag = getSystemLanguageTag();
     const fallbackLanguage = resolveFrontendSpellcheckLanguage("system");
 
-    return `${requestedLanguage} is selected as the global primary spellcheck language but is not installed. Runtime will fall back to System (${systemTag} -> ${fallbackLanguage}) until a Hunspell pack with dictionary.aff and dictionary.dic is available at ${installDirectory}.`;
+    return `${requestedLanguage} is selected as the primary spellcheck language but is not installed. Runtime will fall back to System (${systemTag} -> ${fallbackLanguage}) until a Hunspell pack with dictionary.aff and dictionary.dic is available at ${installDirectory}.`;
 }
 
 export function buildSpellcheckSecondaryLanguageDescription(
@@ -181,7 +211,7 @@ export function buildSpellcheckSecondaryLanguageDescription(
     runtimeDirectory: string | null,
 ) {
     if (!secondaryLanguage) {
-        return "Optional global secondary dictionary used to accept words from a second language.";
+        return "Optional secondary dictionary used to accept words from a second language.";
     }
 
     const selectedLanguage = languages.find(
@@ -200,7 +230,7 @@ export function buildSpellcheckSecondaryLanguageDescription(
                 : null,
         ].filter(Boolean);
 
-        return `${selectedLanguage.label} is the current global secondary spellcheck language and is ${status.toLowerCase()}.${
+        return `${selectedLanguage.label} is the current secondary spellcheck language and is ${status.toLowerCase()}.${
             details.length > 0 ? ` ${details.join(" · ")}.` : ""
         }`;
     }
@@ -209,7 +239,7 @@ export function buildSpellcheckSecondaryLanguageDescription(
         ? `${runtimeDirectory}/packs/${secondaryLanguage}`
         : `<spellcheck>/packs/${secondaryLanguage}`;
 
-    return `${secondaryLanguage} is selected as the global secondary spellcheck language but is not installed. Runtime will ignore the secondary dictionary and continue with only the primary language until a Hunspell pack with dictionary.aff and dictionary.dic is available at ${installDirectory}.`;
+    return `${secondaryLanguage} is selected as the secondary spellcheck language but is not installed. Runtime will ignore the secondary dictionary and continue with only the primary language until a Hunspell pack with dictionary.aff and dictionary.dic is available at ${installDirectory}.`;
 }
 
 export function buildSpellcheckLanguagesSummary(

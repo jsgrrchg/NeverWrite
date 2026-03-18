@@ -3,6 +3,7 @@ import {
     buildSpellcheckLanguageDescription,
     buildSpellcheckSecondaryLanguageDescription,
     buildSpellcheckLanguageSelectOptions,
+    buildSpellcheckSecondaryLanguageSelectOptions,
     buildSpellcheckLanguagesSummary,
     getSpellcheckLanguageStatusLabel,
 } from "./language";
@@ -70,6 +71,23 @@ describe("spellcheck language helpers", () => {
         ).toContain("Runtime will fall back to System");
     });
 
+    it("explains system-language fallback chains for regional locales", () => {
+        const originalLanguage = navigator.language;
+        Object.defineProperty(navigator, "language", {
+            configurable: true,
+            value: "fr-CA",
+        });
+
+        expect(
+            buildSpellcheckLanguageDescription("system", LANGUAGES, null),
+        ).toContain("Runtime may fall back to fr");
+
+        Object.defineProperty(navigator, "language", {
+            configurable: true,
+            value: originalLanguage,
+        });
+    });
+
     it("describes unavailable secondary languages as ignored at runtime", () => {
         expect(
             buildSpellcheckSecondaryLanguageDescription(
@@ -91,5 +109,15 @@ describe("spellcheck language helpers", () => {
         expect(getSpellcheckLanguageStatusLabel(LANGUAGES[1]!)).toBe(
             "Installed",
         );
+    });
+
+    it("filters secondary options that would resolve to the same primary language family", () => {
+        const options = buildSpellcheckSecondaryLanguageSelectOptions(
+            "fr-CA",
+            null,
+            LANGUAGES,
+        );
+
+        expect(options.some((option) => option.value === "fr-FR")).toBe(false);
     });
 });

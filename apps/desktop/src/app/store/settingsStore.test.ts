@@ -56,7 +56,7 @@ describe("settingsStore developer mode", () => {
         });
     });
 
-    it("keeps spellcheck languages global across vault changes", () => {
+    it("keeps spellcheck languages per vault across vault changes", () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         useSettingsStore
             .getState()
@@ -69,12 +69,67 @@ describe("settingsStore developer mode", () => {
         useVaultStore.setState({ vaultPath: "/vaults/two" });
 
         expect(useSettingsStore.getState().spellcheckPrimaryLanguage).toBe(
+            "system",
+        );
+        expect(useSettingsStore.getState().spellcheckSecondaryLanguage).toBe(
+            null,
+        );
+        expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
+
+        useSettingsStore
+            .getState()
+            .setSetting("spellcheckPrimaryLanguage", "fr-FR");
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+
+        expect(useSettingsStore.getState().spellcheckPrimaryLanguage).toBe(
             "es-CL",
         );
         expect(useSettingsStore.getState().spellcheckSecondaryLanguage).toBe(
             "en-US",
         );
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
+        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
+    });
+
+    it("migrates legacy global spellcheck settings into existing vault settings", () => {
+        localStorage.setItem(
+            "vaultai:settings",
+            JSON.stringify({
+                state: {
+                    spellcheckPrimaryLanguage: "es-CL",
+                    spellcheckSecondaryLanguage: "en-US",
+                },
+            }),
+        );
+        localStorage.setItem(
+            "vaultai:settings:/vaults/migrated",
+            JSON.stringify({
+                state: {
+                    developerModeEnabled: true,
+                },
+            }),
+        );
+
+        useVaultStore.setState({ vaultPath: "/vaults/migrated" });
+
+        expect(useSettingsStore.getState().spellcheckPrimaryLanguage).toBe(
+            "es-CL",
+        );
+        expect(useSettingsStore.getState().spellcheckSecondaryLanguage).toBe(
+            "en-US",
+        );
+        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
+        expect(
+            JSON.parse(
+                localStorage.getItem("vaultai:settings:/vaults/migrated") ?? "",
+            ),
+        ).toMatchObject({
+            state: {
+                developerModeEnabled: true,
+                spellcheckPrimaryLanguage: "es-CL",
+                spellcheckSecondaryLanguage: "en-US",
+            },
+        });
     });
 
     it("normalizes invalid secondary spellcheck values to null", () => {

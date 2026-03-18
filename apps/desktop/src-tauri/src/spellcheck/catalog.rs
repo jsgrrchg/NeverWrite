@@ -41,6 +41,8 @@ pub struct SpellcheckCatalogEntryDto {
     pub homepage: String,
     pub bundled: bool,
     pub size_bytes: u64,
+    pub size_known: bool,
+    pub integrity_available: bool,
     pub installed: bool,
     pub update_available: bool,
     pub install_status: String,
@@ -76,6 +78,9 @@ pub fn list_catalog(app: &AppHandle) -> Result<Vec<SpellcheckCatalogEntryDto>, S
             let installed = pack_exists(app, &entry.id)?;
             let installed_index = read_installed_pack_index(app, &entry.id)?;
             let installed_version = installed_index.as_ref().map(|index| index.version.clone());
+            let size_known = entry.size_bytes > 0;
+            let integrity_available =
+                !entry.aff_sha256.trim().is_empty() && !entry.dic_sha256.trim().is_empty();
             let update_available = if installed && !entry.bundled && installed_index.is_none() {
                 true
             } else {
@@ -98,6 +103,8 @@ pub fn list_catalog(app: &AppHandle) -> Result<Vec<SpellcheckCatalogEntryDto>, S
                 homepage: entry.homepage,
                 bundled: entry.bundled,
                 size_bytes: entry.size_bytes,
+                size_known,
+                integrity_available,
                 installed,
                 update_available,
                 install_status: if entry.bundled {

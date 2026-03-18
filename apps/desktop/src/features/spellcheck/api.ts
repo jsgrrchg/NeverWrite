@@ -4,6 +4,7 @@ import type {
     SpellcheckSecondaryLanguage,
 } from "../../app/store/settingsStore";
 import type {
+    GrammarCheckResponse,
     SpellcheckCatalogEntry,
     SpellcheckCatalogMutationResponse,
     SpellcheckCheckTextResponse,
@@ -39,43 +40,65 @@ function normalizeLanguageTagCase(value: string) {
         .join("-");
 }
 
-export function normalizeSpellcheckLanguageTag(language: SpellcheckLanguage) {
-    const trimmed = language.trim();
-    const candidate = normalizeLanguageTagCase(
-        trimmed === "system" ? "system" : trimmed || "en-US",
-    );
-
-    switch (candidate.toLowerCase()) {
-        case "system": {
-            const systemCandidate = normalizeLanguageTagCase(
-                typeof navigator !== "undefined"
-                    ? navigator.language || "en-US"
-                    : "en-US",
-            );
-
-            if (
-                systemCandidate.toLowerCase() === "es" ||
-                systemCandidate.toLowerCase().startsWith("es-")
-            ) {
-                return "es-ES";
-            }
-
-            if (
-                systemCandidate.toLowerCase() === "en" ||
-                systemCandidate.toLowerCase().startsWith("en-")
-            ) {
-                return "en-US";
-            }
-
-            return systemCandidate || "en-US";
-        }
+function normalizePrimaryLanguageAlias(value: string) {
+    switch (value.toLowerCase()) {
         case "en":
             return "en-US";
         case "es":
             return "es-ES";
         default:
-            return candidate || "en-US";
+            return value;
     }
+}
+
+function buildLanguageFallbackCandidates(languageTag: string) {
+    const normalized = normalizePrimaryLanguageAlias(
+        normalizeLanguageTagCase(languageTag),
+    );
+    if (!normalized) {
+        return ["en-US"];
+    }
+
+    const candidates: string[] = [];
+    const pushCandidate = (candidate: string) => {
+        const normalizedCandidate = normalizePrimaryLanguageAlias(
+            normalizeLanguageTagCase(candidate),
+        );
+        if (normalizedCandidate && !candidates.includes(normalizedCandidate)) {
+            candidates.push(normalizedCandidate);
+        }
+    };
+
+    pushCandidate(normalized);
+
+    const segments = normalized.split("-").filter(Boolean);
+    while (segments.length > 1) {
+        segments.pop();
+        pushCandidate(segments.join("-"));
+    }
+
+    return candidates;
+}
+
+export function resolveFrontendSpellcheckLanguageCandidates(
+    language: SpellcheckLanguage,
+) {
+    const trimmed = language.trim();
+    if (trimmed.toLowerCase() === "system") {
+        const systemCandidate = normalizeLanguageTagCase(
+            typeof navigator !== "undefined"
+                ? navigator.language || "en-US"
+                : "en-US",
+        );
+
+        return buildLanguageFallbackCandidates(systemCandidate);
+    }
+
+    return buildLanguageFallbackCandidates(trimmed || "en-US");
+}
+
+export function normalizeSpellcheckLanguageTag(language: SpellcheckLanguage) {
+    return resolveFrontendSpellcheckLanguageCandidates(language)[0] ?? "en-US";
 }
 
 export function resolveFrontendSpellcheckLanguage(
@@ -183,4 +206,18 @@ export function spellcheckRemoveInstalledDictionary(language: string) {
         "spellcheck_remove_installed_dictionary",
         { language },
     );
+}
+
+export function spellcheckCheckGrammar(
+    text: string,
+    language: SpellcheckLanguage,
+    serverUrl?: string,
+) {
+    const normalizedServerUrl = serverUrl?.trim();
+
+    return invoke<GrammarCheckResponse>("spellcheck_check_grammar", {
+        text,
+        language: resolveFrontendSpellcheckLanguage(language),
+        serverUrl: normalizedServerUrl || undefined,
+    });
 }

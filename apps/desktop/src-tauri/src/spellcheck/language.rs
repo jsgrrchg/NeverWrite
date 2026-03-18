@@ -62,12 +62,60 @@ fn canonicalize_language(input: &str) -> String {
     }
 }
 
+fn normalize_locale_environment_value(input: &str) -> String {
+    input
+        .trim()
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .split('@')
+        .next()
+        .unwrap_or_default()
+        .replace('_', "-")
+}
+
+fn build_language_candidates(input: &str) -> Vec<String> {
+    let normalized = canonicalize_language(input);
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    let push_candidate = |candidates: &mut Vec<String>, candidate: String| {
+        if !candidate.is_empty() && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    push_candidate(&mut candidates, normalized.clone());
+
+    let mut segments: Vec<&str> = normalized.split('-').collect();
+    while segments.len() > 1 {
+        segments.pop();
+        push_candidate(&mut candidates, canonicalize_language(&segments.join("-")));
+    }
+
+    push_candidate(&mut candidates, "en-US".to_string());
+
+    candidates
+}
+
 fn current_system_language() -> String {
-    std::env::var("LANG")
-        .ok()
-        .and_then(|value| value.split('.').next().map(str::to_string))
-        .map(|value| value.replace('_', "-"))
-        .unwrap_or_else(|| "en-US".to_string())
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            let normalized = normalize_locale_environment_value(&value);
+            if normalized.is_empty() {
+                continue;
+            }
+
+            match normalized.to_ascii_lowercase().as_str() {
+                "c" | "posix" => return "en-US".to_string(),
+                _ => return normalize_language_tag_case(&normalized),
+            }
+        }
+    }
+
+    "en-US".to_string()
 }
 
 fn installed_language_ids(app: &AppHandle) -> Result<BTreeSet<String>, String> {
@@ -126,19 +174,9 @@ pub fn resolve_language(
     let requested = requested_language.unwrap_or_else(|| "system".to_string());
     let normalized_requested = canonicalize_language(requested.trim());
     let candidates = if normalized_requested.eq_ignore_ascii_case("system") {
-        let system_language = canonicalize_language(&current_system_language());
-        let mut candidates = vec![system_language.clone()];
-        match system_language.split('-').next().unwrap_or_default() {
-            "es" if system_language != "es-ES" => candidates.push("es-ES".to_string()),
-            "en" if system_language != "en-US" => candidates.push("en-US".to_string()),
-            _ => {}
-        }
-        if !candidates.iter().any(|candidate| candidate == "en-US") {
-            candidates.push("en-US".to_string());
-        }
-        candidates
+        build_language_candidates(&current_system_language())
     } else {
-        vec![normalized_requested]
+        build_language_candidates(&normalized_requested)
     };
 
     for id in candidates {
@@ -305,7 +343,9 @@ pub fn list_supported_languages(app: &AppHandle) -> Result<Vec<SpellcheckLanguag
 
 #[cfg(test)]
 mod tests {
-    use super::canonicalize_language;
+    use super::{
+        build_language_candidates, canonicalize_language, normalize_locale_environment_value,
+    };
 
     #[test]
     fn canonicalizes_language_tags_case_and_aliases() {
@@ -313,5 +353,35 @@ mod tests {
         assert_eq!(canonicalize_language("en-gb"), "en-GB");
         assert_eq!(canonicalize_language("es_cl"), "es-CL");
         assert_eq!(canonicalize_language("pt-br"), "pt-BR");
+    }
+
+    #[test]
+    fn builds_language_candidates_from_regional_variants() {
+        assert_eq!(
+            build_language_candidates("fr-CA"),
+            vec!["fr-CA".to_string(), "fr".to_string(), "en-US".to_string()]
+        );
+        assert_eq!(
+            build_language_candidates("sr-Latn-RS"),
+            vec![
+                "sr-Latn-RS".to_string(),
+                "sr-Latn".to_string(),
+                "sr".to_string(),
+                "en-US".to_string(),
+            ]
+        );
+        assert_eq!(
+            build_language_candidates("en-GB"),
+            vec!["en-GB".to_string(), "en-US".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalizes_locale_environment_values() {
+        assert_eq!(
+            normalize_locale_environment_value("fr_CA.UTF-8@euro"),
+            "fr-CA"
+        );
+        assert_eq!(normalize_locale_environment_value("C.UTF-8"), "C");
     }
 }
