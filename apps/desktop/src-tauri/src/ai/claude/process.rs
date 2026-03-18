@@ -8,6 +8,8 @@ use super::setup::{
 };
 
 const CLAUDE_VENDOR_RELATIVE_PATH: &str = "../../../vendor/Claude-agent-acp-upstream";
+const CLAUDE_EMBEDDED_RELATIVE_PATH: &str = "embedded/claude-agent-acp";
+const NODE_EMBEDDED_RELATIVE_PATH: &str = "embedded/node";
 
 #[derive(Debug, Clone)]
 pub struct ClaudeProcessSpec {
@@ -62,11 +64,43 @@ impl ClaudeRuntime {
             .join("index.js")
     }
 
+    pub fn bundled_vendor_entry_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+        Ok(resource_dir
+            .join(CLAUDE_EMBEDDED_RELATIVE_PATH)
+            .join("dist")
+            .join("index.js"))
+    }
+
+    pub fn bundled_node_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let binary_name = if cfg!(target_os = "windows") {
+            "node.exe"
+        } else {
+            "node"
+        };
+
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+        Ok(resource_dir
+            .join(NODE_EMBEDDED_RELATIVE_PATH)
+            .join("bin")
+            .join(binary_name))
+    }
+
     pub fn resolved_binary(&self, app: &AppHandle) -> Result<ResolvedBinary, String> {
         let setup = load_setup_config(app)?;
         Ok(resolve_binary_command(
             &setup,
             self.bundled_binary_path(app)?,
+            self.bundled_node_path(app)?,
+            self.bundled_vendor_entry_path(app)?,
             self.vendor_entry_path(),
         ))
     }
@@ -75,6 +109,8 @@ impl ClaudeRuntime {
         setup_status(
             app,
             self.bundled_binary_path(app)?,
+            self.bundled_node_path(app)?,
+            self.bundled_vendor_entry_path(app)?,
             self.vendor_entry_path(),
         )
     }
@@ -88,6 +124,8 @@ impl ClaudeRuntime {
         let resolved = resolve_binary_command(
             &setup,
             self.bundled_binary_path(app)?,
+            self.bundled_node_path(app)?,
+            self.bundled_vendor_entry_path(app)?,
             self.vendor_entry_path(),
         );
 
