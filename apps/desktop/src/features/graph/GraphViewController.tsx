@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    startTransition,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import {
     useEditorStore,
     isNoteTab,
@@ -15,7 +22,6 @@ import {
 import { GraphRenderer3D } from "./GraphRenderer3D";
 import { GraphRenderer2D } from "./GraphRenderer2D";
 import { GraphSettingsPanel } from "./GraphSettingsPanel";
-import { prepareGraphLayout } from "./graphLayout";
 import {
     buildGraphLayoutKey,
     saveGraphLayoutSnapshot,
@@ -23,8 +29,6 @@ import {
 } from "./graphLayoutCache";
 import { qualityProfileForMode, resolveQualityMode } from "./graphQuality";
 import {
-    buildGraphNeighborMap,
-    toGraphRenderSnapshot,
     type GraphPosition,
     type GraphRenderNode,
     type GraphRendererCallbacks,
@@ -36,10 +40,13 @@ import {
     type GraphMode,
     type GraphQualityMode,
 } from "./graphSettingsStore";
+import { graphPerfCount, graphPerfMeasure } from "./graphPerf";
 import { useGraphData } from "./useGraphData";
+import { usePreparedGraphSnapshot } from "./usePreparedGraphSnapshot";
 
 const GRAPH_NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 const LARGE_GRAPH_SUGGESTION_THRESHOLD = 10_000;
+const EMPTY_NEIGHBOR_INDEX: Record<string, string[]> = {};
 
 function parseHexRgb(hex: string): [number, number, number] {
     if (hex.startsWith("#") && hex.length >= 7) {
@@ -62,7 +69,13 @@ function toGraphNodePositions(
     return next;
 }
 
-export function GraphViewController() {
+interface GraphViewControllerProps {
+    isVisible?: boolean;
+}
+
+export function GraphViewController({
+    isVisible = true,
+}: GraphViewControllerProps) {
     const rendererRef = useRef<GraphRendererHandle | null>(null);
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -71,6 +84,32 @@ export function GraphViewController() {
     >(new Set());
     const [contextMenu, setContextMenu] =
         useState<GraphContextMenuState | null>(null);
+
+    // Phase 5: lifecycle instrumentation
+    const visibleAtRef = useRef<number | null>(
+        isVisible ? performance.now() : null,
+    );
+    const resumeKindRef = useRef<"cold" | "warm">("cold");
+    const resumeTrackedRef = useRef(false);
+
+    useEffect(() => {
+        if (isVisible) {
+            visibleAtRef.current = performance.now();
+            resumeTrackedRef.current = false;
+            resumeKindRef.current = preparedSnapshot != null ? "warm" : "cold";
+            graphPerfCount("graph.lifecycle.tabVisible", {
+                startKind: resumeKindRef.current,
+                rendererMode,
+                nodeCount: preparedSnapshot?.nodes.length ?? 0,
+            });
+            return;
+        }
+        setHoveredNodeId(null);
+        setContextMenu(null);
+        graphPerfCount("graph.lifecycle.tabHidden");
+        visibleAtRef.current = null;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isVisible]);
 
     const activeNoteId = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
@@ -102,25 +141,22 @@ export function GraphViewController() {
     const linkDistance = useGraphSettingsStore((s) => s.linkDistance);
     const nodeSize = useGraphSettingsStore((s) => s.nodeSize);
     const linkThickness = useGraphSettingsStore((s) => s.linkThickness);
+    const showTitles = useGraphSettingsStore((s) => s.showTitles);
     const textFadeThreshold = useGraphSettingsStore((s) => s.textFadeThreshold);
     const arrows = useGraphSettingsStore((s) => s.arrows);
     const glowIntensity = useGraphSettingsStore((s) => s.glowIntensity);
     const setGraphSetting = useGraphSettingsStore((s) => s.set);
 
-    const rawData = useGraphData(activeNoteId);
-    const renderSnapshot = useMemo(
-        () => (rawData ? toGraphRenderSnapshot(rawData) : null),
-        [rawData],
-    );
+    const graphSnapshot = useGraphData(activeNoteId);
     const effectiveQualityMode = useMemo(
         () =>
             resolveQualityMode(
                 qualityModeSetting,
-                renderSnapshot?.stats.totalNodes ??
-                    renderSnapshot?.nodes.length ??
+                graphSnapshot?.stats.total_nodes ??
+                    graphSnapshot?.nodes.length ??
                     0,
             ),
-        [qualityModeSetting, renderSnapshot],
+        [graphSnapshot, qualityModeSetting],
     );
     const qualityProfile = useMemo(
         () => qualityProfileForMode(effectiveQualityMode),
@@ -146,24 +182,24 @@ export function GraphViewController() {
     }, [isDark, qualityProfile]);
 
     const truncationMessage = useMemo(() => {
-        if (!renderSnapshot?.stats.truncated) return null;
+        if (!graphSnapshot?.stats.truncated) return null;
 
         const visibleNodes = GRAPH_NUMBER_FORMAT.format(
-            renderSnapshot.nodes.length,
+            graphSnapshot.nodes.length,
         );
         const visibleLinks = GRAPH_NUMBER_FORMAT.format(
-            renderSnapshot.links.length,
+            graphSnapshot.links.length,
         );
         const totalNodes = GRAPH_NUMBER_FORMAT.format(
-            renderSnapshot.stats.totalNodes,
+            graphSnapshot.stats.total_nodes,
         );
         const totalLinks = GRAPH_NUMBER_FORMAT.format(
-            renderSnapshot.stats.totalLinks,
+            graphSnapshot.stats.total_links,
         );
 
         if (
-            renderSnapshot.stats.totalNodes > renderSnapshot.nodes.length ||
-            renderSnapshot.stats.totalLinks > renderSnapshot.links.length
+            graphSnapshot.stats.total_nodes > graphSnapshot.nodes.length ||
+            graphSnapshot.stats.total_links > graphSnapshot.links.length
         ) {
             return {
                 title: `Showing ${visibleNodes} of ${totalNodes} nodes`,
@@ -175,25 +211,25 @@ export function GraphViewController() {
             title: `Showing a truncated graph (${visibleNodes} nodes)`,
             detail: `Visible links: ${visibleLinks}`,
         };
-    }, [renderSnapshot]);
+    }, [graphSnapshot]);
 
     const hiddenNodeCount = Math.max(
         0,
-        (renderSnapshot?.stats.totalNodes ?? 0) -
-            (renderSnapshot?.nodes.length ?? 0),
+        (graphSnapshot?.stats.total_nodes ?? 0) -
+            (graphSnapshot?.nodes.length ?? 0),
     );
     const hiddenLinkCount = Math.max(
         0,
-        (renderSnapshot?.stats.totalLinks ?? 0) -
-            (renderSnapshot?.links.length ?? 0),
+        (graphSnapshot?.stats.total_links ?? 0) -
+            (graphSnapshot?.links.length ?? 0),
     );
     const graphStatusMessage = useMemo(() => {
-        if (!renderSnapshot) return null;
+        if (!graphSnapshot) return null;
         const visibleNodes = GRAPH_NUMBER_FORMAT.format(
-            renderSnapshot.nodes.length,
+            graphSnapshot.nodes.length,
         );
         const visibleLinks = GRAPH_NUMBER_FORMAT.format(
-            renderSnapshot.links.length,
+            graphSnapshot.links.length,
         );
 
         if (hiddenNodeCount > 0 || hiddenLinkCount > 0) {
@@ -207,13 +243,13 @@ export function GraphViewController() {
             title: `${visibleNodes} nodes • ${visibleLinks} links visible`,
             detail: "Showing the full graph for the current mode and filters.",
         };
-    }, [hiddenLinkCount, hiddenNodeCount, renderSnapshot]);
+    }, [graphSnapshot, hiddenLinkCount, hiddenNodeCount]);
 
     const layoutKey = useMemo(() => {
-        if (!vaultPath || !renderSnapshot) return null;
+        if (!vaultPath || !graphSnapshot) return null;
         return buildGraphLayoutKey({
             vaultPath,
-            graphVersion: renderSnapshot.version,
+            graphVersion: graphSnapshot.version,
             graphMode,
             rendererMode,
             localDepth,
@@ -230,7 +266,7 @@ export function GraphViewController() {
         rendererMode,
         layoutStrategy,
         localDepth,
-        renderSnapshot,
+        graphSnapshot,
         searchFilter,
         showAttachmentNodes,
         showOrphans,
@@ -238,19 +274,38 @@ export function GraphViewController() {
         vaultPath,
     ]);
 
-    const preparedLayout = useMemo(() => {
-        if (!renderSnapshot || !layoutKey) return null;
-        return prepareGraphLayout(renderSnapshot, layoutKey, layoutStrategy);
-    }, [layoutKey, layoutStrategy, renderSnapshot]);
+    const {
+        prepared,
+        isPreparing: isPreparingPipeline,
+        error: preparedPipelineError,
+    } = usePreparedGraphSnapshot({
+        graphSnapshot,
+        layoutKey,
+        layoutStrategy,
+        isVisible,
+    });
 
-    const preparedSnapshot = preparedLayout?.snapshot ?? null;
+    const preparedSnapshot =
+        prepared && prepared.layoutKey === layoutKey ? prepared.snapshot : null;
+    const restoredFromCache =
+        prepared && prepared.layoutKey === layoutKey
+            ? prepared.restoredFromCache
+            : false;
+    const neighborIndex =
+        prepared && prepared.layoutKey === layoutKey
+            ? prepared.neighborIndex
+            : EMPTY_NEIGHBOR_INDEX;
+
     const shouldRunSimulation =
         preparedSnapshot != null &&
         (layoutStrategy === "force" ||
-            (layoutStrategy === "preset" &&
-                !preparedLayout?.restoredFromCache));
+            (layoutStrategy === "preset" && !restoredFromCache));
     const cooldownTicks = shouldRunSimulation
         ? qualityProfile.defaultCooldownTicks
+        : 0;
+    const effectiveShouldRunSimulation = shouldRunSimulation && isVisible;
+    const effectiveCooldownTicks = effectiveShouldRunSimulation
+        ? cooldownTicks
         : 0;
     const appliedVaultDefaultRef = useRef<string | null>(null);
 
@@ -266,14 +321,6 @@ export function GraphViewController() {
             useGraphSettingsStore.getState().set("graphMode", defaultMode);
         }
     }, [defaultModeByVault, graphMode, vaultPath]);
-
-    const neighborMap = useMemo(
-        () =>
-            preparedSnapshot
-                ? buildGraphNeighborMap(preparedSnapshot)
-                : new Map(),
-        [preparedSnapshot],
-    );
 
     const visibleNodeIds = useMemo(
         () =>
@@ -348,11 +395,11 @@ export function GraphViewController() {
                 setHighlightedNeighborIds(new Set());
                 return;
             }
-            const next = new Set<string>(neighborMap.get(nodeId) ?? []);
+            const next = new Set<string>(neighborIndex[nodeId] ?? []);
             next.add(nodeId);
             setHighlightedNeighborIds(next);
         },
-        [neighborMap],
+        [neighborIndex],
     );
 
     const handleNodeClick = useCallback(
@@ -380,7 +427,13 @@ export function GraphViewController() {
 
     const handleNodeContextMenu = useCallback(
         (node: GraphRenderNode, event: MouseEvent) => {
-            if (node.nodeType === "cluster") return;
+            if (
+                node.nodeType === "cluster" ||
+                node.nodeType === "tag" ||
+                node.nodeType === "attachment"
+            ) {
+                return;
+            }
             event.preventDefault();
             setContextMenu({
                 nodeId: node.id,
@@ -431,16 +484,16 @@ export function GraphViewController() {
     }, []);
 
     const suggestionActions = useMemo(() => {
-        if (!renderSnapshot)
+        if (!graphSnapshot)
             return [] as Array<{
                 label: string;
                 action: () => void;
             }>;
 
         const feelsLarge =
-            renderSnapshot.stats.totalNodes >=
+            graphSnapshot.stats.total_nodes >=
                 LARGE_GRAPH_SUGGESTION_THRESHOLD ||
-            renderSnapshot.stats.truncated;
+            graphSnapshot.stats.truncated;
         const actions: Array<{
             label: string;
             action: () => void;
@@ -465,7 +518,7 @@ export function GraphViewController() {
         }
 
         return actions.slice(0, 2);
-    }, [activeNoteId, graphMode, renderSnapshot, setGraphSetting]);
+    }, [activeNoteId, graphMode, graphSnapshot, setGraphSetting]);
 
     const currentLimit = useMemo(() => {
         switch (graphMode as GraphMode) {
@@ -484,10 +537,82 @@ export function GraphViewController() {
     const settingsPanel = (
         <GraphSettingsPanel
             effectiveQualityMode={effectiveQualityMode}
-            totalNodes={preparedSnapshot?.stats.totalNodes ?? null}
+            totalNodes={
+                graphSnapshot?.stats.total_nodes ??
+                preparedSnapshot?.stats.totalNodes ??
+                null
+            }
             vaultPath={vaultPath}
         />
     );
+
+    const rendererSurfaceKey =
+        preparedSnapshot && layoutKey ? `${rendererMode}:${layoutKey}` : null;
+    const [mountedRendererSurfaceKey, setMountedRendererSurfaceKey] = useState<
+        string | null
+    >(null);
+
+    useEffect(() => {
+        if (!rendererSurfaceKey) {
+            if (preparedSnapshot == null) {
+                setMountedRendererSurfaceKey(null);
+            }
+            return;
+        }
+        if (!isVisible) return;
+        if (mountedRendererSurfaceKey === rendererSurfaceKey) return;
+
+        setMountedRendererSurfaceKey(null);
+        let firstFrame = 0;
+        let secondFrame = 0;
+        firstFrame = window.requestAnimationFrame(() => {
+            secondFrame = window.requestAnimationFrame(() => {
+                startTransition(() => {
+                    setMountedRendererSurfaceKey(rendererSurfaceKey);
+                });
+            });
+        });
+
+        return () => {
+            window.cancelAnimationFrame(firstFrame);
+            window.cancelAnimationFrame(secondFrame);
+        };
+    }, [
+        isVisible,
+        mountedRendererSurfaceKey,
+        preparedSnapshot,
+        rendererSurfaceKey,
+    ]);
+
+    const shouldRenderRenderer =
+        preparedSnapshot != null &&
+        rendererSurfaceKey != null &&
+        mountedRendererSurfaceKey === rendererSurfaceKey;
+
+    // Phase 5: measure total time from visible to interactive
+    useEffect(() => {
+        if (
+            !shouldRenderRenderer ||
+            !isVisible ||
+            resumeTrackedRef.current ||
+            visibleAtRef.current == null
+        ) {
+            return;
+        }
+        resumeTrackedRef.current = true;
+        graphPerfMeasure(
+            "graph.lifecycle.timeToInteractive.duration",
+            visibleAtRef.current,
+            {
+                startKind: resumeKindRef.current,
+                rendererMode,
+                nodeCount: preparedSnapshot?.nodes.length ?? 0,
+                linkCount: preparedSnapshot?.links.length ?? 0,
+                restoredLayout: restoredFromCache ? 1 : 0,
+            },
+        );
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [shouldRenderRenderer, isVisible]);
 
     const toggleButton = (
         <button
@@ -529,11 +654,19 @@ export function GraphViewController() {
         </button>
     );
 
-    if (!preparedSnapshot || !layoutKey) {
-        const message =
-            graphMode === "local" && !activeNoteId
-                ? "Open a note to see its local graph"
-                : "Loading graph…";
+    if (!layoutKey || !shouldRenderRenderer) {
+        let message = "Loading graph…";
+        if (graphMode === "local" && !activeNoteId) {
+            message = "Open a note to see its local graph";
+        } else if (preparedPipelineError) {
+            message = "Graph pipeline error";
+        } else if (graphSnapshot && preparedSnapshot == null) {
+            message = isPreparingPipeline
+                ? "Preparing graph…"
+                : "Graph readying…";
+        } else if (preparedSnapshot && !shouldRenderRenderer) {
+            message = "Rendering graph…";
+        }
         return (
             <div style={{ display: "flex", position: "absolute", inset: 0 }}>
                 {settingsPanel}
@@ -550,6 +683,21 @@ export function GraphViewController() {
                     }}
                 >
                     {message}
+                    {preparedPipelineError && (
+                        <div
+                            style={{
+                                position: "absolute",
+                                bottom: 16,
+                                left: 16,
+                                right: 16,
+                                fontSize: 12,
+                                color: "var(--text-secondary)",
+                                textAlign: "center",
+                            }}
+                        >
+                            {preparedPipelineError}
+                        </div>
+                    )}
                     {toggleButton}
                 </div>
             </div>
@@ -564,6 +712,7 @@ export function GraphViewController() {
                     <GraphRenderer3D
                         ref={rendererRef}
                         snapshot={preparedSnapshot}
+                        isVisible={isVisible}
                         graphMode={graphMode}
                         localDepth={localDepth}
                         qualityProfile={qualityProfile}
@@ -577,19 +726,19 @@ export function GraphViewController() {
                         linkDistance={linkDistance}
                         nodeSize={nodeSize}
                         glowIntensity={glowIntensity}
+                        showTitles={showTitles}
                         textFadeThreshold={textFadeThreshold}
                         layoutKey={layoutKey}
-                        restoredFromCache={
-                            preparedLayout?.restoredFromCache ?? false
-                        }
-                        shouldRunSimulation={shouldRunSimulation}
-                        cooldownTicks={cooldownTicks}
+                        restoredFromCache={restoredFromCache}
+                        shouldRunSimulation={effectiveShouldRunSimulation}
+                        cooldownTicks={effectiveCooldownTicks}
                         callbacks={rendererCallbacks}
                     />
                 ) : (
                     <GraphRenderer2D
                         ref={rendererRef}
                         snapshot={preparedSnapshot}
+                        isVisible={isVisible}
                         graphMode={graphMode}
                         localDepth={localDepth}
                         qualityProfile={qualityProfile}
@@ -603,13 +752,12 @@ export function GraphViewController() {
                         linkDistance={linkDistance}
                         nodeSize={nodeSize}
                         glowIntensity={glowIntensity}
+                        showTitles={showTitles}
                         textFadeThreshold={textFadeThreshold}
                         layoutKey={layoutKey}
-                        restoredFromCache={
-                            preparedLayout?.restoredFromCache ?? false
-                        }
-                        shouldRunSimulation={shouldRunSimulation}
-                        cooldownTicks={cooldownTicks}
+                        restoredFromCache={restoredFromCache}
+                        shouldRunSimulation={effectiveShouldRunSimulation}
+                        cooldownTicks={effectiveCooldownTicks}
                         callbacks={rendererCallbacks}
                     />
                 )}

@@ -84,17 +84,29 @@ export function prepareGraphLayout(
     layoutStrategy: GraphLayoutStrategy,
 ): PreparedGraphLayout {
     const cachedLayout = loadGraphLayoutSnapshot(layoutKey);
+    return prepareGraphLayoutWithCachedPositions(
+        snapshot,
+        layoutStrategy,
+        cachedLayout?.positions ?? null,
+    );
+}
+
+export function prepareGraphLayoutWithCachedPositions(
+    snapshot: GraphRenderSnapshot,
+    layoutStrategy: GraphLayoutStrategy,
+    cachedPositions: Record<string, GraphNodePosition> | null,
+): PreparedGraphLayout {
     const fallbackPositions =
         layoutStrategy === "overview-packed"
             ? buildOverviewPackedPositions(snapshot.nodes)
             : layoutStrategy === "clustered"
               ? buildClusteredPositions(snapshot.nodes)
               : null;
-    const positions = cachedLayout?.positions ?? fallbackPositions ?? null;
+    const positions = cachedPositions ?? fallbackPositions ?? null;
 
     return {
         snapshot: withGraphPositions(snapshot, positions),
-        restoredFromCache: Boolean(cachedLayout),
+        restoredFromCache: Boolean(cachedPositions),
     };
 }
 

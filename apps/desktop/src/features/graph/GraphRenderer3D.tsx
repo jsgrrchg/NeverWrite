@@ -42,6 +42,34 @@ interface GraphRendererData {
 }
 
 type GNode = NodeObject<GraphRendererNode>;
+type NodeMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+type NodeLabel = THREE.Sprite;
+type NodeVisualState = {
+    color: string;
+    opacity: number;
+    showLabel: boolean;
+    labelColor: string;
+    emissiveIntensity: number;
+};
+type CachedNodeVisualRefs = {
+    mesh: NodeMesh;
+    label: NodeLabel;
+};
+type CachedNodeObject = {
+    signature: string;
+    object: THREE.Object3D;
+    refs: CachedNodeVisualRefs;
+    visualSignature: string | null;
+};
+type GraphRendererVisualProps = {
+    selection: GraphRendererProps["selection"];
+    qualityProfile: GraphRendererProps["qualityProfile"];
+    showTitles: boolean;
+    textFadeThreshold: number;
+    glowIntensity: number;
+    labelRgb: [number, number, number];
+    activeNodeId: string | null;
+};
 
 const COLORS = {
     node: "#6366f1",
@@ -103,11 +131,7 @@ function colorForNode(
     }
 }
 
-function makeTextSprite(
-    text: string,
-    color: string,
-    yOffset: number,
-): THREE.Sprite {
+function makeTextSprite(text: string, yOffset: number): NodeLabel {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d")!;
     const fontSize = 48;
@@ -132,7 +156,7 @@ function makeTextSprite(
         canvas.width - pad,
     );
     // Foreground fill
-    ctx.fillStyle = color;
+    ctx.fillStyle = "#ffffff";
     ctx.fillText(text, canvas.width / 2, canvas.height / 2, canvas.width - pad);
 
     const texture = new THREE.CanvasTexture(canvas);
@@ -151,32 +175,26 @@ function makeTextSprite(
 
 function objectForNode(
     node: GraphRendererNode,
-    color: string,
+    backlinkCount: number,
     scale: number,
-    opacity: number,
-): THREE.Object3D {
+): { object: THREE.Object3D; refs: CachedNodeVisualRefs } {
     const importance = node.importance ?? 1;
     const size =
         (node.nodeType === "cluster"
             ? 4 + Math.min(Math.sqrt(importance) * 0.9, 8)
-            : 2.2 + Math.min(importance * 0.3, 4)) * scale;
-
-    // Emissive scales with importance — hub nodes glow brighter
-    const baseEmissive = node.isRoot
-        ? 0.65
-        : 0.15 + Math.min(importance * 0.04, 0.45);
+            : 2.2 + Math.min(backlinkCount * 0.55, 4.5)) * scale;
 
     const material = new THREE.MeshStandardMaterial({
-        color,
-        emissive: new THREE.Color(color),
-        emissiveIntensity: baseEmissive,
+        color: "#ffffff",
+        emissive: new THREE.Color("#ffffff"),
+        emissiveIntensity: 0.3,
         roughness: 0.35,
         metalness: 0.15,
-        transparent: opacity < 1,
-        opacity,
+        transparent: true,
+        opacity: 1,
     });
 
-    let mesh: THREE.Mesh;
+    let mesh: NodeMesh;
     switch (node.nodeType) {
         case "cluster":
         case "tag":
@@ -202,8 +220,134 @@ function objectForNode(
     const label = node.title || node.id;
     const group = new THREE.Group();
     group.add(mesh);
-    group.add(makeTextSprite(label, color, -(size + 2.5)));
-    return group;
+    const labelSprite = makeTextSprite(label, -(size + 2.5));
+    group.add(labelSprite);
+    return {
+        object: group,
+        refs: {
+            mesh,
+            label: labelSprite,
+        },
+    };
+}
+
+function rgbToHex([r, g, b]: [number, number, number]): string {
+    return new THREE.Color(`rgb(${r}, ${g}, ${b})`).getHexString();
+}
+
+function labelColorForNode(
+    node: GraphRendererNode,
+    activeNodeId: string | null,
+    labelRgb: [number, number, number],
+): string {
+    if (
+        node.id === activeNodeId ||
+        node.isRoot ||
+        node.nodeType === "cluster" ||
+        node.nodeType === "tag" ||
+        node.nodeType === "attachment" ||
+        node.groupColor
+    ) {
+        return colorForNode(node, activeNodeId);
+    }
+
+    return `#${rgbToHex(labelRgb)}`;
+}
+
+function shouldShowNodeLabel(showTitles: boolean): boolean {
+    return showTitles;
+}
+
+function buildNodeVisualState(
+    node: GraphRendererNode,
+    selection: GraphRendererProps["selection"],
+    showTitles: boolean,
+    glowIntensity: number,
+    labelRgb: [number, number, number],
+): NodeVisualState {
+    const color = colorForNode(node, selection.activeNodeId);
+    const hasFocusedNeighborhood = selection.highlightedNeighborIds.size > 0;
+    const opacity = hasFocusedNeighborhood
+        ? selection.highlightedNeighborIds.has(node.id) ||
+          selection.selectedNodeId === node.id
+            ? 1
+            : 0.28
+        : 0.95;
+    const baseEmissive = node.isRoot
+        ? 0.65
+        : 0.15 + Math.min((node.importance ?? 1) * 0.04, 0.45);
+
+    return {
+        color,
+        opacity,
+        showLabel: shouldShowNodeLabel(showTitles),
+        labelColor: labelColorForNode(node, selection.activeNodeId, labelRgb),
+        emissiveIntensity: baseEmissive * (glowIntensity / 50),
+    };
+}
+
+function updateNodeVisualState(
+    cached: CachedNodeObject,
+    visualState: NodeVisualState,
+) {
+    const visualSignature = [
+        visualState.color,
+        visualState.opacity,
+        visualState.showLabel ? "1" : "0",
+        visualState.labelColor,
+        visualState.emissiveIntensity,
+    ].join("\u0000");
+    if (cached.visualSignature === visualSignature) {
+        return;
+    }
+
+    cached.visualSignature = visualSignature;
+
+    const { mesh, label } = cached.refs;
+    const labelMaterial = label.material as THREE.SpriteMaterial;
+    mesh.material.color.set(visualState.color);
+    mesh.material.emissive.set(visualState.color);
+    mesh.material.emissiveIntensity = visualState.emissiveIntensity;
+    mesh.material.opacity = visualState.opacity;
+    mesh.material.transparent = visualState.opacity < 1;
+    mesh.material.needsUpdate = true;
+
+    label.visible = visualState.showLabel;
+    labelMaterial.color.set(visualState.labelColor);
+    labelMaterial.opacity = visualState.opacity;
+    labelMaterial.needsUpdate = true;
+}
+
+function disposeMaterial(material: THREE.Material) {
+    for (const value of Object.values(material)) {
+        if (value instanceof THREE.Texture) {
+            value.dispose();
+        }
+    }
+    material.dispose();
+}
+
+function disposeThreeObject(object: THREE.Object3D) {
+    object.traverse((child) => {
+        const geometry = (
+            child as THREE.Object3D & { geometry?: THREE.BufferGeometry }
+        ).geometry;
+        if (geometry) {
+            geometry.dispose();
+        }
+
+        const material = (
+            child as THREE.Object3D & {
+                material?: THREE.Material | THREE.Material[];
+            }
+        ).material;
+
+        if (Array.isArray(material)) {
+            material.forEach(disposeMaterial);
+        } else if (material) {
+            disposeMaterial(material);
+        }
+    });
 }
 
 export const GraphRenderer3D = forwardRef<
@@ -212,14 +356,20 @@ export const GraphRenderer3D = forwardRef<
 >(function GraphRenderer3D(
     {
         snapshot,
+        isVisible,
         qualityProfile,
         selection,
+        canvasTheme,
         linkThickness,
         arrows,
+        centerForce,
         repelForce,
         linkForce,
         linkDistance,
         nodeSize,
+        glowIntensity,
+        showTitles,
+        textFadeThreshold,
         layoutKey,
         restoredFromCache,
         shouldRunSimulation,
@@ -232,15 +382,26 @@ export const GraphRenderer3D = forwardRef<
     const fgRef = useRef<ForceGraphMethods<GNode> | undefined>(undefined);
     const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
     const renderDataRef = useRef<GraphRendererData | null>(null);
-    const hasFitLayoutKeyRef = useRef<string | null>(null);
+    const nodeObjectCacheRef = useRef<Map<string, CachedNodeObject>>(new Map());
+    const lastFitSignatureRef = useRef<string | null>(null);
     const persistedLayoutKeyRef = useRef<string | null>(null);
     const lastSimulatedLayoutKeyRef = useRef<string | null>(null);
+    const visualPropsRef = useRef<GraphRendererVisualProps>({
+        selection,
+        qualityProfile,
+        showTitles,
+        textFadeThreshold,
+        glowIntensity,
+        labelRgb: canvasTheme.labelRgb,
+        activeNodeId: selection.activeNodeId,
+    });
     const interactionSampleRef = useRef<{
         dragCancel?: () => void;
         zoomCancel?: () => void;
         hoverCancel?: () => void;
     }>({});
     const dataReadyAtRef = useRef<number | null>(null);
+    const effectiveShouldRunSimulation = shouldRunSimulation && isVisible;
 
     const renderData = useMemo(() => toRendererData(snapshot), [snapshot]);
 
@@ -249,6 +410,33 @@ export const GraphRenderer3D = forwardRef<
     }, [renderData]);
 
     const nodeScale = nodeSize / 3;
+    const labelRgb = canvasTheme.labelRgb;
+    const backlinkCounts = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const link of renderData.links) {
+            counts.set(link.target, (counts.get(link.target) ?? 0) + 1);
+        }
+        return counts;
+    }, [renderData.links]);
+
+    useEffect(() => {
+        visualPropsRef.current = {
+            selection,
+            qualityProfile,
+            showTitles,
+            textFadeThreshold,
+            glowIntensity,
+            labelRgb,
+            activeNodeId: selection.activeNodeId,
+        };
+    }, [
+        glowIntensity,
+        labelRgb,
+        qualityProfile,
+        selection,
+        showTitles,
+        textFadeThreshold,
+    ]);
 
     const focusNode = useCallback(
         (nodeId: string) => {
@@ -306,39 +494,63 @@ export const GraphRenderer3D = forwardRef<
         callbacks.onPersistPositions?.(extractPositions(currentGraph.nodes));
     }, [callbacks]);
 
-    const nodeOpacityFor = useCallback(
-        (node: GNode) => {
-            const hasFocusedNeighborhood =
-                selection.highlightedNeighborIds.size > 0;
-            if (!hasFocusedNeighborhood) return 0.95;
-            if (
-                selection.highlightedNeighborIds.has(node.id as string) ||
-                selection.selectedNodeId === node.id
-            ) {
-                return 1;
-            }
-            return 0.28;
-        },
-        [selection.highlightedNeighborIds, selection.selectedNodeId],
-    );
-
-    const nodeColor = useCallback(
-        (node: GNode) => {
-            const opacity = nodeOpacityFor(node);
-            if (opacity < 1) {
-                return "rgba(120,120,140,0.35)";
-            }
-            return colorForNode(node, selection.activeNodeId);
-        },
-        [nodeOpacityFor, selection.activeNodeId],
-    );
+    const nodeColor = useCallback((node: GNode) => {
+        const visualProps = visualPropsRef.current;
+        const visualState = buildNodeVisualState(
+            node,
+            visualProps.selection,
+            visualProps.showTitles,
+            visualProps.glowIntensity,
+            visualProps.labelRgb,
+        );
+        if (visualState.opacity < 1) {
+            return "rgba(120,120,140,0.35)";
+        }
+        return visualState.color;
+    }, []);
 
     const nodeThreeObject = useCallback(
         (node: GNode) => {
-            const color = colorForNode(node, selection.activeNodeId);
-            return objectForNode(node, color, nodeScale, nodeOpacityFor(node));
+            const nodeId = node.id as string;
+            const backlinkCount = backlinkCounts.get(nodeId) ?? 0;
+            const signature = [
+                node.title ?? "",
+                node.nodeType ?? "",
+                node.importance ?? 1,
+                backlinkCount,
+                nodeScale,
+            ].join("\u0000");
+            const cached = nodeObjectCacheRef.current.get(nodeId);
+            const visualProps = visualPropsRef.current;
+            const visualState = buildNodeVisualState(
+                node,
+                visualProps.selection,
+                visualProps.showTitles,
+                visualProps.glowIntensity,
+                visualProps.labelRgb,
+            );
+
+            if (cached?.signature === signature) {
+                updateNodeVisualState(cached, visualState);
+                return cached.object;
+            }
+
+            if (cached) {
+                disposeThreeObject(cached.object);
+            }
+
+            const created = objectForNode(node, backlinkCount, nodeScale);
+            const nextCached: CachedNodeObject = {
+                signature,
+                object: created.object,
+                refs: created.refs,
+                visualSignature: null,
+            };
+            updateNodeVisualState(nextCached, visualState);
+            nodeObjectCacheRef.current.set(nodeId, nextCached);
+            return created.object;
         },
-        [nodeOpacityFor, nodeScale, selection.activeNodeId],
+        [backlinkCounts, nodeScale],
     );
 
     const linkColor = useCallback(
@@ -378,11 +590,54 @@ export const GraphRenderer3D = forwardRef<
 
     useEffect(() => {
         persistedLayoutKeyRef.current = layoutKey;
-        if (restoredFromCache) return;
-        if (hasFitLayoutKeyRef.current === layoutKey) return;
-        hasFitLayoutKeyRef.current = layoutKey;
-        window.setTimeout(() => fgRef.current?.zoomToFit(400, 60), 180);
-    }, [layoutKey, restoredFromCache]);
+        if (!isVisible) return;
+        if (dimensions.width < 10 || dimensions.height < 10) return;
+        const nextSignature = `${layoutKey}:${dimensions.width}x${dimensions.height}`;
+        if (lastFitSignatureRef.current === nextSignature) return;
+        lastFitSignatureRef.current = nextSignature;
+        const timeoutId = window.setTimeout(
+            () => fgRef.current?.zoomToFit(400, 60),
+            180,
+        );
+        return () => window.clearTimeout(timeoutId);
+    }, [dimensions.height, dimensions.width, isVisible, layoutKey]);
+
+    useEffect(() => {
+        const activeNodeIds = new Set(renderData.nodes.map((node) => node.id));
+        const cache = nodeObjectCacheRef.current;
+
+        for (const [nodeId, cached] of cache) {
+            if (activeNodeIds.has(nodeId)) continue;
+            disposeThreeObject(cached.object);
+            cache.delete(nodeId);
+        }
+    }, [renderData.nodes]);
+
+    useEffect(() => {
+        const cache = nodeObjectCacheRef.current;
+        for (const node of renderData.nodes) {
+            const cached = cache.get(node.id);
+            if (!cached) continue;
+            updateNodeVisualState(
+                cached,
+                buildNodeVisualState(
+                    node,
+                    selection,
+                    showTitles,
+                    glowIntensity,
+                    labelRgb,
+                ),
+            );
+        }
+    }, [
+        glowIntensity,
+        labelRgb,
+        qualityProfile,
+        renderData.nodes,
+        selection,
+        showTitles,
+        textFadeThreshold,
+    ]);
 
     useEffect(() => {
         if (shouldRunSimulation) return;
@@ -398,6 +653,7 @@ export const GraphRenderer3D = forwardRef<
     ]);
 
     useEffect(() => {
+        if (!isVisible) return;
         dataReadyAtRef.current = performance.now();
         graphPerfCount("graph.view3d.data.ready", {
             nodeCount: renderData.nodes.length,
@@ -419,11 +675,34 @@ export const GraphRenderer3D = forwardRef<
         });
         return () => window.cancelAnimationFrame(rafId);
     }, [
+        isVisible,
         qualityProfile.mode,
         renderData.links.length,
         renderData.nodes.length,
         restoredFromCache,
     ]);
+
+    useEffect(() => {
+        if (isVisible && qualityProfile.enableHover) return;
+        interactionSampleRef.current.hoverCancel?.();
+        interactionSampleRef.current.hoverCancel = undefined;
+        callbacks.onNodeHover?.(null);
+    }, [callbacks, isVisible, qualityProfile.enableHover]);
+
+    useEffect(() => {
+        const fg = fgRef.current as
+            | (ForceGraphMethods<GNode> & {
+                  pauseAnimation?: () => void;
+                  resumeAnimation?: () => void;
+              })
+            | undefined;
+        if (!fg) return;
+        if (isVisible) {
+            fg.resumeAnimation?.();
+            return;
+        }
+        fg.pauseAnimation?.();
+    }, [isVisible]);
 
     useEffect(() => {
         const fg = fgRef.current;
@@ -433,6 +712,13 @@ export const GraphRenderer3D = forwardRef<
         if (charge && "strength" in charge) {
             (charge as unknown as { strength: (v: number) => void }).strength(
                 -repelForce,
+            );
+        }
+
+        const center = fg.d3Force("center");
+        if (center && "strength" in center) {
+            (center as unknown as { strength: (v: number) => void }).strength(
+                centerForce,
             );
         }
 
@@ -450,20 +736,27 @@ export const GraphRenderer3D = forwardRef<
             }
         }
 
-        if (shouldRunSimulation) {
+        if (effectiveShouldRunSimulation) {
             fg.d3ReheatSimulation();
         }
-    }, [linkDistance, linkForce, repelForce, shouldRunSimulation]);
+    }, [
+        centerForce,
+        effectiveShouldRunSimulation,
+        linkDistance,
+        linkForce,
+        repelForce,
+    ]);
 
     useEffect(() => {
         if (!shouldRunSimulation) {
             lastSimulatedLayoutKeyRef.current = layoutKey;
             return;
         }
+        if (!isVisible) return;
         if (lastSimulatedLayoutKeyRef.current === layoutKey) return;
         lastSimulatedLayoutKeyRef.current = layoutKey;
         fgRef.current?.d3ReheatSimulation();
-    }, [layoutKey, shouldRunSimulation]);
+    }, [isVisible, layoutKey, shouldRunSimulation]);
 
     const handleNodeClick = useCallback(
         (node: GNode) => {
@@ -554,6 +847,11 @@ export const GraphRenderer3D = forwardRef<
             samples.zoomCancel?.();
             samples.hoverCancel?.();
             persistCurrentLayout();
+
+            for (const cached of nodeObjectCacheRef.current.values()) {
+                disposeThreeObject(cached.object);
+            }
+            nodeObjectCacheRef.current.clear();
         };
     }, [persistCurrentLayout]);
 
@@ -586,14 +884,16 @@ export const GraphRenderer3D = forwardRef<
                 linkDirectionalParticleSpeed={qualityProfile.particleSpeed}
                 linkDirectionalParticleWidth={qualityProfile.particleWidth}
                 enablePointerInteraction={
-                    qualityProfile.enablePointerInteraction
+                    isVisible && qualityProfile.enablePointerInteraction
                 }
-                enableNodeDrag={qualityProfile.enableNodeDrag}
+                enableNodeDrag={isVisible && qualityProfile.enableNodeDrag}
                 cooldownTicks={cooldownTicks}
                 onNodeClick={handleNodeClick}
                 onNodeRightClick={handleNodeRightClick}
                 onNodeHover={
-                    qualityProfile.enableHover ? handleNodeHover : undefined
+                    isVisible && qualityProfile.enableHover
+                        ? handleNodeHover
+                        : undefined
                 }
                 onBackgroundClick={handleBackgroundClick}
                 onNodeDragEnd={persistCurrentLayout}

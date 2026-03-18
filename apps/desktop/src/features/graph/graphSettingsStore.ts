@@ -38,6 +38,7 @@ export interface GraphSettings {
     // Display
     nodeSize: number;
     linkThickness: number;
+    showTitles: boolean;
     textFadeThreshold: number;
     arrows: boolean;
     glowIntensity: number;
@@ -84,6 +85,7 @@ const defaults: GraphSettings = {
     linkDistance: 60,
     nodeSize: 3,
     linkThickness: 0.5,
+    showTitles: true,
     textFadeThreshold: 0.6,
     arrows: false,
     glowIntensity: 50,

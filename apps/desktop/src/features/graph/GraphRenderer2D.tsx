@@ -114,6 +114,7 @@ export const GraphRenderer2D = forwardRef<
 >(function GraphRenderer2D(
     {
         snapshot,
+        isVisible,
         graphMode,
         localDepth,
         qualityProfile,
@@ -127,6 +128,7 @@ export const GraphRenderer2D = forwardRef<
         linkDistance,
         nodeSize,
         glowIntensity,
+        showTitles,
         textFadeThreshold,
         layoutKey,
         restoredFromCache,
@@ -147,8 +149,9 @@ export const GraphRenderer2D = forwardRef<
     }>({});
     const renderDataRef = useRef<GraphRendererData | null>(null);
     const persistedLayoutKeyRef = useRef<string | null>(null);
-    const hasZoomedLayoutKeyRef = useRef<string | null>(null);
+    const lastZoomSignatureRef = useRef<string | null>(null);
     const lastSimulatedLayoutKeyRef = useRef<string | null>(null);
+    const effectiveShouldRunSimulation = shouldRunSimulation && isVisible;
 
     const renderData = useMemo(() => toRendererData(snapshot), [snapshot]);
 
@@ -332,14 +335,15 @@ export const GraphRenderer2D = forwardRef<
             ctx.restore();
 
             const showLabel =
-                (ps.showLabelsOnZoom &&
+                showTitles &&
+                ((ps.showLabelsOnZoom &&
                     globalScale > ps.textFadeThreshold &&
                     ps.qualityMode === "cinematic") ||
-                (ps.showLabelsOnHover && isHovered) ||
-                isCluster ||
-                isActive ||
-                isRoot ||
-                isSelected;
+                    (ps.showLabelsOnHover && isHovered) ||
+                    isCluster ||
+                    isActive ||
+                    isRoot ||
+                    isSelected);
             if (!showLabel) return;
 
             const fontSize = Math.min(12 / globalScale, 5);
@@ -480,11 +484,17 @@ export const GraphRenderer2D = forwardRef<
 
     useEffect(() => {
         persistedLayoutKeyRef.current = layoutKey;
-        if (restoredFromCache) return;
-        if (hasZoomedLayoutKeyRef.current === layoutKey) return;
-        hasZoomedLayoutKeyRef.current = layoutKey;
-        window.setTimeout(() => fgRef.current?.zoomToFit(400, 60), 180);
-    }, [layoutKey, restoredFromCache]);
+        if (!isVisible) return;
+        if (dimensions.width < 10 || dimensions.height < 10) return;
+        const nextSignature = `${layoutKey}:${dimensions.width}x${dimensions.height}`;
+        if (lastZoomSignatureRef.current === nextSignature) return;
+        lastZoomSignatureRef.current = nextSignature;
+        const timeoutId = window.setTimeout(
+            () => fgRef.current?.zoomToFit(400, 60),
+            180,
+        );
+        return () => window.clearTimeout(timeoutId);
+    }, [dimensions.height, dimensions.width, isVisible, layoutKey]);
 
     useEffect(() => {
         if (shouldRunSimulation) return;
@@ -500,6 +510,7 @@ export const GraphRenderer2D = forwardRef<
     ]);
 
     useEffect(() => {
+        if (!isVisible) return;
         dataReadyAtRef.current = performance.now();
         graphPerfCount("graph.view.data.ready", {
             nodeCount: renderData.nodes.length,
@@ -523,6 +534,7 @@ export const GraphRenderer2D = forwardRef<
 
         return () => window.cancelAnimationFrame(rafId);
     }, [
+        isVisible,
         qualityProfile.mode,
         renderData.links.length,
         renderData.nodes.length,
@@ -530,11 +542,26 @@ export const GraphRenderer2D = forwardRef<
     ]);
 
     useEffect(() => {
-        if (qualityProfile.enableHover) return;
+        if (isVisible && qualityProfile.enableHover) return;
         interactionSampleRef.current.hoverCancel?.();
         interactionSampleRef.current.hoverCancel = undefined;
         callbacks.onNodeHover?.(null);
-    }, [callbacks, qualityProfile.enableHover]);
+    }, [callbacks, isVisible, qualityProfile.enableHover]);
+
+    useEffect(() => {
+        const fg = fgRef.current as
+            | (ForceGraphMethods<GNode> & {
+                  pauseAnimation?: () => void;
+                  resumeAnimation?: () => void;
+              })
+            | undefined;
+        if (!fg) return;
+        if (isVisible) {
+            fg.resumeAnimation?.();
+            return;
+        }
+        fg.pauseAnimation?.();
+    }, [isVisible]);
 
     useEffect(() => {
         const fg = fgRef.current;
@@ -568,20 +595,27 @@ export const GraphRenderer2D = forwardRef<
             }
         }
 
-        if (shouldRunSimulation) {
+        if (effectiveShouldRunSimulation) {
             fg.d3ReheatSimulation();
         }
-    }, [centerForce, linkDistance, linkForce, repelForce, shouldRunSimulation]);
+    }, [
+        centerForce,
+        effectiveShouldRunSimulation,
+        linkDistance,
+        linkForce,
+        repelForce,
+    ]);
 
     useEffect(() => {
         if (!shouldRunSimulation) {
             lastSimulatedLayoutKeyRef.current = layoutKey;
             return;
         }
+        if (!isVisible) return;
         if (lastSimulatedLayoutKeyRef.current === layoutKey) return;
         lastSimulatedLayoutKeyRef.current = layoutKey;
         fgRef.current?.d3ReheatSimulation();
-    }, [layoutKey, shouldRunSimulation]);
+    }, [isVisible, layoutKey, shouldRunSimulation]);
 
     const handleNodeClick = useCallback(
         (node: GNode) => {
@@ -714,16 +748,18 @@ export const GraphRenderer2D = forwardRef<
                 linkDirectionalParticleWidth={qualityProfile.particleWidth}
                 linkDirectionalParticleColor={particleColorFn}
                 enablePointerInteraction={
-                    qualityProfile.enablePointerInteraction
+                    isVisible && qualityProfile.enablePointerInteraction
                 }
                 onNodeClick={handleNodeClick}
                 onNodeRightClick={handleNodeRightClick}
                 onNodeHover={
-                    qualityProfile.enableHover ? handleNodeHover : undefined
+                    isVisible && qualityProfile.enableHover
+                        ? handleNodeHover
+                        : undefined
                 }
                 onBackgroundClick={handleBackgroundClick}
                 cooldownTicks={cooldownTicks}
-                enableNodeDrag={qualityProfile.enableNodeDrag}
+                enableNodeDrag={isVisible && qualityProfile.enableNodeDrag}
                 onNodeDragEnd={persistCurrentLayout}
                 onEngineStop={persistCurrentLayout}
             />
