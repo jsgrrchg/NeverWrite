@@ -1,0 +1,248 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+let capturedOptions;
+vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
+    const actual = await vi.importActual("@anthropic-ai/claude-agent-sdk");
+    return {
+        ...actual,
+        query: (args) => {
+            capturedOptions = args.options;
+            return {
+                initializationResult: async () => ({
+                    models: [
+                        { value: "claude-sonnet-4-5", displayName: "Claude Sonnet", description: "Fast" },
+                    ],
+                }),
+                setModel: async () => { },
+                supportedCommands: async () => [],
+                [Symbol.asyncIterator]: async function* () { },
+            };
+        },
+    };
+});
+vi.mock("../tools.js", async () => {
+    const actual = await vi.importActual("../tools.js");
+    return {
+        ...actual,
+        registerHookCallback: vi.fn(),
+    };
+});
+describe("createSession options merging", () => {
+    let agent;
+    let ClaudeAcpAgent;
+    function createMockClient() {
+        return {
+            sessionUpdate: async (_notification) => { },
+            requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+            readTextFile: async () => ({ content: "" }),
+            writeTextFile: async () => ({}),
+        };
+    }
+    beforeEach(async () => {
+        capturedOptions = undefined;
+        vi.resetModules();
+        const acpAgent = await import("../acp-agent.js");
+        ClaudeAcpAgent = acpAgent.ClaudeAcpAgent;
+        agent = new ClaudeAcpAgent(createMockClient());
+    });
+    it("merges user-provided disallowedTools with ACP internal list", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        disallowedTools: ["WebSearch", "WebFetch"],
+                    },
+                },
+            },
+        });
+        // User-provided tools should be present
+        expect(capturedOptions.disallowedTools).toContain("WebSearch");
+        expect(capturedOptions.disallowedTools).toContain("WebFetch");
+        // ACP's internal disallowed tool should also be present
+        expect(capturedOptions.disallowedTools).toContain("AskUserQuestion");
+    });
+    it("works when user provides no disallowedTools", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+        });
+        expect(capturedOptions.disallowedTools).toContain("AskUserQuestion");
+    });
+    it("works when user provides empty disallowedTools", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        disallowedTools: [],
+                    },
+                },
+            },
+        });
+        expect(capturedOptions.disallowedTools).toContain("AskUserQuestion");
+    });
+    it("sets tools to empty array when disableBuiltInTools is true", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                disableBuiltInTools: true,
+                claudeCode: {
+                    options: {
+                        disallowedTools: ["CustomTool"],
+                    },
+                },
+            },
+        });
+        // disableBuiltInTools removes all built-in tools from context
+        expect(capturedOptions.tools).toEqual([]);
+        // User-provided and ACP disallowedTools still apply
+        expect(capturedOptions.disallowedTools).toContain("CustomTool");
+        expect(capturedOptions.disallowedTools).toContain("AskUserQuestion");
+    });
+    it("merges user-provided hooks with ACP hooks", async () => {
+        const userPreToolUseHook = { hooks: [{ command: "echo pre" }] };
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        hooks: {
+                            PreToolUse: [userPreToolUseHook],
+                            PostToolUse: [{ hooks: [{ command: "echo user-post" }] }],
+                        },
+                    },
+                },
+            },
+        });
+        // User's PreToolUse hooks should be preserved
+        expect(capturedOptions.hooks?.PreToolUse).toEqual([userPreToolUseHook]);
+        // PostToolUse should contain both user and ACP hooks
+        expect(capturedOptions.hooks?.PostToolUse).toHaveLength(2);
+    });
+    it("inherits HOME and PATH from process.env when no env is provided", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+        });
+        expect(capturedOptions?.env?.HOME).toBe(process.env.HOME);
+        expect(capturedOptions?.env?.PATH).toBe(process.env.PATH);
+    });
+    it("merges user-provided env vars on top of process.env", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        env: {
+                            CUSTOM_VAR: "custom-value",
+                        },
+                    },
+                },
+            },
+        });
+        expect(capturedOptions?.env?.HOME).toBe(process.env.HOME);
+        expect(capturedOptions?.env?.PATH).toBe(process.env.PATH);
+        expect(capturedOptions?.env?.CUSTOM_VAR).toBe("custom-value");
+    });
+    it("allows user-provided env vars to override process.env entries", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        env: {
+                            HOME: "/custom/home",
+                        },
+                    },
+                },
+            },
+        });
+        expect(capturedOptions?.env?.HOME).toBe("/custom/home");
+    });
+    it("defaults tools to claude_code preset when not provided", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+        });
+        expect(capturedOptions.tools).toEqual({ type: "preset", preset: "claude_code" });
+    });
+    it("passes through user-provided tools string array", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        tools: ["Read", "Glob"],
+                    },
+                },
+            },
+        });
+        expect(capturedOptions.tools).toEqual(["Read", "Glob"]);
+    });
+    it("explicit tools array takes precedence over disableBuiltInTools", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                disableBuiltInTools: true,
+                claudeCode: {
+                    options: {
+                        tools: ["Read", "Glob"],
+                    },
+                },
+            },
+        });
+        expect(capturedOptions.tools).toEqual(["Read", "Glob"]);
+    });
+    it("passes through empty tools array to disable all built-in tools", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        tools: [],
+                    },
+                },
+            },
+        });
+        expect(capturedOptions.tools).toEqual([]);
+    });
+    it("merges user-provided mcpServers with ACP mcpServers", async () => {
+        await agent.newSession({
+            cwd: "/test",
+            mcpServers: [
+                {
+                    name: "acp-server",
+                    command: "node",
+                    args: ["acp-server.js"],
+                    env: [],
+                },
+            ],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        mcpServers: {
+                            "user-server": {
+                                type: "stdio",
+                                command: "node",
+                                args: ["server.js"],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        // User-provided MCP server should be present
+        expect(capturedOptions.mcpServers).toHaveProperty("user-server");
+        // ACP-provided MCP server should also be present
+        expect(capturedOptions.mcpServers).toHaveProperty("acp-server");
+    });
+});

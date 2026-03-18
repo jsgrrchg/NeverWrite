@@ -1,0 +1,117 @@
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
+import { ClaudeAcpAgent } from "../acp-agent.js";
+describe("authorization", () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        //await all pending events like
+        vi.runAllTimers();
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+        vi.resetAllMocks();
+    });
+    async function createAgentMock() {
+        const mockQuery = vi.hoisted(() => vi.fn(() => ({
+            initializationResult: vi.fn().mockResolvedValue({
+                models: [{ value: "id", displayName: "name", description: "description" }],
+            }),
+            setModel: vi.fn(),
+            supportedCommands: vi.fn().mockResolvedValue([]),
+        })));
+        vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+            query: mockQuery,
+        }));
+        const connectionMock = {
+            sessionUpdate: async (_) => { },
+        };
+        const agent = new ClaudeAcpAgent(connectionMock);
+        return [agent, mockQuery];
+    }
+    it("gateway auth not offered without capability", async () => {
+        const [agent] = await createAgentMock();
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {},
+        });
+        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "gateway" }));
+    });
+    it("gateway auth offered when client advertises auth._meta.gateway capability", async () => {
+        const [agent] = await createAgentMock();
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                auth: { _meta: { gateway: true } },
+            },
+        });
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "gateway" }));
+    });
+    it("uses gateway env after gateway auth", async () => {
+        const [agent, mockQuery] = await createAgentMock();
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                auth: { terminal: true, _meta: { gateway: true } },
+            },
+        });
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "gateway" }));
+        await agent.authenticate({
+            methodId: "gateway",
+            _meta: { gateway: { baseUrl: "https://gateway.example", headers: { "x-api-key": "test" } } },
+        });
+        await agent.newSession({
+            cwd: "testRoot",
+            mcpServers: [],
+            _meta: {
+                claudeCode: {
+                    options: {
+                        env: {
+                            userEnv: "userEnv",
+                        },
+                    },
+                },
+            },
+        });
+        expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
+            options: expect.objectContaining({
+                env: expect.objectContaining({
+                    ANTHROPIC_AUTH_TOKEN: "",
+                    ANTHROPIC_BASE_URL: "https://gateway.example",
+                    ANTHROPIC_CUSTOM_HEADERS: "x-api-key: test",
+                    userEnv: "userEnv",
+                }),
+            }),
+        }));
+    });
+    it("hide claude authentication without terminal-auth", async () => {
+        const [agent] = await createAgentMock();
+        vi.stubGlobal("process", { ...process, argv: ["--hide-claude-auth"] });
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                auth: { _meta: { gateway: true } },
+            },
+        });
+        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "claude-login" }));
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "gateway" }));
+    });
+    it("hide terminal auth even when terminal-auth is set", async () => {
+        const [agent] = await createAgentMock();
+        vi.stubGlobal("process", { ...process, argv: ["--hide-claude-auth"] });
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                _meta: { "terminal-auth": true },
+            },
+        });
+        expect(initializeResponse.authMethods).toStrictEqual([]);
+    });
+    it("show claude authentication", async () => {
+        const [agent] = await createAgentMock();
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { auth: { terminal: true } },
+        });
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "claude-login" }));
+    });
+});
