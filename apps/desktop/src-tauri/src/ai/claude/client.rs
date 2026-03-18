@@ -13,7 +13,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Client, ClientCapabilities, ClientSideConnection, ContentBlock, ContentChunk,
-    FileSystemCapability, ForkSessionRequest, Implementation, InitializeRequest,
+    FileSystemCapabilities, ForkSessionRequest, Implementation, InitializeRequest,
     ListSessionsRequest, LoadSessionRequest, NewSessionRequest, PermissionOption, PromptRequest,
     ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     Result as AcpResult, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
@@ -115,7 +115,7 @@ enum RuntimeCommand {
         display_path: String,
         content: String,
     },
-    ClearSessionBaselines {
+    ClearSessionState {
         session_id: String,
     },
 }
@@ -184,6 +184,24 @@ impl StreamingState {
             .lock()
             .ok()
             .and_then(|mut guard| guard.remove(session_id))
+    }
+
+    fn clear_session(&self, session_id: &str) {
+        if let Ok(mut guard) = self.current_message_ids.lock() {
+            guard.remove(session_id);
+        }
+        if let Ok(mut guard) = self.current_thought_ids.lock() {
+            guard.remove(session_id);
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.current_message_ids.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.current_thought_ids.lock() {
+            guard.clear();
+        }
     }
 }
 
@@ -437,10 +455,47 @@ impl ToolState {
         }
     }
 
-    fn clear_session_baselines(&self, session_id: &str) {
+    fn clear_session(&self, session_id: &str) {
         let prefix = format!("{session_id}::");
+
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Ok(mut guard) = self.terminal_output.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Ok(mut guard) = self.terminal_exit.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
         if let Ok(mut guard) = self.file_baselines.lock() {
             guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Ok(mut guard) = self.session_cwds.lock() {
+            guard.remove(session_id);
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.terminal_output.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.terminal_exit.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.session_cwds.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.clear();
         }
     }
 
@@ -598,6 +653,19 @@ impl PermissionState {
         sender
             .send(outcome)
             .map_err(|_| "Permission channel closed".to_string())
+    }
+
+    fn clear_session(&self, session_id: &str) {
+        let prefix = format!("{session_id}:permission:");
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.retain(|request_id, _| !request_id.starts_with(&prefix));
+        }
+    }
+
+    fn clear_all(&self) {
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.clear();
+        }
     }
 }
 
@@ -1038,8 +1106,8 @@ impl ClaudeRuntimeHandle {
             .map_err(|error| error.to_string())
     }
 
-    pub fn clear_session_baselines(&self, session_id: &str) {
-        let _ = self.command_tx.send(RuntimeCommand::ClearSessionBaselines {
+    pub fn clear_session_state(&self, session_id: &str) {
+        let _ = self.command_tx.send(RuntimeCommand::ClearSessionState {
             session_id: session_id.to_string(),
         });
     }
@@ -1085,9 +1153,18 @@ impl RuntimeActor {
         self.connection = None;
         self._io_task_done = None;
         self.initialized = false;
+        self.streaming.clear_all();
+        self.tools.clear_all();
+        self.permissions.clear_all();
         if let Ok(mut guard) = self.stderr_tail.lock() {
             guard.clear();
         }
+    }
+
+    fn clear_session_state(&mut self, session_id: &str) {
+        self.streaming.clear_session(session_id);
+        self.tools.clear_session(session_id);
+        self.permissions.clear_session(session_id);
     }
 
     fn poll_connection_health(&mut self) -> Result<(), String> {
@@ -1206,8 +1283,8 @@ impl RuntimeActor {
                 self.tools
                     .store_file_baseline(&session_id, &display_path, content);
             }
-            RuntimeCommand::ClearSessionBaselines { session_id } => {
-                self.tools.clear_session_baselines(&session_id);
+            RuntimeCommand::ClearSessionState { session_id } => {
+                self.clear_session_state(&session_id);
             }
         }
     }
@@ -1329,7 +1406,7 @@ impl RuntimeActor {
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(
                 ClientCapabilities::new()
-                    .fs(FileSystemCapability::new()
+                    .fs(FileSystemCapabilities::new()
                         .read_text_file(true)
                         .write_text_file(true))
                     .terminal(false),
@@ -1556,7 +1633,7 @@ impl RuntimeActor {
             .set_session_config_option(SetSessionConfigOptionRequest::new(
                 SessionId::new(session_id),
                 option_id,
-                value,
+                value.as_str(),
             ))
             .await
             .map(|_| ())

@@ -620,10 +620,18 @@ mod tests {
             ..ClaudeSetupConfig::default()
         };
         let bundled_path = std::env::temp_dir().join("vaultai-claude-test-bundled");
+        let bundled_node_path = std::env::temp_dir().join("vaultai-claude-test-bundled-node");
+        let bundled_vendor_path = std::env::temp_dir().join("vaultai-claude-test-bundled-vendor");
         let vendor_path = std::env::temp_dir().join("vaultai-claude-test-vendor");
         fs::write(&bundled_path, "binary").expect("write bundled stub");
 
-        let resolved = resolve_binary_command(&config, bundled_path.clone(), vendor_path);
+        let resolved = resolve_binary_command(
+            &config,
+            bundled_path.clone(),
+            bundled_node_path,
+            bundled_vendor_path,
+            vendor_path,
+        );
 
         assert_eq!(resolved.program, Some(bundled_path.display().to_string()));
         assert_eq!(resolved.source, AiRuntimeBinarySource::Bundled);
