@@ -253,7 +253,7 @@ export function GraphViewController({
             graphMode,
             rendererMode,
             localDepth,
-            rootNoteId: activeNoteId,
+            rootNoteId: graphMode === "local" ? activeNoteId : null,
             showTagNodes,
             showAttachmentNodes,
             showOrphans,
@@ -417,12 +417,18 @@ export function GraphViewController({
                 );
                 return;
             }
+
+            if (rendererMode === "3d") {
+                rendererRef.current?.focusNode(node.id);
+                return;
+            }
+
             if (node.nodeType === "tag" || node.nodeType === "attachment") {
                 return;
             }
             void openNoteById(node.id, node.title || node.id);
         },
-        [openNoteById, setGraphSetting],
+        [openNoteById, rendererMode, setGraphSetting],
     );
 
     const handleNodeContextMenu = useCallback(
