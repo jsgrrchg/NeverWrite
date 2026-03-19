@@ -101,7 +101,15 @@ import {
 } from "./FloatingSelectionToolbar";
 import { FrontmatterPanel } from "./FrontmatterPanel";
 import {
+    getBlockquoteTransform,
+    getCodeBlockLanguageAtSelection,
+    getCodeBlockTransform,
+    getHeadingTransform,
+    getHorizontalRuleTransform,
     getSelectionTransform,
+    getSetCodeBlockLanguageTransform,
+    type HeadingLevel,
+    type SelectionTransformResult,
     type SelectionToolbarAction,
 } from "./selectionTransforms";
 import {
@@ -125,6 +133,7 @@ import {
     findGrammarDiagnosticsAt,
 } from "./extensions/grammar";
 import { useSpellcheckStore } from "../spellcheck/store";
+import { useCommandStore } from "../command-palette/store/commandStore";
 import {
     getInlineDiffExtension,
     inlineDiffField,
@@ -236,6 +245,8 @@ export function Editor({
     );
     const updateTabContent = useEditorStore((s) => s.updateTabContent);
     const updateTabTitle = useEditorStore((s) => s.updateTabTitle);
+    const registerCommand = useCommandStore((s) => s.register);
+    const unregisterCommand = useCommandStore((s) => s.unregister);
     const isDark = useThemeStore((s) => s.isDark);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
@@ -512,6 +523,33 @@ export function Editor({
         ],
     );
 
+    const syncDerivedTitle = useCallback(
+        (body: string, tab: NoteTab | null = activeTabRef.current) => {
+            if (!tab) return null;
+
+            const nextTitle = deriveDisplayedTitle(
+                frontmatterByTabId.current.get(tab.noteId) ?? null,
+                body,
+                tab.title,
+            );
+
+            if (activeTabRef.current?.id === tab.id) {
+                setEditableTitle(nextTitle);
+            }
+
+            if (nextTitle !== tab.title) {
+                updateTabTitle(tab.id, nextTitle);
+                updateNoteMetadata(tab.noteId, {
+                    title: nextTitle,
+                    modified_at: Math.floor(Date.now() / 1000),
+                });
+            }
+
+            return nextTitle;
+        },
+        [updateNoteMetadata, updateTabTitle],
+    );
+
     const copySelectedText = useCallback(async () => {
         const view = viewRef.current;
         if (!view) return;
@@ -676,6 +714,70 @@ export function Editor({
         },
         [updateSelectionToolbar],
     );
+
+    const applyEditorTransform = useCallback(
+        (
+            getTransform: (
+                state: EditorState,
+            ) => SelectionTransformResult | null,
+        ) => {
+            const view = viewRef.current;
+            if (!view) return false;
+
+            const transform = getTransform(view.state);
+            if (!transform) return false;
+
+            view.dispatch({
+                changes: transform.changes,
+                selection: transform.selection,
+                scrollIntoView: true,
+                userEvent: transform.userEvent,
+            });
+            view.focus();
+            updateSelectionToolbar(view);
+            return true;
+        },
+        [updateSelectionToolbar],
+    );
+
+    const applyHeadingCommand = useCallback(
+        (level: HeadingLevel) =>
+            applyEditorTransform((state) => getHeadingTransform(state, level)),
+        [applyEditorTransform],
+    );
+
+    const applyBlockquoteCommand = useCallback(
+        () => applyEditorTransform(getBlockquoteTransform),
+        [applyEditorTransform],
+    );
+
+    const applyCodeBlockCommand = useCallback(
+        () => applyEditorTransform(getCodeBlockTransform),
+        [applyEditorTransform],
+    );
+
+    const applyHorizontalRuleCommand = useCallback(
+        () => applyEditorTransform(getHorizontalRuleTransform),
+        [applyEditorTransform],
+    );
+
+    const applyCodeBlockLanguageCommand = useCallback(() => {
+        const view = viewRef.current;
+        if (!view) return false;
+
+        const currentLanguage = getCodeBlockLanguageAtSelection(view.state);
+        if (currentLanguage === null) return false;
+
+        const nextLanguage = window.prompt(
+            "Code block language",
+            currentLanguage,
+        );
+        if (nextLanguage === null) return false;
+
+        return applyEditorTransform((state) =>
+            getSetCodeBlockLanguageTransform(state, nextLanguage),
+        );
+    }, [applyEditorTransform]);
 
     const handleAddSelectionToChat = useCallback(() => {
         useChatStore.getState().attachSelectionFromEditor();
@@ -1153,6 +1255,119 @@ export function Editor({
         ],
     );
 
+    useEffect(() => {
+        const whenEditorReady = () =>
+            viewRef.current !== null && activeTabRef.current !== null;
+        const commands = [
+            {
+                id: "editor:heading-1",
+                label: "Heading 1",
+                shortcut: "\u23181",
+                execute: () => {
+                    applyHeadingCommand(1);
+                },
+            },
+            {
+                id: "editor:heading-2",
+                label: "Heading 2",
+                shortcut: "\u23182",
+                execute: () => {
+                    applyHeadingCommand(2);
+                },
+            },
+            {
+                id: "editor:heading-3",
+                label: "Heading 3",
+                shortcut: "\u23183",
+                execute: () => {
+                    applyHeadingCommand(3);
+                },
+            },
+            {
+                id: "editor:heading-4",
+                label: "Heading 4",
+                shortcut: "\u23184",
+                execute: () => {
+                    applyHeadingCommand(4);
+                },
+            },
+            {
+                id: "editor:heading-5",
+                label: "Heading 5",
+                shortcut: "\u23185",
+                execute: () => {
+                    applyHeadingCommand(5);
+                },
+            },
+            {
+                id: "editor:heading-6",
+                label: "Heading 6",
+                shortcut: "\u23186",
+                execute: () => {
+                    applyHeadingCommand(6);
+                },
+            },
+            {
+                id: "editor:heading-0",
+                label: "Remove Heading",
+                shortcut: "\u23180",
+                execute: () => {
+                    applyHeadingCommand(0);
+                },
+            },
+            {
+                id: "editor:blockquote",
+                label: "Toggle Blockquote",
+                execute: () => {
+                    applyBlockquoteCommand();
+                },
+            },
+            {
+                id: "editor:code-block",
+                label: "Insert Code Block",
+                execute: () => {
+                    applyCodeBlockCommand();
+                },
+            },
+            {
+                id: "editor:horizontal-rule",
+                label: "Insert Horizontal Rule",
+                execute: () => {
+                    applyHorizontalRuleCommand();
+                },
+            },
+            {
+                id: "editor:code-block-language",
+                label: "Set Code Block Language",
+                execute: () => {
+                    applyCodeBlockLanguageCommand();
+                },
+            },
+        ] as const;
+
+        for (const command of commands) {
+            registerCommand({
+                ...command,
+                category: "Editor",
+                when: whenEditorReady,
+            });
+        }
+
+        return () => {
+            for (const command of commands) {
+                unregisterCommand(command.id);
+            }
+        };
+    }, [
+        applyBlockquoteCommand,
+        applyCodeBlockCommand,
+        applyCodeBlockLanguageCommand,
+        applyHeadingCommand,
+        applyHorizontalRuleCommand,
+        registerCommand,
+        unregisterCommand,
+    ]);
+
     // Factory to create a fresh EditorState with all extensions
     const createEditorState = useCallback(
         (
@@ -1285,6 +1500,34 @@ export function Editor({
                                 return true;
                             },
                         },
+                        {
+                            key: "Mod-1",
+                            run: () => applyHeadingCommand(1),
+                        },
+                        {
+                            key: "Mod-2",
+                            run: () => applyHeadingCommand(2),
+                        },
+                        {
+                            key: "Mod-3",
+                            run: () => applyHeadingCommand(3),
+                        },
+                        {
+                            key: "Mod-4",
+                            run: () => applyHeadingCommand(4),
+                        },
+                        {
+                            key: "Mod-5",
+                            run: () => applyHeadingCommand(5),
+                        },
+                        {
+                            key: "Mod-6",
+                            run: () => applyHeadingCommand(6),
+                        },
+                        {
+                            key: "Mod-0",
+                            run: () => applyHeadingCommand(0),
+                        },
                         ...defaultKeymap,
                         ...historyKeymap,
                         ...searchKeymap,
@@ -1308,6 +1551,7 @@ export function Editor({
                             const content = doc.toString();
                             updateTabContent(tab.id, content);
                         }, 300);
+                        syncDerivedTitle(doc.toString(), tab);
                         scheduleSaveRef.current(tab.id, doc);
                     }),
                     userEditNotifier(
@@ -1359,6 +1603,8 @@ export function Editor({
             updateSelectionToolbar,
             updateWikilinkSuggester,
             handleOpenLinkContextMenu,
+            applyHeadingCommand,
+            syncDerivedTitle,
             updateTabContent,
         ],
     );

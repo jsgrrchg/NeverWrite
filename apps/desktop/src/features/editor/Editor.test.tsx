@@ -1,8 +1,9 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { EditorView } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useCommandStore } from "../command-palette/store/commandStore";
 import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { Editor } from "./Editor";
@@ -172,6 +173,162 @@ describe("Editor", () => {
             "data-live-preview",
             "false",
         );
+    });
+
+    it("registers heading shortcuts and syncs the visible title from the leading H1", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        await act(async () => {
+            view.focus();
+            view.dispatch({ selection: { anchor: 0 } });
+        });
+
+        expect(
+            view.state
+                .facet(keymap)
+                .flat()
+                .some((binding) => binding.key === "Mod-1"),
+        ).toBe(true);
+
+        await act(async () => {
+            useCommandStore.getState().execute("editor:heading-1");
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("# Hello world\nBody");
+        expect(screen.getByDisplayValue("Hello world")).toBeInTheDocument();
+        expect(useEditorStore.getState().tabs[0]?.title).toBe("Hello world");
+    });
+
+    it("registers heading commands and keeps frontmatter title as the visible title", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Frontmatter title",
+                content:
+                    "---\ntitle: Frontmatter title\n---\nBody heading\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+
+        expect(
+            useCommandStore.getState().commands.get("editor:heading-1"),
+        ).toBeDefined();
+        expect(
+            useCommandStore.getState().commands.get("editor:heading-0"),
+        ).toBeDefined();
+
+        await act(async () => {
+            view.dispatch({ selection: { anchor: 0 } });
+            useCommandStore.getState().execute("editor:heading-1");
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("# Body heading\nBody");
+        expect(screen.getAllByDisplayValue("Frontmatter title")).toHaveLength(
+            2,
+        );
+        expect(useEditorStore.getState().tabs[0]?.title).toBe(
+            "Frontmatter title",
+        );
+    });
+
+    it("registers structural editor commands and executes them from the command palette store", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world\nNext line",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+
+        expect(
+            useCommandStore.getState().commands.get("editor:blockquote"),
+        ).toBeDefined();
+        expect(
+            useCommandStore.getState().commands.get("editor:code-block"),
+        ).toBeDefined();
+        expect(
+            useCommandStore.getState().commands.get("editor:horizontal-rule"),
+        ).toBeDefined();
+        expect(
+            useCommandStore
+                .getState()
+                .commands.get("editor:code-block-language"),
+        ).toBeDefined();
+
+        await act(async () => {
+            view.dispatch({ selection: { anchor: 0 } });
+            useCommandStore.getState().execute("editor:blockquote");
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("> Hello world\nNext line");
+
+        await act(async () => {
+            view.dispatch({ selection: { anchor: 3 } });
+            useCommandStore.getState().execute("editor:horizontal-rule");
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("> Hello world\n---\nNext line");
+    });
+
+    it("inserts code blocks and lets the language be updated through commands", async () => {
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("ts");
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "const value = 1;",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                selection: { anchor: 0, head: view.state.doc.length },
+            });
+            useCommandStore.getState().execute("editor:code-block");
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("```\nconst value = 1;\n```");
+
+        await act(async () => {
+            view.dispatch({ selection: { anchor: 5 } });
+            useCommandStore.getState().execute("editor:code-block-language");
+            await flushPromises();
+        });
+
+        expect(promptSpy).toHaveBeenCalledWith("Code block language", "");
+        expect(view.state.doc.toString()).toBe("```ts\nconst value = 1;\n```");
+
+        promptSpy.mockRestore();
     });
 
     it("uses the shared spellcheck menu for the title textarea", async () => {
