@@ -777,11 +777,7 @@ function buildCodeBlockDecorations(state: EditorState): DecorationSet {
 
             if (openEnd < 0) return;
 
-            const showHeader = !selectionTouchesRange(
-                state,
-                node.from,
-                Math.min(openEnd + 1, node.to),
-            );
+            const showHeader = true;
 
             const openLine = state.doc.lineAt(node.from);
             const firstContentLineNum = openLine.number + 1;

@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { resolveLinkHref, linkReferenceField } from "./livePreviewHelpers";
 import { dispatchOpenYouTubeModal } from "../youtube";
 import {
+    createCodeBlockLivePreviewExtension,
     createImageLivePreviewExtension,
     createTableLivePreviewExtension,
     type TableInteractionHandlers,
@@ -433,6 +434,7 @@ export function livePreviewExtension(
     return [
         linkReferenceField,
         createInlineLivePreviewPlugin(),
+        createCodeBlockLivePreviewExtension(),
         createImageLivePreviewExtension(vaultRoot),
         createTableLivePreviewExtension(interactions),
         clickHandler,
