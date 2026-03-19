@@ -17,6 +17,7 @@ import {
     graphPerfMeasure,
     scheduleGraphFpsSample,
 } from "./graphPerf";
+import { getFocusedCameraPosition, getGraphFocusDistance } from "./graphCamera";
 import type { GraphRendererProps } from "./graphRendererProps";
 import type {
     GraphPosition,
@@ -452,19 +453,34 @@ export const GraphRenderer3D = forwardRef<
                 return;
             }
 
-            const distance = 120;
-            const distRatio =
-                1 +
-                distance / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+            const camera = fgRef.current?.camera();
+            const currentDistance = camera
+                ? Math.hypot(
+                      camera.position.x - node.x,
+                      camera.position.y - node.y,
+                      camera.position.z - node.z,
+                  )
+                : null;
+            const distance = getGraphFocusDistance(
+                currentDistance,
+                node.importance ?? 1,
+            );
+            const position = getFocusedCameraPosition(
+                { x: node.x, y: node.y, z: node.z },
+                camera
+                    ? {
+                          x: camera.position.x,
+                          y: camera.position.y,
+                          z: camera.position.z,
+                      }
+                    : null,
+                distance,
+            );
 
             fgRef.current?.cameraPosition(
-                {
-                    x: node.x * distRatio,
-                    y: node.y * distRatio,
-                    z: node.z * distRatio,
-                },
+                position,
                 { x: node.x, y: node.y, z: node.z },
-                500,
+                1100,
             );
             callbacks.onSelectionChange?.(nodeId);
             callbacks.onHighlightNeighbors?.(nodeId);

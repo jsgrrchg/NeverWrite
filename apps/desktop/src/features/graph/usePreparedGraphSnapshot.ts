@@ -147,6 +147,12 @@ export function usePreparedGraphSnapshot({
             return;
         }
 
+        if (prepared?.layoutKey === layoutKey) {
+            setIsPreparing(false);
+            setError(null);
+            return;
+        }
+
         const worker = workerRef.current;
         if (!worker) return;
 
@@ -170,7 +176,14 @@ export function usePreparedGraphSnapshot({
             layoutStrategy,
             cachedPositions,
         });
-    }, [cachedPositions, graphSnapshot, isVisible, layoutKey, layoutStrategy]);
+    }, [
+        cachedPositions,
+        graphSnapshot,
+        isVisible,
+        layoutKey,
+        layoutStrategy,
+        prepared,
+    ]);
 
     return {
         prepared,

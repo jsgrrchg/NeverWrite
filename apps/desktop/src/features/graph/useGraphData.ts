@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { parseQuery } from "../search/queryParser";
@@ -149,6 +149,11 @@ export function useGraphData(
         undefined,
     );
     const missingLocalRoot = graphMode === "local" && !activeNoteId;
+    const localRootNoteId = graphMode === "local" ? activeNoteId : null;
+    const preferredNodeIds = useMemo(
+        () => (localRootNoteId ? [localRootNoteId] : undefined),
+        [localRootNoteId],
+    );
 
     useEffect(() => {
         const timer = setTimeout(
@@ -196,14 +201,9 @@ export function useGraphData(
             try {
                 const options: GraphSnapshotOptions = {
                     mode: graphMode,
-                    root_note_id:
-                        graphMode === "local"
-                            ? (activeNoteId ?? undefined)
-                            : undefined,
+                    root_note_id: localRootNoteId ?? undefined,
                     local_depth: graphMode === "local" ? localDepth : undefined,
-                    preferred_node_ids: activeNoteId
-                        ? [activeNoteId]
-                        : undefined,
+                    preferred_node_ids: preferredNodeIds,
                     include_tags: showTagNodes,
                     include_attachments: showAttachmentNodes,
                     include_groups: groupQueries.length > 0,
@@ -312,8 +312,9 @@ export function useGraphData(
         graphRevision,
         graphMode,
         localDepth,
-        activeNoteId,
+        localRootNoteId,
         missingLocalRoot,
+        preferredNodeIds,
         debouncedSearchFilter,
         maxGlobalLinks,
         maxGlobalNodes,
