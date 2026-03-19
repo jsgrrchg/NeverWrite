@@ -1,5 +1,5 @@
 import { useEditorStore, isReviewTab } from "../../../app/store/editorStore";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent, setVaultEntries } from "../../../test/test-utils";
@@ -7,7 +7,7 @@ import type { AIChatSession } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { resetChatStore, useChatStore } from "../store/chatStore";
-import { buildPatchFromTexts, emptyPatch } from "../store/actionLogModel";
+import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
 
 function createTrackedFile(
     path: string,
@@ -15,7 +15,7 @@ function createTrackedFile(
 ): TrackedFile {
     const diffBase = overrides.diffBase ?? "old line";
     const currentText = overrides.currentText ?? "new line";
-    return {
+    return syncDerivedLinePatch({
         identityKey: path,
         originPath: path,
         path,
@@ -23,15 +23,12 @@ function createTrackedFile(
         status: { kind: "modified" },
         diffBase,
         currentText,
-        unreviewedEdits:
-            diffBase === currentText
-                ? emptyPatch()
-                : buildPatchFromTexts(diffBase, currentText),
+        unreviewedEdits: emptyPatch(),
         version: 1,
         isText: true,
         updatedAt: 10,
         ...overrides,
-    };
+    });
 }
 
 function createSession(sessionId: string, files: TrackedFile[]): AIChatSession {
@@ -103,6 +100,49 @@ describe("EditedFilesBufferPanel", () => {
         renderComponent(<EditedFilesBufferPanel />);
 
         expect(screen.queryByText("Edits")).not.toBeInTheDocument();
+    });
+
+    it("auto-hides the undo-only banner after five seconds", () => {
+        vi.useFakeTimers();
+
+        const session = {
+            ...createSession("session-undo", []),
+            activeWorkCycleId: "cycle-1",
+            visibleWorkCycleId: "cycle-1",
+            actionLog: {
+                trackedFilesByWorkCycleId: {
+                    "cycle-1": {},
+                },
+                lastRejectUndo: {
+                    buffers: [],
+                    snapshots: {
+                        "/vault/src/a.ts": createTrackedFile("/vault/src/a.ts"),
+                    },
+                    timestamp: 123,
+                },
+            },
+        } satisfies AIChatSession;
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            undoLastReject: vi.fn(async () => {}),
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        expect(screen.getByText("Undo last reject")).toBeInTheDocument();
+
+        act(() => {
+            vi.advanceTimersByTime(5000);
+        });
+
+        expect(screen.queryByText("Undo last reject")).not.toBeInTheDocument();
+
+        vi.useRealTimers();
     });
 
     it("renders the total summary and the primary actions", () => {

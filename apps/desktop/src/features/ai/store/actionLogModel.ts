@@ -7,9 +7,12 @@
 
 import type {
     ActionLogState,
+    AgentTextSpan,
     LineEdit,
     LinePatch,
     PerFileUndo,
+    TextEdit,
+    TextRangePatch,
     TrackedFile,
     TrackedFileStatus,
 } from "../diff/actionLogTypes";
@@ -21,6 +24,10 @@ import type { AIFileDiff, AIFileDiffHunk, AIFileDiffHunkLine } from "../types";
 
 export function emptyPatch(): LinePatch {
     return { edits: [] };
+}
+
+export function emptyTextRangePatch(): TextRangePatch {
+    return { spans: [] };
 }
 
 export function patchIsEmpty(patch: LinePatch): boolean {
@@ -66,6 +73,359 @@ export function shiftEditsAfter(
         }
         return edit;
     });
+}
+
+function buildLineStartOffsets(text: string): number[] {
+    const offsets = [0];
+    for (let index = 0; index < text.length; index++) {
+        if (text[index] === "\n") {
+            offsets.push(index + 1);
+        }
+    }
+    return offsets;
+}
+
+function lineIndexAtOffset(lineStarts: number[], offset: number): number {
+    if (lineStarts.length === 0) return 0;
+    let low = 0;
+    let high = lineStarts.length - 1;
+
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        if (lineStarts[mid] <= offset) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    return Math.max(0, high);
+}
+
+function insertionLineIndexAtOffset(
+    lineStarts: number[],
+    offset: number,
+): number {
+    let low = 0;
+    let high = lineStarts.length;
+
+    while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (lineStarts[mid] < offset) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    return low;
+}
+
+function lineIndexToOffset(lineStarts: number[], text: string, line: number) {
+    if (line <= 0) return 0;
+    if (line >= lineStarts.length) return text.length;
+    return lineStarts[line];
+}
+
+function commonPrefixLength(a: string, b: string): number {
+    const limit = Math.min(a.length, b.length);
+    let index = 0;
+    while (index < limit && a[index] === b[index]) {
+        index += 1;
+    }
+    return index;
+}
+
+function commonSuffixLength(
+    a: string,
+    b: string,
+    prefixLength: number,
+): number {
+    const maxSuffix = Math.min(a.length, b.length) - prefixLength;
+    let index = 0;
+    while (
+        index < maxSuffix &&
+        a[a.length - 1 - index] === b[b.length - 1 - index]
+    ) {
+        index += 1;
+    }
+    return index;
+}
+
+function buildTextRangePatchFromLinePatch(
+    baseText: string,
+    currentText: string,
+    patch: LinePatch,
+): TextRangePatch {
+    if (patchIsEmpty(patch)) {
+        return emptyTextRangePatch();
+    }
+
+    const baseLineStarts = buildLineStartOffsets(baseText);
+    const currentLineStarts = buildLineStartOffsets(currentText);
+    const spans: AgentTextSpan[] = [];
+
+    for (const edit of patch.edits) {
+        const baseWindowStart = lineIndexToOffset(
+            baseLineStarts,
+            baseText,
+            edit.oldStart,
+        );
+        const baseWindowEnd = lineIndexToOffset(
+            baseLineStarts,
+            baseText,
+            edit.oldEnd,
+        );
+        const currentWindowStart = lineIndexToOffset(
+            currentLineStarts,
+            currentText,
+            edit.newStart,
+        );
+        const currentWindowEnd = lineIndexToOffset(
+            currentLineStarts,
+            currentText,
+            edit.newEnd,
+        );
+
+        const baseWindowText = baseText.slice(baseWindowStart, baseWindowEnd);
+        const currentWindowText = currentText.slice(
+            currentWindowStart,
+            currentWindowEnd,
+        );
+
+        if (baseWindowText === currentWindowText) {
+            continue;
+        }
+
+        const prefixLength = commonPrefixLength(
+            baseWindowText,
+            currentWindowText,
+        );
+        const suffixLength = commonSuffixLength(
+            baseWindowText,
+            currentWindowText,
+            prefixLength,
+        );
+
+        spans.push({
+            baseFrom: baseWindowStart + prefixLength,
+            baseTo: baseWindowEnd - suffixLength,
+            currentFrom: currentWindowStart + prefixLength,
+            currentTo: currentWindowEnd - suffixLength,
+        });
+    }
+
+    return { spans };
+}
+
+function isLineBoundary(text: string, offset: number): boolean {
+    if (offset <= 0 || offset >= text.length) return true;
+    return text[offset - 1] === "\n";
+}
+
+function isSingleLineTextRange(
+    _text: string,
+    lineStarts: number[],
+    from: number,
+    to: number,
+): boolean {
+    if (from >= to) return true;
+    return (
+        lineIndexAtOffset(lineStarts, from) ===
+        lineIndexAtOffset(lineStarts, to - 1)
+    );
+}
+
+function spanPartToLineRange(
+    text: string,
+    lineStarts: number[],
+    from: number,
+    to: number,
+    counterpartText: string,
+    counterpartFrom: number,
+    counterpartTo: number,
+): { start: number; end: number } {
+    if (from === to && counterpartFrom === counterpartTo) {
+        const point = insertionLineIndexAtOffset(lineStarts, from);
+        return { start: point, end: point };
+    }
+
+    if (from === to) {
+        const insertedText = counterpartText.slice(
+            counterpartFrom,
+            counterpartTo,
+        );
+        const inlineSingleLineInsert =
+            !insertedText.includes("\n") &&
+            !isLineBoundary(text, from) &&
+            !isLineBoundary(counterpartText, counterpartFrom);
+
+        if (inlineSingleLineInsert) {
+            const line = lineIndexAtOffset(lineStarts, Math.max(0, from - 1));
+            return { start: line, end: line + 1 };
+        }
+
+        const point = insertionLineIndexAtOffset(lineStarts, from);
+        return { start: point, end: point };
+    }
+
+    const changedText = text.slice(from, to);
+    const counterpartChangedText = counterpartText.slice(
+        counterpartFrom,
+        counterpartTo,
+    );
+    const inlineSingleLineChange =
+        !changedText.includes("\n") &&
+        !counterpartChangedText.includes("\n") &&
+        isSingleLineTextRange(text, lineStarts, from, to);
+
+    if (inlineSingleLineChange) {
+        const line = lineIndexAtOffset(lineStarts, from);
+        return { start: line, end: line + 1 };
+    }
+
+    return {
+        start: lineIndexAtOffset(lineStarts, from),
+        end: lineIndexAtOffset(lineStarts, to - 1) + 1,
+    };
+}
+
+function mergeOverlappingLineEdits(edits: LineEdit[]): LineEdit[] {
+    if (edits.length <= 1) return edits;
+
+    const sorted = [...edits].sort((left, right) => {
+        if (left.newStart !== right.newStart) {
+            return left.newStart - right.newStart;
+        }
+        if (left.newEnd !== right.newEnd) {
+            return left.newEnd - right.newEnd;
+        }
+        if (left.oldStart !== right.oldStart) {
+            return left.oldStart - right.oldStart;
+        }
+        return left.oldEnd - right.oldEnd;
+    });
+
+    const merged: LineEdit[] = [sorted[0]];
+    for (const edit of sorted.slice(1)) {
+        const previous = merged[merged.length - 1];
+        const overlapsOld = rangesOverlap(
+            previous.oldStart,
+            previous.oldEnd,
+            edit.oldStart,
+            edit.oldEnd,
+        );
+        const overlapsNew = rangesOverlap(
+            previous.newStart,
+            previous.newEnd,
+            edit.newStart,
+            edit.newEnd,
+        );
+
+        if (overlapsOld || overlapsNew) {
+            previous.oldStart = Math.min(previous.oldStart, edit.oldStart);
+            previous.oldEnd = Math.max(previous.oldEnd, edit.oldEnd);
+            previous.newStart = Math.min(previous.newStart, edit.newStart);
+            previous.newEnd = Math.max(previous.newEnd, edit.newEnd);
+            continue;
+        }
+
+        merged.push({ ...edit });
+    }
+
+    return merged;
+}
+
+export function mapTextPositionThroughEdits(
+    position: number,
+    edits: TextEdit[],
+    assoc: -1 | 1,
+): number {
+    let delta = 0;
+
+    for (const edit of edits) {
+        const changeDelta =
+            edit.newTo - edit.newFrom - (edit.oldTo - edit.oldFrom);
+
+        if (edit.oldTo < position || (edit.oldTo === position && assoc > 0)) {
+            delta += changeDelta;
+            continue;
+        }
+
+        break;
+    }
+
+    return position + delta;
+}
+
+export function mapAgentSpanThroughTextEdits(
+    span: AgentTextSpan,
+    edits: TextEdit[],
+): AgentTextSpan | null {
+    const touchedByUser = edits.some((edit) =>
+        rangesOverlap(
+            edit.oldFrom,
+            edit.oldTo,
+            span.currentFrom,
+            span.currentTo,
+        ),
+    );
+
+    if (touchedByUser) {
+        return null;
+    }
+
+    return {
+        ...span,
+        currentFrom: mapTextPositionThroughEdits(span.currentFrom, edits, 1),
+        currentTo: mapTextPositionThroughEdits(span.currentTo, edits, -1),
+    };
+}
+
+export function rebuildDiffBaseFromPendingSpans(
+    originalDiffBase: string,
+    currentText: string,
+    spans: AgentTextSpan[],
+): string {
+    if (spans.length === 0) {
+        return currentText;
+    }
+
+    const sortedSpans = [...spans].sort(
+        (left, right) => left.currentFrom - right.currentFrom,
+    );
+    const parts: string[] = [];
+    let cursor = 0;
+
+    for (const span of sortedSpans) {
+        parts.push(currentText.slice(cursor, span.currentFrom));
+        parts.push(originalDiffBase.slice(span.baseFrom, span.baseTo));
+        cursor = span.currentTo;
+    }
+
+    parts.push(currentText.slice(cursor));
+    return parts.join("");
+}
+
+function getLineEditForSpan(
+    baseText: string,
+    currentText: string,
+    span: AgentTextSpan,
+): LineEdit | null {
+    const patch = deriveLinePatchFromTextRanges(baseText, currentText, [span]);
+    return patch.edits[0] ?? null;
+}
+
+function spanMatchesLineRange(
+    baseText: string,
+    currentText: string,
+    span: AgentTextSpan,
+    startLine: number,
+    endLine: number,
+): boolean {
+    const edit = getLineEditForSpan(baseText, currentText, span);
+    if (!edit) return false;
+    return rangesOverlap(startLine, endLine, edit.newStart, edit.newEnd);
 }
 
 /**
@@ -151,6 +511,131 @@ export function buildPatchFromTexts(
     return { edits };
 }
 
+export function buildTextRangePatchFromTexts(
+    oldText: string,
+    newText: string,
+): TextRangePatch {
+    if (oldText === newText) {
+        return emptyTextRangePatch();
+    }
+
+    return buildTextRangePatchFromLinePatch(
+        oldText,
+        newText,
+        buildPatchFromTexts(oldText, newText),
+    );
+}
+
+export function deriveLinePatchFromTextRanges(
+    baseText: string,
+    currentText: string,
+    spans: AgentTextSpan[],
+): LinePatch {
+    if (spans.length === 0) {
+        return emptyPatch();
+    }
+
+    const baseLineStarts = buildLineStartOffsets(baseText);
+    const currentLineStarts = buildLineStartOffsets(currentText);
+    const edits = spans.map((span) => {
+        const oldRange = spanPartToLineRange(
+            baseText,
+            baseLineStarts,
+            span.baseFrom,
+            span.baseTo,
+            currentText,
+            span.currentFrom,
+            span.currentTo,
+        );
+        const newRange = spanPartToLineRange(
+            currentText,
+            currentLineStarts,
+            span.currentFrom,
+            span.currentTo,
+            baseText,
+            span.baseFrom,
+            span.baseTo,
+        );
+
+        return {
+            oldStart: oldRange.start,
+            oldEnd: oldRange.end,
+            newStart: newRange.start,
+            newEnd: newRange.end,
+        };
+    });
+
+    return { edits: mergeOverlappingLineEdits(edits) };
+}
+
+function spansEqual(a: AgentTextSpan[], b: AgentTextSpan[]): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((span, index) => {
+        const other = b[index];
+        return (
+            span.baseFrom === other.baseFrom &&
+            span.baseTo === other.baseTo &&
+            span.currentFrom === other.currentFrom &&
+            span.currentTo === other.currentTo
+        );
+    });
+}
+
+function linePatchesEqual(a: LinePatch, b: LinePatch): boolean {
+    if (a.edits.length !== b.edits.length) return false;
+    return a.edits.every((edit, index) => {
+        const other = b.edits[index];
+        return (
+            edit.oldStart === other.oldStart &&
+            edit.oldEnd === other.oldEnd &&
+            edit.newStart === other.newStart &&
+            edit.newEnd === other.newEnd
+        );
+    });
+}
+
+export function syncDerivedLinePatch(file: TrackedFile): TrackedFile {
+    const unreviewedRanges = file.unreviewedRanges
+        ? file.unreviewedRanges
+        : buildTextRangePatchFromTexts(file.diffBase, file.currentText);
+    const unreviewedEdits = deriveLinePatchFromTextRanges(
+        file.diffBase,
+        file.currentText,
+        unreviewedRanges.spans,
+    );
+
+    if (
+        file.unreviewedRanges &&
+        spansEqual(file.unreviewedRanges.spans, unreviewedRanges.spans) &&
+        linePatchesEqual(file.unreviewedEdits, unreviewedEdits)
+    ) {
+        return file;
+    }
+
+    return {
+        ...file,
+        unreviewedRanges,
+        unreviewedEdits,
+    };
+}
+
+function syncTrackedFiles(
+    files: Record<string, TrackedFile>,
+): Record<string, TrackedFile> {
+    let changed = false;
+    const next: Record<string, TrackedFile> = {};
+
+    for (const [key, file] of Object.entries(files)) {
+        const synced = syncDerivedLinePatch(file);
+        next[key] = synced;
+        if (synced !== file) {
+            changed = true;
+        }
+    }
+
+    return changed ? next : files;
+}
+
 // ---------------------------------------------------------------------------
 // TrackedFile creation / update from AIFileDiff
 // ---------------------------------------------------------------------------
@@ -184,6 +669,10 @@ export function createTrackedFileFromDiff(
         diffBase === currentText
             ? emptyPatch()
             : buildPatchFromTexts(diffBase, currentText);
+    const unreviewedRanges =
+        diffBase === currentText
+            ? emptyTextRangePatch()
+            : buildTextRangePatchFromTexts(diffBase, currentText);
 
     return {
         identityKey: diff.path,
@@ -193,6 +682,7 @@ export function createTrackedFileFromDiff(
         status,
         diffBase,
         currentText,
+        unreviewedRanges,
         unreviewedEdits,
         version: 1,
         isText: diff.is_text !== false,
@@ -208,8 +698,9 @@ export function createTrackedFileFromDiff(
  * at line 0).
  */
 export function shouldShowInlineDiff(tracked: TrackedFile): boolean {
-    if (tracked.unreviewedEdits.edits.length === 0) return false;
-    if (tracked.diffBase === "" && tracked.status.kind !== "created")
+    const synced = syncDerivedLinePatch(tracked);
+    if (synced.unreviewedEdits.edits.length === 0) return false;
+    if (synced.diffBase === "" && synced.status.kind !== "created")
         return false;
     return true;
 }
@@ -227,6 +718,10 @@ export function updateTrackedFileWithDiff(
         file.diffBase === currentText
             ? emptyPatch()
             : buildPatchFromTexts(file.diffBase, currentText);
+    const unreviewedRanges =
+        file.diffBase === currentText
+            ? emptyTextRangePatch()
+            : buildTextRangePatchFromTexts(file.diffBase, currentText);
 
     // Update status if operation changed (e.g. update → delete)
     let { status } = file;
@@ -245,7 +740,9 @@ export function updateTrackedFileWithDiff(
         previousPath: diff.previous_path ?? file.previousPath,
         status,
         currentText,
+        unreviewedRanges,
         unreviewedEdits,
+        conflictHash: null,
         version: file.version + 1,
         updatedAt: timestamp,
     };
@@ -337,70 +834,68 @@ export function consolidateTrackedFiles(
 
 /**
  * When the user edits a file that has pending agent changes, absorb user
- * edits into diffBase if they don't overlap with unreviewedEdits.
+ * edits into diffBase while preserving only the agent hunks the user has not
+ * touched.
  *
- * - Non-conflicting user edits → applied to diffBase (absorbed)
- * - Conflicting user edits → ignored (agent's edit stays visible)
+ * - Untouched agent hunks stay pending review
+ * - Any agent hunk touched by the user is retired from agent attribution
  *
  * Returns updated TrackedFile (immutable).
  */
 export function applyNonConflictingEdits(
     file: TrackedFile,
-    userEdits: LineEdit[],
+    userEdits: TextEdit[],
     newFullText: string,
 ): TrackedFile {
-    if (userEdits.length === 0 || patchIsEmpty(file.unreviewedEdits)) {
+    const syncedFile = syncDerivedLinePatch(file);
+
+    if (userEdits.length === 0) {
         return {
-            ...file,
+            ...syncedFile,
             currentText: newFullText,
-            version: file.version + 1,
+            version: syncedFile.version + 1,
         };
     }
 
-    const diffBaseLines = file.diffBase.split("\n");
-    let appliedDelta = 0;
-    const agentEdits = [...file.unreviewedEdits.edits];
-
-    for (const userEdit of userEdits) {
-        const conflicts = agentEdits.some((agentEdit) =>
-            rangesOverlap(
-                userEdit.oldStart,
-                userEdit.oldEnd,
-                agentEdit.newStart,
-                agentEdit.newEnd,
-            ),
-        );
-
-        if (conflicts) {
-            continue;
-        }
-
-        // Non-conflicting: absorb into diffBase
-        const newLines = newFullText
-            .split("\n")
-            .slice(userEdit.newStart, userEdit.newEnd);
-        const spliceStart = userEdit.oldStart + appliedDelta;
-        const deleteCount = userEdit.oldEnd - userEdit.oldStart;
-        diffBaseLines.splice(spliceStart, deleteCount, ...newLines);
-
-        const lineDelta = userEdit.newEnd - userEdit.newStart - deleteCount;
-        appliedDelta += lineDelta;
+    if (
+        syncedFile.unreviewedRanges == null ||
+        syncedFile.unreviewedRanges.spans.length === 0
+    ) {
+        return {
+            ...syncedFile,
+            diffBase: newFullText,
+            currentText: newFullText,
+            unreviewedRanges: emptyTextRangePatch(),
+            unreviewedEdits: emptyPatch(),
+            version: syncedFile.version + 1,
+        };
     }
 
-    const newDiffBase = diffBaseLines.join("\n");
-
-    // Recompute unreviewedEdits from the (possibly updated) diffBase
-    const unreviewedEdits =
-        newDiffBase === newFullText
-            ? emptyPatch()
-            : buildPatchFromTexts(newDiffBase, newFullText);
+    const survivingSpans = syncedFile.unreviewedRanges.spans
+        .map((span) => mapAgentSpanThroughTextEdits(span, userEdits))
+        .filter((span): span is AgentTextSpan => span !== null);
+    const newDiffBase = rebuildDiffBaseFromPendingSpans(
+        syncedFile.diffBase,
+        newFullText,
+        survivingSpans,
+    );
+    const unreviewedRanges =
+        survivingSpans.length === 0
+            ? emptyTextRangePatch()
+            : buildTextRangePatchFromTexts(newDiffBase, newFullText);
+    const unreviewedEdits = deriveLinePatchFromTextRanges(
+        newDiffBase,
+        newFullText,
+        unreviewedRanges.spans,
+    );
 
     return {
-        ...file,
+        ...syncedFile,
         diffBase: newDiffBase,
         currentText: newFullText,
+        unreviewedRanges,
         unreviewedEdits,
-        version: file.version + 1,
+        version: syncedFile.version + 1,
     };
 }
 
@@ -448,11 +943,13 @@ export function computeRestoreAction(file: TrackedFile): RestoreAction {
  * The file is removed from tracking (caller should delete from map).
  */
 export function keepAllEdits(file: TrackedFile): TrackedFile {
+    const syncedFile = syncDerivedLinePatch(file);
     return {
-        ...file,
-        diffBase: file.currentText,
+        ...syncedFile,
+        diffBase: syncedFile.currentText,
+        unreviewedRanges: emptyTextRangePatch(),
         unreviewedEdits: emptyPatch(),
-        version: file.version + 1,
+        version: syncedFile.version + 1,
     };
 }
 
@@ -465,37 +962,39 @@ export function keepEditsInRange(
     startLine: number,
     endLine: number,
 ): TrackedFile {
-    const currentLines = file.currentText.split("\n");
-    const diffBaseLines = file.diffBase.split("\n");
-    let delta = 0;
-
-    const remaining: LineEdit[] = [];
-
-    for (const edit of file.unreviewedEdits.edits) {
-        if (rangesOverlap(startLine, endLine, edit.newStart, edit.newEnd)) {
-            // Accept: apply this edit to diffBase
-            const newLines = currentLines.slice(edit.newStart, edit.newEnd);
-            const spliceStart = edit.oldStart + delta;
-            const deleteCount = edit.oldEnd - edit.oldStart;
-            diffBaseLines.splice(spliceStart, deleteCount, ...newLines);
-            delta += newLines.length - deleteCount;
-        } else {
-            remaining.push(edit);
-        }
-    }
-
-    const newDiffBase = diffBaseLines.join("\n");
-    // Recompute remaining edits from new diffBase
-    const unreviewedEdits =
-        remaining.length === 0
-            ? emptyPatch()
-            : buildPatchFromTexts(newDiffBase, file.currentText);
+    const syncedFile = syncDerivedLinePatch(file);
+    const currentSpans = syncedFile.unreviewedRanges?.spans ?? [];
+    const remainingSpans = currentSpans.filter(
+        (span) =>
+            !spanMatchesLineRange(
+                syncedFile.diffBase,
+                syncedFile.currentText,
+                span,
+                startLine,
+                endLine,
+            ),
+    );
+    const newDiffBase = rebuildDiffBaseFromPendingSpans(
+        syncedFile.diffBase,
+        syncedFile.currentText,
+        remainingSpans,
+    );
+    const unreviewedRanges =
+        remainingSpans.length === 0
+            ? emptyTextRangePatch()
+            : buildTextRangePatchFromTexts(newDiffBase, syncedFile.currentText);
+    const unreviewedEdits = deriveLinePatchFromTextRanges(
+        newDiffBase,
+        syncedFile.currentText,
+        unreviewedRanges.spans,
+    );
 
     return {
-        ...file,
+        ...syncedFile,
         diffBase: newDiffBase,
+        unreviewedRanges,
         unreviewedEdits,
-        version: file.version + 1,
+        version: syncedFile.version + 1,
     };
 }
 
@@ -507,25 +1006,27 @@ export function rejectAllEdits(file: TrackedFile): {
     file: TrackedFile;
     undoData: PerFileUndo;
 } {
-    const currentLines = file.currentText.split("\n");
+    const syncedFile = syncDerivedLinePatch(file);
+    const currentLines = syncedFile.currentText.split("\n");
 
-    const editsToRestore = file.unreviewedEdits.edits.map((edit) => ({
+    const editsToRestore = syncedFile.unreviewedEdits.edits.map((edit) => ({
         startLine: edit.newStart,
         endLine: edit.newEnd,
         text: currentLines.slice(edit.newStart, edit.newEnd).join("\n"),
     }));
 
     const undoData: PerFileUndo = {
-        path: file.path,
+        path: syncedFile.path,
         editsToRestore,
-        previousStatus: file.status,
+        previousStatus: syncedFile.status,
     };
 
     const revertedFile: TrackedFile = {
-        ...file,
-        currentText: file.diffBase,
+        ...syncedFile,
+        currentText: syncedFile.diffBase,
+        unreviewedRanges: emptyTextRangePatch(),
         unreviewedEdits: emptyPatch(),
-        version: file.version + 1,
+        version: syncedFile.version + 1,
     };
 
     return { file: revertedFile, undoData };
@@ -539,54 +1040,68 @@ export function rejectEditsInRanges(
     file: TrackedFile,
     ranges: Array<{ start: number; end: number }>,
 ): { file: TrackedFile; undoData: PerFileUndo } {
-    const currentLines = file.currentText.split("\n");
-    const diffBaseLines = file.diffBase.split("\n");
-    const resultLines = [...currentLines];
-    let delta = 0;
+    const syncedFile = syncDerivedLinePatch(file);
+    const currentLines = syncedFile.currentText.split("\n");
+    const currentSpans = syncedFile.unreviewedRanges?.spans ?? [];
+    const rejectedSpans = currentSpans.filter((span) =>
+        ranges.some((range) =>
+            spanMatchesLineRange(
+                syncedFile.diffBase,
+                syncedFile.currentText,
+                span,
+                range.start,
+                range.end,
+            ),
+        ),
+    );
+    const remainingSpans = currentSpans.filter(
+        (span) => !rejectedSpans.includes(span),
+    );
 
     const editsToRestore: PerFileUndo["editsToRestore"] = [];
-
-    for (const edit of file.unreviewedEdits.edits) {
-        const isRejected = ranges.some((range) =>
-            rangesOverlap(range.start, range.end, edit.newStart, edit.newEnd),
+    for (const span of rejectedSpans) {
+        const edit = getLineEditForSpan(
+            syncedFile.diffBase,
+            syncedFile.currentText,
+            span,
         );
+        if (!edit) continue;
 
-        if (isRejected) {
-            // Capture agent text for undo
-            editsToRestore.push({
-                startLine: edit.newStart,
-                endLine: edit.newEnd,
-                text: currentLines.slice(edit.newStart, edit.newEnd).join("\n"),
-            });
-
-            // Replace agent lines with diffBase lines in result
-            const baseLines = diffBaseLines.slice(edit.oldStart, edit.oldEnd);
-            const spliceStart = edit.newStart + delta;
-            const deleteCount = edit.newEnd - edit.newStart;
-            resultLines.splice(spliceStart, deleteCount, ...baseLines);
-            delta += baseLines.length - deleteCount;
-        }
+        editsToRestore.push({
+            startLine: edit.newStart,
+            endLine: edit.newEnd,
+            text: currentLines.slice(edit.newStart, edit.newEnd).join("\n"),
+        });
     }
 
-    const newCurrentText = resultLines.join("\n");
-    // Recompute diff from diffBase to the new (partially reverted) text
-    const unreviewedEdits =
-        file.diffBase === newCurrentText
-            ? emptyPatch()
-            : buildPatchFromTexts(file.diffBase, newCurrentText);
+    const newCurrentText = rebuildDiffBaseFromPendingSpans(
+        syncedFile.diffBase,
+        syncedFile.currentText,
+        rejectedSpans,
+    );
+    const unreviewedRanges =
+        remainingSpans.length === 0
+            ? emptyTextRangePatch()
+            : buildTextRangePatchFromTexts(syncedFile.diffBase, newCurrentText);
+    const unreviewedEdits = deriveLinePatchFromTextRanges(
+        syncedFile.diffBase,
+        newCurrentText,
+        unreviewedRanges.spans,
+    );
 
     const undoData: PerFileUndo = {
-        path: file.path,
+        path: syncedFile.path,
         editsToRestore,
-        previousStatus: file.status,
+        previousStatus: syncedFile.status,
     };
 
     return {
         file: {
-            ...file,
+            ...syncedFile,
             currentText: newCurrentText,
+            unreviewedRanges,
             unreviewedEdits,
-            version: file.version + 1,
+            version: syncedFile.version + 1,
         },
         undoData,
     };
@@ -604,7 +1119,8 @@ export function applyRejectUndo(
     file: TrackedFile,
     undo: PerFileUndo,
 ): TrackedFile {
-    const lines = file.currentText.split("\n");
+    const syncedFile = syncDerivedLinePatch(file);
+    const lines = syncedFile.currentText.split("\n");
     let delta = 0;
 
     for (const entry of undo.editsToRestore) {
@@ -617,7 +1133,7 @@ export function applyRejectUndo(
         // The safest approach: just splice at the position and insert.
         // But we need to know how many lines to remove.
         // Find the corresponding old range from unreviewedEdits
-        const matchingEdit = file.unreviewedEdits.edits.find(
+        const matchingEdit = syncedFile.unreviewedEdits.edits.find(
             (e) => e.newStart === entry.startLine + delta,
         );
         const deleteCount = matchingEdit
@@ -630,16 +1146,22 @@ export function applyRejectUndo(
 
     const newCurrentText = lines.join("\n");
     const unreviewedEdits =
-        file.diffBase === newCurrentText
+        syncedFile.diffBase === newCurrentText
             ? emptyPatch()
-            : buildPatchFromTexts(file.diffBase, newCurrentText);
+            : buildPatchFromTexts(syncedFile.diffBase, newCurrentText);
+    const unreviewedRanges = buildTextRangePatchFromLinePatch(
+        syncedFile.diffBase,
+        newCurrentText,
+        unreviewedEdits,
+    );
 
     return {
-        ...file,
+        ...syncedFile,
         currentText: newCurrentText,
+        unreviewedRanges,
         unreviewedEdits,
         status: undo.previousStatus,
-        version: file.version + 1,
+        version: syncedFile.version + 1,
     };
 }
 
@@ -676,12 +1198,13 @@ export function getFileOperation(
  * instead of recomputing LCS. This bypasses the 700-line limit.
  */
 export function unreviewedEditsToHunks(file: TrackedFile): AIFileDiffHunk[] {
-    if (patchIsEmpty(file.unreviewedEdits)) return [];
+    const syncedFile = syncDerivedLinePatch(file);
+    if (patchIsEmpty(syncedFile.unreviewedEdits)) return [];
 
-    const baseLines = file.diffBase.split("\n");
-    const currentLines = file.currentText.split("\n");
+    const baseLines = syncedFile.diffBase.split("\n");
+    const currentLines = syncedFile.currentText.split("\n");
 
-    return file.unreviewedEdits.edits.map((edit) => {
+    return syncedFile.unreviewedEdits.edits.map((edit) => {
         const lines: AIFileDiffHunkLine[] = [];
 
         for (let i = edit.oldStart; i < edit.oldEnd; i++) {
@@ -717,7 +1240,8 @@ export function getTrackedFilesForWorkCycle(
     workCycleId: string | null | undefined,
 ): Record<string, TrackedFile> {
     if (!workCycleId) return {};
-    return state.trackedFilesByWorkCycleId[workCycleId] ?? {};
+    const files = state.trackedFilesByWorkCycleId[workCycleId] ?? {};
+    return syncTrackedFiles(files);
 }
 
 export function setTrackedFilesForWorkCycle(
@@ -729,7 +1253,7 @@ export function setTrackedFilesForWorkCycle(
     if (Object.keys(files).length === 0) {
         delete next[workCycleId];
     } else {
-        next[workCycleId] = files;
+        next[workCycleId] = syncTrackedFiles(files);
     }
     return { ...state, trackedFilesByWorkCycleId: next };
 }

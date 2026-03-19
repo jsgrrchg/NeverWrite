@@ -10,7 +10,7 @@ import {
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import type { AIChatSession } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
-import { buildPatchFromTexts, emptyPatch } from "../store/actionLogModel";
+import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
 import { AIReviewView } from "./AIReviewView";
 
 const DEFAULT_WORK_CYCLE = "default-wc";
@@ -18,7 +18,7 @@ const DEFAULT_WORK_CYCLE = "default-wc";
 function makeTrackedFile(overrides: Partial<TrackedFile> = {}): TrackedFile {
     const diffBase = overrides.diffBase ?? "old line";
     const currentText = overrides.currentText ?? "new line";
-    return {
+    return syncDerivedLinePatch({
         identityKey: overrides.identityKey ?? "key-1",
         originPath: overrides.originPath ?? "/vault/test.md",
         path: overrides.path ?? "/vault/test.md",
@@ -26,15 +26,12 @@ function makeTrackedFile(overrides: Partial<TrackedFile> = {}): TrackedFile {
         status: overrides.status ?? { kind: "modified" },
         diffBase,
         currentText,
-        unreviewedEdits:
-            diffBase === currentText
-                ? emptyPatch()
-                : buildPatchFromTexts(diffBase, currentText),
+        unreviewedEdits: emptyPatch(),
         version: 1,
         isText: overrides.isText ?? true,
         updatedAt: overrides.updatedAt ?? Date.now(),
         ...overrides,
-    };
+    });
 }
 
 function makeSession(

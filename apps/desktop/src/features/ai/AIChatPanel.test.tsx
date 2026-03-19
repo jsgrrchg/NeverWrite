@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import { AIChatPanel } from "./AIChatPanel";
 import { resetChatStore, useChatStore } from "./store/chatStore";
+import { syncDerivedLinePatch } from "./store/actionLogModel";
 import {
     markChatTabsReady,
     resetChatTabsStore,
@@ -600,10 +601,135 @@ describe("AIChatPanel tabs lifecycle", () => {
         await waitFor(() => {
             expect(useChatTabsStore.getState().activeTabId).toBe("tab-b");
             expect(useChatStore.getState().activeSessionId).toBe("session-b");
-            expect(textbox.textContent).toContain("Draft B");
+            expect(
+                screen.getByRole("textbox", {
+                    name: "Message VaultAI",
+                }).textContent,
+            ).toContain("Draft B");
             expect(screen.queryByText("Doc A")).toBeNull();
             expect(screen.getByText("Doc B")).toBeTruthy();
             expect(screen.getByLabelText("Send")).not.toBeDisabled();
+        });
+    });
+
+    it("routes composer edits to the visible tab session when tab and active session diverge", () => {
+        const sessionA = createSession("session-a", "First conversation");
+        const sessionB = createSession("session-b", "Second conversation");
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+                [sessionB.sessionId]: sessionB,
+            },
+            sessionOrder: [sessionA.sessionId, sessionB.sessionId],
+            activeSessionId: sessionA.sessionId,
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: createDraft("Draft A"),
+                [sessionB.sessionId]: createDraft("Draft B"),
+            },
+            setActiveSession: vi.fn(),
+        }));
+        useChatTabsStore.setState({
+            tabs: [
+                { id: "tab-a", sessionId: sessionA.sessionId },
+                { id: "tab-b", sessionId: sessionB.sessionId },
+            ],
+            activeTabId: "tab-b",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        const textbox = screen.getByRole("textbox", {
+            name: "Message VaultAI",
+        });
+        expect(textbox.textContent).toContain("Draft B");
+        expect(useChatStore.getState().activeSessionId).toBe("session-a");
+
+        textbox.textContent = "Visible draft";
+        fireEvent.input(textbox);
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-b"],
+        ).toMatchObject([{ type: "text", text: "Visible draft" }]);
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).toMatchObject([{ type: "text", text: "Draft A" }]);
+    });
+
+    it("updates the composer banner to the visible session provider when switching tabs", async () => {
+        const sessionA = createSession(
+            "session-a",
+            "First conversation",
+            "idle",
+            {
+                runtimeId: "codex-acp",
+            },
+        );
+        const sessionB = createSession(
+            "session-b",
+            "Second conversation",
+            "idle",
+            {
+                runtimeId: "claude-acp",
+            },
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+                [sessionB.sessionId]: sessionB,
+            },
+            sessionOrder: [sessionA.sessionId, sessionB.sessionId],
+            activeSessionId: sessionA.sessionId,
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: [],
+                [sessionB.sessionId]: [],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [
+                { id: "tab-a", sessionId: sessionA.sessionId },
+                { id: "tab-b", sessionId: sessionB.sessionId },
+            ],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(
+            screen.getByText(/Message Codex — @ to include context/i),
+        ).toBeTruthy();
+
+        fireEvent.click(
+            screen.getByRole("tab", { name: /Second conversation/i }),
+        );
+
+        await waitFor(() => {
+            expect(
+                screen.getByText(/Message Claude — @ to include context/i),
+            ).toBeTruthy();
         });
     });
 
@@ -952,7 +1078,7 @@ describe("AIChatPanel tabs lifecycle", () => {
             actionLog: {
                 trackedFilesByWorkCycleId: {
                     [workCycleId]: {
-                        "/vault/src/watcher.rs": {
+                        "/vault/src/watcher.rs": syncDerivedLinePatch({
                             identityKey: "/vault/src/watcher.rs",
                             originPath: "/vault/src/watcher.rs",
                             path: "/vault/src/watcher.rs",
@@ -964,7 +1090,7 @@ describe("AIChatPanel tabs lifecycle", () => {
                             version: 1,
                             isText: true,
                             updatedAt: 10,
-                        },
+                        }),
                     },
                 },
                 lastRejectUndo: null,
@@ -1063,7 +1189,7 @@ describe("AIChatPanel tabs lifecycle", () => {
             actionLog: {
                 trackedFilesByWorkCycleId: {
                     [workCycleId]: {
-                        "/vault/tmp/result.txt": {
+                        "/vault/tmp/result.txt": syncDerivedLinePatch({
                             identityKey: "/vault/tmp/result.txt",
                             originPath: "/vault/tmp/result.txt",
                             path: "/vault/tmp/result.txt",
@@ -1075,7 +1201,7 @@ describe("AIChatPanel tabs lifecycle", () => {
                             version: 1,
                             isText: true,
                             updatedAt: 20,
-                        },
+                        }),
                     },
                 },
                 lastRejectUndo: null,

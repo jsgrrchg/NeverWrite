@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { formatDiffStat } from "../diff/reviewDiff";
@@ -21,6 +21,7 @@ import {
 import { canOpenAiEditedFileEntry } from "../chatFileNavigation";
 
 const COMPACT_MAX_LIST_HEIGHT = "208px";
+const UNDO_ONLY_BANNER_TIMEOUT_MS = 5000;
 
 function CollapseToggle({
     expanded,
@@ -59,9 +60,15 @@ function CollapseToggle({
     );
 }
 
-export function EditedFilesBufferPanel() {
+export function EditedFilesBufferPanel({
+    sessionId: sessionIdProp,
+}: {
+    sessionId?: string | null;
+}) {
     const [collapsed, setCollapsed] = useState(false);
-    const activeSessionId = useChatStore((state) => state.activeSessionId);
+    const activeSessionId = useChatStore(
+        (state) => sessionIdProp ?? state.activeSessionId,
+    );
     const activeSession = useChatStore((state) =>
         activeSessionId ? (state.sessionsById[activeSessionId] ?? null) : null,
     );
@@ -91,8 +98,16 @@ export function EditedFilesBufferPanel() {
     const hasUndoReject = useChatStore((state) =>
         selectHasUndoReject(state, activeSessionId),
     );
+    const undoRejectTimestamp = useChatStore((state) =>
+        activeSessionId
+            ? (state.sessionsById[activeSessionId]?.actionLog?.lastRejectUndo
+                  ?.timestamp ?? null)
+            : null,
+    );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const entries = useVaultStore((state) => state.entries);
+    const [showUndoOnlyBanner, setShowUndoOnlyBanner] = useState(false);
+    const dismissedUndoBannerKeysRef = useRef<Set<string>>(new Set());
 
     const openablePathSet = useMemo(
         () =>
@@ -109,13 +124,44 @@ export function EditedFilesBufferPanel() {
     );
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = items.filter((item) => item.canReject).length;
+    const isUndoOnly = items.length === 0 && hasUndoReject;
+    const undoOnlyBannerKey =
+        activeSessionId && undoRejectTimestamp
+            ? `${activeSessionId}:${undoRejectTimestamp}`
+            : null;
+
+    useEffect(() => {
+        if (!isUndoOnly || !undoOnlyBannerKey) {
+            setShowUndoOnlyBanner(false);
+            return;
+        }
+
+        if (dismissedUndoBannerKeysRef.current.has(undoOnlyBannerKey)) {
+            setShowUndoOnlyBanner(false);
+            return;
+        }
+
+        setShowUndoOnlyBanner(true);
+        const timeoutId = window.setTimeout(() => {
+            dismissedUndoBannerKeysRef.current.add(undoOnlyBannerKey);
+            setShowUndoOnlyBanner(false);
+        }, UNDO_ONLY_BANNER_TIMEOUT_MS);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+        };
+    }, [isUndoOnly, undoOnlyBannerKey]);
 
     if (!activeSessionId || (items.length === 0 && !hasUndoReject)) {
         return null;
     }
 
     // Only undo available, no pending items — minimal undo-only strip
-    if (items.length === 0 && hasUndoReject) {
+    if (isUndoOnly) {
+        if (!showUndoOnlyBanner) {
+            return null;
+        }
+
         return (
             <section
                 className="mx-3 mb-2 overflow-hidden rounded-xl"

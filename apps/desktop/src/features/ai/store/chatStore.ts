@@ -370,10 +370,22 @@ interface ChatStore {
     resumeSession: (sessionId: string) => Promise<string | null>;
     loadSession: (sessionId: string) => Promise<void>;
     setModel: (modelId: string) => Promise<void>;
+    setModelForSession: (sessionId: string, modelId: string) => Promise<void>;
     setMode: (modeId: string) => Promise<void>;
+    setModeForSession: (sessionId: string, modeId: string) => Promise<void>;
     setConfigOption: (optionId: string, value: string) => Promise<void>;
+    setConfigOptionForSession: (
+        sessionId: string,
+        optionId: string,
+        value: string,
+    ) => Promise<void>;
     setComposerParts: (parts: AIComposerPart[]) => void;
+    setComposerPartsForSession: (
+        sessionId: string,
+        parts: AIComposerPart[],
+    ) => void;
     sendMessage: () => Promise<void>;
+    sendMessageForSession: (sessionId: string) => Promise<void>;
     enqueueMessage: (sessionId: string, item: QueuedChatMessage) => void;
     removeQueuedMessage: (sessionId: string, messageId: string) => void;
     markQueuedMessageStatus: (
@@ -391,8 +403,19 @@ interface ChatStore {
     ) => Promise<void>;
     tryDrainQueue: (sessionId: string) => Promise<void>;
     stopStreaming: () => Promise<void>;
+    stopStreamingForSession: (sessionId: string) => Promise<void>;
     respondPermission: (requestId: string, optionId?: string) => Promise<void>;
+    respondPermissionForSession: (
+        sessionId: string,
+        requestId: string,
+        optionId?: string,
+    ) => Promise<void>;
     respondUserInput: (
+        requestId: string,
+        answers: Record<string, string[]>,
+    ) => Promise<void>;
+    respondUserInputForSession: (
+        sessionId: string,
         requestId: string,
         answers: Record<string, string[]>,
     ) => Promise<void>;
@@ -415,24 +438,55 @@ interface ChatStore {
     undoLastReject: (sessionId: string) => Promise<void>;
     notifyUserEditOnFile: (
         fileId: string,
-        userEdits: import("../diff/actionLogTypes").LineEdit[],
+        userEdits: import("../diff/actionLogTypes").TextEdit[],
         newFullText: string,
     ) => void;
     newSession: (runtimeId?: string) => Promise<void>;
     deleteSession: (sessionId: string) => Promise<void>;
     deleteAllSessions: () => Promise<void>;
     attachNote: (note: AIChatNoteSummary) => void;
+    attachNoteToSession: (sessionId: string, note: AIChatNoteSummary) => void;
     attachFolder: (folderPath: string, name: string) => void;
+    attachFolderToSession: (
+        sessionId: string,
+        folderPath: string,
+        name: string,
+    ) => void;
     attachCurrentNote: (note: AIChatNoteSummary | null) => void;
+    attachCurrentNoteToSession: (
+        sessionId: string,
+        note: AIChatNoteSummary | null,
+    ) => void;
     attachSelectionFromEditor: () => void;
     attachAudio: (filePath: string, fileName: string) => void;
+    attachAudioToSession: (
+        sessionId: string,
+        filePath: string,
+        fileName: string,
+    ) => void;
     attachFile: (filePath: string, fileName: string, mimeType: string) => void;
+    attachFileToSession: (
+        sessionId: string,
+        filePath: string,
+        fileName: string,
+        mimeType: string,
+    ) => void;
     updateAttachment: (
         attachmentId: string,
         patch: Partial<AIChatAttachment>,
     ) => void;
+    updateAttachmentInSession: (
+        sessionId: string,
+        attachmentId: string,
+        patch: Partial<AIChatAttachment>,
+    ) => void;
     removeAttachment: (attachmentId: string) => void;
+    removeAttachmentFromSession: (
+        sessionId: string,
+        attachmentId: string,
+    ) => void;
     clearAttachments: () => void;
+    clearAttachmentsForSession: (sessionId: string) => void;
     toggleAutoContext: () => void;
     toggleRequireCmdEnterToSend: () => void;
     setComposerFontSize: (size: number) => void;
@@ -1457,19 +1511,17 @@ function touchSessionOrder(sessionOrder: string[], sessionId: string) {
     return [sessionId, ...sessionOrder.filter((id) => id !== sessionId)];
 }
 
-function updateActiveSession(
-    state: Pick<ChatStore, "activeSessionId" | "sessionsById">,
+function updateSessionById(
+    state: Pick<ChatStore, "sessionsById">,
+    sessionId: string,
     updater: (session: AIChatSession) => AIChatSession,
 ) {
-    const activeSessionId = state.activeSessionId;
-    if (!activeSessionId) return state.sessionsById;
-
-    const session = state.sessionsById[activeSessionId];
+    const session = state.sessionsById[sessionId];
     if (!session) return state.sessionsById;
 
     return {
         ...state.sessionsById,
-        [activeSessionId]: updater(session),
+        [sessionId]: updater(session),
     };
 }
 
@@ -3471,9 +3523,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setModel: async (modelId) => {
-            const { activeSessionId, sessionsById } = get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
-            const session = sessionsById[activeSessionId];
+            await get().setModelForSession(activeSessionId, modelId);
+        },
+
+        setModelForSession: async (sessionId, modelId) => {
+            const { sessionsById } = get();
+            const session = sessionsById[sessionId];
             if (!session) return;
             if (
                 session.status === "streaming" ||
@@ -3488,8 +3545,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 set((state) => ({
                     sessionsById: {
                         ...state.sessionsById,
-                        [activeSessionId]: applyLocalModelSelection(
-                            state.sessionsById[activeSessionId]!,
+                        [sessionId]: applyLocalModelSelection(
+                            state.sessionsById[sessionId]!,
                             modelId,
                         ),
                     },
@@ -3506,16 +3563,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         (option) => option.value === modelId,
                     )
                         ? await aiSetConfigOption(
-                              activeSessionId,
+                              sessionId,
                               modelConfig.id,
                               modelId,
                           )
-                        : await aiSetModel(activeSessionId, modelId);
+                        : await aiSetModel(sessionId, modelId);
                 get().upsertSession(updatedSession);
                 saveAiPreferences({ modelId });
             } catch (error) {
                 get().applySessionError({
-                    session_id: activeSessionId,
+                    session_id: sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to update the model.",
@@ -3525,9 +3582,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setMode: async (modeId) => {
-            const { activeSessionId, sessionsById } = get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
-            const session = sessionsById[activeSessionId];
+            await get().setModeForSession(activeSessionId, modeId);
+        },
+
+        setModeForSession: async (sessionId, modeId) => {
+            const { sessionsById } = get();
+            const session = sessionsById[sessionId];
             if (!session) return;
             if (
                 session.status === "streaming" ||
@@ -3542,8 +3604,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 set((state) => ({
                     sessionsById: {
                         ...state.sessionsById,
-                        [activeSessionId]: {
-                            ...state.sessionsById[activeSessionId]!,
+                        [sessionId]: {
+                            ...state.sessionsById[sessionId]!,
                             modeId,
                         },
                     },
@@ -3553,12 +3615,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             try {
-                const updatedSession = await aiSetMode(activeSessionId, modeId);
+                const updatedSession = await aiSetMode(sessionId, modeId);
                 get().upsertSession(updatedSession);
                 saveAiPreferences({ modeId });
             } catch (error) {
                 get().applySessionError({
-                    session_id: activeSessionId,
+                    session_id: sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to update the mode.",
@@ -3568,9 +3630,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setConfigOption: async (optionId, value) => {
-            const { activeSessionId, sessionsById } = get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
-            const session = sessionsById[activeSessionId];
+            await get().setConfigOptionForSession(
+                activeSessionId,
+                optionId,
+                value,
+            );
+        },
+
+        setConfigOptionForSession: async (sessionId, optionId, value) => {
+            const { sessionsById } = get();
+            const session = sessionsById[sessionId];
             if (!session) return;
             if (
                 session.status === "streaming" ||
@@ -3583,7 +3654,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             if (session.runtimeState !== "live") {
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId]!;
+                    const currentSession = state.sessionsById[sessionId]!;
                     const nextSession =
                         optionId === "model"
                             ? applyLocalModelSelection(currentSession, value)
@@ -3601,7 +3672,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: nextSession,
+                            [sessionId]: nextSession,
                         },
                     };
                 });
@@ -3615,7 +3686,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const updatedSession = await aiSetConfigOption(
-                    activeSessionId,
+                    sessionId,
                     optionId,
                     value,
                 );
@@ -3627,7 +3698,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
             } catch (error) {
                 get().applySessionError({
-                    session_id: activeSessionId,
+                    session_id: sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to update the session option.",
@@ -3636,12 +3707,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        setComposerParts: (parts) =>
-            set((state) => {
-                const activeSessionId = state.activeSessionId;
-                if (!activeSessionId) return state;
+        setComposerParts: (parts) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().setComposerPartsForSession(activeSessionId, parts);
+        },
 
-                const session = state.sessionsById[activeSessionId];
+        setComposerPartsForSession: (sessionId, parts) =>
+            set((state) => {
+                const session = state.sessionsById[sessionId];
                 const mentionIds = new Set(
                     parts
                         .filter(
@@ -3680,14 +3754,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return {
                     composerPartsBySessionId: {
                         ...state.composerPartsBySessionId,
-                        [activeSessionId]: parts,
+                        [sessionId]: parts,
                     },
                     ...(session &&
                     prunedAttachments.length !== session.attachments.length
                         ? {
                               sessionsById: {
                                   ...state.sessionsById,
-                                  [activeSessionId]: {
+                                  [sessionId]: {
                                       ...session,
                                       attachments: prunedAttachments,
                                   },
@@ -3893,23 +3967,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         sendMessage: async () => {
-            const { activeSessionId, sessionsById, composerPartsBySessionId } =
-                get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
+            await get().sendMessageForSession(activeSessionId);
+        },
 
-            const session = sessionsById[activeSessionId];
+        sendMessageForSession: async (sessionId) => {
+            const { sessionsById, composerPartsBySessionId } = get();
+            const session = sessionsById[sessionId];
             if (!session || session.isResumingSession) {
                 return;
             }
 
             const composerParts =
-                composerPartsBySessionId[activeSessionId] ??
+                composerPartsBySessionId[sessionId] ??
                 createEmptyComposerParts();
             const queuedItem = buildQueuedMessage(session, composerParts);
             if (!queuedItem) return;
 
             const queuedMessageEdit =
-                get().queuedMessageEditBySessionId[activeSessionId];
+                get().queuedMessageEditBySessionId[sessionId];
             if (queuedMessageEdit) {
                 const updatedQueuedItem: QueuedChatMessage = {
                     ...queuedMessageEdit.item,
@@ -3920,9 +3997,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 };
 
                 set((state) => {
-                    const targetSession = state.sessionsById[activeSessionId];
+                    const targetSession = state.sessionsById[sessionId];
                     const currentEdit =
-                        state.queuedMessageEditBySessionId[activeSessionId];
+                        state.queuedMessageEditBySessionId[sessionId];
                     if (!targetSession || !currentEdit) {
                         return state;
                     }
@@ -3930,12 +4007,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const nextQueuedMessageEditBySessionId = {
                         ...state.queuedMessageEditBySessionId,
                     };
-                    delete nextQueuedMessageEditBySessionId[activeSessionId];
+                    delete nextQueuedMessageEditBySessionId[sessionId];
 
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: {
+                            [sessionId]: {
                                 ...targetSession,
                                 attachments:
                                     currentEdit.previousAttachments.map(
@@ -3945,16 +4022,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         },
                         composerPartsBySessionId: {
                             ...state.composerPartsBySessionId,
-                            [activeSessionId]: cloneComposerParts(
+                            [sessionId]: cloneComposerParts(
                                 currentEdit.previousComposerParts,
                             ),
                         },
                         queuedMessagesBySessionId: {
                             ...state.queuedMessagesBySessionId,
-                            [activeSessionId]: restoreQueuedMessagePosition(
-                                state.queuedMessagesBySessionId[
-                                    activeSessionId
-                                ] ?? [],
+                            [sessionId]: restoreQueuedMessagePosition(
+                                state.queuedMessagesBySessionId[sessionId] ??
+                                    [],
                                 currentEdit,
                                 updatedQueuedItem,
                             ),
@@ -3963,41 +4039,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             nextQueuedMessageEditBySessionId,
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
-                            activeSessionId,
+                            sessionId,
                         ),
                     };
                 });
 
-                if (get().sessionsById[activeSessionId]?.status === "idle") {
-                    void get().tryDrainQueue(activeSessionId);
+                if (get().sessionsById[sessionId]?.status === "idle") {
+                    void get().tryDrainQueue(sessionId);
                 }
                 return;
             }
 
             if (isSessionBusy(session)) {
-                get().enqueueMessage(activeSessionId, queuedItem);
+                get().enqueueMessage(sessionId, queuedItem);
                 set((state) => {
-                    const targetSession = state.sessionsById[activeSessionId];
+                    const targetSession = state.sessionsById[sessionId];
                     if (!targetSession) return state;
 
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: {
+                            [sessionId]: {
                                 ...targetSession,
                                 attachments: [],
                             },
                         },
                         composerPartsBySessionId: {
                             ...state.composerPartsBySessionId,
-                            [activeSessionId]: createEmptyComposerParts(),
+                            [sessionId]: createEmptyComposerParts(),
                         },
                     };
                 });
                 return;
             }
 
-            await dispatchMessage(activeSessionId, queuedItem, "immediate");
+            await dispatchMessage(sessionId, queuedItem, "immediate");
         },
 
         retryQueuedMessage: async (sessionId, messageId) => {
@@ -4117,17 +4193,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         stopStreaming: async () => {
-            const { activeSessionId } = get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
+            await get().stopStreamingForSession(activeSessionId);
+        },
 
-            clearStaleStreamingCheck(activeSessionId);
+        stopStreamingForSession: async (sessionId) => {
+            clearStaleStreamingCheck(sessionId);
 
             try {
-                const session = await aiCancelTurn(activeSessionId);
+                const session = await aiCancelTurn(sessionId);
                 get().upsertSession(session);
             } catch (error) {
                 get().applySessionError({
-                    session_id: activeSessionId,
+                    session_id: sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to stop the current turn.",
@@ -4138,12 +4217,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             // Explicitly transition to idle — same as applyMessageCompleted.
             const stoppedAt = Date.now();
             set((state) => {
-                const sess = state.sessionsById[activeSessionId];
+                const sess = state.sessionsById[sessionId];
                 if (!sess || sess.status === "idle") return state;
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [activeSessionId]: {
+                        [sessionId]: {
                             ...sess,
                             status: "idle",
                             messages: stampElapsedOnTurnStarted(
@@ -4158,21 +4237,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     },
                 };
             });
-            void get().tryDrainQueue(activeSessionId);
+            void get().tryDrainQueue(sessionId);
         },
 
         respondPermission: async (requestId, optionId) => {
-            const { activeSessionId } = get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
+            await get().respondPermissionForSession(
+                activeSessionId,
+                requestId,
+                optionId,
+            );
+        },
 
+        respondPermissionForSession: async (sessionId, requestId, optionId) => {
             // Optimistically mark as streaming since the agent will resume
             set((state) => {
-                const session = state.sessionsById[activeSessionId];
+                const session = state.sessionsById[sessionId];
                 if (!session) return state;
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [activeSessionId]: updatePermissionMessageState(
+                        [sessionId]: updatePermissionMessageState(
                             { ...session, status: "streaming" },
                             requestId,
                             {
@@ -4186,18 +4272,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const session = await aiRespondPermission(
-                    activeSessionId,
+                    sessionId,
                     requestId,
                     optionId,
                 );
                 get().upsertSession(session);
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: updatePermissionMessageState(
+                            [sessionId]: updatePermissionMessageState(
                                 currentSession,
                                 requestId,
                                 {
@@ -4214,12 +4300,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     "Failed to resolve the permission request.",
                 );
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: updatePermissionMessageState(
+                            [sessionId]: updatePermissionMessageState(
                                 {
                                     ...currentSession,
                                     status: "waiting_permission",
@@ -4233,17 +4319,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         },
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
-                            activeSessionId,
+                            sessionId,
                         ),
                     };
                 });
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: {
+                            [sessionId]: {
                                 ...currentSession,
                                 messages: [
                                     ...currentSession.messages,
@@ -4253,7 +4339,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         },
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
-                            activeSessionId,
+                            sessionId,
                         ),
                     };
                 });
@@ -4261,9 +4347,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         respondUserInput: async (requestId, answers) => {
-            const { activeSessionId } = get();
+            const activeSessionId = get().activeSessionId;
             if (!activeSessionId) return;
-            const session = get().sessionsById[activeSessionId];
+            await get().respondUserInputForSession(
+                activeSessionId,
+                requestId,
+                answers,
+            );
+        },
+
+        respondUserInputForSession: async (sessionId, requestId, answers) => {
+            const session = get().sessionsById[sessionId];
             if (!session) return;
 
             if (
@@ -4274,12 +4368,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 )
             ) {
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: {
+                            [sessionId]: {
                                 ...currentSession,
                                 messages: [
                                     ...currentSession.messages,
@@ -4291,7 +4385,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         },
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
-                            activeSessionId,
+                            sessionId,
                         ),
                     };
                 });
@@ -4299,12 +4393,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             set((state) => {
-                const currentSession = state.sessionsById[activeSessionId];
+                const currentSession = state.sessionsById[sessionId];
                 if (!currentSession) return state;
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [activeSessionId]: updateUserInputMessageState(
+                        [sessionId]: updateUserInputMessageState(
                             { ...currentSession, status: "streaming" },
                             requestId,
                             {
@@ -4318,18 +4412,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const session = await aiRespondUserInput(
-                    activeSessionId,
+                    sessionId,
                     requestId,
                     answers,
                 );
                 get().upsertSession(session);
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: updateUserInputMessageState(
+                            [sessionId]: updateUserInputMessageState(
                                 currentSession,
                                 requestId,
                                 {
@@ -4346,12 +4440,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     "Failed to respond to the input request.",
                 );
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: updateUserInputMessageState(
+                            [sessionId]: updateUserInputMessageState(
                                 {
                                     ...currentSession,
                                     status: "waiting_user_input",
@@ -4365,17 +4459,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         },
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
-                            activeSessionId,
+                            sessionId,
                         ),
                     };
                 });
                 set((state) => {
-                    const currentSession = state.sessionsById[activeSessionId];
+                    const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: {
+                            [sessionId]: {
                                 ...currentSession,
                                 messages: [
                                     ...currentSession.messages,
@@ -4385,7 +4479,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         },
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
-                            activeSessionId,
+                            sessionId,
                         ),
                     };
                 });
@@ -4538,6 +4632,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             : null,
                     content: mergedText,
                 });
+                const noteId = tracked.path.replace(/\.md$/, "");
+                reloadOpenEditorContent(noteId, mergedText);
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
@@ -4589,6 +4685,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const undoBuffers: import("../diff/actionLogTypes").PerFileUndo[] =
                 [];
             const undoSnapshots: Record<string, TrackedFile> = {};
+            let caughtError: unknown = null;
 
             for (const [identityKey, tracked] of Object.entries(trackedFiles)) {
                 if (!tracked.isText) {
@@ -4624,14 +4721,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     undoBuffers.push(undoData);
                     undoSnapshots[identityKey] = tracked;
                 } catch (error) {
-                    get().applySessionError({
-                        session_id: sessionId,
-                        message: getAiErrorMessage(
-                            error,
-                            "Failed to reject all file changes.",
-                        ),
-                    });
-                    return;
+                    caughtError = error;
+                    break;
                 }
             }
 
@@ -4681,6 +4772,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const updatedSession = get().sessionsById[sessionId];
             if (updatedSession) {
                 void persistSession(updatedSession);
+            }
+
+            if (caughtError) {
+                get().applySessionError({
+                    session_id: sessionId,
+                    message: getAiErrorMessage(
+                        caughtError,
+                        "Failed to reject all file changes.",
+                    ),
+                });
             }
         },
 
@@ -4775,6 +4876,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     hunkNewEnd,
                 );
             } else {
+                const vaultPath = useVaultStore.getState().vaultPath;
+                if (vaultPath) {
+                    const restoreCheck = await hasConflict(vaultPath, tracked);
+
+                    if (restoreCheck.conflict) {
+                        set((state) => {
+                            const currentSession =
+                                state.sessionsById[sessionId];
+                            if (!currentSession) return state;
+
+                            return {
+                                sessionsById: {
+                                    ...state.sessionsById,
+                                    [sessionId]: markTrackedConflict(
+                                        currentSession,
+                                        identityKey,
+                                        restoreCheck.currentHash,
+                                    ),
+                                },
+                            };
+                        });
+
+                        const updatedSession = get().sessionsById[sessionId];
+                        if (updatedSession) {
+                            void persistSession(updatedSession);
+                        }
+                        return;
+                    }
+                }
+
                 // Reject: revert hunk in currentText, write to disk
                 const { file } = rejectEditsInRanges(tracked, [
                     { start: hunkNewStart, end: hunkNewEnd },
@@ -4783,7 +4914,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 // Store undo snapshot so the reject can be undone
                 hunkUndoSnapshot = { identityKey, snapshot: tracked };
 
-                const vaultPath = useVaultStore.getState().vaultPath;
                 if (vaultPath) {
                     await aiRestoreTextFile({
                         vaultPath,
@@ -4803,8 +4933,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const currentSession = state.sessionsById[sessionId];
                 if (!currentSession?.actionLog || !wc) return state;
 
-                if (patchIsEmpty(updatedFile.unreviewedEdits)) {
-                    // All hunks resolved — remove from tracking
+                if (
+                    patchIsEmpty(updatedFile.unreviewedEdits) &&
+                    updatedFile.path === updatedFile.originPath
+                ) {
+                    // All hunks resolved and no move remains pending — remove from tracking
                     let cleaned = removeTrackedFileFromActionLog(
                         currentSession,
                         identityKey,
@@ -4880,10 +5013,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const { lastRejectUndo } = session.actionLog;
             const { snapshots } = lastRejectUndo;
+            const restoredSnapshots: Record<string, TrackedFile> = {};
+            let caughtError: unknown = null;
 
-            try {
-                // Restore each file on disk from its pre-reject snapshot
-                for (const [, snapshot] of Object.entries(snapshots)) {
+            // Restore each file on disk from its pre-reject snapshot
+            for (const [identityKey, snapshot] of Object.entries(snapshots)) {
+                try {
                     // Write the agent's currentText back (undo the rejection)
                     if (
                         snapshot.status.kind === "created" &&
@@ -4908,9 +5043,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }
                     const noteId = snapshot.path.replace(/\.md$/, "");
                     reloadOpenEditorContent(noteId, snapshot.currentText);
+                    restoredSnapshots[identityKey] = snapshot;
+                } catch (error) {
+                    caughtError = error;
+                    break;
                 }
+            }
 
-                // Re-track files in ActionLog + legacy buffer, clear undo
+            if (Object.keys(restoredSnapshots).length > 0) {
+                // Re-track successfully restored files and keep undo only for failures
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
                     if (!currentSession?.actionLog) return state;
@@ -4925,7 +5066,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         currentSession.actionLog,
                         wc,
                     );
-                    const restoredFiles = { ...existingFiles, ...snapshots };
+                    const restoredFiles = {
+                        ...existingFiles,
+                        ...restoredSnapshots,
+                    };
+                    const restoredKeys = new Set(
+                        Object.keys(restoredSnapshots),
+                    );
+                    const restoredPaths = new Set(
+                        Object.values(restoredSnapshots).map(
+                            (snapshot) => snapshot.path,
+                        ),
+                    );
+                    const remainingSnapshots = Object.fromEntries(
+                        Object.entries(lastRejectUndo.snapshots).filter(
+                            ([identityKey]) => !restoredKeys.has(identityKey),
+                        ),
+                    );
                     let updated: AIChatSession = {
                         ...currentSession,
                         actionLog: setTrackedFilesForWorkCycle(
@@ -4935,8 +5092,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         ),
                     };
 
-                    // Clear undo state
-                    updated = setActionLogUndo(updated, null);
+                    updated = setActionLogUndo(
+                        updated,
+                        Object.keys(remainingSnapshots).length === 0
+                            ? null
+                            : {
+                                  buffers: lastRejectUndo.buffers.filter(
+                                      (buffer) =>
+                                          !restoredPaths.has(buffer.path),
+                                  ),
+                                  snapshots: remainingSnapshots,
+                                  timestamp: lastRejectUndo.timestamp,
+                              },
+                    );
 
                     return {
                         sessionsById: {
@@ -4950,11 +5118,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (updatedSession) {
                     void persistSession(updatedSession);
                 }
-            } catch (error) {
+            }
+
+            if (caughtError) {
                 get().applySessionError({
                     session_id: sessionId,
                     message: getAiErrorMessage(
-                        error,
+                        caughtError,
                         "Failed to undo the last reject.",
                     ),
                 });
@@ -4963,7 +5133,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         notifyUserEditOnFile: (fileId, userEdits, newFullText) => {
             set((state) => {
-                // Find session with this file tracked in ActionLog
+                let nextSessionsById: typeof state.sessionsById | null = null;
+
+                // Propagate the user edit to every session tracking this file
                 for (const [sessionId, session] of Object.entries(
                     state.sessionsById,
                 )) {
@@ -4997,27 +5169,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         newFullText,
                     );
 
-                    const nextFiles = {
-                        ...files,
-                        [trackedKey]: updated,
-                    };
+                    const nextFiles = { ...files };
+                    if (
+                        patchIsEmpty(updated.unreviewedEdits) &&
+                        updated.path === updated.originPath
+                    ) {
+                        delete nextFiles[trackedKey];
+                    } else {
+                        nextFiles[trackedKey] = updated;
+                    }
                     const nextActionLog = setTrackedFilesForWorkCycle(
                         session.actionLog,
                         wc,
                         nextFiles,
                     );
 
-                    return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [sessionId]: {
-                                ...session,
-                                actionLog: nextActionLog,
-                            },
-                        },
+                    if (nextSessionsById === null) {
+                        nextSessionsById = { ...state.sessionsById };
+                    }
+
+                    nextSessionsById[sessionId] = {
+                        ...session,
+                        actionLog: nextActionLog,
                     };
                 }
-                return state;
+
+                return nextSessionsById === null
+                    ? state
+                    : { sessionsById: nextSessionsById };
             });
         },
 
@@ -5251,43 +5430,73 @@ export const useChatStore = create<ChatStore>((set, get) => {
             await get().newSession();
         },
 
-        attachNote: (note) =>
+        attachNote: (note) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().attachNoteToSession(activeSessionId, note);
+        },
+
+        attachNoteToSession: (sessionId, note) =>
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: withUniqueAttachment(
-                        session.attachments,
-                        createAttachment("note", note),
-                    ),
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: withUniqueAttachment(
+                            session.attachments,
+                            createAttachment("note", note),
+                        ),
+                    }),
+                ),
                 notePickerOpen: false,
             })),
 
-        attachFolder: (folderPath, name) =>
+        attachFolder: (folderPath, name) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().attachFolderToSession(activeSessionId, folderPath, name);
+        },
+
+        attachFolderToSession: (sessionId, folderPath, name) =>
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: withUniqueAttachment(session.attachments, {
-                        id: crypto.randomUUID(),
-                        type: "folder",
-                        noteId: folderPath,
-                        label: name,
-                        path: null,
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: withUniqueAttachment(session.attachments, {
+                            id: crypto.randomUUID(),
+                            type: "folder",
+                            noteId: folderPath,
+                            label: name,
+                            path: null,
+                        }),
                     }),
-                })),
+                ),
             })),
 
         attachCurrentNote: (note) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().attachCurrentNoteToSession(activeSessionId, note);
+        },
+
+        attachCurrentNoteToSession: (sessionId, note) => {
             if (!note) return;
 
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: withUniqueAttachment(
-                        session.attachments,
-                        createAttachment("current_note", note),
-                    ),
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: withUniqueAttachment(
+                            session.attachments,
+                            createAttachment("current_note", note),
+                        ),
+                    }),
+                ),
             }));
         },
 
@@ -5342,6 +5551,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         attachAudio: (filePath, fileName) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().attachAudioToSession(activeSessionId, filePath, fileName);
+        },
+
+        attachAudioToSession: (sessionId, filePath, fileName) => {
             const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
             const mimeMap: Record<string, string> = {
                 mp3: "audio/mpeg",
@@ -5351,71 +5566,124 @@ export const useChatStore = create<ChatStore>((set, get) => {
             };
             const mimeType = mimeMap[ext] ?? "audio/*";
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: [
-                        ...session.attachments,
-                        {
-                            id: crypto.randomUUID(),
-                            type: "audio",
-                            noteId: null,
-                            label: fileName,
-                            path: null,
-                            filePath,
-                            mimeType,
-                            status: "pending",
-                        },
-                    ],
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: [
+                            ...session.attachments,
+                            {
+                                id: crypto.randomUUID(),
+                                type: "audio",
+                                noteId: null,
+                                label: fileName,
+                                path: null,
+                                filePath,
+                                mimeType,
+                                status: "pending",
+                            },
+                        ],
+                    }),
+                ),
             }));
         },
 
-        attachFile: (filePath, fileName, mimeType) =>
+        attachFile: (filePath, fileName, mimeType) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().attachFileToSession(
+                activeSessionId,
+                filePath,
+                fileName,
+                mimeType,
+            );
+        },
+
+        attachFileToSession: (sessionId, filePath, fileName, mimeType) =>
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: [
-                        ...session.attachments,
-                        {
-                            id: crypto.randomUUID(),
-                            type: "file",
-                            noteId: null,
-                            label: fileName,
-                            path: null,
-                            filePath,
-                            mimeType,
-                            status: "ready",
-                        },
-                    ],
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: [
+                            ...session.attachments,
+                            {
+                                id: crypto.randomUUID(),
+                                type: "file",
+                                noteId: null,
+                                label: fileName,
+                                path: null,
+                                filePath,
+                                mimeType,
+                                status: "ready",
+                            },
+                        ],
+                    }),
+                ),
             })),
 
-        updateAttachment: (attachmentId, patch) =>
+        updateAttachment: (attachmentId, patch) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().updateAttachmentInSession(
+                activeSessionId,
+                attachmentId,
+                patch,
+            );
+        },
+
+        updateAttachmentInSession: (sessionId, attachmentId, patch) =>
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: session.attachments.map((a) =>
-                        a.id === attachmentId ? { ...a, ...patch } : a,
-                    ),
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: session.attachments.map((a) =>
+                            a.id === attachmentId ? { ...a, ...patch } : a,
+                        ),
+                    }),
+                ),
             })),
 
-        removeAttachment: (attachmentId) =>
+        removeAttachment: (attachmentId) => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().removeAttachmentFromSession(activeSessionId, attachmentId);
+        },
+
+        removeAttachmentFromSession: (sessionId, attachmentId) =>
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: session.attachments.filter(
-                        (attachment) => attachment.id !== attachmentId,
-                    ),
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: session.attachments.filter(
+                            (attachment) => attachment.id !== attachmentId,
+                        ),
+                    }),
+                ),
             })),
 
-        clearAttachments: () =>
+        clearAttachments: () => {
+            const activeSessionId = get().activeSessionId;
+            if (!activeSessionId) return;
+            get().clearAttachmentsForSession(activeSessionId);
+        },
+
+        clearAttachmentsForSession: (sessionId) =>
             set((state) => ({
-                sessionsById: updateActiveSession(state, (session) => ({
-                    ...session,
-                    attachments: [],
-                })),
+                sessionsById: updateSessionById(
+                    state,
+                    sessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: [],
+                    }),
+                ),
             })),
 
         toggleAutoContext: () => {

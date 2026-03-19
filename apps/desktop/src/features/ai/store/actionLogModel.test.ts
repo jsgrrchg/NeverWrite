@@ -1,22 +1,29 @@
 import { describe, expect, it } from "vitest";
 import type { AIFileDiff } from "../types";
-import type { TrackedFile } from "../diff/actionLogTypes";
+import type { TextEdit, TrackedFile } from "../diff/actionLogTypes";
 import {
     applyNonConflictingEdits,
     applyRejectUndo,
     buildPatchFromTexts,
+    buildTextRangePatchFromTexts,
     computeRestoreAction,
     consolidateTrackedFiles,
     createTrackedFileFromDiff,
+    deriveLinePatchFromTextRanges,
     emptyPatch,
+    getTrackedFilesForWorkCycle,
     keepAllEdits,
     keepEditsInRange,
+    mapAgentSpanThroughTextEdits,
+    mapTextPositionThroughEdits,
     patchContainsLine,
     patchIsEmpty,
     rangesOverlap,
+    rebuildDiffBaseFromPendingSpans,
     rejectAllEdits,
     rejectEditsInRanges,
     shouldShowInlineDiff,
+    syncDerivedLinePatch,
     updateTrackedFileWithDiff,
 } from "./actionLogModel";
 
@@ -117,6 +124,110 @@ describe("Patch primitives", () => {
         expect(patchContainsLine(p, 1)).toBe(true); // "BBB"
         expect(patchContainsLine(p, 2)).toBe(false); // "ccc"
     });
+
+    it("buildTextRangePatchFromTexts captures inline spans", () => {
+        const patch = buildTextRangePatchFromTexts("alpha", "alpHa");
+
+        expect(patch.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+    });
+
+    it("deriveLinePatchFromTextRanges keeps review hunks line-based", () => {
+        const baseText = "first line\nalpha\nlast line";
+        const currentText = "first line\nalpHa\nlast line";
+        const ranges = buildTextRangePatchFromTexts(baseText, currentText);
+
+        const linePatch = deriveLinePatchFromTextRanges(
+            baseText,
+            currentText,
+            ranges.spans,
+        );
+
+        expect(linePatch.edits).toEqual([
+            {
+                oldStart: 1,
+                oldEnd: 2,
+                newStart: 1,
+                newEnd: 2,
+            },
+        ]);
+    });
+
+    it("syncDerivedLinePatch rebuilds spans from legacy line-only tracked files", () => {
+        const legacy: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "alpha",
+            currentText: "alpHa",
+            unreviewedEdits: buildPatchFromTexts("alpha", "alpHa"),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const synced = syncDerivedLinePatch(legacy);
+
+        expect(synced.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+        expect(synced.unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 0,
+                oldEnd: 1,
+                newStart: 0,
+                newEnd: 1,
+            },
+        ]);
+    });
+
+    it("syncDerivedLinePatch rebuilds spans from texts when legacy line hunks are stale", () => {
+        const legacy: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "alpha",
+            currentText: "alpHa",
+            unreviewedEdits: emptyPatch(),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const synced = syncDerivedLinePatch(legacy);
+
+        expect(synced.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+        expect(synced.unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 0,
+                oldEnd: 1,
+                newStart: 0,
+                newEnd: 1,
+            },
+        ]);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -133,6 +244,7 @@ describe("createTrackedFileFromDiff", () => {
         expect(file.status).toEqual({ kind: "modified" });
         expect(file.diffBase).toBe("aaa\nbbb\nccc");
         expect(file.currentText).toBe("aaa\nBBB\nccc");
+        expect(file.unreviewedRanges?.spans).toHaveLength(1);
         expect(file.unreviewedEdits.edits).toHaveLength(1);
         expect(file.version).toBe(1);
     });
@@ -268,6 +380,46 @@ describe("consolidateTrackedFiles", () => {
     });
 });
 
+describe("ActionLogState helpers", () => {
+    it("getTrackedFilesForWorkCycle lazily normalizes legacy tracked files", () => {
+        const legacy: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "alpha",
+            currentText: "alpHa",
+            unreviewedEdits: emptyPatch(),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const tracked = getTrackedFilesForWorkCycle(
+            {
+                trackedFilesByWorkCycleId: {
+                    cycle: {
+                        "test.md": legacy,
+                    },
+                },
+                lastRejectUndo: null,
+            },
+            "cycle",
+        );
+
+        expect(tracked["test.md"]).not.toBe(legacy);
+        expect(tracked["test.md"].unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+    });
+});
+
 // ---------------------------------------------------------------------------
 // applyNonConflictingEdits
 // ---------------------------------------------------------------------------
@@ -292,12 +444,21 @@ describe("applyNonConflictingEdits", () => {
         };
     }
 
+    function edit(
+        oldFrom: number,
+        oldTo: number,
+        newFrom: number,
+        newTo: number,
+    ): TextEdit {
+        return { oldFrom, oldTo, newFrom, newTo };
+    }
+
     it("absorbs user edit on non-agent line into diffBase", () => {
         // Agent changed line 1 (bbb → BBB)
         // User changes line 0 (aaa → AAA)
         const file = makeTrackedFile("aaa\nbbb\nccc", "aaa\nBBB\nccc");
 
-        const userEdits = [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }];
+        const userEdits = [edit(0, 3, 0, 3)];
         const newFullText = "AAA\nBBB\nccc";
 
         const result = applyNonConflictingEdits(file, userEdits, newFullText);
@@ -310,18 +471,18 @@ describe("applyNonConflictingEdits", () => {
         expect(patchContainsLine(result.unreviewedEdits, 1)).toBe(true);
     });
 
-    it("ignores user edit on agent-modified line", () => {
+    it("retires agent attribution when the user edits an agent-modified line", () => {
         // Agent changed line 1 (bbb → BBB)
         // User also tries to change line 1
         const file = makeTrackedFile("aaa\nbbb\nccc", "aaa\nBBB\nccc");
 
-        const userEdits = [{ oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 }];
+        const userEdits = [edit(4, 7, 4, 7)];
         const newFullText = "aaa\nXXX\nccc";
 
         const result = applyNonConflictingEdits(file, userEdits, newFullText);
 
-        // diffBase should NOT absorb the user's edit (conflict)
-        expect(result.diffBase).toBe("aaa\nbbb\nccc");
+        expect(result.diffBase).toBe("aaa\nXXX\nccc");
+        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
     });
 
     it("handles user edit after agent range", () => {
@@ -329,7 +490,7 @@ describe("applyNonConflictingEdits", () => {
         // User changes line 2 (ccc → CCC) — no conflict
         const file = makeTrackedFile("aaa\nbbb\nccc", "AAA\nbbb\nccc");
 
-        const userEdits = [{ oldStart: 2, oldEnd: 3, newStart: 2, newEnd: 3 }];
+        const userEdits = [edit(8, 11, 8, 11)];
         const newFullText = "AAA\nbbb\nCCC";
 
         const result = applyNonConflictingEdits(file, userEdits, newFullText);
@@ -345,19 +506,70 @@ describe("applyNonConflictingEdits", () => {
         );
 
         const userEdits = [
-            { oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }, // aaa → AAA (ok)
-            { oldStart: 2, oldEnd: 3, newStart: 2, newEnd: 3 }, // CCC → XXX (conflict)
-            { oldStart: 3, oldEnd: 4, newStart: 3, newEnd: 4 }, // ddd → DDD (ok)
+            edit(0, 3, 0, 3), // aaa → AAA (ok)
+            edit(8, 11, 8, 11), // CCC → XXX (conflict)
+            edit(12, 15, 12, 15), // ddd → DDD (ok)
         ];
         const newFullText = "AAA\nbbb\nXXX\nDDD";
 
         const result = applyNonConflictingEdits(file, userEdits, newFullText);
 
-        // Only non-conflicting edits absorbed
-        expect(lines(result.diffBase)).toContain("AAA");
-        expect(lines(result.diffBase)).toContain("DDD");
-        // Original "ccc" still in diffBase (conflict edit ignored)
-        expect(lines(result.diffBase)).toContain("ccc");
+        expect(result.diffBase).toBe("AAA\nbbb\nXXX\nDDD");
+        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
+    });
+
+    it("keeps agent spans when the user edits beside them inline", () => {
+        const file = makeTrackedFile("alpha", "alpHa");
+        const userEdits = [edit(4, 4, 4, 5)];
+        const newFullText = "alpHXa";
+
+        const result = applyNonConflictingEdits(file, userEdits, newFullText);
+
+        expect(result.diffBase).toBe("alphXa");
+        expect(result.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+        expect(result.unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 0,
+                oldEnd: 1,
+                newStart: 0,
+                newEnd: 1,
+            },
+        ]);
+    });
+
+    it("retires the whole span when the user touches it partially", () => {
+        const file = makeTrackedFile("alpha", "alpHa");
+        const userEdits = [edit(3, 4, 3, 4)];
+        const newFullText = "alpha";
+
+        const result = applyNonConflictingEdits(file, userEdits, newFullText);
+
+        expect(result.diffBase).toBe("alpha");
+        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
+    });
+
+    it("keeps untouched agent hunks pending after a user line insertion above them", () => {
+        const file = makeTrackedFile("aaa\nbbb\nccc", "aaa\nbbb\nCCC");
+        const userEdits = [edit(4, 4, 4, 9)];
+        const newFullText = "aaa\nuser\nbbb\nCCC";
+
+        const result = applyNonConflictingEdits(file, userEdits, newFullText);
+
+        expect(result.diffBase).toBe("aaa\nuser\nbbb\nccc");
+        expect(result.unreviewedEdits.edits).toHaveLength(1);
+        expect(result.unreviewedEdits.edits[0]).toEqual({
+            oldStart: 3,
+            oldEnd: 4,
+            newStart: 3,
+            newEnd: 4,
+        });
     });
 
     it("returns unchanged file when no user edits", () => {
@@ -383,10 +595,11 @@ describe("applyNonConflictingEdits", () => {
 
         const result = applyNonConflictingEdits(
             file,
-            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [edit(0, 3, 0, 3)],
             "AAA\nbbb",
         );
 
+        expect(result.diffBase).toBe("AAA\nbbb");
         expect(result.currentText).toBe("AAA\nbbb");
         expect(result.version).toBe(2);
     });
@@ -420,6 +633,37 @@ describe("Accept operations", () => {
         expect(lines(accepted.diffBase)).toContain("AAA");
         // The second hunk should still be unreviewed
         expect(accepted.unreviewedEdits.edits.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("keepEditsInRange accepts only spans that match the selected derived hunk", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "alpha\nmiddle\nbeta",
+                new_text: "alpHa\nmiddle\nbeTa",
+            }),
+            1000,
+        );
+
+        const accepted = keepEditsInRange(file, 0, 1);
+
+        expect(accepted.diffBase).toBe("alpHa\nmiddle\nbeta");
+        expect(accepted.currentText).toBe("alpHa\nmiddle\nbeTa");
+        expect(accepted.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 15,
+                baseTo: 16,
+                currentFrom: 15,
+                currentTo: 16,
+            },
+        ]);
+        expect(accepted.unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 2,
+                oldEnd: 3,
+                newStart: 2,
+                newEnd: 3,
+            },
+        ]);
     });
 });
 
@@ -456,6 +700,45 @@ describe("Reject operations", () => {
         // Undo should capture the rejected agent text
         expect(undoData.editsToRestore).toHaveLength(1);
         expect(undoData.editsToRestore[0].text).toBe("AAA");
+    });
+
+    it("rejectEditsInRanges reverts only spans inside the selected derived hunk", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "alpha\nmiddle\nbeta",
+                new_text: "alpHa\nmiddle\nbeTa",
+            }),
+            1000,
+        );
+
+        const { file: rejected, undoData } = rejectEditsInRanges(file, [
+            { start: 0, end: 1 },
+        ]);
+
+        expect(rejected.currentText).toBe("alpha\nmiddle\nbeTa");
+        expect(rejected.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 15,
+                baseTo: 16,
+                currentFrom: 15,
+                currentTo: 16,
+            },
+        ]);
+        expect(rejected.unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 2,
+                oldEnd: 3,
+                newStart: 2,
+                newEnd: 3,
+            },
+        ]);
+        expect(undoData.editsToRestore).toEqual([
+            {
+                startLine: 0,
+                endLine: 1,
+                text: "alpHa",
+            },
+        ]);
     });
 });
 
@@ -725,5 +1008,197 @@ describe("Inline diff positioning", () => {
         // shouldShowInlineDiff still returns true — the editor
         // handles this via the deleted-block widget in inlineDiff.ts.
         // This test just documents the behavior.
+    });
+});
+
+// ---------------------------------------------------------------------------
+// mapAgentSpanThroughTextEdits — isolated unit tests
+// ---------------------------------------------------------------------------
+
+describe("mapAgentSpanThroughTextEdits", () => {
+    function edit(
+        oldFrom: number,
+        oldTo: number,
+        newFrom: number,
+        newTo: number,
+    ): TextEdit {
+        return { oldFrom, oldTo, newFrom, newTo };
+    }
+
+    function span(
+        baseFrom: number,
+        baseTo: number,
+        currentFrom: number,
+        currentTo: number,
+    ) {
+        return { baseFrom, baseTo, currentFrom, currentTo };
+    }
+
+    it("returns null when user edit overlaps the span", () => {
+        // span at [4,7], user edits [5,6]
+        const result = mapAgentSpanThroughTextEdits(span(4, 7, 4, 7), [
+            edit(5, 6, 5, 6),
+        ]);
+        expect(result).toBeNull();
+    });
+
+    it("returns null when user edit fully contains the span", () => {
+        const result = mapAgentSpanThroughTextEdits(span(4, 7, 4, 7), [
+            edit(3, 8, 3, 10),
+        ]);
+        expect(result).toBeNull();
+    });
+
+    it("shifts span forward when user inserts before it", () => {
+        // span at [10,15], user inserts 5 chars at position [2,2] → [2,7]
+        const result = mapAgentSpanThroughTextEdits(span(10, 15, 10, 15), [
+            edit(2, 2, 2, 7),
+        ]);
+        expect(result).toEqual(span(10, 15, 15, 20));
+    });
+
+    it("leaves span unchanged when user edits after it", () => {
+        // span at [2,5], user edits at [10,12]
+        const result = mapAgentSpanThroughTextEdits(span(2, 5, 2, 5), [
+            edit(10, 12, 10, 15),
+        ]);
+        expect(result).toEqual(span(2, 5, 2, 5));
+    });
+
+    it("handles multiple edits: one before, one after the span", () => {
+        // span at [10,15], edits: insert 3 chars at [2,2]→[2,5], replace at [20,22]→[23,25]
+        const result = mapAgentSpanThroughTextEdits(span(10, 15, 10, 15), [
+            edit(2, 2, 2, 5),
+            edit(20, 22, 23, 25),
+        ]);
+        // Only the first edit (insert of 3) shifts the span
+        expect(result).toEqual(span(10, 15, 13, 18));
+    });
+
+    it("returns null when one of multiple edits touches the span", () => {
+        // span at [10,15], first edit is safe but second overlaps
+        const result = mapAgentSpanThroughTextEdits(span(10, 15, 10, 15), [
+            edit(2, 2, 2, 5),
+            edit(12, 13, 15, 16),
+        ]);
+        expect(result).toBeNull();
+    });
+
+    it("handles pure insertion span (baseFrom === baseTo)", () => {
+        // Agent inserted text: baseFrom === baseTo (nothing in old), currentFrom/To has content
+        const result = mapAgentSpanThroughTextEdits(
+            span(5, 5, 5, 10),
+            [edit(0, 0, 0, 3)], // user inserts 3 chars at start
+        );
+        expect(result).toEqual(span(5, 5, 8, 13));
+    });
+
+    it("returns null when user edit touches a pure insertion span", () => {
+        // span is pure insertion at [5,10] in current text
+        const result = mapAgentSpanThroughTextEdits(
+            span(5, 5, 5, 10),
+            [edit(6, 7, 6, 7)], // user edits inside the insertion
+        );
+        expect(result).toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// mapTextPositionThroughEdits — isolated unit tests
+// ---------------------------------------------------------------------------
+
+describe("mapTextPositionThroughEdits", () => {
+    function edit(
+        oldFrom: number,
+        oldTo: number,
+        newFrom: number,
+        newTo: number,
+    ): TextEdit {
+        return { oldFrom, oldTo, newFrom, newTo };
+    }
+
+    it("shifts position forward after an insertion before it", () => {
+        // Insert 5 chars at [0,0]→[0,5], position was 10
+        expect(mapTextPositionThroughEdits(10, [edit(0, 0, 0, 5)], 1)).toBe(15);
+    });
+
+    it("shifts position backward after a deletion before it", () => {
+        // Delete 3 chars at [2,5]→[2,2], position was 10
+        expect(mapTextPositionThroughEdits(10, [edit(2, 5, 2, 2)], 1)).toBe(7);
+    });
+
+    it("does not shift position for edit after it", () => {
+        expect(mapTextPositionThroughEdits(5, [edit(10, 12, 10, 15)], 1)).toBe(
+            5,
+        );
+    });
+
+    it("accumulates deltas from multiple edits before position", () => {
+        // Two insertions before position 20: +3 at pos 2, +2 at pos 8
+        const edits = [edit(2, 2, 2, 5), edit(8, 8, 11, 13)];
+        expect(mapTextPositionThroughEdits(20, edits, 1)).toBe(25);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// rebuildDiffBaseFromPendingSpans — isolated unit tests
+// ---------------------------------------------------------------------------
+
+describe("rebuildDiffBaseFromPendingSpans", () => {
+    it("returns currentText when no spans remain", () => {
+        expect(rebuildDiffBaseFromPendingSpans("old", "new text", [])).toBe(
+            "new text",
+        );
+    });
+
+    it("replaces agent span region with original base text", () => {
+        // currentText: "alpHa", agent span at [3,4] maps to base [3,4] ("h")
+        const result = rebuildDiffBaseFromPendingSpans("alpha", "alpHa", [
+            { baseFrom: 3, baseTo: 4, currentFrom: 3, currentTo: 4 },
+        ]);
+        expect(result).toBe("alpha");
+    });
+
+    it("handles two separated spans with user text between them", () => {
+        // base: "aaa bbb ccc", current: "aaa BBB CCC"
+        // Agent changed "bbb"→"BBB" at [4,7] and "ccc"→"CCC" at [8,11]
+        const result = rebuildDiffBaseFromPendingSpans(
+            "aaa bbb ccc",
+            "aaa BBB CCC",
+            [
+                { baseFrom: 4, baseTo: 7, currentFrom: 4, currentTo: 7 },
+                { baseFrom: 8, baseTo: 11, currentFrom: 8, currentTo: 11 },
+            ],
+        );
+        expect(result).toBe("aaa bbb ccc");
+    });
+
+    it("handles span at the start of the document", () => {
+        const result = rebuildDiffBaseFromPendingSpans(
+            "hello world",
+            "HELLO world",
+            [{ baseFrom: 0, baseTo: 5, currentFrom: 0, currentTo: 5 }],
+        );
+        expect(result).toBe("hello world");
+    });
+
+    it("handles span at the end of the document", () => {
+        const result = rebuildDiffBaseFromPendingSpans(
+            "hello world",
+            "hello WORLD",
+            [{ baseFrom: 6, baseTo: 11, currentFrom: 6, currentTo: 11 }],
+        );
+        expect(result).toBe("hello world");
+    });
+
+    it("handles pure insertion span (baseTo === baseFrom)", () => {
+        // Agent inserted "XYZ" at position 5 — base has nothing there
+        const result = rebuildDiffBaseFromPendingSpans(
+            "hello world",
+            "helloXYZ world",
+            [{ baseFrom: 5, baseTo: 5, currentFrom: 5, currentTo: 8 }],
+        );
+        // The agent's insertion should be reverted: base text at [5,5] is ""
+        expect(result).toBe("hello world");
     });
 });

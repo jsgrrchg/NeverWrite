@@ -23,6 +23,17 @@ export const inlineDiffTheme = EditorView.baseTheme({
         borderLeft: "3px solid var(--diff-update)",
         paddingLeft: "6px !important",
     },
+    ".cm-diff-inline-add": {
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 28%, transparent)",
+        borderRadius: "3px",
+        boxDecorationBreak: "clone",
+    },
+    ".cm-diff-inline-modified": {
+        backgroundColor:
+            "color-mix(in srgb, var(--diff-update) 28%, transparent)",
+        borderRadius: "3px",
+        boxDecorationBreak: "clone",
+    },
 
     // ── Deleted text block (block widget via StateField) ──────────────
     ".cm-diff-deleted-block": {

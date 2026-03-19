@@ -8,39 +8,26 @@
 import { Annotation } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import type { ChangeAuthor } from "../../ai/diff/actionLogTypes";
-import type { LineEdit } from "../../ai/diff/actionLogTypes";
+import type { TextEdit } from "../../ai/diff/actionLogTypes";
 
 /** Annotate a transaction with its change author. */
 export const changeAuthorAnnotation = Annotation.define<ChangeAuthor>();
 
 /**
- * Compute 0-based, end-exclusive line ranges from a CodeMirror ViewUpdate.
- * Returns an array of LineEdit describing which old lines were replaced
- * and which new lines were inserted.
+ * Compute 0-based, end-exclusive text offsets from a CodeMirror ViewUpdate.
+ * Returns an array of TextEdit describing the precise old/new document ranges.
  */
-export function computeChangedLineRanges(update: ViewUpdate): LineEdit[] {
+export function computeChangedTextEdits(update: ViewUpdate): TextEdit[] {
     if (!update.docChanged) return [];
 
-    const edits: LineEdit[] = [];
-    const oldDoc = update.startState.doc;
-    const newDoc = update.state.doc;
+    const edits: TextEdit[] = [];
 
-    update.changes.iterChanges((fromA, toA, fromB, toB) => {
-        // Old doc: which lines were removed/replaced
-        const oldStartLine = oldDoc.lineAt(fromA).number - 1;
-        const oldEndLine =
-            fromA === toA ? oldStartLine : oldDoc.lineAt(toA - 1).number; // 1-based → 0-based exclusive
-
-        // New doc: which lines were inserted
-        const newStartLine = newDoc.lineAt(fromB).number - 1;
-        const newEndLine =
-            fromB === toB ? newStartLine : newDoc.lineAt(toB - 1).number;
-
+    update.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
         edits.push({
-            oldStart: oldStartLine,
-            oldEnd: oldEndLine,
-            newStart: newStartLine,
-            newEnd: newEndLine,
+            oldFrom: fromA,
+            oldTo: toA,
+            newFrom: fromB,
+            newTo: Math.max(toB, fromB + inserted.length),
         });
     });
 
@@ -58,7 +45,7 @@ export function computeChangedLineRanges(update: ViewUpdate): LineEdit[] {
  */
 export function userEditNotifier(
     getFileId: () => string | null,
-    onUserEdit: (fileId: string, edits: LineEdit[], fullText: string) => void,
+    onUserEdit: (fileId: string, edits: TextEdit[], fullText: string) => void,
 ) {
     return EditorView.updateListener.of((update) => {
         if (!update.docChanged) return;
@@ -75,10 +62,10 @@ export function userEditNotifier(
         const fileId = getFileId();
         if (!fileId) return;
 
-        const lineEdits = computeChangedLineRanges(update);
-        if (lineEdits.length === 0) return;
+        const textEdits = computeChangedTextEdits(update);
+        if (textEdits.length === 0) return;
 
         const fullText = update.state.doc.toString();
-        onUserEdit(fileId, lineEdits, fullText);
+        onUserEdit(fileId, textEdits, fullText);
     });
 }

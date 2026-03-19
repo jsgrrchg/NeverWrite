@@ -27,7 +27,7 @@ import {
     WidgetType,
     type ViewUpdate,
 } from "@codemirror/view";
-import type { LineEdit } from "../../ai/diff/actionLogTypes";
+import type { AgentTextSpan, LineEdit } from "../../ai/diff/actionLogTypes";
 import { inlineDiffTheme } from "./inlineDiffTheme";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,7 @@ import { inlineDiffTheme } from "./inlineDiffTheme";
 
 export interface InlineDiffState {
     edits: LineEdit[];
+    spans: AgentTextSpan[];
     /** Parallel to edits — deleted lines text for each edit (empty for non-deletions). */
     deletedTexts: string[][];
     sessionId: string | null;
@@ -45,6 +46,7 @@ export interface InlineDiffState {
 
 const emptyState: InlineDiffState = {
     edits: [],
+    spans: [],
     deletedTexts: [],
     sessionId: null,
     identityKey: null,
@@ -71,6 +73,82 @@ export const inlineDiffField = StateField.define<InlineDiffState>({
 
 const addedLineDeco = Decoration.line({ class: "cm-diff-added" });
 const modifiedLineDeco = Decoration.line({ class: "cm-diff-modified" });
+const addedInlineMarkDeco = Decoration.mark({ class: "cm-diff-inline-add" });
+const modifiedInlineMarkDeco = Decoration.mark({
+    class: "cm-diff-inline-modified",
+});
+
+function clampOffset(doc: EditorView["state"]["doc"], offset: number): number {
+    return Math.max(0, Math.min(offset, doc.length));
+}
+
+function spanLineRange(
+    doc: EditorView["state"]["doc"],
+    span: AgentTextSpan,
+): { start: number; end: number } | null {
+    if (span.currentFrom === span.currentTo) return null;
+
+    const from = clampOffset(doc, span.currentFrom);
+    const to = clampOffset(doc, span.currentTo);
+    if (from === to) return null;
+
+    const start = doc.lineAt(from).number - 1;
+    const end = doc.lineAt(Math.max(from, to - 1)).number;
+    return { start, end };
+}
+
+function spansForEdit(
+    doc: EditorView["state"]["doc"],
+    edit: LineEdit,
+    spans: AgentTextSpan[],
+): AgentTextSpan[] {
+    if (spans.length === 0) return [];
+
+    return spans.filter((span) => {
+        const range = spanLineRange(doc, span);
+        if (!range) return false;
+        if (edit.newStart === edit.newEnd) {
+            return range.start === edit.newStart || range.end === edit.newStart;
+        }
+        return range.start < edit.newEnd && edit.newStart < range.end;
+    });
+}
+
+function spanCoversFullLine(
+    doc: EditorView["state"]["doc"],
+    span: AgentTextSpan,
+): boolean {
+    if (span.currentFrom === span.currentTo) return false;
+
+    const from = clampOffset(doc, span.currentFrom);
+    const to = clampOffset(doc, span.currentTo);
+    if (from === to) return false;
+
+    const fromLine = doc.lineAt(from);
+    const toLine = doc.lineAt(Math.max(from, to - 1));
+    return from === fromLine.from && to === toLine.to;
+}
+
+function shouldUseLineBackgroundForEdit(
+    doc: EditorView["state"]["doc"],
+    edit: LineEdit,
+    spans: AgentTextSpan[],
+): boolean {
+    if (edit.newStart === edit.newEnd) return false;
+
+    const relatedSpans = spansForEdit(doc, edit, spans);
+    if (relatedSpans.length === 0) {
+        return edit.newEnd - edit.newStart > 1;
+    }
+
+    return relatedSpans.some((span) => {
+        const from = clampOffset(doc, span.currentFrom);
+        const to = clampOffset(doc, span.currentTo);
+        if (from === to) return false;
+        const text = doc.sliceString(from, to);
+        return text.includes("\n") || spanCoversFullLine(doc, span);
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Widgets
@@ -258,13 +336,32 @@ class DeletedBlockWidget extends WidgetType {
 
 function buildLineDecorations(view: EditorView): DecorationSet {
     const diffState = view.state.field(inlineDiffField);
-    if (diffState.edits.length === 0) return Decoration.none;
+    if (diffState.edits.length === 0 && diffState.spans.length === 0) {
+        return Decoration.none;
+    }
 
     const builder = new RangeSetBuilder<Decoration>();
     const doc = view.state.doc;
     const totalLines = doc.lines;
 
     const decos: Array<{ from: number; to: number; deco: Decoration }> = [];
+
+    for (const span of diffState.spans) {
+        if (span.currentFrom === span.currentTo) continue;
+
+        const from = clampOffset(doc, span.currentFrom);
+        const to = clampOffset(doc, span.currentTo);
+        if (from === to) continue;
+
+        decos.push({
+            from,
+            to,
+            deco:
+                span.baseFrom === span.baseTo
+                    ? addedInlineMarkDeco
+                    : modifiedInlineMarkDeco,
+        });
+    }
 
     for (const edit of diffState.edits) {
         const isAdded = edit.oldStart === edit.oldEnd;
@@ -273,13 +370,17 @@ function buildLineDecorations(view: EditorView): DecorationSet {
         // Deletions are handled by the block-widget StateField below
         if (isDeleted) continue;
 
-        // Added or modified lines — line background + controls on first line
-        const lineDeco = isAdded ? addedLineDeco : modifiedLineDeco;
-
-        for (let lineIdx = edit.newStart; lineIdx < edit.newEnd; lineIdx++) {
-            if (lineIdx >= totalLines) break;
-            const lineFrom = doc.line(lineIdx + 1).from;
-            decos.push({ from: lineFrom, to: lineFrom, deco: lineDeco });
+        if (shouldUseLineBackgroundForEdit(doc, edit, diffState.spans)) {
+            const lineDeco = isAdded ? addedLineDeco : modifiedLineDeco;
+            for (
+                let lineIdx = edit.newStart;
+                lineIdx < edit.newEnd;
+                lineIdx++
+            ) {
+                if (lineIdx >= totalLines) break;
+                const lineFrom = doc.line(lineIdx + 1).from;
+                decos.push({ from: lineFrom, to: lineFrom, deco: lineDeco });
+            }
         }
 
         // Hunk controls on first line (inline widget, floated right via CSS)

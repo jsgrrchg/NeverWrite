@@ -20,6 +20,7 @@ type DecorationInfo = {
     from: number;
     to: number;
     className: string;
+    style: string;
     hasWidget: boolean;
 };
 
@@ -29,6 +30,13 @@ function readClassName(deco: Decoration): string {
         attributes?: Record<string, string>;
     };
     return spec.class ?? spec.attributes?.class ?? "";
+}
+
+function readStyle(deco: Decoration): string {
+    const spec = deco.spec as {
+        attributes?: Record<string, string>;
+    };
+    return spec.attributes?.style ?? "";
 }
 
 function collectDecorations(
@@ -47,6 +55,7 @@ function collectDecorations(
                 from,
                 to,
                 className: readClassName(deco),
+                style: readStyle(deco),
                 hasWidget: "widget" in deco.spec && deco.spec.widget != null,
             });
         },
@@ -75,6 +84,15 @@ function hasWidgetRange(
 ) {
     return decorations.some(
         (deco) => deco.hasWidget && deco.from === from && deco.to === to,
+    );
+}
+
+function findDecorationByClass(
+    decorations: DecorationInfo[],
+    className: string,
+) {
+    return decorations.find((deco) =>
+        deco.className.split(" ").includes(className),
     );
 }
 
@@ -139,6 +157,25 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("keeps an active empty list item in live preview without showing raw markers", () => {
+        const { plugin, parent, view } = createView(
+            "- ",
+            EditorSelection.cursor(2),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 1)).toBe(true);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-li-line"),
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("keeps task markers hidden even when the caret is on the same line", () => {
         const doc = "- [ ] task";
         const { plugin, parent, view } = createView(
@@ -150,6 +187,27 @@ describe("createInlineLivePreviewPlugin", () => {
 
         expect(hasHiddenRange(decorations, 0, 2)).toBe(true);
         expect(hasHiddenRange(decorations, 2, 6)).toBe(true);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-task-line"),
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("keeps an active empty task item in live preview without showing raw markers", () => {
+        const doc = "- [ ] ";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 1)).toBe(true);
+        expect(hasHiddenRange(decorations, 2, 5)).toBe(true);
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-task-line"),
@@ -181,6 +239,35 @@ describe("createInlineLivePreviewPlugin", () => {
 
         decorations = collectDecorations(view, plugin);
         expect(hasHiddenRange(decorations, 8, 11)).toBe(true);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-hr-line"),
+            ),
+        ).toBe(false);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("hides horizontal rule preview decorations while the line is selected", () => {
+        const doc = "before\n\n---\nafter";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.range(0, doc.length),
+        );
+
+        let decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-hr-line"),
+            ),
+        ).toBe(false);
+
+        view.dispatch({
+            selection: EditorSelection.cursor(0),
+        });
+
+        decorations = collectDecorations(view, plugin);
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-hr-line"),
@@ -553,6 +640,68 @@ describe("createInlineLivePreviewPlugin", () => {
         });
 
         expect(perfMeasureMock).not.toHaveBeenCalled();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("rebuilds list line decorations when indenting with leading whitespace changes", () => {
+        const perfMeasureMock = vi.mocked(perfMeasure);
+        const { plugin, parent, view } = createView(
+            "- item",
+            EditorSelection.cursor(0),
+        );
+
+        perfMeasureMock.mockClear();
+
+        view.dispatch({
+            changes: { from: 0, insert: "  " },
+        });
+
+        const decorations = collectDecorations(view, plugin);
+        const lineDecoration = findDecorationByClass(
+            decorations,
+            "cm-lp-li-line",
+        );
+
+        expect(lineDecoration?.style).toContain("--cm-lp-indent: 2ch");
+        expect(perfMeasureMock).toHaveBeenCalledWith(
+            "editor.livePreviewInline.build.docChanged",
+            expect.any(Number),
+            expect.any(Object),
+        );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("rebuilds list preview when typing the first character into an empty list item", () => {
+        const perfMeasureMock = vi.mocked(perfMeasure);
+        const { plugin, parent, view } = createView(
+            "- ",
+            EditorSelection.cursor(2),
+        );
+
+        perfMeasureMock.mockClear();
+
+        view.dispatch({
+            changes: { from: 2, insert: "a" },
+            selection: EditorSelection.cursor(3),
+        });
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 2)).toBe(true);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-li-line"),
+            ),
+        ).toBe(true);
+        expect(perfMeasureMock).toHaveBeenCalledWith(
+            "editor.livePreviewInline.build.docChanged",
+            expect.any(Number),
+            expect.any(Object),
+        );
 
         view.destroy();
         parent.remove();
