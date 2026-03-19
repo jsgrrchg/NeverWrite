@@ -142,6 +142,7 @@ import {
 } from "./extensions/inlineDiff";
 import {
     getTrackedFilesForWorkCycle,
+    syncDerivedLinePatch,
     shouldShowInlineDiff,
 } from "../ai/store/actionLogModel";
 import {
@@ -1528,6 +1529,23 @@ export function Editor({
                             key: "Mod-0",
                             run: () => applyHeadingCommand(0),
                         },
+                        {
+                            key: "Mod-Shift-h",
+                            run: (view) => {
+                                const transform = getSelectionTransform(
+                                    view.state,
+                                    "highlight",
+                                );
+                                if (!transform) return false;
+                                view.dispatch({
+                                    changes: transform.changes,
+                                    selection: transform.selection,
+                                    scrollIntoView: true,
+                                    userEvent: transform.userEvent,
+                                });
+                                return true;
+                            },
+                        },
                         ...defaultKeymap,
                         ...historyKeymap,
                         ...searchKeymap,
@@ -1559,10 +1577,14 @@ export function Editor({
                             const noteId = activeTabRef.current?.noteId;
                             return noteId ? `${noteId}.md` : null;
                         },
-                        (fileId, edits, fullText) => {
+                        (fileId, textEdits, fullText) => {
                             useChatStore
                                 .getState()
-                                .notifyUserEditOnFile(fileId, edits, fullText);
+                                .notifyUserEditOnFile(
+                                    fileId,
+                                    textEdits,
+                                    fullText,
+                                );
                         },
                     ),
                     getInlineDiffExtension(),
@@ -2047,9 +2069,13 @@ export function Editor({
             // Skip when noteId changed — the tab-switch useEffect handles navigation
             if (tab.noteId !== prevTab.noteId) return;
 
+            const isForced =
+                state._pendingForceReloads?.has(tab.noteId) ?? false;
+
             if (
                 tab.content === prevTab.content &&
-                tab.title === prevTab.title
+                tab.title === prevTab.title &&
+                !isForced
             ) {
                 return;
             }
@@ -2063,8 +2089,6 @@ export function Editor({
                 lastSavedContentByTabId.current.get(tab.noteId) ?? null;
             const hasLocalUnsavedChanges =
                 lastSaved !== null && currentSerialized !== lastSaved;
-            const isForced =
-                state._pendingForceReloads?.has(tab.noteId) ?? false;
             const incoming = stripFrontmatter(tab.noteId, tab.content);
             const nextFrontmatter =
                 frontmatterByTabId.current.get(tab.noteId) ?? null;
@@ -2132,6 +2156,8 @@ export function Editor({
 
             // Find TrackedFile for this file in any session.
             let foundEdits: import("../ai/diff/actionLogTypes").LineEdit[] = [];
+            let foundSpans: import("../ai/diff/actionLogTypes").AgentTextSpan[] =
+                [];
             let foundSessionId: string | null = null;
             let foundIdentityKey: string | null = null;
             let foundVersion = 0;
@@ -2162,12 +2188,18 @@ export function Editor({
                         }
                     }
                 }
-                if (tracked && shouldShowInlineDiff(tracked)) {
-                    foundEdits = tracked.unreviewedEdits.edits;
+                if (tracked) {
+                    const syncedTracked = syncDerivedLinePatch(tracked);
+                    if (!shouldShowInlineDiff(syncedTracked)) {
+                        continue;
+                    }
+
+                    foundEdits = syncedTracked.unreviewedEdits.edits;
+                    foundSpans = syncedTracked.unreviewedRanges?.spans ?? [];
                     foundSessionId = sid;
-                    foundIdentityKey = tracked.identityKey;
-                    foundVersion = tracked.version;
-                    foundDiffBase = tracked.diffBase;
+                    foundIdentityKey = syncedTracked.identityKey;
+                    foundVersion = syncedTracked.version;
+                    foundDiffBase = syncedTracked.diffBase;
                     break;
                 }
             }
@@ -2194,6 +2226,7 @@ export function Editor({
             view.dispatch({
                 effects: setInlineDiff.of({
                     edits: foundEdits,
+                    spans: foundSpans,
                     deletedTexts,
                     sessionId: foundSessionId,
                     identityKey: foundIdentityKey,

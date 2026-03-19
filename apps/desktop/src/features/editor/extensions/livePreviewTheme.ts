@@ -11,7 +11,12 @@ const LEVEL_3_NESTING_OFFSET = "0.34em";
 
 export const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-hidden": {
-        display: "none",
+        display: "inline-block",
+        fontSize: "0",
+        letterSpacing: "0",
+        width: "0",
+        overflow: "hidden",
+        opacity: "0",
     },
     ".cm-lp-hidden-inline": {
         display: "inline-block",

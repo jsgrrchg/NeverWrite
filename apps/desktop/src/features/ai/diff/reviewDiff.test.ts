@@ -19,7 +19,11 @@ import {
     DIFF_ZOOM_MIN,
 } from "./reviewDiff";
 import type { TrackedFile } from "./actionLogTypes";
-import { emptyPatch, buildPatchFromTexts } from "../store/actionLogModel";
+import {
+    buildPatchFromTexts,
+    buildTextRangePatchFromTexts,
+    emptyPatch,
+} from "../store/actionLogModel";
 import type { AIFileDiff } from "../types";
 
 describe("reviewDiff", () => {
@@ -865,6 +869,71 @@ describe("reviewDiff", () => {
             // unreviewedEdits produce hunks when diffBase !== currentText
             expect(diff.hunks).toBeDefined();
             expect(diff.hunks!.length).toBeGreaterThan(0);
+        });
+
+        it("derives review hunks from unreviewedRanges when line patch is stale", () => {
+            const diffBase = "alpha\nmiddle\nbeta";
+            const currentText = "alpHa\nmiddle\nbeTa";
+            const file = makeFile({
+                identityKey: "k5",
+                diffBase,
+                currentText,
+                unreviewedRanges: buildTextRangePatchFromTexts(
+                    diffBase,
+                    currentText,
+                ),
+                unreviewedEdits: emptyPatch(),
+            });
+
+            const diff = createDiffFromTrackedFile(file);
+
+            expect(diff.old_text).toBe(diffBase);
+            expect(diff.new_text).toBe(currentText);
+            expect(diff.hunks).toEqual([
+                {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: [
+                        { type: "remove", text: "alpha" },
+                        { type: "add", text: "alpHa" },
+                    ],
+                },
+                {
+                    old_start: 3,
+                    old_count: 1,
+                    new_start: 3,
+                    new_count: 1,
+                    lines: [
+                        { type: "remove", text: "beta" },
+                        { type: "add", text: "beTa" },
+                    ],
+                },
+            ]);
+        });
+
+        it("keeps lazy compatibility for legacy tracked files without unreviewedRanges", () => {
+            const file = makeFile({
+                identityKey: "k6",
+                diffBase: "alpha",
+                currentText: "alpHa",
+            });
+
+            const diff = createDiffFromTrackedFile(file);
+
+            expect(diff.hunks).toEqual([
+                {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: [
+                        { type: "remove", text: "alpha" },
+                        { type: "add", text: "alpHa" },
+                    ],
+                },
+            ]);
         });
     });
 });

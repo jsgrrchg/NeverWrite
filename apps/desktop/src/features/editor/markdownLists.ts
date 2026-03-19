@@ -98,12 +98,14 @@ export function continueMarkdownListItem({
         return true;
     }
 
+    const contentStart = line.from + item.prefixLength;
+    const insertAt = range.from <= contentStart ? line.to : range.from;
     const insert = `\n${buildContinuedListPrefix(item)}`;
-    const anchor = range.from + insert.length;
+    const anchor = insertAt + insert.length;
 
     dispatch(
         state.update({
-            changes: { from: range.from, to: range.to, insert },
+            changes: { from: insertAt, to: insertAt, insert },
             selection: EditorSelection.cursor(anchor),
             scrollIntoView: true,
             userEvent: "input",

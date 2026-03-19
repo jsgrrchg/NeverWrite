@@ -937,6 +937,50 @@ describe("Editor", () => {
         );
     });
 
+    it("forces a doc reload even when the tab content already matches the incoming content", async () => {
+        vi.useFakeTimers();
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Restored body",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: "Deleted body",
+                },
+            });
+        });
+
+        expect(view.state.doc.toString()).toBe("Deleted body");
+        expect(useEditorStore.getState().tabs[0]?.content).toBe(
+            "Restored body",
+        );
+
+        await act(async () => {
+            useEditorStore.getState().forceReloadNoteContent("notes/current", {
+                title: "Current",
+                content: "Restored body",
+            });
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("Restored body");
+
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
     it("does not save a clean tab when switching notes", async () => {
         setEditorTabs(
             [

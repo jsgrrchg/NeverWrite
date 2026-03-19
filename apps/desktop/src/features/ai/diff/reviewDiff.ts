@@ -1,6 +1,7 @@
 import type { TrackedFile } from "./actionLogTypes";
 import {
     getFileOperation,
+    syncDerivedLinePatch,
     unreviewedEditsToHunks,
 } from "../store/actionLogModel";
 import type { AIFileDiff, AIFileDiffHunk } from "../types";
@@ -823,21 +824,24 @@ export function getCompactPath(path: string, tailSegments = 3) {
 }
 
 export function createDiffFromTrackedFile(file: TrackedFile): AIFileDiff {
+    const syncedFile = syncDerivedLinePatch(file);
     const previousPath =
-        file.previousPath ??
-        (file.originPath !== file.path ? file.originPath : null);
-    const op = getFileOperation(file);
+        syncedFile.previousPath ??
+        (syncedFile.originPath !== syncedFile.path
+            ? syncedFile.originPath
+            : null);
+    const op = getFileOperation(syncedFile);
     const kind = previousPath && op !== "add" && op !== "delete" ? "move" : op;
-    const hunks = unreviewedEditsToHunks(file);
+    const hunks = unreviewedEditsToHunks(syncedFile);
 
     return {
-        path: file.path,
+        path: syncedFile.path,
         kind,
         previous_path: previousPath,
         reversible: true,
-        is_text: file.isText,
-        old_text: file.diffBase,
-        new_text: file.currentText,
+        is_text: syncedFile.isText,
+        old_text: syncedFile.diffBase,
+        new_text: syncedFile.currentText,
         ...(hunks.length > 0 ? { hunks } : {}),
     };
 }

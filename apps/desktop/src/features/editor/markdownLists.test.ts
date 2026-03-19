@@ -45,6 +45,28 @@ describe("markdownLists", () => {
         expect(state.doc.toString()).toBe("- Item\n- ");
     });
 
+    it("continues below the current item when Enter is pressed in the hidden list prefix", () => {
+        const { handled, state } = applyListCommand(
+            "- One\n- Two",
+            EditorSelection.cursor(6),
+            continueMarkdownListItem,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe("- One\n- Two\n- ");
+    });
+
+    it("keeps splitting the item when Enter is pressed in the content", () => {
+        const { handled, state } = applyListCommand(
+            "- OneTwo",
+            EditorSelection.cursor(5),
+            continueMarkdownListItem,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe("- One\n- Two");
+    });
+
     it("removes an empty list item marker on Backspace", () => {
         const { handled, state } = applyListCommand(
             "- ",

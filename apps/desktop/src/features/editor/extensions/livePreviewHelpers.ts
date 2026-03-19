@@ -42,10 +42,10 @@ export interface LinkInfo {
 // Shared decorations
 // ---------------------------------------------------------------------------
 
-/** Removes element from layout (for block-level marks: list markers, heading marks, link brackets). */
+/** Hides block-level marks (list markers, heading marks, link brackets) as zero-width inline elements. */
 export const hideMark = Decoration.mark({ class: "cm-lp-hidden" });
 
-/** Hides inline syntax marks while collapsing their visual width. */
+/** Hides inline syntax marks (bold/italic/code delimiters) as zero-width inline elements. */
 export const hideInlineMark = Decoration.mark({ class: "cm-lp-hidden-inline" });
 
 // ---------------------------------------------------------------------------

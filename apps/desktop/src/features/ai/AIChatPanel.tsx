@@ -86,18 +86,28 @@ export function AIChatPanel() {
 
     // Actions — access via getState() to avoid 30+ unnecessary subscriptions
     const chatActions = useRef(useChatStore.getState()).current;
+    const resolveComposerSessionId = useCallback(() => {
+        const { tabs, activeTabId } = useChatTabsStore.getState();
+        return (
+            tabs.find((tab) => tab.id === activeTabId)?.sessionId ??
+            useChatStore.getState().activeSessionId
+        );
+    }, []);
 
     const refreshEntries = useVaultStore((state) => state.refreshEntries);
     const vaultPath = useVaultStore((state) => state.vaultPath);
 
     const [whisperSetupOpen, setWhisperSetupOpen] = useState(false);
-    const pendingAudioPathRef = useRef<string | null>(null);
+    const pendingAudioPathRef = useRef<{
+        sessionId: string;
+        filePath: string;
+    } | null>(null);
     // Tracks which attachment IDs have been removed so in-flight transcriptions
     // can check and bail out early.
     const cancelledAttachmentsRef = useRef<Set<string>>(new Set());
     // Simple transcription queue: only one transcription at a time.
     const transcriptionQueueRef = useRef<
-        Array<{ filePath: string; attachmentId: string }>
+        Array<{ sessionId: string; filePath: string; attachmentId: string }>
     >([]);
     const isTranscribingRef = useRef(false);
 
@@ -115,7 +125,7 @@ export function AIChatPanel() {
 
     const insertTranscription = useCallback(
         (text: string) => {
-            const sessionId = useChatStore.getState().activeSessionId;
+            const sessionId = resolveComposerSessionId();
             if (!sessionId) return;
             const currentParts =
                 useChatStore.getState().composerPartsBySessionId[sessionId] ??
@@ -124,7 +134,7 @@ export function AIChatPanel() {
                 (p) => p.type === "text" && p.text.length > 0,
             );
             if (hasContent) {
-                chatActions.setComposerParts([
+                chatActions.setComposerPartsForSession(sessionId, [
                     ...currentParts,
                     {
                         id: crypto.randomUUID(),
@@ -133,7 +143,7 @@ export function AIChatPanel() {
                     },
                 ]);
             } else {
-                chatActions.setComposerParts([
+                chatActions.setComposerPartsForSession(sessionId, [
                     {
                         id: crypto.randomUUID(),
                         type: "text" as const,
@@ -142,7 +152,7 @@ export function AIChatPanel() {
                 ]);
             }
         },
-        [chatActions],
+        [chatActions, resolveComposerSessionId],
     );
 
     // Handle auto-stop transcription (2-min limit)
@@ -192,7 +202,7 @@ export function AIChatPanel() {
         const next = transcriptionQueueRef.current.shift();
         if (!next) return;
 
-        const { filePath, attachmentId } = next;
+        const { sessionId, filePath, attachmentId } = next;
 
         // Skip if the attachment was removed while queued
         if (cancelledAttachmentsRef.current.has(attachmentId)) {
@@ -202,7 +212,9 @@ export function AIChatPanel() {
         }
 
         isTranscribingRef.current = true;
-        chatActions.updateAttachment(attachmentId, { status: "processing" });
+        chatActions.updateAttachmentInSession(sessionId, attachmentId, {
+            status: "processing",
+        });
 
         try {
             const result = await whisperTranscribe(filePath);
@@ -210,14 +222,14 @@ export function AIChatPanel() {
             if (cancelledAttachmentsRef.current.has(attachmentId)) {
                 cancelledAttachmentsRef.current.delete(attachmentId);
             } else {
-                chatActions.updateAttachment(attachmentId, {
+                chatActions.updateAttachmentInSession(sessionId, attachmentId, {
                     status: "ready",
                     transcription: result.text,
                 });
             }
         } catch (e) {
             if (!cancelledAttachmentsRef.current.has(attachmentId)) {
-                chatActions.updateAttachment(attachmentId, {
+                chatActions.updateAttachmentInSession(sessionId, attachmentId, {
                     status: "error",
                     errorMessage: String(e),
                 });
@@ -231,8 +243,12 @@ export function AIChatPanel() {
     }, [chatActions]);
 
     const enqueueTranscription = useCallback(
-        (filePath: string, attachmentId: string) => {
-            transcriptionQueueRef.current.push({ filePath, attachmentId });
+        (sessionId: string, filePath: string, attachmentId: string) => {
+            transcriptionQueueRef.current.push({
+                sessionId,
+                filePath,
+                attachmentId,
+            });
             void processTranscriptionQueue();
         },
         [processTranscriptionQueue],
@@ -240,153 +256,166 @@ export function AIChatPanel() {
 
     // Wrap removeAttachment to also cancel pending transcriptions
     const handleRemoveAttachment = useCallback(
-        (attachmentId: string) => {
+        (sessionId: string, attachmentId: string) => {
             cancelledAttachmentsRef.current.add(attachmentId);
             // Remove from queue if still pending
             transcriptionQueueRef.current =
                 transcriptionQueueRef.current.filter(
                     (item) => item.attachmentId !== attachmentId,
                 );
-            chatActions.removeAttachment(attachmentId);
+            chatActions.removeAttachmentFromSession(sessionId, attachmentId);
         },
         [chatActions],
     );
 
-    const handleClearAttachments = useCallback(() => {
-        // Mark all audio attachments as cancelled
-        const state = useChatStore.getState();
-        const session = state.activeSessionId
-            ? state.sessionsById[state.activeSessionId]
-            : null;
-        session?.attachments
-            .filter((a) => a.type === "audio" && a.status === "processing")
-            .forEach((a) => cancelledAttachmentsRef.current.add(a.id));
-        transcriptionQueueRef.current = [];
-        chatActions.clearAttachments();
-    }, [chatActions]);
-
-    const handleAttachAudio = useCallback(async () => {
-        const selected = await tauriOpen({
-            multiple: false,
-            filters: [
-                {
-                    name: "Audio",
-                    extensions: ["mp3", "wav", "ogg", "flac"],
-                },
-            ],
-        });
-        if (!selected) return;
-        const filePath =
-            typeof selected === "string"
-                ? selected
-                : (selected as { path: string }).path;
-        const fileName = filePath.split(/[/\\]/).pop() ?? "audio";
-
-        // Check file size (25 MB limit)
-        try {
-            const info = await whisperCheckAudioFile(filePath);
-            if (info.tooLarge) {
-                const maxMb = Math.round(info.maxSizeBytes / (1024 * 1024));
-                const sizeMb = (info.sizeBytes / (1024 * 1024)).toFixed(1);
-                chatActions.attachAudio(filePath, fileName);
-                const state = useChatStore.getState();
-                const session = state.activeSessionId
-                    ? state.sessionsById[state.activeSessionId]
-                    : null;
-                const attachment = session?.attachments.findLast(
-                    (a) => a.filePath === filePath && a.type === "audio",
+    const handleClearAttachments = useCallback(
+        (sessionId: string) => {
+            // Mark all audio attachments as cancelled
+            const state = useChatStore.getState();
+            const session = state.sessionsById[sessionId] ?? null;
+            session?.attachments
+                .filter((a) => a.type === "audio" && a.status === "processing")
+                .forEach((a) => cancelledAttachmentsRef.current.add(a.id));
+            transcriptionQueueRef.current =
+                transcriptionQueueRef.current.filter(
+                    (item) => item.sessionId !== sessionId,
                 );
-                if (attachment) {
-                    chatActions.updateAttachment(attachment.id, {
-                        status: "error",
-                        errorMessage: `File is too large (${sizeMb} MB). Maximum allowed: ${maxMb} MB.`,
-                    });
+            chatActions.clearAttachmentsForSession(sessionId);
+        },
+        [chatActions],
+    );
+
+    const handleAttachAudio = useCallback(
+        async (sessionId: string) => {
+            const selected = await tauriOpen({
+                multiple: false,
+                filters: [
+                    {
+                        name: "Audio",
+                        extensions: ["mp3", "wav", "ogg", "flac"],
+                    },
+                ],
+            });
+            if (!selected) return;
+            const filePath =
+                typeof selected === "string"
+                    ? selected
+                    : (selected as { path: string }).path;
+            const fileName = filePath.split(/[/\\]/).pop() ?? "audio";
+
+            // Check file size (25 MB limit)
+            try {
+                const info = await whisperCheckAudioFile(filePath);
+                if (info.tooLarge) {
+                    const maxMb = Math.round(info.maxSizeBytes / (1024 * 1024));
+                    const sizeMb = (info.sizeBytes / (1024 * 1024)).toFixed(1);
+                    chatActions.attachAudioToSession(
+                        sessionId,
+                        filePath,
+                        fileName,
+                    );
+                    const state = useChatStore.getState();
+                    const session = state.sessionsById[sessionId] ?? null;
+                    const attachment = session?.attachments.findLast(
+                        (a) => a.filePath === filePath && a.type === "audio",
+                    );
+                    if (attachment) {
+                        chatActions.updateAttachmentInSession(
+                            sessionId,
+                            attachment.id,
+                            {
+                                status: "error",
+                                errorMessage: `File is too large (${sizeMb} MB). Maximum allowed: ${maxMb} MB.`,
+                            },
+                        );
+                    }
+                    return;
                 }
-                return;
+            } catch {
+                // If check fails, proceed anyway — transcribe will also validate
             }
-        } catch {
-            // If check fails, proceed anyway — transcribe will also validate
-        }
 
-        // Check if whisper model is downloaded
-        try {
-            const status = await whisperGetStatus();
-            if (status.downloadedModels.length === 0) {
-                pendingAudioPathRef.current = filePath;
-                setWhisperSetupOpen(true);
-                return;
+            // Check if whisper model is downloaded
+            try {
+                const status = await whisperGetStatus();
+                if (status.downloadedModels.length === 0) {
+                    pendingAudioPathRef.current = { sessionId, filePath };
+                    setWhisperSetupOpen(true);
+                    return;
+                }
+            } catch {
+                // If we can't check, try anyway
             }
-        } catch {
-            // If we can't check, try anyway
-        }
 
-        chatActions.attachAudio(filePath, fileName);
-        const state = useChatStore.getState();
-        const session = state.activeSessionId
-            ? state.sessionsById[state.activeSessionId]
-            : null;
-        const attachment = session?.attachments.findLast(
-            (a) => a.filePath === filePath && a.type === "audio",
-        );
-        if (attachment) {
-            enqueueTranscription(filePath, attachment.id);
-        }
-    }, [chatActions, enqueueTranscription]);
+            chatActions.attachAudioToSession(sessionId, filePath, fileName);
+            const state = useChatStore.getState();
+            const session = state.sessionsById[sessionId] ?? null;
+            const attachment = session?.attachments.findLast(
+                (a) => a.filePath === filePath && a.type === "audio",
+            );
+            if (attachment) {
+                enqueueTranscription(sessionId, filePath, attachment.id);
+            }
+        },
+        [chatActions, enqueueTranscription],
+    );
 
-    const handleAttachFile = useCallback(async () => {
-        const selected = await tauriOpen({
-            multiple: false,
-            filters: [
-                {
-                    name: "Files",
-                    extensions: [
-                        "txt",
-                        "json",
-                        "csv",
-                        "pdf",
-                        "xml",
-                        "yaml",
-                        "yml",
-                        "toml",
-                        "log",
-                    ],
-                },
-            ],
-        });
-        if (!selected) return;
-        const filePath =
-            typeof selected === "string"
-                ? selected
-                : (selected as { path: string }).path;
-        const fileName = filePath.split(/[/\\]/).pop() ?? "file";
-        const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-        const mimeMap: Record<string, string> = {
-            txt: "text/plain",
-            json: "application/json",
-            csv: "text/csv",
-            pdf: "application/pdf",
-            xml: "application/xml",
-            yaml: "text/yaml",
-            yml: "text/yaml",
-            toml: "text/toml",
-            log: "text/plain",
-        };
-        const sessionId = useChatStore.getState().activeSessionId;
-        if (!sessionId) return;
-        const currentParts =
-            useChatStore.getState().composerPartsBySessionId[sessionId] ??
-            createEmptyComposerParts();
-        chatActions.setComposerParts(
-            appendFileAttachmentPart(currentParts, {
-                filePath,
-                mimeType: mimeMap[ext] ?? "application/octet-stream",
-                label: fileName,
-            }),
-        );
-    }, [chatActions]);
+    const handleAttachFile = useCallback(
+        async (sessionId: string) => {
+            const selected = await tauriOpen({
+                multiple: false,
+                filters: [
+                    {
+                        name: "Files",
+                        extensions: [
+                            "txt",
+                            "json",
+                            "csv",
+                            "pdf",
+                            "xml",
+                            "yaml",
+                            "yml",
+                            "toml",
+                            "log",
+                        ],
+                    },
+                ],
+            });
+            if (!selected) return;
+            const filePath =
+                typeof selected === "string"
+                    ? selected
+                    : (selected as { path: string }).path;
+            const fileName = filePath.split(/[/\\]/).pop() ?? "file";
+            const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+            const mimeMap: Record<string, string> = {
+                txt: "text/plain",
+                json: "application/json",
+                csv: "text/csv",
+                pdf: "application/pdf",
+                xml: "application/xml",
+                yaml: "text/yaml",
+                yml: "text/yaml",
+                toml: "text/toml",
+                log: "text/plain",
+            };
+            const currentParts =
+                useChatStore.getState().composerPartsBySessionId[sessionId] ??
+                createEmptyComposerParts();
+            chatActions.setComposerPartsForSession(
+                sessionId,
+                appendFileAttachmentPart(currentParts, {
+                    filePath,
+                    mimeType: mimeMap[ext] ?? "application/octet-stream",
+                    label: fileName,
+                }),
+            );
+        },
+        [chatActions],
+    );
 
     const handlePasteImage = useCallback(
-        async (file: File) => {
+        async (sessionId: string, file: File) => {
             const MAX_SIZE = 25 * 1024 * 1024; // 25 MB
             if (file.size > MAX_SIZE) {
                 console.warn("[chat] Pasted image too large:", file.size);
@@ -428,13 +457,12 @@ export function AIChatPanel() {
                 await refreshEntries();
 
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
-                const sessionId = useChatStore.getState().activeSessionId;
-                if (!sessionId) return;
                 const currentParts =
                     useChatStore.getState().composerPartsBySessionId[
                         sessionId
                     ] ?? createEmptyComposerParts();
-                chatActions.setComposerParts(
+                chatActions.setComposerPartsForSession(
+                    sessionId,
                     appendScreenshotPart(currentParts, {
                         filePath: saved.path,
                         mimeType: saved.mime_type ?? file.type,
@@ -450,22 +478,21 @@ export function AIChatPanel() {
 
     const handleWhisperReady = useCallback(() => {
         setWhisperSetupOpen(false);
-        const filePath = pendingAudioPathRef.current;
+        const pendingAudio = pendingAudioPathRef.current;
         pendingAudioPathRef.current = null;
-        if (!filePath) return;
+        if (!pendingAudio) return;
+        const { sessionId, filePath } = pendingAudio;
 
         const fileName = filePath.split(/[/\\]/).pop() ?? "audio";
-        chatActions.attachAudio(filePath, fileName);
+        chatActions.attachAudioToSession(sessionId, filePath, fileName);
         setTimeout(() => {
             const state = useChatStore.getState();
-            const session = state.activeSessionId
-                ? state.sessionsById[state.activeSessionId]
-                : null;
+            const session = state.sessionsById[sessionId] ?? null;
             const attachment = session?.attachments.findLast(
                 (a) => a.filePath === filePath && a.type === "audio",
             );
             if (attachment) {
-                enqueueTranscription(filePath, attachment.id);
+                enqueueTranscription(sessionId, filePath, attachment.id);
             }
         }, 0);
     }, [chatActions, enqueueTranscription]);
@@ -610,8 +637,14 @@ export function AIChatPanel() {
         : { status: "idle", message: null };
     const runtimeModels = currentSession?.models ?? activeRuntime?.models ?? [];
     const runtimeModes = currentSession?.modes ?? activeRuntime?.modes ?? [];
-    const runtimeLabel =
-        activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+    const composerRuntimeLabel =
+        (currentSession
+            ? runtimes.find(
+                  (descriptor) =>
+                      descriptor.runtime.id === currentSession.runtimeId,
+              )?.runtime.name
+            : activeRuntime?.runtime.name
+        )?.replace(/ ACP$/, "") ?? "Assistant";
     const handleRefreshSetup = useCallback(
         async (runtimeId: string) => {
             await chatActions.refreshSetupStatus(runtimeId);
@@ -950,20 +983,24 @@ export function AIChatPanel() {
                         chatFontSize={chatFontSize}
                         chatFontFamily={chatFontFamily}
                         onPermissionResponse={(requestId, optionId) => {
-                            void chatActions.respondPermission(
+                            if (!composerSessionId) return;
+                            void chatActions.respondPermissionForSession(
+                                composerSessionId,
                                 requestId,
                                 optionId,
                             );
                         }}
                         onUserInputResponse={(requestId, answers) => {
-                            void chatActions.respondUserInput(
+                            if (!composerSessionId) return;
+                            void chatActions.respondUserInputForSession(
+                                composerSessionId,
                                 requestId,
                                 answers,
                             );
                         }}
                     />
                 ))}
-            <EditedFilesBufferPanel />
+            <EditedFilesBufferPanel sessionId={composerSessionId} />
             <div
                 className={
                     composerExpanded
@@ -1005,10 +1042,11 @@ export function AIChatPanel() {
                     }}
                 />
                 <AIChatComposer
+                    key={composerSessionId ?? "no-session"}
                     parts={composerParts}
                     notes={noteOptions}
                     status={currentSession?.status ?? "idle"}
-                    runtimeName={runtimeLabel}
+                    runtimeName={composerRuntimeLabel}
                     runtimeId={currentSession?.runtimeId}
                     autoContextEnabled={autoContextEnabled}
                     hasActiveNote={activeNote !== null}
@@ -1056,8 +1094,17 @@ export function AIChatPanel() {
                                     })),
                                 ...autoContextAttachments,
                             ]}
-                            onRemoveAttachment={handleRemoveAttachment}
-                            onClearAll={handleClearAttachments}
+                            onRemoveAttachment={(attachmentId) => {
+                                if (!composerSessionId) return;
+                                handleRemoveAttachment(
+                                    composerSessionId,
+                                    attachmentId,
+                                );
+                            }}
+                            onClearAll={() => {
+                                if (!composerSessionId) return;
+                                handleClearAttachments(composerSessionId);
+                            }}
                         />
                     }
                     footer={
@@ -1078,19 +1125,76 @@ export function AIChatPanel() {
                             models={runtimeModels}
                             modes={runtimeModes}
                             configOptions={currentSession?.configOptions ?? []}
-                            onModelChange={chatActions.setModel}
-                            onModeChange={chatActions.setMode}
-                            onConfigOptionChange={chatActions.setConfigOption}
+                            onModelChange={(modelId) => {
+                                if (!composerSessionId) return;
+                                void chatActions.setModelForSession(
+                                    composerSessionId,
+                                    modelId,
+                                );
+                            }}
+                            onModeChange={(modeId) => {
+                                if (!composerSessionId) return;
+                                void chatActions.setModeForSession(
+                                    composerSessionId,
+                                    modeId,
+                                );
+                            }}
+                            onConfigOptionChange={(optionId, value) => {
+                                if (!composerSessionId) return;
+                                void chatActions.setConfigOptionForSession(
+                                    composerSessionId,
+                                    optionId,
+                                    value,
+                                );
+                            }}
                         />
                     }
-                    onChange={chatActions.setComposerParts}
-                    onAttachAudio={handleAttachAudio}
-                    onAttachFile={handleAttachFile}
-                    onPasteImage={handlePasteImage}
-                    onMentionAttach={chatActions.attachNote}
-                    onFolderAttach={chatActions.attachFolder}
-                    onSubmit={chatActions.sendMessage}
-                    onStop={chatActions.stopStreaming}
+                    onChange={(parts) => {
+                        if (!composerSessionId) return;
+                        chatActions.setComposerPartsForSession(
+                            composerSessionId,
+                            parts,
+                        );
+                    }}
+                    onAttachAudio={() => {
+                        if (!composerSessionId) return;
+                        void handleAttachAudio(composerSessionId);
+                    }}
+                    onAttachFile={() => {
+                        if (!composerSessionId) return;
+                        void handleAttachFile(composerSessionId);
+                    }}
+                    onPasteImage={(file) => {
+                        if (!composerSessionId) return;
+                        void handlePasteImage(composerSessionId, file);
+                    }}
+                    onMentionAttach={(note) => {
+                        if (!composerSessionId) return;
+                        chatActions.attachNoteToSession(
+                            composerSessionId,
+                            note,
+                        );
+                    }}
+                    onFolderAttach={(folderPath, name) => {
+                        if (!composerSessionId) return;
+                        chatActions.attachFolderToSession(
+                            composerSessionId,
+                            folderPath,
+                            name,
+                        );
+                    }}
+                    onSubmit={() => {
+                        if (!composerSessionId) return;
+                        void chatActions.sendMessageForSession(
+                            composerSessionId,
+                        );
+                    }}
+                    onStop={() => {
+                        if (!composerSessionId) return;
+                        void chatActions.stopStreamingForSession(
+                            composerSessionId,
+                        );
+                    }}
                     isRecording={isRecording}
                     isTranscribing={isVoiceTranscribing}
                     voiceStream={voiceStream}

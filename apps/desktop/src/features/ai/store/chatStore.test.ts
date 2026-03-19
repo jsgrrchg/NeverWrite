@@ -5,6 +5,7 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
 import type {
     AIChatAttachment,
+    AIChatSession,
     AIComposerPart,
     QueuedChatMessage,
 } from "../types";
@@ -2372,6 +2373,175 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
+    it("applies user text edits from the editor while preserving untouched agent spans", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const workCycleId = "cycle-user-edit";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    activeWorkCycleId: workCycleId,
+                    visibleWorkCycleId: workCycleId,
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            [workCycleId]: {
+                                "/notes/file.md": createTrackedFile(
+                                    "/notes/file.md",
+                                    "aaa\nbbb\nccc",
+                                    "aaa\nBBB\nccc",
+                                ),
+                            },
+                        },
+                        lastRejectUndo: null,
+                    },
+                },
+            },
+        }));
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc",
+        );
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0]).toMatchObject({
+            identityKey: "/notes/file.md",
+            diffBase: "aaXa\nbbb\nccc",
+            currentText: "aaXa\nBBB\nccc",
+        });
+        expect(buffer[0].unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 1,
+                oldEnd: 2,
+                newStart: 1,
+                newEnd: 2,
+            },
+        ]);
+
+        // Verify spans (source of truth) are also correctly preserved
+        expect(buffer[0].unreviewedRanges).toBeDefined();
+        expect(buffer[0].unreviewedRanges!.spans.length).toBeGreaterThan(0);
+        // The agent span for "bbb"→"BBB" should be within line 1 of the new text
+        const agentSpan = buffer[0].unreviewedRanges!.spans[0];
+        const line1Start = "aaXa\n".length; // 5
+        expect(agentSpan.currentFrom).toBeGreaterThanOrEqual(line1Start);
+        expect(agentSpan.currentTo).toBeLessThanOrEqual(
+            line1Start + "BBB".length,
+        );
+    });
+
+    it("propagates user text edits to every session tracking the same file", async () => {
+        await useChatStore.getState().initialize();
+
+        const firstSessionId = getActiveSessionId();
+        const firstSession =
+            useChatStore.getState().sessionsById[firstSessionId]!;
+        const secondSessionId = "codex-session-2";
+        const firstWorkCycleId = "cycle-user-edit-1";
+        const secondWorkCycleId = "cycle-user-edit-2";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [firstSessionId]: {
+                    ...state.sessionsById[firstSessionId]!,
+                    activeWorkCycleId: firstWorkCycleId,
+                    visibleWorkCycleId: firstWorkCycleId,
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            [firstWorkCycleId]: {
+                                "/notes/file.md": createTrackedFile(
+                                    "/notes/file.md",
+                                    "aaa\nbbb\nccc",
+                                    "aaa\nBBB\nccc",
+                                ),
+                            },
+                        },
+                        lastRejectUndo: null,
+                    },
+                },
+                [secondSessionId]: {
+                    ...firstSession,
+                    sessionId: secondSessionId,
+                    historySessionId: secondSessionId,
+                    activeWorkCycleId: secondWorkCycleId,
+                    visibleWorkCycleId: secondWorkCycleId,
+                    actionLog: {
+                        trackedFilesByWorkCycleId: {
+                            [secondWorkCycleId]: {
+                                "/notes/file.md": createTrackedFile(
+                                    "/notes/file.md",
+                                    "aaa\nbbb\nccc",
+                                    "aaa\nBBB\nccc",
+                                ),
+                            },
+                        },
+                        lastRejectUndo: null,
+                    },
+                },
+            } as Record<string, AIChatSession>,
+            sessionOrder: [...state.sessionOrder, secondSessionId],
+        }));
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc",
+        );
+
+        const firstBuffer = getVisibleBuffer(firstSessionId);
+        const secondBuffer = getVisibleBuffer(secondSessionId);
+
+        expect(firstBuffer).toHaveLength(1);
+        expect(secondBuffer).toHaveLength(1);
+        expect(firstBuffer[0]).toMatchObject({
+            identityKey: "/notes/file.md",
+            diffBase: "aaXa\nbbb\nccc",
+            currentText: "aaXa\nBBB\nccc",
+        });
+        expect(secondBuffer[0]).toMatchObject({
+            identityKey: "/notes/file.md",
+            diffBase: "aaXa\nbbb\nccc",
+            currentText: "aaXa\nBBB\nccc",
+        });
+        expect(firstBuffer[0].unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 1,
+                oldEnd: 2,
+                newStart: 1,
+                newEnd: 2,
+            },
+        ]);
+        expect(secondBuffer[0].unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 1,
+                oldEnd: 2,
+                newStart: 1,
+                newEnd: 2,
+            },
+        ]);
+    });
+
     it("normalizes move entries to the destination path so later edits merge into one row", async () => {
         await useChatStore.getState().initialize();
 
@@ -2884,6 +3054,390 @@ describe("chatStore", () => {
         });
     });
 
+    it("reloads the open editor tab after resolving merged text", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "note",
+                    noteId: "/vault/src/watcher.rs",
+                    title: "watcher.rs",
+                    content: "new line",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-resolve-hunks-open-tab",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveEditedFileWithMergedText(
+                activeSessionId,
+                entry.identityKey,
+                "merged line",
+            );
+
+        const editorState = useEditorStore.getState();
+        const tab = editorState.tabs[0];
+        expect(tab).toMatchObject({
+            noteId: "/vault/src/watcher.rs",
+            content: "merged line",
+        });
+        expect(
+            editorState._pendingForceReloads.has("/vault/src/watcher.rs"),
+        ).toBe(true);
+    });
+
+    it("rejects a hunk only when the on-disk hash still matches the applied snapshot", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-hunk-reject",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+        const hunk = entry.unreviewedEdits.edits[0]!;
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                hunk.newStart,
+                hunk.newEnd,
+            );
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/vault/src/watcher.rs",
+            previousPath: null,
+            content: "old line",
+        });
+    });
+
+    it("marks hunk reject as conflict when the applied file changed on disk", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-hunk-conflict",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+        const hunk = entry.unreviewedEdits.edits[0]!;
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return "different-hash";
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                hunk.newStart,
+                hunk.newEnd,
+            );
+
+        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
+
+        expect(remainingEntry).toMatchObject({
+            identityKey: entry.identityKey,
+            currentText: "new line",
+            conflictHash: "different-hash",
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/vault/src/watcher.rs",
+            previousPath: null,
+            content: "old line",
+        });
+    });
+
+    it("clears stale conflictHash when a new diff arrives for the same tracked file", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-conflict-repro-1",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return "different-hash";
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(activeSessionId, entry.identityKey);
+
+        expect(getVisibleBuffer(activeSessionId)[0]?.conflictHash).toBe(
+            "different-hash",
+        );
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-conflict-repro-2",
+            title: "Edit watcher again",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs again",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "new line",
+                    new_text: "newer line",
+                },
+            ],
+        });
+
+        expect(getVisibleBuffer(activeSessionId)[0]?.conflictHash).toBeNull();
+    });
+
+    it("keeps moved files tracked after rejecting their last content hunk", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-hunk-move-reject",
+            title: "Move watcher",
+            kind: "move",
+            status: "completed",
+            target: "/vault/src/watcher-final.rs",
+            summary: "Moved watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher-final.rs",
+                    previous_path: "/vault/src/watcher.rs",
+                    kind: "move",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+        const hunk = entry.unreviewedEdits.edits[0]!;
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                if (path === "/vault/src/watcher-final.rs") {
+                    return hashTextContent(entry.currentText);
+                }
+                return null;
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                hunk.newStart,
+                hunk.newEnd,
+            );
+
+        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
+
+        expect(remainingEntry).toMatchObject({
+            identityKey: "/vault/src/watcher-final.rs",
+            originPath: "/vault/src/watcher.rs",
+            path: "/vault/src/watcher-final.rs",
+            currentText: "old line",
+            diffBase: "old line",
+        });
+        expect(remainingEntry?.unreviewedEdits.edits).toEqual([]);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/vault/src/watcher-final.rs",
+            previousPath: "/vault/src/watcher.rs",
+            content: "old line",
+        });
+    });
+
     it("rejects all safe entries and leaves conflicting rows visible", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -2976,6 +3530,246 @@ describe("chatStore", () => {
             previousPath: null,
             content: "old line",
         });
+    });
+
+    it("consolidates successful rejects before a later rejectAll failure", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-partial-safe",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-partial-fail",
+            title: "Edit parser",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/parser.rs",
+            summary: "Updated parser.rs",
+            diffs: [
+                {
+                    path: "/vault/src/parser.rs",
+                    kind: "update",
+                    old_text: "old parser",
+                    new_text: "new parser",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entries = getVisibleBuffer(activeSessionId);
+        const watcherEntry = entries.find(
+            (entry) => entry.path === "/vault/src/watcher.rs",
+        )!;
+        const parserEntry = entries.find(
+            (entry) => entry.path === "/vault/src/parser.rs",
+        )!;
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                if (path === "/vault/src/watcher.rs") {
+                    return hashTextContent(watcherEntry.currentText);
+                }
+                if (path === "/vault/src/parser.rs") {
+                    return hashTextContent(parserEntry.currentText);
+                }
+                return null;
+            }
+
+            if (command === "ai_restore_text_file") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                if (path === "/vault/src/parser.rs") {
+                    throw new Error("disk failure");
+                }
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore.getState().rejectAllEditedFiles(activeSessionId);
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const remainingEntries = getVisibleBuffer(activeSessionId);
+
+        expect(session.visibleWorkCycleId).toBe(workCycleId);
+        expect(remainingEntries).toHaveLength(1);
+        expect(remainingEntries[0]).toMatchObject({
+            path: "/vault/src/parser.rs",
+            currentText: "new parser",
+        });
+        expect(session.actionLog?.lastRejectUndo?.snapshots).toMatchObject({
+            "/vault/src/watcher.rs": expect.objectContaining({
+                path: "/vault/src/watcher.rs",
+                currentText: "new line",
+            }),
+        });
+        expect(
+            session.actionLog?.lastRejectUndo?.snapshots?.[
+                "/vault/src/parser.rs"
+            ],
+        ).toBeUndefined();
+    });
+
+    it("keeps only failed snapshots in undoLastReject after a partial restore", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-undo-partial-a",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-undo-partial-b",
+            title: "Edit parser",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/parser.rs",
+            summary: "Updated parser.rs",
+            diffs: [
+                {
+                    path: "/vault/src/parser.rs",
+                    kind: "update",
+                    old_text: "old parser",
+                    new_text: "new parser",
+                },
+            ],
+        });
+
+        const entries = getVisibleBuffer(activeSessionId);
+        const watcherEntry = entries.find(
+            (entry) => entry.path === "/vault/src/watcher.rs",
+        )!;
+        const parserEntry = entries.find(
+            (entry) => entry.path === "/vault/src/parser.rs",
+        )!;
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                if (path === "/vault/src/watcher.rs") {
+                    return hashTextContent(watcherEntry.currentText);
+                }
+                if (path === "/vault/src/parser.rs") {
+                    return hashTextContent(parserEntry.currentText);
+                }
+                return null;
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore.getState().rejectAllEditedFiles(activeSessionId);
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_restore_text_file") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                if (path === "/vault/src/parser.rs") {
+                    throw new Error("undo failure");
+                }
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore.getState().undoLastReject(activeSessionId);
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const remainingEntries = getVisibleBuffer(activeSessionId);
+
+        expect(remainingEntries).toHaveLength(1);
+        expect(remainingEntries[0]).toMatchObject({
+            path: "/vault/src/watcher.rs",
+            currentText: "new line",
+        });
+        expect(session.actionLog?.lastRejectUndo?.snapshots).toMatchObject({
+            "/vault/src/parser.rs": expect.objectContaining({
+                path: "/vault/src/parser.rs",
+                currentText: "new parser",
+            }),
+        });
+        expect(
+            session.actionLog?.lastRejectUndo?.snapshots?.[
+                "/vault/src/watcher.rs"
+            ],
+        ).toBeUndefined();
     });
 
     it("upserts status events as system messages and updates them by event id", async () => {

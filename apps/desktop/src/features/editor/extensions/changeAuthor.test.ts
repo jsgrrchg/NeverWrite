@@ -6,18 +6,19 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
     changeAuthorAnnotation,
-    computeChangedLineRanges,
+    computeChangedTextEdits,
+    userEditNotifier,
 } from "./changeAuthor";
-import type { LineEdit } from "../../ai/diff/actionLogTypes";
+import type { TextEdit } from "../../ai/diff/actionLogTypes";
 
-describe("computeChangedLineRanges", () => {
+describe("computeChangedTextEdits", () => {
     it("returns empty for non-doc-changed updates", () => {
-        let lastEdits: LineEdit[] = [];
+        let lastEdits: TextEdit[] = [];
         const state = EditorState.create({
             doc: "hello\nworld",
             extensions: [
                 EditorView.updateListener.of((update) => {
-                    lastEdits = computeChangedLineRanges(update);
+                    lastEdits = computeChangedTextEdits(update);
                 }),
             ],
         });
@@ -28,12 +29,12 @@ describe("computeChangedLineRanges", () => {
     });
 
     it("detects single line edit", () => {
-        let lastEdits: LineEdit[] = [];
+        let lastEdits: TextEdit[] = [];
         const state = EditorState.create({
             doc: "aaa\nbbb\nccc",
             extensions: [
                 EditorView.updateListener.of((update) => {
-                    lastEdits = computeChangedLineRanges(update);
+                    lastEdits = computeChangedTextEdits(update);
                 }),
             ],
         });
@@ -45,20 +46,22 @@ describe("computeChangedLineRanges", () => {
         });
 
         expect(lastEdits).toHaveLength(1);
-        expect(lastEdits[0].oldStart).toBe(1);
-        expect(lastEdits[0].oldEnd).toBe(2);
-        expect(lastEdits[0].newStart).toBe(1);
-        expect(lastEdits[0].newEnd).toBe(2);
+        expect(lastEdits[0]).toEqual({
+            oldFrom: 4,
+            oldTo: 7,
+            newFrom: 4,
+            newTo: 7,
+        });
         view.destroy();
     });
 
     it("detects insertion of new lines", () => {
-        let lastEdits: LineEdit[] = [];
+        let lastEdits: TextEdit[] = [];
         const state = EditorState.create({
             doc: "aaa\nccc",
             extensions: [
                 EditorView.updateListener.of((update) => {
-                    lastEdits = computeChangedLineRanges(update);
+                    lastEdits = computeChangedTextEdits(update);
                 }),
             ],
         });
@@ -70,20 +73,22 @@ describe("computeChangedLineRanges", () => {
         });
 
         expect(lastEdits).toHaveLength(1);
-        // No old lines removed (oldStart === oldEnd)
-        expect(lastEdits[0].oldStart).toBe(lastEdits[0].oldEnd);
-        // New lines inserted
-        expect(lastEdits[0].newEnd).toBeGreaterThan(lastEdits[0].newStart);
+        expect(lastEdits[0]).toEqual({
+            oldFrom: 4,
+            oldTo: 4,
+            newFrom: 4,
+            newTo: 8,
+        });
         view.destroy();
     });
 
     it("detects deletion of lines", () => {
-        let lastEdits: LineEdit[] = [];
+        let lastEdits: TextEdit[] = [];
         const state = EditorState.create({
             doc: "aaa\nbbb\nccc",
             extensions: [
                 EditorView.updateListener.of((update) => {
-                    lastEdits = computeChangedLineRanges(update);
+                    lastEdits = computeChangedTextEdits(update);
                 }),
             ],
         });
@@ -95,10 +100,56 @@ describe("computeChangedLineRanges", () => {
         });
 
         expect(lastEdits).toHaveLength(1);
-        // Old lines were removed
-        expect(lastEdits[0].oldEnd).toBeGreaterThan(lastEdits[0].oldStart);
-        // No new lines inserted
-        expect(lastEdits[0].newStart).toBe(lastEdits[0].newEnd);
+        expect(lastEdits[0]).toEqual({
+            oldFrom: 4,
+            oldTo: 8,
+            newFrom: 4,
+            newTo: 4,
+        });
+        view.destroy();
+    });
+
+    it("reports inline insertions with exact offsets", () => {
+        let lastEdits: TextEdit[] = [];
+        const state = EditorState.create({
+            doc: "aaa\nbbb\nccc",
+            extensions: [
+                EditorView.updateListener.of((update) => {
+                    lastEdits = computeChangedTextEdits(update);
+                }),
+            ],
+        });
+        const view = new EditorView({ state });
+
+        view.dispatch({
+            changes: { from: 5, to: 5, insert: "X" },
+        });
+
+        expect(lastEdits).toEqual([
+            { oldFrom: 5, oldTo: 5, newFrom: 5, newTo: 6 },
+        ]);
+        view.destroy();
+    });
+
+    it("reports inline deletions with exact offsets", () => {
+        let lastEdits: TextEdit[] = [];
+        const state = EditorState.create({
+            doc: "aaa\nbbb\nccc",
+            extensions: [
+                EditorView.updateListener.of((update) => {
+                    lastEdits = computeChangedTextEdits(update);
+                }),
+            ],
+        });
+        const view = new EditorView({ state });
+
+        view.dispatch({
+            changes: { from: 4, to: 5, insert: "" },
+        });
+
+        expect(lastEdits).toEqual([
+            { oldFrom: 4, oldTo: 5, newFrom: 4, newTo: 4 },
+        ]);
         view.destroy();
     });
 
@@ -132,6 +183,141 @@ describe("computeChangedLineRanges", () => {
             changes: { from: 0, to: 5, insert: "user" },
         });
         expect(notifyCount).toBe(1);
+        view.destroy();
+    });
+
+    it("captures multiple edits in a single transaction (find-replace scenario)", () => {
+        let lastEdits: TextEdit[] = [];
+        const state = EditorState.create({
+            doc: "aaa bbb aaa bbb aaa",
+            extensions: [
+                EditorView.updateListener.of((update) => {
+                    lastEdits = computeChangedTextEdits(update);
+                }),
+            ],
+        });
+        const view = new EditorView({ state });
+
+        // Simulate find-replace: replace all "aaa" with "XXX"
+        // Three separate changes in one dispatch
+        view.dispatch({
+            changes: [
+                { from: 0, to: 3, insert: "XXX" },
+                { from: 8, to: 11, insert: "XXX" },
+                { from: 16, to: 19, insert: "XXX" },
+            ],
+        });
+
+        expect(lastEdits).toHaveLength(3);
+        expect(lastEdits[0]).toEqual({
+            oldFrom: 0,
+            oldTo: 3,
+            newFrom: 0,
+            newTo: 3,
+        });
+        expect(lastEdits[1]).toEqual({
+            oldFrom: 8,
+            oldTo: 11,
+            newFrom: 8,
+            newTo: 11,
+        });
+        expect(lastEdits[2]).toEqual({
+            oldFrom: 16,
+            oldTo: 19,
+            newFrom: 16,
+            newTo: 19,
+        });
+        view.destroy();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// userEditNotifier — end-to-end extension test
+// ---------------------------------------------------------------------------
+
+describe("userEditNotifier", () => {
+    it("calls onUserEdit with fileId, textEdits, and full text on user edit", () => {
+        let capturedFileId: string | null = null;
+        let capturedEdits: TextEdit[] = [];
+        let capturedFullText = "";
+
+        const state = EditorState.create({
+            doc: "hello world",
+            extensions: [
+                userEditNotifier(
+                    () => "test-note.md",
+                    (fileId, edits, fullText) => {
+                        capturedFileId = fileId;
+                        capturedEdits = edits;
+                        capturedFullText = fullText;
+                    },
+                ),
+            ],
+        });
+        const view = new EditorView({ state });
+
+        view.dispatch({
+            changes: { from: 5, to: 5, insert: " beautiful" },
+        });
+
+        expect(capturedFileId).toBe("test-note.md");
+        expect(capturedEdits).toHaveLength(1);
+        expect(capturedEdits[0]).toEqual({
+            oldFrom: 5,
+            oldTo: 5,
+            newFrom: 5,
+            newTo: 15,
+        });
+        expect(capturedFullText).toBe("hello beautiful world");
+        view.destroy();
+    });
+
+    it("does not call onUserEdit for agent-annotated transactions", () => {
+        let callCount = 0;
+
+        const state = EditorState.create({
+            doc: "hello",
+            extensions: [
+                userEditNotifier(
+                    () => "test-note.md",
+                    () => {
+                        callCount++;
+                    },
+                ),
+            ],
+        });
+        const view = new EditorView({ state });
+
+        view.dispatch({
+            changes: { from: 0, to: 5, insert: "AGENT" },
+            annotations: [changeAuthorAnnotation.of("agent")],
+        });
+
+        expect(callCount).toBe(0);
+        view.destroy();
+    });
+
+    it("does not call onUserEdit when getFileId returns null", () => {
+        let callCount = 0;
+
+        const state = EditorState.create({
+            doc: "hello",
+            extensions: [
+                userEditNotifier(
+                    () => null,
+                    () => {
+                        callCount++;
+                    },
+                ),
+            ],
+        });
+        const view = new EditorView({ state });
+
+        view.dispatch({
+            changes: { from: 0, to: 5, insert: "world" },
+        });
+
+        expect(callCount).toBe(0);
         view.destroy();
     });
 });

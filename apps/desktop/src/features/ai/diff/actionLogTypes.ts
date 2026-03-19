@@ -23,6 +23,27 @@ export interface LinePatch {
     edits: LineEdit[];
 }
 
+/** A single edit expressed as text offsets (0-based, end-exclusive). */
+export interface TextEdit {
+    oldFrom: number;
+    oldTo: number;
+    newFrom: number;
+    newTo: number;
+}
+
+/** A pending agent-authored span tracked across base/current documents. */
+export interface AgentTextSpan {
+    baseFrom: number;
+    baseTo: number;
+    currentFrom: number;
+    currentTo: number;
+}
+
+/** Ordered, non-overlapping collection of agent text spans. */
+export interface TextRangePatch {
+    spans: AgentTextSpan[];
+}
+
 // ---------------------------------------------------------------------------
 // Change attribution
 // ---------------------------------------------------------------------------
@@ -60,7 +81,14 @@ export interface TrackedFile {
     diffBase: string;
     /** Full text as last applied by the agent. */
     currentText: string;
-    /** Agent edits still pending review (line ranges). */
+    /**
+     * Agent edits still pending review (text ranges).
+     *
+     * Optional for lazy compatibility with persisted sessions created before
+     * the offset-based transitional model existed.
+     */
+    unreviewedRanges?: TextRangePatch;
+    /** Agent edits still pending review (line ranges, derived/cache). */
     unreviewedEdits: LinePatch;
     /** Monotonic version counter — bumped on every mutation. */
     version: number;

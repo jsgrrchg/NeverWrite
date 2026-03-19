@@ -35,6 +35,7 @@ import {
     selectionTouchesLine,
     selectionTouchesRange,
 } from "./selectionActivity";
+import { parseMarkdownListItem } from "../markdownLists";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfCount,
@@ -251,6 +252,16 @@ function lineHasListDecoration(
         entry.classes.has("cm-lp-task-line") ||
         entry.classes.has("cm-lp-list-continuation")
     );
+}
+
+function isActiveEmptyListLine(
+    state: EditorState,
+    lineFrom: number,
+    lineTo: number,
+) {
+    if (!selectionTouchesLine(state, lineFrom, lineTo)) return false;
+    const item = parseMarkdownListItem(state.doc.sliceString(lineFrom, lineTo));
+    return item?.isEmpty === true;
 }
 
 function getListItemPresentation(
@@ -652,7 +663,10 @@ const horizontalRuleRule: NodeRule = (node, context) => {
 
     const line = context.state.doc.lineAt(node.from);
     hideRange(context, line.from, line.to);
-    addLineDecoration(context.lineDecos, line.from, "cm-lp-hr-line");
+    registerRevealSensitiveRange(context, "line", line.from, line.to);
+    if (!selectionTouchesLine(context.state, line.from, line.to)) {
+        addLineDecoration(context.lineDecos, line.from, "cm-lp-hr-line");
+    }
 };
 
 const listMarkRule: NodeRule = (node, context) => {
@@ -662,8 +676,13 @@ const listMarkRule: NodeRule = (node, context) => {
     const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
     const line = context.state.doc.lineAt(node.from);
     const hideTo = extendPastFollowingWhitespace(context.state, node.to);
+    const activeEmptyItem = isActiveEmptyListLine(
+        context.state,
+        line.from,
+        line.to,
+    );
 
-    hideRange(context, line.from, hideTo);
+    hideRange(context, line.from, activeEmptyItem ? node.to : hideTo);
 
     if (isTaskItem) return;
 
@@ -807,12 +826,17 @@ const taskMarkerRule: NodeRule = (node, context) => {
     const checked = text.includes("x") || text.includes("X");
     const line = context.state.doc.lineAt(node.from);
     const indentWidth = measureLineLeadingIndent(line.text);
+    const activeEmptyItem = isActiveEmptyListLine(
+        context.state,
+        line.from,
+        line.to,
+    );
     const densityClass = getListDensityClass(
         context.state.doc.sliceString(prefixEnd, line.to),
     );
     const levelClass = getListLevelClass(getListLevel(node.node));
 
-    hideRange(context, node.from, prefixEnd);
+    hideRange(context, node.from, activeEmptyItem ? node.to : prefixEnd);
     addLineDecoration(
         context.lineDecos,
         line.from,
@@ -1523,7 +1547,84 @@ function buildInlineDecorations(
     };
 }
 
+function touchesLeadingWhitespace(
+    lineText: string,
+    fromOffset: number,
+    toOffset: number,
+) {
+    const leadingWhitespaceLength = lineText.match(/^[ \t]*/)?.[0].length ?? 0;
+    return (
+        fromOffset <= leadingWhitespaceLength ||
+        toOffset <= leadingWhitespaceLength
+    );
+}
+
+function touchesLineIndentation(update: ViewUpdate): boolean {
+    let touched = false;
+
+    update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        if (touched) return;
+
+        const oldLine = update.startState.doc.lineAt(fromA);
+        const newLine = update.state.doc.lineAt(fromB);
+
+        if (
+            touchesLeadingWhitespace(
+                oldLine.text,
+                fromA - oldLine.from,
+                toA - oldLine.from,
+            ) ||
+            touchesLeadingWhitespace(
+                newLine.text,
+                fromB - newLine.from,
+                toB - newLine.from,
+            )
+        ) {
+            touched = true;
+        }
+    });
+
+    return touched;
+}
+
+function touchesListPresentationTransition(update: ViewUpdate): boolean {
+    let touched = false;
+
+    update.changes.iterChangedRanges((fromA, _toA, fromB, _toB) => {
+        if (touched) return;
+
+        const oldLine = update.startState.doc.lineAt(fromA);
+        const newLine = update.state.doc.lineAt(fromB);
+        const oldItem = parseMarkdownListItem(oldLine.text);
+        const newItem = parseMarkdownListItem(newLine.text);
+
+        if (!oldItem && !newItem) return;
+        if (!oldItem || !newItem) {
+            touched = true;
+            return;
+        }
+
+        if (
+            oldItem.isEmpty !== newItem.isEmpty ||
+            oldItem.isTask !== newItem.isTask ||
+            oldItem.marker !== newItem.marker ||
+            oldItem.indent !== newItem.indent
+        ) {
+            touched = true;
+        }
+    });
+
+    return touched;
+}
+
 function isSimpleEdit(update: ViewUpdate): boolean {
+    if (
+        touchesLineIndentation(update) ||
+        touchesListPresentationTransition(update)
+    ) {
+        return false;
+    }
+
     let safe = true;
     update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
         if (!safe) return;
