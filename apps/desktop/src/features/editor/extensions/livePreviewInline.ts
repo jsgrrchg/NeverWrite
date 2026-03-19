@@ -31,7 +31,10 @@ import {
     measureLineLeadingIndent,
     addLineDecoration,
 } from "./livePreviewHelpers";
-import { selectionTouchesLine } from "./selectionActivity";
+import {
+    selectionTouchesLine,
+    selectionTouchesRange,
+} from "./selectionActivity";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfCount,
@@ -95,6 +98,8 @@ interface BuildContext {
     vpFrom: number;
     vpTo: number;
     vpText: string;
+    revealSensitiveRanges: RevealSensitiveRange[];
+    revealSensitiveRangeKeys: Set<string>;
 }
 
 type NodeRule = (node: LivePreviewNode, context: BuildContext) => void;
@@ -110,6 +115,13 @@ type ListItemPresentation = {
     levelClass: string;
     lineStyles: Record<string, string>;
     markerLineNumber: number;
+};
+
+type RevealSensitiveRange = {
+    key: string;
+    from: number;
+    to: number;
+    strategy: "line" | "range";
 };
 
 class InlineBreakWidget extends WidgetType {
@@ -392,6 +404,36 @@ function pushDeco(
     context.decos.push({ from, to, deco });
 }
 
+function hideRange(
+    context: BuildContext,
+    from: number,
+    to: number,
+    deco: Decoration = hideMark,
+) {
+    if (from >= to) return;
+    pushDeco(context, from, to, deco);
+}
+
+function registerRevealSensitiveRange(
+    context: BuildContext,
+    strategy: RevealSensitiveRange["strategy"],
+    from: number,
+    to: number,
+) {
+    if (from >= to) return;
+
+    const key = `${strategy}:${from}:${to}`;
+    if (context.revealSensitiveRangeKeys.has(key)) return;
+
+    context.revealSensitiveRangeKeys.add(key);
+    context.revealSensitiveRanges.push({
+        key,
+        from,
+        to,
+        strategy,
+    });
+}
+
 function hideRangeUnlessEditing(
     context: BuildContext,
     from: number,
@@ -399,9 +441,47 @@ function hideRangeUnlessEditing(
     deco: Decoration = hideMark,
 ) {
     if (from >= to) return;
+    registerRevealSensitiveRange(context, "line", from, to);
     if (!selectionTouchesLine(context.state, from, to)) {
         pushDeco(context, from, to, deco);
     }
+}
+
+function hideRangeUnlessTokenActive(
+    context: BuildContext,
+    from: number,
+    to: number,
+    activeFrom: number,
+    activeTo: number,
+    deco: Decoration = hideMark,
+) {
+    if (from >= to) return;
+    registerRevealSensitiveRange(context, "range", activeFrom, activeTo);
+    if (!selectionTouchesRange(context.state, activeFrom, activeTo)) {
+        pushDeco(context, from, to, deco);
+    }
+}
+
+function getRevealSensitiveSignature(
+    state: EditorState,
+    ranges: readonly RevealSensitiveRange[],
+) {
+    if (!ranges.length) return "";
+
+    const activeKeys: string[] = [];
+
+    for (const range of ranges) {
+        const active =
+            range.strategy === "line"
+                ? selectionTouchesLine(state, range.from, range.to)
+                : selectionTouchesRange(state, range.from, range.to);
+
+        if (active) {
+            activeKeys.push(range.key);
+        }
+    }
+
+    return activeKeys.join("|");
 }
 
 function addLineClassForRange(
@@ -434,10 +514,13 @@ function createInlineFormattingRule(
 ): NodeRule {
     return (node, context) => {
         if (node.name !== nodeName) return;
+        registerRevealSensitiveRange(context, "range", node.from, node.to);
         pushDeco(context, node.from, node.to, mark);
         hideInactiveChildMarks(
             node.node,
             markerName,
+            node.from,
+            node.to,
             context.state,
             context.decos,
             hideInlineMark,
@@ -454,7 +537,7 @@ const headingRule: NodeRule = (node, context) => {
         isLeadingDocumentHeading(context.state, node.from)
     ) {
         const hideTo = getLeadingHeadingHideTo(context.state, node.to);
-        hideRangeUnlessEditing(context, node.from, hideTo);
+        hideRange(context, node.from, hideTo);
         return;
     }
 
@@ -477,11 +560,22 @@ const headingRule: NodeRule = (node, context) => {
     // For setext headings, don't apply heading style while editing the
     // underline.  This prevents the paragraph from suddenly becoming an h2
     // when the user types "-" to start a list below it.
-    const editingUnderline =
-        isSetext &&
-        headerMarks.some((m) =>
-            selectionTouchesLine(context.state, m.from, m.to),
-        );
+    let editingUnderline = false;
+    if (isSetext) {
+        editingUnderline = headerMarks.some((markRange) => {
+            registerRevealSensitiveRange(
+                context,
+                "line",
+                markRange.from,
+                markRange.to,
+            );
+            return selectionTouchesLine(
+                context.state,
+                markRange.from,
+                markRange.to,
+            );
+        });
+    }
 
     if (!editingUnderline) {
         const mark = headingMarks[headingLevel];
@@ -511,7 +605,7 @@ const headingRule: NodeRule = (node, context) => {
             hideFrom--;
         }
 
-        hideRangeUnlessEditing(context, hideFrom, hideTo);
+        hideRange(context, hideFrom, hideTo);
     }
 };
 
@@ -535,17 +629,29 @@ const linkRule: NodeRule = (node, context) => {
     });
 
     pushDeco(context, info.textFrom, info.textTo, linkMark);
-    hideRangeUnlessEditing(context, node.from, info.textFrom, hideMark);
-    hideRangeUnlessEditing(context, info.textTo, node.to, hideMark);
+    hideRangeUnlessTokenActive(
+        context,
+        node.from,
+        info.textFrom,
+        node.from,
+        node.to,
+        hideMark,
+    );
+    hideRangeUnlessTokenActive(
+        context,
+        info.textTo,
+        node.to,
+        node.from,
+        node.to,
+        hideMark,
+    );
 };
 
 const horizontalRuleRule: NodeRule = (node, context) => {
     if (node.name !== "HorizontalRule") return;
 
     const line = context.state.doc.lineAt(node.from);
-    if (selectionTouchesLine(context.state, line.from, line.to)) return;
-
-    pushDeco(context, line.from, line.to, hideMark);
+    hideRange(context, line.from, line.to);
     addLineDecoration(context.lineDecos, line.from, "cm-lp-hr-line");
 };
 
@@ -556,15 +662,8 @@ const listMarkRule: NodeRule = (node, context) => {
     const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
     const line = context.state.doc.lineAt(node.from);
     const hideTo = extendPastFollowingWhitespace(context.state, node.to);
-    const isEditingMarker = selectionTouchesLine(
-        context.state,
-        node.from,
-        hideTo,
-    );
 
-    if (!isEditingMarker) {
-        pushDeco(context, line.from, hideTo, hideMark);
-    }
+    hideRange(context, line.from, hideTo);
 
     if (isTaskItem) return;
 
@@ -599,7 +698,6 @@ const listMarkRule: NodeRule = (node, context) => {
                       "data-lp-marker": markerText,
                   }
                 : {}),
-            "data-lp-editing-marker": isEditingMarker ? "true" : "false",
         },
         lineStyles,
     );
@@ -607,9 +705,7 @@ const listMarkRule: NodeRule = (node, context) => {
         context.lineDecos,
         line.from,
         "cm-lp-li-line",
-        {
-            "data-lp-editing-marker": isEditingMarker ? "true" : "false",
-        },
+        undefined,
         lineStyles,
     );
     addLineDecoration(context.lineDecos, line.from, densityClass);
@@ -664,7 +760,7 @@ const blockquoteRule: NodeRule = (node, context) => {
             hideTo++;
         }
 
-        hideRangeUnlessEditing(context, cursor.from, hideTo);
+        hideRange(context, cursor.from, hideTo);
     } while (cursor.nextSibling());
 };
 
@@ -690,7 +786,7 @@ const fencedCodeRule: NodeRule = (node, context) => {
     }
 
     if (openEnd > node.from) {
-        hideRangeUnlessEditing(context, node.from, openEnd);
+        hideRange(context, node.from, openEnd);
     }
 
     if (closeFrom >= 0 && closeFrom < node.to) {
@@ -699,7 +795,7 @@ const fencedCodeRule: NodeRule = (node, context) => {
             context.state.doc.sliceString(closeFrom - 1, closeFrom) === "\n"
                 ? closeFrom - 1
                 : closeFrom;
-        hideRangeUnlessEditing(context, hideFrom, node.to);
+        hideRange(context, hideFrom, node.to);
     }
 };
 
@@ -707,12 +803,6 @@ const taskMarkerRule: NodeRule = (node, context) => {
     if (node.name !== "TaskMarker") return;
 
     const prefixEnd = extendPastFollowingWhitespace(context.state, node.to);
-    const isEditingMarker = selectionTouchesLine(
-        context.state,
-        node.from,
-        prefixEnd,
-    );
-
     const text = context.state.doc.sliceString(node.from, node.to);
     const checked = text.includes("x") || text.includes("X");
     const line = context.state.doc.lineAt(node.from);
@@ -722,9 +812,7 @@ const taskMarkerRule: NodeRule = (node, context) => {
     );
     const levelClass = getListLevelClass(getListLevel(node.node));
 
-    if (!isEditingMarker) {
-        pushDeco(context, node.from, prefixEnd, hideMark);
-    }
+    hideRange(context, node.from, prefixEnd);
     addLineDecoration(
         context.lineDecos,
         line.from,
@@ -734,7 +822,6 @@ const taskMarkerRule: NodeRule = (node, context) => {
             "data-lp-task-state": checked ? "done" : "open",
             "data-lp-task-from": String(line.from),
             "data-lp-task-marker": checked ? "x" : " ",
-            "data-lp-editing-marker": isEditingMarker ? "true" : "false",
             tabindex: "0",
             role: "checkbox",
             "aria-checked": checked ? "true" : "false",
@@ -797,35 +884,55 @@ const regexRules: Array<{
             const pipeIndex = inner.indexOf("|");
 
             if (pipeIndex >= 0) {
-                hideRangeUnlessEditing(
+                hideRangeUnlessTokenActive(
                     context,
                     absFrom,
                     absFrom + 2 + pipeIndex + 1,
+                    absFrom,
+                    absTo,
                     hideInlineMark,
                 );
             } else {
-                hideRangeUnlessEditing(
+                hideRangeUnlessTokenActive(
                     context,
                     absFrom,
                     absFrom + 2,
+                    absFrom,
+                    absTo,
                     hideInlineMark,
                 );
             }
 
-            hideRangeUnlessEditing(context, absTo - 2, absTo, hideInlineMark);
+            hideRangeUnlessTokenActive(
+                context,
+                absTo - 2,
+                absTo,
+                absFrom,
+                absTo,
+                hideInlineMark,
+            );
         },
     },
     {
         pattern: HIGHLIGHT_RE,
         apply(_match, absFrom, absTo, context) {
-            hideRangeUnlessEditing(
+            hideRangeUnlessTokenActive(
                 context,
                 absFrom,
                 absFrom + 2,
+                absFrom,
+                absTo,
                 hideInlineMark,
             );
             pushDeco(context, absFrom + 2, absTo - 2, highlightMark);
-            hideRangeUnlessEditing(context, absTo - 2, absTo, hideInlineMark);
+            hideRangeUnlessTokenActive(
+                context,
+                absTo - 2,
+                absTo,
+                absFrom,
+                absTo,
+                hideInlineMark,
+            );
         },
     },
 ];
@@ -904,23 +1011,14 @@ function applyLooseListFallback(context: BuildContext) {
 
         const markerFrom = line.from + indent.length;
         const hideTo = markerFrom + marker.length + spacing.length;
-        const isEditingMarker = selectionTouchesLine(
-            context.state,
-            markerFrom,
-            hideTo,
-        );
 
-        if (!isEditingMarker) {
-            pushDeco(context, line.from, hideTo, hideMark);
-        }
+        hideRange(context, line.from, hideTo);
 
         addLineDecoration(
             context.lineDecos,
             line.from,
             "cm-lp-li-unordered",
-            {
-                "data-lp-editing-marker": isEditingMarker ? "true" : "false",
-            },
+            undefined,
             {
                 "--cm-lp-indent": `${indentWidth}ch`,
                 "--cm-lp-marker-width": UNORDERED_LIST_MARKER_WIDTH,
@@ -930,9 +1028,7 @@ function applyLooseListFallback(context: BuildContext) {
             context.lineDecos,
             line.from,
             "cm-lp-li-line",
-            {
-                "data-lp-editing-marker": isEditingMarker ? "true" : "false",
-            },
+            undefined,
             {
                 "--cm-lp-indent": `${indentWidth}ch`,
                 "--cm-lp-marker-width": UNORDERED_LIST_MARKER_WIDTH,
@@ -1051,7 +1147,6 @@ function applyCalloutDecorations(context: BuildContext) {
             );
         }
 
-        const absoluteMarkerFrom = line.from + markerStart;
         let absoluteMarkerTo = line.from + markerEnd + 1;
         if (match[2]) {
             absoluteMarkerTo += match[2].length;
@@ -1065,12 +1160,31 @@ function applyCalloutDecorations(context: BuildContext) {
         ) {
             absoluteMarkerTo++;
         }
-        hideRangeUnlessEditing(context, absoluteMarkerFrom, absoluteMarkerTo);
+        hideRange(context, line.from, absoluteMarkerTo);
+
+        for (
+            let currentLineNumber = lineNumber + 1;
+            currentLineNumber <= blockEnd;
+            currentLineNumber++
+        ) {
+            const currentLine = context.state.doc.line(currentLineNumber);
+            const quotePrefix = currentLine.text.match(/^\s*>\s?/);
+            if (!quotePrefix || quotePrefix[0].length === 0) continue;
+
+            hideRange(
+                context,
+                currentLine.from,
+                currentLine.from + quotePrefix[0].length,
+            );
+        }
 
         // Hide body lines when collapsed
         if (isCollapsed && blockEnd > lineNumber) {
             const bodyFrom = context.state.doc.line(lineNumber + 1).from - 1;
             const bodyTo = context.state.doc.line(blockEnd).to;
+            if (bodyFrom < bodyTo) {
+                registerRevealSensitiveRange(context, "line", bodyFrom, bodyTo);
+            }
             if (
                 bodyFrom < bodyTo &&
                 !selectionTouchesLine(context.state, bodyFrom, bodyTo)
@@ -1097,12 +1211,12 @@ function applyFootnoteDefinitionDecorations(context: BuildContext) {
         addLineDecoration(context.lineDecos, line.from, "cm-lp-footnote-def", {
             "data-footnote-id": label,
         });
-        hideRangeUnlessEditing(context, line.from, markerTo);
+        hideRange(context, line.from, markerTo);
         if (
             markerTo < line.to &&
             context.state.doc.sliceString(markerTo, markerTo + 1) === " "
         ) {
-            hideRangeUnlessEditing(context, markerTo, markerTo + 1);
+            hideRange(context, markerTo, markerTo + 1);
         }
 
         let continuation = lineNumber + 1;
@@ -1147,22 +1261,10 @@ function applyExtendedTaskFallback(context: BuildContext) {
         const prefix = match[1];
         const markerStart = line.from + prefix.length;
         const markerEnd = markerStart + 3;
-        const isEditingMarker = selectionTouchesLine(
-            context.state,
-            markerStart,
-            markerEnd + 1,
-        );
         const indentWidth = measureLineLeadingIndent(line.text);
         const taskState = "partial";
 
-        if (!isEditingMarker) {
-            pushDeco(
-                context,
-                line.from,
-                Math.min(line.to, markerEnd + 1),
-                hideMark,
-            );
-        }
+        hideRange(context, line.from, Math.min(line.to, markerEnd + 1));
 
         addLineDecoration(
             context.lineDecos,
@@ -1172,7 +1274,6 @@ function applyExtendedTaskFallback(context: BuildContext) {
                 "data-lp-task-state": taskState,
                 "data-lp-task-from": String(line.from),
                 "data-lp-task-marker": markerState,
-                "data-lp-editing-marker": isEditingMarker ? "true" : "false",
                 tabindex: "0",
                 role: "checkbox",
                 "aria-checked": "mixed",
@@ -1195,19 +1296,27 @@ function applyRichRegexRules(context: BuildContext) {
         if (rangeOverlapsBlock(context, absFrom, absTo)) continue;
 
         const id = footnoteMatch[1];
-        pushDeco(
-            context,
-            absFrom,
-            absTo,
-            Decoration.mark({
-                class: "cm-lp-footnote-ref",
-                attributes: {
-                    "data-footnote-id": id,
-                    tabindex: "0",
-                    role: "button",
-                },
-            }),
-        );
+        const contentFrom = absFrom + 2;
+        const contentTo = absTo - 1;
+        registerRevealSensitiveRange(context, "range", absFrom, absTo);
+
+        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
+            hideRange(context, absFrom, contentFrom, hideInlineMark);
+            hideRange(context, contentTo, absTo, hideInlineMark);
+            pushDeco(
+                context,
+                contentFrom,
+                contentTo,
+                Decoration.mark({
+                    class: "cm-lp-footnote-ref",
+                    attributes: {
+                        "data-footnote-id": id,
+                        tabindex: "0",
+                        role: "button",
+                    },
+                }),
+            );
+        }
     }
 
     INLINE_HTML_RE.lastIndex = 0;
@@ -1229,14 +1338,20 @@ function applyRichRegexRules(context: BuildContext) {
                   ? "cm-lp-subscript"
                   : "cm-lp-superscript";
 
-        hideRangeUnlessEditing(context, absFrom, contentFrom);
+        hideRangeUnlessTokenActive(
+            context,
+            absFrom,
+            contentFrom,
+            absFrom,
+            absTo,
+        );
         pushDeco(
             context,
             contentFrom,
             contentTo,
             Decoration.mark({ class: className }),
         );
-        hideRangeUnlessEditing(context, contentTo, absTo);
+        hideRangeUnlessTokenActive(context, contentTo, absTo, absFrom, absTo);
     }
 
     INLINE_BR_RE.lastIndex = 0;
@@ -1266,8 +1381,9 @@ function applyRichRegexRules(context: BuildContext) {
 
         const tex = blockMathMatch[1].trim();
         if (!tex) continue;
+        registerRevealSensitiveRange(context, "range", absFrom, absTo);
 
-        if (!selectionTouchesLine(context.state, absFrom, absTo)) {
+        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
             pushDeco(
                 context,
                 absFrom,
@@ -1298,8 +1414,9 @@ function applyRichRegexRules(context: BuildContext) {
             .sliceString(contentFrom, contentTo)
             .trim();
         if (!tex) continue;
+        registerRevealSensitiveRange(context, "range", absFrom, absTo);
 
-        if (!selectionTouchesLine(context.state, absFrom, absTo)) {
+        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
             pushDeco(
                 context,
                 absFrom,
@@ -1309,9 +1426,21 @@ function applyRichRegexRules(context: BuildContext) {
                 }),
             );
         } else {
-            hideRangeUnlessEditing(context, absFrom, contentFrom);
+            hideRangeUnlessTokenActive(
+                context,
+                absFrom,
+                contentFrom,
+                absFrom,
+                absTo,
+            );
             pushDeco(context, contentFrom, contentTo, createMathMark("inline"));
-            hideRangeUnlessEditing(context, contentTo, absTo);
+            hideRangeUnlessTokenActive(
+                context,
+                contentTo,
+                absTo,
+                absFrom,
+                absTo,
+            );
         }
     }
 }
@@ -1345,7 +1474,11 @@ function buildInlineDecorations(
     state: EditorState,
     vpFrom: number,
     vpTo: number,
-): DecorationSet {
+): {
+    decorations: DecorationSet;
+    revealSensitiveRanges: RevealSensitiveRange[];
+    activeRevealSignature: string;
+} {
     const context: BuildContext = {
         state,
         decos: [],
@@ -1356,6 +1489,8 @@ function buildInlineDecorations(
         vpFrom,
         vpTo,
         vpText: state.doc.sliceString(vpFrom, vpTo),
+        revealSensitiveRanges: [],
+        revealSensitiveRangeKeys: new Set<string>(),
     };
 
     applyNodeRules(context);
@@ -1378,7 +1513,14 @@ function buildInlineDecorations(
     for (const deco of context.decos) {
         builder.add(deco.from, deco.to, deco.deco);
     }
-    return builder.finish();
+    return {
+        decorations: builder.finish(),
+        revealSensitiveRanges: context.revealSensitiveRanges,
+        activeRevealSignature: getRevealSensitiveSignature(
+            state,
+            context.revealSensitiveRanges,
+        ),
+    };
 }
 
 function isSimpleEdit(update: ViewUpdate): boolean {
@@ -1412,6 +1554,8 @@ export function createInlineLivePreviewPlugin() {
     return ViewPlugin.fromClass(
         class {
             decorations: DecorationSet;
+            revealSensitiveRanges: RevealSensitiveRange[] = [];
+            activeRevealSignature = "";
 
             constructor(view: EditorView) {
                 this.decorations = this.build(view, "initial");
@@ -1440,17 +1584,15 @@ export function createInlineLivePreviewPlugin() {
                 }
 
                 if (!update.selectionSet) return;
-
-                // With line-level hide/show, decorations only change when the
-                // selection moves to a different line range.
-                const prev = update.startState.selection.main;
-                const curr = update.state.selection.main;
-                if (
-                    update.startState.doc.lineAt(prev.from).number ===
-                        update.state.doc.lineAt(curr.from).number &&
-                    update.startState.doc.lineAt(prev.to).number ===
-                        update.state.doc.lineAt(curr.to).number
-                ) {
+                const nextRevealSignature = getRevealSensitiveSignature(
+                    update.state,
+                    this.revealSensitiveRanges,
+                );
+                if (nextRevealSignature === this.activeRevealSignature) {
+                    perfCount("editor.livePreviewInline.selectionSet.skipped", {
+                        revealSensitiveRanges:
+                            this.revealSensitiveRanges.length,
+                    });
                     return;
                 }
                 this.decorations = this.build(update.view, "selectionSet");
@@ -1466,11 +1608,13 @@ export function createInlineLivePreviewPlugin() {
             ): DecorationSet {
                 const { from, to } = view.viewport;
                 const startMs = perfNow();
-                const decorations = buildInlineDecorations(
+                const buildResult = buildInlineDecorations(
                     view.state,
                     from,
                     to,
                 );
+                this.revealSensitiveRanges = buildResult.revealSensitiveRanges;
+                this.activeRevealSignature = buildResult.activeRevealSignature;
                 const visibleLines =
                     view.state.doc.lineAt(to).number -
                     view.state.doc.lineAt(from).number +
@@ -1489,10 +1633,12 @@ export function createInlineLivePreviewPlugin() {
                         viewportChars: Math.max(0, to - from),
                         visibleLines,
                         docLines: view.state.doc.lines,
+                        revealSensitiveRanges:
+                            this.revealSensitiveRanges.length,
                     },
                 );
 
-                return decorations;
+                return buildResult.decorations;
             }
         },
         { decorations: (value) => value.decorations },
