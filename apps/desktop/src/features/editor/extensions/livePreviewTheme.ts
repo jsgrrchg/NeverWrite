@@ -144,10 +144,6 @@ export const livePreviewTheme = EditorView.baseTheme({
         borderLeft: "3px solid var(--accent)",
         paddingLeft: "12px",
     },
-    ".cm-lp-blockquote-line[data-lp-editing-marker='true']": {
-        borderLeft: "3px solid var(--accent)",
-        paddingLeft: "12px",
-    },
     ".cm-lp-blockquote-level-2": {
         paddingLeft: "28px !important",
         position: "relative",
@@ -247,10 +243,6 @@ export const livePreviewTheme = EditorView.baseTheme({
         fontSize: "0.72em",
         opacity: 0.74,
     },
-    ".cm-lp-li-line[data-lp-editing-marker='true']::before, .cm-lp-li-ordered[data-lp-editing-marker='true']::before, .cm-lp-li-unordered[data-lp-editing-marker='true']::before":
-        {
-            opacity: 0,
-        },
     ".cm-lp-li-ordered::before": {
         content: "attr(data-lp-marker)",
         fontVariantNumeric: "tabular-nums",
@@ -329,10 +321,6 @@ export const livePreviewTheme = EditorView.baseTheme({
         transform: "none",
         opacity: 1,
     },
-    ".cm-lp-task-line[data-lp-editing-marker='true']::before, .cm-lp-task-line[data-lp-editing-marker='true']::after":
-        {
-            opacity: 0,
-        },
     ".cm-lp-footnote-ref": {
         fontSize: "0.72em",
         verticalAlign: "super",

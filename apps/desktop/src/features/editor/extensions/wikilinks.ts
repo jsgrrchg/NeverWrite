@@ -5,13 +5,17 @@ import {
     ViewPlugin,
     type ViewUpdate,
 } from "@codemirror/view";
-import { RangeSetBuilder, StateEffect } from "@codemirror/state";
+import {
+    type EditorState,
+    RangeSetBuilder,
+    StateEffect,
+} from "@codemirror/state";
 import {
     perfCount,
     perfMeasure,
     perfNow,
 } from "../../../app/utils/perfInstrumentation";
-import { selectionTouchesLine } from "./selectionActivity";
+import { selectionTouchesRange } from "./selectionActivity";
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 // Characters that can affect wikilink structure: brackets, pipe, newlines.
@@ -34,6 +38,22 @@ interface WikilinkMatch {
     target: string;
     /** The text between [[ and ]], cached to avoid re-slicing. */
     inner: string;
+}
+
+function getActiveWikilinkSignature(
+    state: EditorState,
+    links: readonly WikilinkMatch[],
+) {
+    if (!links.length) return "";
+
+    const activeKeys: string[] = [];
+    for (const link of links) {
+        if (selectionTouchesRange(state, link.from, link.to)) {
+            activeKeys.push(`${link.from}:${link.to}`);
+        }
+    }
+
+    return activeKeys.join("|");
 }
 
 function findWikilinksInText(doc: string, offset = 0): WikilinkMatch[] {
@@ -207,6 +227,9 @@ export function wikilinkExtension(
             decorations: DecorationSet;
             deferredDenseResolutionHandle: IdleCallbackHandle | null = null;
             deferredDenseResolutionVersion = 0;
+            visibleLinks: WikilinkMatch[] = [];
+            activeWikilinkSignature = "";
+            denseMode = false;
 
             constructor(view: EditorView) {
                 this.decorations = this.build(view, "initial");
@@ -252,21 +275,18 @@ export function wikilinkExtension(
                 }
 
                 if (!update.selectionSet) return;
-
-                // With line-level hide/show, decorations only change when
-                // the selection moves to a different line range.
-                const prev = update.startState.selection.main;
-                const curr = update.state.selection.main;
-                if (
-                    update.startState.doc.lineAt(prev.from).number ===
-                        update.state.doc.lineAt(curr.from).number &&
-                    update.startState.doc.lineAt(prev.to).number ===
-                        update.state.doc.lineAt(curr.to).number
-                ) {
-                    perfCount("editor.wikilinks.selectionSet.sameLine");
-                    return;
+                if (!this.denseMode) {
+                    const nextActiveSignature = getActiveWikilinkSignature(
+                        update.state,
+                        this.visibleLinks,
+                    );
+                    if (nextActiveSignature === this.activeWikilinkSignature) {
+                        perfCount("editor.wikilinks.selectionSet.skipped", {
+                            visibleLinks: this.visibleLinks.length,
+                        });
+                        return;
+                    }
                 }
-
                 this.decorations = this.build(update.view, "selectionSet");
             }
 
@@ -360,6 +380,12 @@ export function wikilinkExtension(
                 );
                 const denseMode =
                     visibleLinks.length > DENSE_VISIBLE_WIKILINK_THRESHOLD;
+                this.visibleLinks = visibleLinks;
+                this.activeWikilinkSignature = getActiveWikilinkSignature(
+                    view.state,
+                    visibleLinks,
+                );
+                this.denseMode = denseMode;
                 const immediateTargets = denseMode
                     ? rankedTargets.slice(0, DENSE_IMMEDIATE_TARGET_LIMIT)
                     : rankedTargets;
@@ -393,28 +419,8 @@ export function wikilinkExtension(
                 let decoratedLinks = 0;
                 let pendingLinks = 0;
 
-                // Pre-compute the cursor line range once to avoid
-                // N × doc.lineAt() calls inside selectionTouchesLine.
-                const sel = view.state.selection;
-                const cursorLineFrom = view.state.doc.lineAt(
-                    sel.main.from,
-                ).number;
-                const cursorLineTo = view.state.doc.lineAt(sel.main.to).number;
-
                 for (const link of visibleLinks) {
-                    // Inline line-range check (avoids function call + redundant
-                    // lineAt for single-selection common case).
-                    const linkLine = view.state.doc.lineAt(link.from).number;
-                    if (
-                        sel.ranges.length === 1
-                            ? linkLine >= cursorLineFrom &&
-                              linkLine <= cursorLineTo
-                            : selectionTouchesLine(
-                                  view.state,
-                                  link.from,
-                                  link.to,
-                              )
-                    ) {
+                    if (selectionTouchesRange(view.state, link.from, link.to)) {
                         continue;
                     }
 
@@ -453,6 +459,9 @@ export function wikilinkExtension(
                         (total, range) => total + (range.to - range.from),
                         0,
                     ),
+                    activeVisibleLinks: this.activeWikilinkSignature
+                        ? this.activeWikilinkSignature.split("|").length
+                        : 0,
                 });
                 if (reason === "docChanged") {
                     perfCount("editor.wikilinks.docChanged");

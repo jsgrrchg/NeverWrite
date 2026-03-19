@@ -115,18 +115,19 @@ export function hideChildInlineMarks(
 export function hideInactiveChildMarks(
     parentNode: SyntaxNode,
     markName: string,
+    activeFrom: number,
+    activeTo: number,
     state: EditorState,
     decos: DecoEntry[],
     hiddenDeco: Decoration,
 ) {
+    const tokenActive = selectionTouchesRange(state, activeFrom, activeTo);
+    if (tokenActive) return;
+
     const cursor = parentNode.cursor();
     if (cursor.firstChild()) {
         do {
-            if (
-                cursor.name === markName &&
-                cursor.from < cursor.to &&
-                !selectionTouchesRange(state, cursor.from, cursor.to)
-            ) {
+            if (cursor.name === markName && cursor.from < cursor.to) {
                 decos.push({
                     from: cursor.from,
                     to: cursor.to,
