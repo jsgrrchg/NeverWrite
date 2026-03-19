@@ -858,16 +858,17 @@ export const GraphRenderer3D = forwardRef<
 
     useEffect(() => {
         const samples = interactionSampleRef.current;
+        const nodeObjectCache = nodeObjectCacheRef.current;
         return () => {
             samples.dragCancel?.();
             samples.zoomCancel?.();
             samples.hoverCancel?.();
             persistCurrentLayout();
 
-            for (const cached of nodeObjectCacheRef.current.values()) {
+            for (const cached of nodeObjectCache.values()) {
                 disposeThreeObject(cached.object);
             }
-            nodeObjectCacheRef.current.clear();
+            nodeObjectCache.clear();
         };
     }, [persistCurrentLayout]);
 

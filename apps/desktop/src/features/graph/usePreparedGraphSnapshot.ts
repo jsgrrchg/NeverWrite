@@ -59,7 +59,18 @@ export function usePreparedGraphSnapshot({
         [layoutKey],
     );
 
+    // Derived state: reset when inputs are missing (avoids synchronous setState in effect)
+    if (
+        (!graphSnapshot || !layoutKey) &&
+        (prepared !== null || isPreparing || error !== null)
+    ) {
+        setPrepared(null);
+        setIsPreparing(false);
+        setError(null);
+    }
+
     useEffect(() => {
+        const requestMeta = requestMetaRef.current;
         const worker = new Worker(
             new URL("./graphPipelineWorker.ts", import.meta.url),
             { type: "module" },
@@ -70,8 +81,8 @@ export function usePreparedGraphSnapshot({
             event: MessageEvent<GraphPipelineWorkerResponse>,
         ) => {
             const response = event.data;
-            const meta = requestMetaRef.current.get(response.requestId);
-            requestMetaRef.current.delete(response.requestId);
+            const meta = requestMeta.get(response.requestId);
+            requestMeta.delete(response.requestId);
             if (response.requestId !== latestRequestIdRef.current || !meta) {
                 return;
             }
@@ -129,29 +140,14 @@ export function usePreparedGraphSnapshot({
             worker.removeEventListener("error", handleError);
             worker.terminate();
             workerRef.current = null;
-            requestMetaRef.current.clear();
+            requestMeta.clear();
         };
     }, []);
 
     useEffect(() => {
-        if (!graphSnapshot || !layoutKey) {
-            setIsPreparing(false);
-            setError(null);
-            startTransition(() => {
-                setPrepared(null);
-            });
-            return;
-        }
-
-        if (!isVisible) {
-            return;
-        }
-
-        if (prepared?.layoutKey === layoutKey) {
-            setIsPreparing(false);
-            setError(null);
-            return;
-        }
+        if (!graphSnapshot || !layoutKey) return;
+        if (!isVisible) return;
+        if (prepared?.layoutKey === layoutKey) return;
 
         const worker = workerRef.current;
         if (!worker) return;

@@ -369,7 +369,7 @@ export const GraphRenderer2D = forwardRef<
                 : `rgba(${lr}, ${lg}, ${lb}, ${alpha})`;
             ctx.fillText(label, x, y + nodeR + 2);
         },
-        [],
+        [showTitles],
     );
 
     const paintNodePointerArea = useCallback(
