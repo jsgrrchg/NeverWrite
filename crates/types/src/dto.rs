@@ -133,13 +133,6 @@ pub struct VaultNoteChangeDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolvedLinkDto {
-    pub target: String,
-    pub note_id: Option<String>,
-    pub title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedWikilinkDto {
     pub target: String,
     pub resolved_note_id: Option<String>,
@@ -152,15 +145,6 @@ pub struct WikilinkSuggestionDto {
     pub title: String,
     pub subtitle: String,
     pub insert_text: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutlineHeadingDto {
-    pub id: String,
-    pub title: String,
-    pub level: u8,
-    pub anchor: usize,
-    pub head: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

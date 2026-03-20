@@ -9,4 +9,3 @@ vault-ai-types = { path = "../types" }
 vault-ai-vault = { path = "../vault" }
 vault-ai-index = { path = "../index" }
 vault-ai-diff = { path = "../diff" }
-vault-ai-state = { path = "../state" }
