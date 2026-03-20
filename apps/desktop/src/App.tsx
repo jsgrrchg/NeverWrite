@@ -896,49 +896,43 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
         s.tabs.some((tab) => isGraphTab(tab)),
     );
     const isGraphActive = view === "graph";
-    const [graphKeepAliveUntil, setGraphKeepAliveUntil] = useState<
-        number | null
-    >(isGraphActive ? Date.now() + GRAPH_KEEP_ALIVE_MS : null);
+    const keepAliveRef = useRef<number | null>(
+        isGraphActive ? Date.now() + GRAPH_KEEP_ALIVE_MS : null,
+    );
     const wasGraphActiveRef = useRef(isGraphActive);
+    const [, forceRender] = useState(0);
 
+    // Update keep-alive timestamp when graph tab state changes
+    const wasGraphActive = wasGraphActiveRef.current;
+    wasGraphActiveRef.current = isGraphActive;
+
+    if (!hasGraphTab) {
+        keepAliveRef.current = null;
+    } else if (isGraphActive || wasGraphActive) {
+        keepAliveRef.current = Date.now() + GRAPH_KEEP_ALIVE_MS;
+    }
+
+    // Timer to expire the keep-alive and trigger unmount
     useEffect(() => {
-        const wasGraphActive = wasGraphActiveRef.current;
-        wasGraphActiveRef.current = isGraphActive;
-
-        if (!hasGraphTab) {
-            setGraphKeepAliveUntil(null);
+        if (!hasGraphTab || isGraphActive || keepAliveRef.current == null) {
             return;
         }
 
-        if (isGraphActive || wasGraphActive) {
-            setGraphKeepAliveUntil(Date.now() + GRAPH_KEEP_ALIVE_MS);
-        }
-    }, [hasGraphTab, isGraphActive]);
-
-    useEffect(() => {
-        if (!hasGraphTab || isGraphActive || graphKeepAliveUntil == null) {
-            return;
-        }
-
-        const remainingMs = graphKeepAliveUntil - Date.now();
-        if (remainingMs <= 0) {
-            setGraphKeepAliveUntil(null);
-            return;
-        }
+        const deadline = keepAliveRef.current;
+        const remainingMs = Math.max(0, deadline - Date.now());
 
         const timeoutId = window.setTimeout(() => {
-            setGraphKeepAliveUntil((current) => {
-                if (current !== graphKeepAliveUntil) return current;
-                perfCount("graph.lifecycle.keepAliveExpired");
-                return null;
-            });
+            if (keepAliveRef.current !== deadline) return;
+            keepAliveRef.current = null;
+            perfCount("graph.lifecycle.keepAliveExpired");
+            forceRender((n) => n + 1);
         }, remainingMs);
 
         return () => window.clearTimeout(timeoutId);
-    }, [graphKeepAliveUntil, hasGraphTab, isGraphActive]);
+    }, [hasGraphTab, isGraphActive]);
 
     const keepGraphMounted =
-        hasGraphTab && (isGraphActive || graphKeepAliveUntil != null);
+        hasGraphTab && (isGraphActive || keepAliveRef.current != null);
 
     return (
         <div className="relative flex-1 min-h-0 w-full">
