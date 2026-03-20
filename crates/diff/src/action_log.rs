@@ -93,10 +93,6 @@ pub fn patch_is_empty(patch: &LinePatch) -> bool {
 }
 
 pub fn ranges_overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> bool {
-    if a_start == a_end && b_start == b_end {
-        return a_start == b_start;
-    }
-
     a_start < b_end && b_start < a_end
 }
 
@@ -154,7 +150,13 @@ fn insertion_line_index_at_offset(line_starts: &[u32], offset: u32) -> u32 {
 }
 
 fn contains_newline(text: &str, from: u32, to: u32) -> bool {
-    utf16_units(text)[from as usize..to as usize].contains(&(b'\n' as u16))
+    let units = utf16_units(text);
+    let start = (from as usize).min(units.len());
+    let end = (to as usize).min(units.len());
+    if start >= end {
+        return false;
+    }
+    units[start..end].contains(&(b'\n' as u16))
 }
 
 fn is_line_boundary(text: &str, offset: u32) -> bool {
@@ -334,12 +336,21 @@ pub fn rebuild_diff_base_from_pending_spans(
     let mut cursor = 0u32;
 
     for span in sorted_spans {
-        parts.extend_from_slice(&current_units[cursor as usize..span.current_from as usize]);
-        parts.extend_from_slice(&original_units[span.base_from as usize..span.base_to as usize]);
+        let cur_from = (cursor as usize).min(current_units.len());
+        let cur_to = (span.current_from as usize).min(current_units.len());
+        if cur_from < cur_to {
+            parts.extend_from_slice(&current_units[cur_from..cur_to]);
+        }
+        let base_from = (span.base_from as usize).min(original_units.len());
+        let base_to = (span.base_to as usize).min(original_units.len());
+        if base_from < base_to {
+            parts.extend_from_slice(&original_units[base_from..base_to]);
+        }
         cursor = span.current_to;
     }
 
-    parts.extend_from_slice(&current_units[cursor as usize..]);
+    let tail_start = (cursor as usize).min(current_units.len());
+    parts.extend_from_slice(&current_units[tail_start..]);
     String::from_utf16_lossy(&parts)
 }
 
@@ -612,6 +623,15 @@ pub fn keep_edits_in_range(file: &TrackedFile, start_line: u32, end_line: u32) -
     next
 }
 
+fn clamped_lines_text(lines: &[String], start: u32, end: u32) -> String {
+    let s = (start as usize).min(lines.len());
+    let e = (end as usize).min(lines.len());
+    if s >= e {
+        return String::new();
+    }
+    lines[s..e].join("\n")
+}
+
 pub fn reject_all_edits(file: &TrackedFile) -> RejectEditsResult {
     let synced_file = sync_derived_line_patch(file);
     let current_lines: Vec<String> = synced_file
@@ -626,7 +646,7 @@ pub fn reject_all_edits(file: &TrackedFile) -> RejectEditsResult {
         .map(|edit| PerFileUndoEdit {
             start_line: edit.new_start,
             end_line: edit.new_end,
-            text: current_lines[edit.new_start as usize..edit.new_end as usize].join("\n"),
+            text: clamped_lines_text(&current_lines, edit.new_start, edit.new_end),
         })
         .collect();
 
@@ -678,7 +698,7 @@ pub fn reject_edits_in_ranges(file: &TrackedFile, ranges: &[LineRange]) -> Rejec
         edits_to_restore.push(PerFileUndoEdit {
             start_line: edit.new_start,
             end_line: edit.new_end,
-            text: current_lines[edit.new_start as usize..edit.new_end as usize].join("\n"),
+            text: clamped_lines_text(&current_lines, edit.new_start, edit.new_end),
         });
     }
 
@@ -727,18 +747,23 @@ pub fn apply_reject_undo(file: &TrackedFile, undo: &PerFileUndo) -> TrackedFile 
 
     for entry in &undo.edits_to_restore {
         let restore_lines: Vec<String> = entry.text.split('\n').map(str::to_owned).collect();
-        let splice_start = (entry.start_line as i32 + delta) as usize;
+        let splice_start_i32 = entry.start_line as i32 + delta;
+        if splice_start_i32 < 0 || splice_start_i32 as usize > lines.len() {
+            continue;
+        }
+        let splice_start = splice_start_i32 as usize;
         let matching_edit = synced_file
             .unreviewed_edits
             .edits
             .iter()
-            .find(|edit| edit.new_start == (entry.start_line as i32 + delta) as u32);
+            .find(|edit| edit.new_start as i32 == splice_start_i32);
         let delete_count = matching_edit
             .map(|edit| (edit.new_end - edit.new_start) as usize)
             .unwrap_or(restore_lines.len());
+        let clamped_delete = delete_count.min(lines.len() - splice_start);
 
         lines.splice(
-            splice_start..splice_start.saturating_add(delete_count),
+            splice_start..splice_start + clamped_delete,
             restore_lines.clone(),
         );
         delta += restore_lines.len() as i32 - delete_count as i32;

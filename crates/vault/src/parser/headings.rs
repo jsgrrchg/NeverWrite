@@ -19,12 +19,12 @@ static SETEXT_H2_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^---+\s*$")
 // clean_heading_title regexes
 static TRAILING_HASHES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+#+\s*$").unwrap());
 static EMBED_WIKILINK_ALIAS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"!\[\[([^|\]]+)\|([^\]]+)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"!\[\[([^|\[\]]+)\|([^\[\]]+)\]\]").unwrap());
 static EMBED_WIKILINK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"!\[\[([^\]]+)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"!\[\[([^\[\]]+)\]\]").unwrap());
 static WIKILINK_ALIAS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^|\]]+)\|([^\]]+)\]\]").unwrap());
-static WIKILINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^|\[\]]+)\|([^\[\]]+)\]\]").unwrap());
+static WIKILINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\[\]]+)\]\]").unwrap());
 static IMG_MD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\([^)]+\)").unwrap());
 static IMG_REF_RE: LazyLock<Regex> =

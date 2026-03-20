@@ -187,7 +187,21 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
         }
 
-        Ok(self.root.join(path))
+        let joined = self.root.join(path);
+
+        // If the path exists on disk, verify its canonical form stays inside the vault.
+        // This catches symlinks that escape the vault boundary.
+        if let Ok(canonical) = joined.canonicalize() {
+            let vault_root = self
+                .root
+                .canonicalize()
+                .map_err(|_| VaultError::InvalidVaultPath(relative_path.to_string()))?;
+            if !canonical.starts_with(&vault_root) {
+                return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
+            }
+        }
+
+        Ok(joined)
     }
 
     pub fn read_text_file(&self, relative_path: &str) -> Result<String, VaultError> {
@@ -302,11 +316,22 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
         }
 
-        if path.exists() || self.id_to_path(relative_path).exists() {
+        // Ensure parent directories exist, then create the leaf atomically.
+        // create_dir fails with AlreadyExists if the folder (or a note with
+        // the same stem) already exists, eliminating the TOCTOU window.
+        if self.id_to_path(relative_path).exists() {
             return Err(VaultError::EntryAlreadyExists(path));
         }
-
-        std::fs::create_dir_all(&path)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::create_dir(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(VaultError::EntryAlreadyExists(path));
+            }
+            Err(e) => return Err(e.into()),
+        }
         self.read_vault_entry_from_path(&path)
     }
 
@@ -358,8 +383,18 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(new_relative_path.to_string()));
         }
 
-        if target.exists() || self.id_to_path(new_relative_path).exists() {
+        if self.id_to_path(new_relative_path).exists() {
             return Err(VaultError::EntryAlreadyExists(target));
+        }
+
+        // Create the target directory atomically — fails if it already exists,
+        // eliminating the TOCTOU window for the directory itself.
+        match std::fs::create_dir(&target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(VaultError::EntryAlreadyExists(target));
+            }
+            Err(e) => return Err(e.into()),
         }
 
         copy_dir_recursive(&source, &target)?;
