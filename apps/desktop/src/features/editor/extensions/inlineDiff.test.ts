@@ -30,6 +30,8 @@ function applyInlineDiff(
     edits: LineEdit[],
     spans: AgentTextSpan[],
     deletedTexts: string[][] = edits.map(() => []),
+    diffBase = "",
+    reviewState: "pending" | "finalized" = "finalized",
 ) {
     view.dispatch({
         effects: setInlineDiff.of({
@@ -38,6 +40,8 @@ function applyInlineDiff(
             deletedTexts,
             sessionId: "session-1",
             identityKey: "note.md",
+            diffBase,
+            reviewState,
             version: 1,
         }),
     });
@@ -51,6 +55,8 @@ describe("inlineDiff", () => {
             view,
             [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
             [{ baseFrom: 3, baseTo: 4, currentFrom: 3, currentTo: 4 }],
+            undefined,
+            "",
         );
 
         expect(
@@ -69,6 +75,8 @@ describe("inlineDiff", () => {
             view,
             [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
             [{ baseFrom: 4, baseTo: 4, currentFrom: 4, currentTo: 5 }],
+            undefined,
+            "",
         );
 
         expect(view.dom.querySelector(".cm-diff-inline-add")).not.toBeNull();
@@ -85,6 +93,7 @@ describe("inlineDiff", () => {
             [{ oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 1 }],
             [{ baseFrom: 4, baseTo: 8, currentFrom: 4, currentTo: 4 }],
             [["bbb"]],
+            "",
         );
 
         expect(view.dom.querySelector(".cm-diff-deleted-block")).not.toBeNull();
@@ -92,6 +101,43 @@ describe("inlineDiff", () => {
             view.dom.querySelector(".cm-diff-deleted-line")?.textContent,
         ).toBe("bbb");
         expect(view.dom.querySelectorAll(".cm-diff-hunk-btn")).toHaveLength(2);
+
+        destroy();
+    });
+
+    it("hides hunk controls while the diff is pending", () => {
+        const { view, destroy } = mountView("alpHa");
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [{ baseFrom: 3, baseTo: 4, currentFrom: 3, currentTo: 4 }],
+            undefined,
+            "",
+            "pending",
+        );
+
+        expect(view.dom.querySelector(".cm-diff-hunk-controls")).toBeNull();
+        expect(view.dom.querySelector(".cm-diff-pending")).not.toBeNull();
+
+        destroy();
+    });
+
+    it("hides deleted-block controls while the diff is pending", () => {
+        const { view, destroy } = mountView("aaa\nccc");
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 1 }],
+            [{ baseFrom: 4, baseTo: 8, currentFrom: 4, currentTo: 4 }],
+            [["bbb"]],
+            "",
+            "pending",
+        );
+
+        expect(view.dom.querySelector(".cm-diff-deleted-block")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-deleted-controls")).toBeNull();
+        expect(view.dom.querySelectorAll(".cm-diff-hunk-btn")).toHaveLength(0);
 
         destroy();
     });
@@ -110,6 +156,8 @@ describe("inlineDiff", () => {
                 // "bbb" → "BBB" at positions [18,21]
                 { baseFrom: 18, baseTo: 21, currentFrom: 18, currentTo: 21 },
             ],
+            undefined,
+            "",
         );
 
         const modifiedMarks = view.dom.querySelectorAll(
@@ -136,12 +184,108 @@ describe("inlineDiff", () => {
                 // inserted "XYZ" at [9,9] → [9,12] in current
                 { baseFrom: 9, baseTo: 9, currentFrom: 9, currentTo: 12 },
             ],
+            undefined,
+            "",
         );
 
         expect(
             view.dom.querySelector(".cm-diff-inline-modified"),
         ).not.toBeNull();
         expect(view.dom.querySelector(".cm-diff-inline-add")).not.toBeNull();
+
+        destroy();
+    });
+
+    it("uses only a line background for a full-line change", () => {
+        const { view, destroy } = mountView("changed line");
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [{ baseFrom: 0, baseTo: 12, currentFrom: 0, currentTo: 12 }],
+            undefined,
+            "",
+        );
+
+        expect(view.dom.querySelector(".cm-diff-modified")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-inline-modified")).toBeNull();
+
+        destroy();
+    });
+
+    it("uses only line backgrounds for multiline changes", () => {
+        const { view, destroy } = mountView("first line\nsecond line");
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 2, newStart: 0, newEnd: 2 }],
+            [{ baseFrom: 0, baseTo: 22, currentFrom: 0, currentTo: 22 }],
+            undefined,
+            "",
+        );
+
+        expect(view.dom.querySelector(".cm-diff-modified")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-inline-modified")).toBeNull();
+
+        destroy();
+    });
+
+    it("uses word-diff marks for small modified hunks", () => {
+        const baseText = "alpha beta gamma";
+        const currentText = "alpha BETA delta gamma";
+        const { view, destroy } = mountView(currentText);
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [{ baseFrom: 6, baseTo: 16, currentFrom: 6, currentTo: 16 }],
+            undefined,
+            baseText,
+        );
+
+        expect(view.dom.querySelector(".cm-diff-word-line-bg")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-word-changed")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-inline-modified")).toBeNull();
+
+        destroy();
+    });
+
+    it("keeps word-diff marks while the diff is pending to avoid visual jumps", () => {
+        const baseText = "alpha beta gamma";
+        const currentText = "alpha BETA delta gamma";
+        const { view, destroy } = mountView(currentText);
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [{ baseFrom: 6, baseTo: 16, currentFrom: 6, currentTo: 16 }],
+            undefined,
+            baseText,
+            "pending",
+        );
+
+        expect(view.dom.querySelector(".cm-diff-word-line-bg")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-word-changed")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-inline-modified")).toBeNull();
+        expect(view.dom.querySelector(".cm-diff-hunk-controls")).toBeNull();
+
+        destroy();
+    });
+
+    it("highlights removed words inside small deleted blocks", () => {
+        const { view, destroy } = mountView("aaa\nccc");
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 1 }],
+            [{ baseFrom: 4, baseTo: 17, currentFrom: 4, currentTo: 4 }],
+            [["beta", "delta words"]],
+            "aaa\nbeta\ndelta words\nccc",
+        );
+
+        expect(view.dom.querySelectorAll(".cm-diff-word-removed").length).toBe(
+            3,
+        );
 
         destroy();
     });

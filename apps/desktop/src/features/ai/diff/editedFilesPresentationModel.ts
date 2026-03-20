@@ -8,7 +8,10 @@ import {
     type DiffLine,
 } from "./reviewDiff";
 import type { AIFileDiff } from "../types";
-import { getFileOperation } from "../store/actionLogModel";
+import {
+    getFileOperation,
+    getTrackedFileReviewState,
+} from "../store/actionLogModel";
 
 export interface ReviewFileItem {
     file: TrackedFile;
@@ -73,6 +76,7 @@ export function canResolveFileHunks(file: TrackedFile, diff?: AIFileDiff) {
     return (
         file.isText &&
         file.conflictHash == null &&
+        getTrackedFileReviewState(file) === "finalized" &&
         op !== "add" &&
         op !== "delete" &&
         computeDecisionHunks(candidateDiff).length > 0
@@ -102,7 +106,10 @@ export function deriveReviewItems(
                 tone: getFileTone(file),
                 summary: getFileSummary(file),
                 canOpen: canOpenByPath.has(file.path),
-                canReject: file.isText && file.conflictHash == null,
+                canReject:
+                    file.isText &&
+                    file.conflictHash == null &&
+                    getTrackedFileReviewState(file) === "finalized",
                 canResolveHunks,
             };
         });

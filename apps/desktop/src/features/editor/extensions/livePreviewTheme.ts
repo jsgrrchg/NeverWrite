@@ -3,11 +3,14 @@ import { EditorView } from "@codemirror/view";
 const DEFAULT_LIST_MARKER_WIDTH = "1.45em";
 const DEFAULT_TASK_MARKER_WIDTH = "1.2em";
 const LIST_MARKER_GAP = "0.65em";
-const TASK_CHECKBOX_SIZE = "0.92em";
 const DENSE_LIST_PADDING_Y = "0.05em";
 const NARRATIVE_LIST_PADDING_Y = "0.12em";
 const LEVEL_2_NESTING_OFFSET = "0.16em";
 const LEVEL_3_NESTING_OFFSET = "0.34em";
+const TASK_CHECKBOX_SIZE = "0.92em";
+const TASK_CHECKBOX_TOP = `calc(var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y}) + ((var(--text-input-line-height) * 1em - ${TASK_CHECKBOX_SIZE}) / 2))`;
+const TASK_CHECKBOX_TICK_OFFSET = "0.26em";
+const TASK_CHECKBOX_PARTIAL_OFFSET = "0.40em";
 
 export const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-hidden": {
@@ -265,7 +268,7 @@ export const livePreviewTheme = EditorView.baseTheme({
         width: TASK_CHECKBOX_SIZE,
         height: TASK_CHECKBOX_SIZE,
         left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${DEFAULT_TASK_MARKER_WIDTH}) - ${TASK_CHECKBOX_SIZE}) / 2))`,
-        top: "0.3em",
+        top: TASK_CHECKBOX_TOP,
         borderRadius: "0.22em",
         border: "1.5px solid color-mix(in srgb, var(--text-secondary) 40%, var(--border))",
         background:
@@ -279,7 +282,7 @@ export const livePreviewTheme = EditorView.baseTheme({
         content: '""',
         position: "absolute",
         left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${DEFAULT_TASK_MARKER_WIDTH}) - ${TASK_CHECKBOX_SIZE}) / 2) + 0.29em)`,
-        top: "0.56em",
+        top: `calc(${TASK_CHECKBOX_TOP} + ${TASK_CHECKBOX_TICK_OFFSET})`,
         width: "0.31em",
         height: "0.17em",
         borderLeft: "2px solid transparent",
@@ -318,7 +321,7 @@ export const livePreviewTheme = EditorView.baseTheme({
     },
     ".cm-lp-task-partial::after": {
         left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${DEFAULT_TASK_MARKER_WIDTH}) - ${TASK_CHECKBOX_SIZE}) / 2) + 0.19em)`,
-        top: "0.7em",
+        top: `calc(${TASK_CHECKBOX_TOP} + ${TASK_CHECKBOX_PARTIAL_OFFSET})`,
         width: "0.46em",
         height: "0",
         borderLeft: "none",

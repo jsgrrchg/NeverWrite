@@ -1971,6 +1971,13 @@ struct SavedBinaryFileDetail {
     mime_type: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ComputeLineDiffInput {
+    old_text: String,
+    new_text: String,
+}
+
 #[tauri::command]
 fn save_vault_binary_file(
     vault_path: String,
@@ -2506,6 +2513,26 @@ fn ai_restore_text_file(
     })?;
 
     Ok(())
+}
+
+#[tauri::command]
+fn compute_line_diffs(
+    inputs: Vec<ComputeLineDiffInput>,
+) -> Result<Vec<vault_ai_diff::LinePatch>, String> {
+    Ok(inputs
+        .into_iter()
+        .map(|input| vault_ai_diff::compute_line_diff(&input.old_text, &input.new_text))
+        .collect())
+}
+
+#[tauri::command]
+fn compute_tracked_file_patches(
+    inputs: Vec<ComputeLineDiffInput>,
+) -> Result<Vec<vault_ai_diff::TrackedFilePatches>, String> {
+    Ok(inputs
+        .into_iter()
+        .map(|input| vault_ai_diff::compute_tracked_file_patch(&input.old_text, &input.new_text))
+        .collect())
 }
 
 #[tauri::command]
@@ -3876,6 +3903,42 @@ fn delete_vault_snapshot(app: AppHandle, vault_path: String) -> Result<(), Strin
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// macOS version detection (for traffic-light sizing in macOS 26+)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn detect_macos_major_version() -> u32 {
+    std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|v| v.trim().split('.').next().map(String::from))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_macos_major_version() -> u32 {
+    0
+}
+
+#[tauri::command]
+fn get_macos_major_version() -> u32 {
+    detect_macos_major_version()
+}
+
+/// Traffic-light Y offset per macOS generation.
+#[cfg(target_os = "macos")]
+fn traffic_light_position_for_version(version: u32) -> (f64, f64) {
+    if version >= 26 {
+        (14.0, 22.0) // macOS 26 (Tahoe) — push traffic lights down to align with 38px bar
+    } else {
+        (14.0, 20.0) // macOS ≤15
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3890,6 +3953,28 @@ pub fn run() {
         .manage(devtools::DevTerminalManager::new())
         .manage(ai::whisper::WhisperDownloadCancel::new())
         .manage(spellcheck::SpellcheckState::new())
+        .setup(|app| {
+            // Create the main window programmatically so we can set the
+            // traffic-light position dynamically based on the macOS version.
+            #[cfg(target_os = "macos")]
+            let (tl_x, tl_y) = traffic_light_position_for_version(detect_macos_major_version());
+            #[cfg(not(target_os = "macos"))]
+            let (tl_x, tl_y) = (14.0, 20.0);
+
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("VaultAI")
+            .inner_size(1200.0, 800.0)
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(tl_x, tl_y))
+            .build()?;
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_vault,
             start_open_vault,
@@ -3914,6 +3999,8 @@ pub fn run() {
             move_vault_entry_to_trash,
             ai_get_text_file_hash,
             ai_restore_text_file,
+            compute_line_diffs,
+            compute_tracked_file_patches,
             search_notes,
             advanced_search,
             get_backlinks,
@@ -3994,6 +4081,7 @@ pub fn run() {
             maps::create_map,
             maps::delete_map,
             maps::notify_map_changed,
+            get_macos_major_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -4150,5 +4238,54 @@ mod tests {
         assert_eq!(index[0].id, "Docs/Guide.pdf");
         assert_eq!(index[0].file_name_lower, "guide.pdf");
         assert_eq!(index[0].relative_path_lower, "docs/guide.pdf");
+    }
+
+    #[test]
+    fn compute_line_diffs_returns_batch_patches() {
+        let patches = compute_line_diffs(vec![
+            ComputeLineDiffInput {
+                old_text: "a\n".to_string(),
+                new_text: "a\nb\n".to_string(),
+            },
+            ComputeLineDiffInput {
+                old_text: "x\ny\n".to_string(),
+                new_text: "x\nY\n".to_string(),
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].edits.len(), 1);
+        assert_eq!(patches[0].edits[0].old_start, 1);
+        assert_eq!(patches[0].edits[0].old_end, 1);
+        assert_eq!(patches[0].edits[0].new_start, 1);
+        assert_eq!(patches[0].edits[0].new_end, 2);
+
+        assert_eq!(patches[1].edits.len(), 1);
+        assert_eq!(patches[1].edits[0].old_start, 1);
+        assert_eq!(patches[1].edits[0].old_end, 2);
+        assert_eq!(patches[1].edits[0].new_start, 1);
+        assert_eq!(patches[1].edits[0].new_end, 2);
+    }
+
+    #[test]
+    fn compute_tracked_file_patches_returns_line_and_text_ranges() {
+        let patches = compute_tracked_file_patches(vec![ComputeLineDiffInput {
+            old_text: "alpha".to_string(),
+            new_text: "alpHa".to_string(),
+        }])
+        .unwrap();
+
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].line_patch.edits.len(), 1);
+        assert_eq!(patches[0].line_patch.edits[0].old_start, 0);
+        assert_eq!(patches[0].line_patch.edits[0].old_end, 1);
+        assert_eq!(patches[0].line_patch.edits[0].new_start, 0);
+        assert_eq!(patches[0].line_patch.edits[0].new_end, 1);
+        assert_eq!(patches[0].text_range_patch.spans.len(), 1);
+        assert_eq!(patches[0].text_range_patch.spans[0].base_from, 3);
+        assert_eq!(patches[0].text_range_patch.spans[0].base_to, 4);
+        assert_eq!(patches[0].text_range_patch.spans[0].current_from, 3);
+        assert_eq!(patches[0].text_range_patch.spans[0].current_to, 4);
     }
 }

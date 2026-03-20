@@ -63,7 +63,7 @@ const quoteContentMark = Decoration.mark({ class: "cm-lp-blockquote" });
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const HIGHLIGHT_RE = /==(?=\S)([^\n]*?\S)==/g;
-const LOOSE_UNORDERED_LIST_RE = /^([ \t]*)([•◦▪‣–—−])([ \t]+)/;
+const LOOSE_UNORDERED_LIST_RE = /^([ \t]*)([-+*]|[•◦▪‣–—−])([ \t]+)/;
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/g;
 const INLINE_HTML_RE = /<(sub|sup|kbd)>([^<\n]+)<\/\1>/gi;
 const INLINE_BR_RE = /<br\s*\/?>/gi;
@@ -251,6 +251,18 @@ function lineHasListDecoration(
         entry.classes.has("cm-lp-li-line") ||
         entry.classes.has("cm-lp-task-line") ||
         entry.classes.has("cm-lp-list-continuation")
+    );
+}
+
+function lineHasPrimaryListDecoration(
+    lineDecos: Map<number, LineDecoEntry>,
+    lineFrom: number,
+): boolean {
+    const entry = lineDecos.get(lineFrom);
+    if (!entry) return false;
+    return (
+        entry.classes.has("cm-lp-li-line") ||
+        entry.classes.has("cm-lp-task-line")
     );
 }
 
@@ -1018,18 +1030,26 @@ function applyLooseListFallback(context: BuildContext) {
 
     for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
         const line = context.state.doc.line(lineNumber);
-        if (lineHasListDecoration(context.lineDecos, line.from)) continue;
+        if (lineHasPrimaryListDecoration(context.lineDecos, line.from)) {
+            continue;
+        }
 
         const match = line.text.match(LOOSE_UNORDERED_LIST_RE);
         if (!match) continue;
 
         const [, indent, marker, spacing] = match;
         const indentWidth = measureIndent(indent);
-        const shouldTreatAsList =
-            marker !== "–" && marker !== "—" && marker !== "−"
-                ? true
-                : indentWidth > 0 ||
-                  hasAdjacentListContext(context.state, line.number);
+        const requiresListContext =
+            marker === "-" ||
+            marker === "+" ||
+            marker === "*" ||
+            marker === "–" ||
+            marker === "—" ||
+            marker === "−";
+        const shouldTreatAsList = !requiresListContext
+            ? true
+            : indentWidth > 0 &&
+              hasAdjacentListContext(context.state, line.number);
 
         if (!shouldTreatAsList) continue;
 
@@ -1274,7 +1294,9 @@ function applyExtendedTaskFallback(context: BuildContext) {
 
     for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
         const line = context.state.doc.line(lineNumber);
-        if (lineHasListDecoration(context.lineDecos, line.from)) continue;
+        if (lineHasPrimaryListDecoration(context.lineDecos, line.from)) {
+            continue;
+        }
 
         const match = line.text.match(EXTENDED_TASK_RE);
         if (!match) continue;
@@ -1607,6 +1629,7 @@ function touchesListPresentationTransition(update: ViewUpdate): boolean {
         if (
             oldItem.isEmpty !== newItem.isEmpty ||
             oldItem.isTask !== newItem.isTask ||
+            oldItem.taskMarker !== newItem.taskMarker ||
             oldItem.marker !== newItem.marker ||
             oldItem.indent !== newItem.indent
         ) {

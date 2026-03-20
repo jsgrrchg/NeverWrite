@@ -46,7 +46,7 @@ export function FileTabView() {
     return tab.viewer === "image" ? (
         <ImageFileViewer key={tab.path} tab={tab} />
     ) : (
-        <FileTextTabView />
+        <FileTextTabView key={tab.id} />
     );
 }
 

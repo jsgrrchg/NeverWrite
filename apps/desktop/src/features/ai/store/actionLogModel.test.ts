@@ -6,18 +6,23 @@ import {
     applyRejectUndo,
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
+    computeWordDiffsForHunk,
     computeRestoreAction,
     consolidateTrackedFiles,
     createTrackedFileFromDiff,
     deriveLinePatchFromTextRanges,
     emptyPatch,
+    finalizeTrackedFile,
+    finalizeTrackedFiles,
     getTrackedFilesForWorkCycle,
+    getTrackedFileReviewState,
     keepAllEdits,
     keepEditsInRange,
     mapAgentSpanThroughTextEdits,
     mapTextPositionThroughEdits,
     patchContainsLine,
     patchIsEmpty,
+    partitionSpansByOverlap,
     rangesOverlap,
     rebuildDiffBaseFromPendingSpans,
     rejectAllEdits,
@@ -138,6 +143,21 @@ describe("Patch primitives", () => {
         ]);
     });
 
+    it("buildTextRangePatchFromTexts can refine a provided line patch", () => {
+        const patch = buildTextRangePatchFromTexts("alpha", "alpHa", {
+            edits: [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+        });
+
+        expect(patch.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+    });
+
     it("deriveLinePatchFromTextRanges keeps review hunks line-based", () => {
         const baseText = "first line\nalpha\nlast line";
         const currentText = "first line\nalpHa\nlast line";
@@ -157,6 +177,51 @@ describe("Patch primitives", () => {
                 newEnd: 2,
             },
         ]);
+    });
+
+    it("computeWordDiffsForHunk refines small modified hunks", () => {
+        const baseText = "alpha beta gamma";
+        const currentText = "alpha BETA delta gamma";
+        const edit = buildPatchFromTexts(baseText, currentText).edits[0];
+
+        const wordDiffs = computeWordDiffsForHunk(baseText, currentText, edit);
+
+        expect(wordDiffs?.bufferRanges).toEqual([
+            {
+                from: 6,
+                to: 16,
+                baseFrom: 6,
+                baseTo: 10,
+            },
+        ]);
+        expect(wordDiffs?.baseRanges).toEqual([
+            {
+                from: 6,
+                to: 10,
+                baseFrom: 6,
+                baseTo: 10,
+            },
+        ]);
+    });
+
+    it("computeWordDiffsForHunk falls back for large hunks", () => {
+        const baseText = ["a", "b", "c", "d", "e", "f"].join("\n");
+        const currentText = ["A", "B", "C", "D", "E", "F"].join("\n");
+        const edit = buildPatchFromTexts(baseText, currentText).edits[0];
+
+        expect(computeWordDiffsForHunk(baseText, currentText, edit)).toBeNull();
+    });
+
+    it("computeWordDiffsForHunk ignores pure additions and deletions", () => {
+        const added = buildPatchFromTexts("alpha", "alpha\nbeta").edits[0];
+        const deleted = buildPatchFromTexts("alpha\nbeta", "alpha").edits[0];
+
+        expect(
+            computeWordDiffsForHunk("alpha", "alpha\nbeta", added),
+        ).toBeNull();
+        expect(
+            computeWordDiffsForHunk("alpha\nbeta", "alpha", deleted),
+        ).toBeNull();
     });
 
     it("syncDerivedLinePatch rebuilds spans from legacy line-only tracked files", () => {
@@ -228,6 +293,62 @@ describe("Patch primitives", () => {
             },
         ]);
     });
+
+    it("syncDerivedLinePatch preserves the same reference for an already synced file", () => {
+        const file = syncDerivedLinePatch({
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "alpha",
+            currentText: "alpHa",
+            unreviewedEdits: emptyPatch(),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        });
+
+        expect(syncDerivedLinePatch(file)).toBe(file);
+    });
+
+    it("getTrackedFilesForWorkCycle returns a stable synced snapshot for legacy files", () => {
+        const legacy: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "alpha",
+            currentText: "alpHa",
+            unreviewedEdits: emptyPatch(),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+        const state = {
+            trackedFilesByWorkCycleId: {
+                "wc-1": {
+                    "test.md": legacy,
+                },
+            },
+            lastRejectUndo: null,
+        };
+
+        const first = getTrackedFilesForWorkCycle(state, "wc-1");
+        const second = getTrackedFilesForWorkCycle(state, "wc-1");
+
+        expect(first).toBe(second);
+        expect(first["test.md"]).toBe(second["test.md"]);
+        expect(first["test.md"]?.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 3,
+                baseTo: 4,
+                currentFrom: 3,
+                currentTo: 4,
+            },
+        ]);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -246,6 +367,7 @@ describe("createTrackedFileFromDiff", () => {
         expect(file.currentText).toBe("aaa\nBBB\nccc");
         expect(file.unreviewedRanges?.spans).toHaveLength(1);
         expect(file.unreviewedEdits.edits).toHaveLength(1);
+        expect(file.reviewState).toBe("pending");
         expect(file.version).toBe(1);
     });
 
@@ -292,6 +414,24 @@ describe("createTrackedFileFromDiff", () => {
         expect(file.originPath).toBe("old/path.md");
         expect(file.path).toBe("new/path.md");
         expect(file.previousPath).toBe("old/path.md");
+    });
+
+    it("uses precomputed patches when provided", () => {
+        const diff = makeDiff();
+        const linePatch = {
+            edits: [{ oldStart: 0, oldEnd: 3, newStart: 0, newEnd: 3 }],
+        };
+        const textRangePatch = {
+            spans: [{ baseFrom: 0, baseTo: 11, currentFrom: 0, currentTo: 11 }],
+        };
+
+        const file = createTrackedFileFromDiff(diff, 1000, {
+            linePatch,
+            textRangePatch,
+        });
+
+        expect(file.unreviewedEdits).toEqual(linePatch);
+        expect(file.unreviewedRanges).toEqual(textRangePatch);
     });
 });
 
@@ -377,6 +517,37 @@ describe("consolidateTrackedFiles", () => {
             1000,
         );
         expect(Object.keys(result)).toHaveLength(0);
+    });
+
+    it("uses precomputed patches by diff index", () => {
+        const result = consolidateTrackedFiles(
+            {},
+            [makeDiff({ path: "a.md" }), makeDiff({ path: "b.md" })],
+            1000,
+            [
+                {
+                    linePatch: {
+                        edits: [
+                            { oldStart: 0, oldEnd: 3, newStart: 0, newEnd: 3 },
+                        ],
+                    },
+                },
+                {
+                    linePatch: {
+                        edits: [
+                            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
+                        ],
+                    },
+                },
+            ],
+        );
+
+        expect(result["a.md"].unreviewedEdits.edits).toEqual([
+            { oldStart: 0, oldEnd: 3, newStart: 0, newEnd: 3 },
+        ]);
+        expect(result["b.md"].unreviewedEdits.edits).toEqual([
+            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
+        ]);
     });
 });
 
@@ -605,6 +776,86 @@ describe("applyNonConflictingEdits", () => {
     });
 });
 
+describe("partitionSpansByOverlap", () => {
+    const baseText = "alpha\nmiddle\nbeta\nspacer\ngamma";
+    const currentText = "alpHa\nmiddle\nbeTa\nspacer\ngamMa";
+    const spans = buildTextRangePatchFromTexts(baseText, currentText).spans;
+
+    it("returns empty groups when there are no spans", () => {
+        expect(
+            partitionSpansByOverlap(
+                [],
+                [{ start: 0, end: 1 }],
+                baseText,
+                currentText,
+            ),
+        ).toEqual({
+            overlapping: [],
+            nonOverlapping: [],
+        });
+    });
+
+    it("returns all spans as non-overlapping when there are no ranges", () => {
+        expect(
+            partitionSpansByOverlap(spans, [], baseText, currentText),
+        ).toEqual({
+            overlapping: [],
+            nonOverlapping: spans,
+        });
+    });
+
+    it("returns no overlaps when ranges miss every span", () => {
+        const result = partitionSpansByOverlap(
+            spans,
+            [{ start: 1, end: 2 }],
+            baseText,
+            currentText,
+        );
+
+        expect(result.overlapping).toEqual([]);
+        expect(result.nonOverlapping).toEqual(spans);
+    });
+
+    it("partitions a single matching span", () => {
+        const result = partitionSpansByOverlap(
+            spans,
+            [{ start: 0, end: 1 }],
+            baseText,
+            currentText,
+        );
+
+        expect(result.overlapping).toEqual([spans[0]]);
+        expect(result.nonOverlapping).toEqual([spans[1], spans[2]]);
+    });
+
+    it("partitions all spans when the range covers every hunk", () => {
+        const result = partitionSpansByOverlap(
+            spans,
+            [{ start: 0, end: 5 }],
+            baseText,
+            currentText,
+        );
+
+        expect(result.overlapping).toEqual(spans);
+        expect(result.nonOverlapping).toEqual([]);
+    });
+
+    it("handles multiple spans and multiple ranges in one pass", () => {
+        const result = partitionSpansByOverlap(
+            spans,
+            [
+                { start: 2, end: 3 },
+                { start: 0, end: 1 },
+            ],
+            baseText,
+            currentText,
+        );
+
+        expect(result.overlapping).toEqual([spans[0], spans[1]]);
+        expect(result.nonOverlapping).toEqual([spans[2]]);
+    });
+});
+
 // ---------------------------------------------------------------------------
 // keepAllEdits / keepEditsInRange
 // ---------------------------------------------------------------------------
@@ -776,6 +1027,27 @@ describe("computeRestoreAction", () => {
         expect(action).toEqual({ kind: "delete" });
     });
 
+    it("returns delete for agent-created file when live text still matches", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({ kind: "add", old_text: null, new_text: "new" }),
+            1000,
+        );
+        const action = computeRestoreAction(file, "new");
+        expect(action).toEqual({ kind: "delete" });
+    });
+
+    it("returns skip for agent-created file when live text differs", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({ kind: "add", old_text: null, new_text: "new" }),
+            1000,
+        );
+        const action = computeRestoreAction(file, "user edited");
+        expect(action).toEqual({
+            kind: "skip",
+            reason: "user_owns_content",
+        });
+    });
+
     it("returns write with diffBase for modified file", () => {
         const file = createTrackedFileFromDiff(makeDiff(), 1000);
         const action = computeRestoreAction(file);
@@ -814,6 +1086,63 @@ describe("computeRestoreAction", () => {
             expect(action.content).toBe(file.diffBase);
             expect(action.previousPath).toBe("new-name.md");
         }
+    });
+});
+
+describe("reviewState", () => {
+    it("defaults legacy tracked files to finalized", () => {
+        const legacy: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "old",
+            currentText: "new",
+            unreviewedEdits: buildPatchFromTexts("old", "new"),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(getTrackedFileReviewState(legacy)).toBe("finalized");
+        expect(finalizeTrackedFile(legacy)).toBe(legacy);
+    });
+
+    it("finalizes a pending tracked file and bumps version", () => {
+        const file = createTrackedFileFromDiff(makeDiff(), 1000);
+
+        const finalized = finalizeTrackedFile(file);
+
+        expect(finalized.reviewState).toBe("finalized");
+        expect(finalized.version).toBe(file.version + 1);
+    });
+
+    it("finalizes every pending file in a tracked map", () => {
+        const a = createTrackedFileFromDiff(makeDiff({ path: "a.md" }), 1000);
+        const b = createTrackedFileFromDiff(makeDiff({ path: "b.md" }), 1000);
+
+        const finalized = finalizeTrackedFiles({
+            [a.identityKey]: a,
+            [b.identityKey]: b,
+        });
+
+        expect(finalized[a.identityKey]?.reviewState).toBe("finalized");
+        expect(finalized[b.identityKey]?.reviewState).toBe("finalized");
+    });
+
+    it("marks updated tracked files as pending again when a new diff arrives", () => {
+        const file = finalizeTrackedFile(
+            createTrackedFileFromDiff(makeDiff(), 1000),
+        );
+
+        const updated = updateTrackedFileWithDiff(
+            file,
+            makeDiff({ new_text: "aaa\nBBBB\nccc" }),
+            2000,
+        );
+
+        expect(updated.reviewState).toBe("pending");
     });
 });
 

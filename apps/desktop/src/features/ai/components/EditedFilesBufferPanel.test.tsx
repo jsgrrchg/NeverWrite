@@ -102,6 +102,35 @@ describe("EditedFilesBufferPanel", () => {
         expect(screen.queryByText("Edits")).not.toBeInTheDocument();
     });
 
+    it("renders legacy tracked files without entering a sync loop", () => {
+        const legacyFile: TrackedFile = {
+            identityKey: "/vault/src/legacy.ts",
+            originPath: "/vault/src/legacy.ts",
+            path: "/vault/src/legacy.ts",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "alpha",
+            currentText: "alpHa",
+            unreviewedEdits: emptyPatch(),
+            version: 1,
+            isText: true,
+            updatedAt: 10,
+        };
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: "session-legacy",
+            sessionsById: {
+                "session-legacy": createSession("session-legacy", [legacyFile]),
+            },
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        expect(screen.getByText("Edits")).toBeInTheDocument();
+        expect(screen.getByText("legacy.ts")).toBeInTheDocument();
+    });
+
     it("auto-hides the undo-only banner after five seconds", () => {
         vi.useFakeTimers();
 

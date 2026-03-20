@@ -134,17 +134,8 @@ import {
 } from "./extensions/grammar";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { useCommandStore } from "../command-palette/store/commandStore";
-import {
-    getInlineDiffExtension,
-    inlineDiffField,
-    setInlineDiff,
-    clearInlineDiff,
-} from "./extensions/inlineDiff";
-import {
-    getTrackedFilesForWorkCycle,
-    syncDerivedLinePatch,
-    shouldShowInlineDiff,
-} from "../ai/store/actionLogModel";
+import { getInlineDiffExtension } from "./extensions/inlineDiff";
+import { syncInlineDiffForPaths } from "./inlineDiffSync";
 import {
     buildSpellcheckContextMenuEntries,
     findTextInputWordRange,
@@ -1838,15 +1829,10 @@ export function Editor({
                 stripFrontmatter(activeNoteId, activeTab.content),
                 activeNoteId,
             );
-        // Swap state in-place — avoids destroying/recreating the entire DOM.
-        // Falls back to replaceEditorView if setState throws.
-        let view: EditorView | null = currentView;
+        // Recreate the EditorView on document switches. Reusing the same view
+        // via setState has left the DOM occasionally blank until a later rerender.
         isInternalRef.current = true;
-        try {
-            currentView.setState(nextState);
-        } catch {
-            view = replaceEditorView(nextState);
-        }
+        const view = replaceEditorView(nextState);
         isInternalRef.current = false;
         if (!view) return;
 
@@ -2115,9 +2101,10 @@ export function Editor({
             if (incoming === currentDoc) return;
 
             const selection = view.state.selection.main;
-            const scrollTop = view.scrollDOM.scrollTop;
-            const scrollLeft = view.scrollDOM.scrollLeft;
             const nextDocLength = incoming.length;
+            // Capture scroll position as a CM6 effect so it is
+            // restored within the same transaction — no visible jump.
+            const scrollEffect = view.scrollSnapshot();
 
             isInternalRef.current = true;
             view.dispatch({
@@ -2131,116 +2118,40 @@ export function Editor({
                     head: Math.min(selection.head, nextDocLength),
                 },
                 annotations: [changeAuthorAnnotation.of("agent")],
+                effects: scrollEffect,
             });
             isInternalRef.current = false;
-            requestAnimationFrame(() => {
-                if (viewRef.current !== view) return;
-                view.scrollDOM.scrollTop = scrollTop;
-                view.scrollDOM.scrollLeft = scrollLeft;
-            });
         });
         return unsub;
     }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
 
-    // Sync inline diff decorations with chatStore TrackedFile changes
-    useEffect(() => {
-        function syncInlineDiff(
-            state: ReturnType<typeof useChatStore.getState>,
-        ) {
-            const view = viewRef.current;
-            if (!view) return;
-
-            const noteId = activeTabRef.current?.noteId;
-            if (!noteId) return;
-            const fileId = `${noteId}.md`;
-
-            // Find TrackedFile for this file in any session.
-            let foundEdits: import("../ai/diff/actionLogTypes").LineEdit[] = [];
-            let foundSpans: import("../ai/diff/actionLogTypes").AgentTextSpan[] =
-                [];
-            let foundSessionId: string | null = null;
-            let foundIdentityKey: string | null = null;
-            let foundVersion = 0;
-            let foundDiffBase = "";
-
-            const sessionEntries = Object.entries(state.sessionsById);
-            const suffix = `/${fileId}`;
-
-            // ActionLog TrackedFiles lookup
-            for (const [sid, session] of sessionEntries) {
-                if (!session.actionLog) continue;
-                const wc =
-                    session.visibleWorkCycleId ?? session.activeWorkCycleId;
-                const files = getTrackedFilesForWorkCycle(
-                    session.actionLog,
-                    wc,
-                );
-                let tracked = files[fileId] ?? null;
-                if (!tracked) {
-                    for (const file of Object.values(files)) {
-                        if (
-                            file.path === fileId ||
-                            file.path.endsWith(suffix) ||
-                            file.identityKey.endsWith(suffix)
-                        ) {
-                            tracked = file;
-                            break;
-                        }
-                    }
-                }
-                if (tracked) {
-                    const syncedTracked = syncDerivedLinePatch(tracked);
-                    if (!shouldShowInlineDiff(syncedTracked)) {
-                        continue;
-                    }
-
-                    foundEdits = syncedTracked.unreviewedEdits.edits;
-                    foundSpans = syncedTracked.unreviewedRanges?.spans ?? [];
-                    foundSessionId = sid;
-                    foundIdentityKey = syncedTracked.identityKey;
-                    foundVersion = syncedTracked.version;
-                    foundDiffBase = syncedTracked.diffBase;
-                    break;
-                }
-            }
-
-            const currentDiffState = view.state.field(inlineDiffField);
-
-            if (foundEdits.length === 0) {
-                if (currentDiffState.edits.length > 0) {
-                    view.dispatch({ effects: clearInlineDiff.of(null) });
-                }
-                return;
-            }
-
-            if (currentDiffState.version === foundVersion) return;
-
-            // Extract deleted text from diffBase for each edit
-            const baseLines = foundDiffBase ? foundDiffBase.split("\n") : [];
-            const deletedTexts = foundEdits.map((edit) =>
-                edit.newStart === edit.newEnd && baseLines.length > 0
-                    ? baseLines.slice(edit.oldStart, edit.oldEnd)
-                    : [],
-            );
-
-            view.dispatch({
-                effects: setInlineDiff.of({
-                    edits: foundEdits,
-                    spans: foundSpans,
-                    deletedTexts,
-                    sessionId: foundSessionId,
-                    identityKey: foundIdentityKey,
-                    version: foundVersion,
-                }),
-            });
-        }
-
-        // Process initial state (in case tracked files already exist)
-        syncInlineDiff(useChatStore.getState());
-
-        const unsub = useChatStore.subscribe(syncInlineDiff);
-        return unsub;
+    const syncInlineDiff = useCallback(() => {
+        const noteId = activeTabRef.current?.noteId;
+        syncInlineDiffForPaths(
+            viewRef.current,
+            noteId ? [`${noteId}.md`] : [],
+            useChatStore.getState().sessionsById,
+        );
     }, []);
+
+    // Sync inline diff decorations with chatStore TrackedFile changes.
+    useEffect(() => {
+        syncInlineDiff();
+        const unsub = useChatStore.subscribe((state) => {
+            const noteId = activeTabRef.current?.noteId;
+            syncInlineDiffForPaths(
+                viewRef.current,
+                noteId ? [`${noteId}.md`] : [],
+                state.sessionsById,
+            );
+        });
+        return unsub;
+    }, [syncInlineDiff]);
+
+    // Re-apply pending inline diff when switching tabs or restoring a saved view.
+    useEffect(() => {
+        syncInlineDiff();
+    }, [activeTabId, activeNoteId, syncInlineDiff]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
