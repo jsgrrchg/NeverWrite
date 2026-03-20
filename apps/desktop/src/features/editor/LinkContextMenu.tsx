@@ -45,7 +45,24 @@ export function LinkContextMenu({
         const handleKey = (event: KeyboardEvent) => {
             if (event.key === "Escape") onClose();
         };
-        const handleScroll = () => onClose();
+        const handleScroll = (event: Event) => {
+            const target = event.target;
+            if (target === document || target === document.documentElement) {
+                onClose();
+                return;
+            }
+            if (target instanceof HTMLElement) {
+                const rect = target.getBoundingClientRect();
+                if (
+                    menu.x >= rect.left &&
+                    menu.x <= rect.right &&
+                    menu.y >= rect.top &&
+                    menu.y <= rect.bottom
+                ) {
+                    onClose();
+                }
+            }
+        };
 
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);
@@ -56,7 +73,7 @@ export function LinkContextMenu({
             document.removeEventListener("keydown", handleKey);
             window.removeEventListener("scroll", handleScroll, true);
         };
-    }, [onClose]);
+    }, [onClose, menu.x, menu.y]);
 
     useEffect(() => {
         let cancelled = false;
