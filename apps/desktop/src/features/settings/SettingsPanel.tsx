@@ -32,6 +32,7 @@ import {
     buildSpellcheckSecondaryLanguageSelectOptions,
     buildSpellcheckLanguagesSummary,
 } from "../spellcheck/language";
+import { getTrafficLightSpacerWidth } from "../../app/utils/platform";
 
 // --- Primitives ---
 
@@ -2429,11 +2430,13 @@ export function SettingsPanel({
                     }
                 }}
                 style={{
-                    height: 44,
+                    height: 38,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
-                    padding: standalone ? "0 20px 0 80px" : "0 20px",
+                    padding: standalone
+                        ? `0 20px 0 ${getTrafficLightSpacerWidth() + 20}px`
+                        : "0 20px",
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
                     backgroundColor: "var(--bg-secondary)",

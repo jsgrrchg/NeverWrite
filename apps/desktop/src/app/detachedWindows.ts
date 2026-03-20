@@ -6,6 +6,7 @@ import {
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { Tab } from "./store/editorStore";
 import { getPathBaseName } from "./utils/path";
+import { getTrafficLightPosition } from "./utils/platform";
 
 const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "vaultai:detached-window:";
@@ -15,10 +16,6 @@ const DETACH_WINDOW_HEIGHT = 720;
 const DETACH_OUTSIDE_MARGIN = 30;
 const DETACHED_WINDOW_CURSOR_OFFSET_X = 120;
 const DETACHED_WINDOW_CURSOR_OFFSET_Y = 18;
-const TRAFFIC_LIGHT_X = 14;
-const NOTE_TRAFFIC_LIGHT_Y = 20;
-const SETTINGS_TRAFFIC_LIGHT_Y = 20;
-const VAULT_TRAFFIC_LIGHT_Y = 20;
 export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
 
 export interface DetachedWindowPayload {
@@ -63,16 +60,9 @@ export function getCurrentWindowLabel() {
     return getCurrentWebviewWindow().label;
 }
 
-function getTrafficLightPosition() {
-    return new LogicalPosition(TRAFFIC_LIGHT_X, NOTE_TRAFFIC_LIGHT_Y);
-}
-
-function getSettingsTrafficLightPosition() {
-    return new LogicalPosition(TRAFFIC_LIGHT_X, SETTINGS_TRAFFIC_LIGHT_Y);
-}
-
-function getVaultTrafficLightPosition() {
-    return new LogicalPosition(TRAFFIC_LIGHT_X, VAULT_TRAFFIC_LIGHT_Y);
+function getTrafficLightLogicalPosition() {
+    const pos = getTrafficLightPosition();
+    return new LogicalPosition(pos.x, pos.y);
 }
 
 function getDetachedWindowStorageKey(label: string) {
@@ -298,7 +288,7 @@ export async function openSettingsWindow(vaultPath: string | null = null) {
         focus: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
-        trafficLightPosition: getSettingsTrafficLightPosition(),
+        trafficLightPosition: getTrafficLightLogicalPosition(),
     });
     await new Promise<void>((resolve, reject) => {
         void win.once("tauri://created", () => resolve());
@@ -319,7 +309,7 @@ export async function openVaultWindow(vaultPath: string) {
         focus: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
-        trafficLightPosition: getVaultTrafficLightPosition(),
+        trafficLightPosition: getTrafficLightLogicalPosition(),
     });
 
     return await new Promise<void>((resolve, reject) => {
@@ -355,7 +345,7 @@ export async function openDetachedNoteWindow(
         preventOverflow: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
-        trafficLightPosition: getTrafficLightPosition(),
+        trafficLightPosition: getTrafficLightLogicalPosition(),
     });
 
     return await new Promise<WebviewWindow>((resolve, reject) => {

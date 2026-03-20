@@ -61,6 +61,10 @@ import {
 } from "./tabDragAttachments";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
+import {
+    getTrafficLightSpacerWidth,
+    getTitlebarPaddingTop,
+} from "../../app/utils/platform";
 
 const appWindow = getCurrentWindow();
 
@@ -125,7 +129,7 @@ const controlsGroupStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
     gap: 4,
-    padding: "4px",
+    padding: "0 3px",
     borderRadius: 12,
     border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
     background: "color-mix(in srgb, var(--bg-primary) 52%, var(--bg-tertiary))",
@@ -999,7 +1003,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 }
             }}
             style={{
-                paddingTop: "env(safe-area-inset-top, 28px)",
+                paddingTop: getTitlebarPaddingTop(),
                 background:
                     "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
                 borderBottom: "1px solid var(--border)",
@@ -1009,11 +1013,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         >
             <div
                 className="flex items-stretch select-none"
-                style={{ height: 44, cursor: "default", padding: "0 6px" }}
+                style={{ height: 38, cursor: "default", padding: "0 6px" }}
             >
                 <div
                     onMouseDown={startWindowDrag}
-                    style={{ width: 68, flexShrink: 0 }}
+                    style={{
+                        width: getTrafficLightSpacerWidth(),
+                        flexShrink: 0,
+                    }}
                 />
 
                 {windowMode === "main" && (
@@ -1028,7 +1035,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             className="no-drag flex items-center justify-center shrink-0"
                             style={{
                                 alignSelf: "center",
-                                marginLeft: 4,
+                                marginLeft: 10,
                                 marginRight: 2,
                                 width: 30,
                                 height: 30,
