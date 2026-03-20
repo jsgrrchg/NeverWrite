@@ -19,9 +19,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use vault_ai_index::{IndexBuildPhase, VaultIndex};
 use vault_ai_types::{
     AdvancedSearchParams, AdvancedSearchResultDto, BacklinkDto, NoteDetailDto, NoteDocument,
-    NoteDto, NoteId, NoteMetadata, OutlineHeadingDto, ResolvedLinkDto, ResolvedWikilinkDto,
-    SearchResultDto, VaultEntryDto, VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto,
-    WikilinkSuggestionDto,
+    NoteDto, NoteId, NoteMetadata, ResolvedWikilinkDto, SearchResultDto, VaultEntryDto,
+    VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto, WikilinkSuggestionDto,
 };
 use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
 
@@ -2516,16 +2515,6 @@ fn ai_restore_text_file(
 }
 
 #[tauri::command]
-fn compute_line_diffs(
-    inputs: Vec<ComputeLineDiffInput>,
-) -> Result<Vec<vault_ai_diff::LinePatch>, String> {
-    Ok(inputs
-        .into_iter()
-        .map(|input| vault_ai_diff::compute_line_diff(&input.old_text, &input.new_text))
-        .collect())
-}
-
-#[tauri::command]
 fn compute_tracked_file_patches(
     inputs: Vec<ComputeLineDiffInput>,
 ) -> Result<Vec<vault_ai_diff::TrackedFilePatches>, String> {
@@ -2680,12 +2669,6 @@ fn get_tags(
 struct GraphLinkDto {
     source: String,
     target: String,
-}
-
-#[derive(serde::Serialize)]
-struct GraphDataDto {
-    nodes: Vec<NoteDto>,
-    links: Vec<GraphLinkDto>,
 }
 
 #[derive(serde::Deserialize)]
@@ -3532,162 +3515,6 @@ fn get_graph_snapshot(
     Ok(response)
 }
 
-#[derive(serde::Serialize)]
-struct LocalGraphNodeDto {
-    #[serde(flatten)]
-    note: NoteDto,
-    depth: u32,
-}
-
-#[derive(serde::Serialize)]
-struct LocalGraphDataDto {
-    nodes: Vec<LocalGraphNodeDto>,
-    links: Vec<GraphLinkDto>,
-}
-
-#[tauri::command]
-fn get_all_links(
-    vault_path: String,
-    state: tauri::State<Mutex<AppState>>,
-) -> Result<GraphDataDto, String> {
-    let _cmd_start = Instant::now();
-    let state = lock!(state)?;
-    let instance = state
-        .vaults
-        .get(&vault_path)
-        .ok_or("No hay vault abierto")?;
-    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
-
-    let nodes: Vec<NoteDto> = index.metadata.values().map(note_to_dto).collect();
-
-    let links: Vec<GraphLinkDto> = index
-        .forward_links
-        .iter()
-        .flat_map(|(source_id, targets)| {
-            targets.iter().map(move |target_id| GraphLinkDto {
-                source: source_id.0.clone(),
-                target: target_id.0.clone(),
-            })
-        })
-        .collect();
-
-    let response = GraphDataDto { nodes, links };
-    dbg_log!(
-        "get_all_links() → {} nodes, {} links, bytes: {}, total: {:.2?}",
-        response.nodes.len(),
-        response.links.len(),
-        serialized_payload_bytes(&response).unwrap_or(0),
-        _cmd_start.elapsed()
-    );
-    Ok(response)
-}
-
-#[tauri::command]
-fn get_local_graph(
-    vault_path: String,
-    note_id: String,
-    max_depth: u32,
-    state: tauri::State<Mutex<AppState>>,
-) -> Result<LocalGraphDataDto, String> {
-    let _cmd_start = Instant::now();
-    let state = lock!(state)?;
-    let instance = state
-        .vaults
-        .get(&vault_path)
-        .ok_or("No hay vault abierto")?;
-    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
-
-    let root = NoteId(note_id.clone());
-    let (bfs_nodes, bfs_links) = index.get_local_graph(&root, max_depth);
-
-    let nodes: Vec<LocalGraphNodeDto> = bfs_nodes
-        .iter()
-        .filter_map(|(id, depth)| {
-            index.metadata.get(id).map(|meta| LocalGraphNodeDto {
-                note: note_to_dto(meta),
-                depth: *depth,
-            })
-        })
-        .collect();
-
-    let links: Vec<GraphLinkDto> = bfs_links
-        .into_iter()
-        .map(|(source, target)| GraphLinkDto {
-            source: source.0,
-            target: target.0,
-        })
-        .collect();
-
-    let response = LocalGraphDataDto { nodes, links };
-    dbg_log!(
-        "get_local_graph({note_id}, depth={max_depth}) → {} nodes, {} links, bytes: {}, total: {:.2?}",
-        response.nodes.len(),
-        response.links.len(),
-        serialized_payload_bytes(&response).unwrap_or(0),
-        _cmd_start.elapsed()
-    );
-    Ok(response)
-}
-
-#[derive(serde::Serialize)]
-struct AttachmentNodeDto {
-    id: String,
-    title: String,
-}
-
-#[derive(serde::Serialize)]
-struct AttachmentLinksDto {
-    nodes: Vec<AttachmentNodeDto>,
-    links: Vec<GraphLinkDto>,
-}
-
-#[tauri::command]
-fn get_attachment_links(
-    vault_path: String,
-    state: tauri::State<Mutex<AppState>>,
-) -> Result<AttachmentLinksDto, String> {
-    let _cmd_start = Instant::now();
-    let state = lock!(state)?;
-    let instance = state
-        .vaults
-        .get(&vault_path)
-        .ok_or("No hay vault abierto")?;
-    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
-
-    let mut attachment_ids = std::collections::HashSet::new();
-    let mut nodes = Vec::new();
-    let mut links = Vec::new();
-
-    for (note_id, targets) in &index.unresolved_links {
-        for target in targets {
-            let att_id = format!("att:{target}");
-            if attachment_ids.insert(att_id.clone()) {
-                // Use the filename as title
-                let title = target.rsplit('/').next().unwrap_or(target).to_string();
-                nodes.push(AttachmentNodeDto {
-                    id: att_id.clone(),
-                    title,
-                });
-            }
-            links.push(GraphLinkDto {
-                source: note_id.0.clone(),
-                target: att_id,
-            });
-        }
-    }
-
-    let response = AttachmentLinksDto { nodes, links };
-    dbg_log!(
-        "get_attachment_links() → {} nodes, {} links, bytes: {}, total: {:.2?}",
-        response.nodes.len(),
-        response.links.len(),
-        serialized_payload_bytes(&response).unwrap_or(0),
-        _cmd_start.elapsed()
-    );
-
-    Ok(response)
-}
-
 #[tauri::command]
 fn get_backlinks(
     vault_path: String,
@@ -3722,48 +3549,6 @@ fn get_backlinks(
         _cmd_start.elapsed()
     );
     Ok(result)
-}
-
-#[tauri::command]
-fn resolve_outgoing_links(
-    vault_path: String,
-    note_id: String,
-    state: tauri::State<Mutex<AppState>>,
-) -> Result<Vec<ResolvedLinkDto>, String> {
-    let state = lock!(state)?;
-    let instance = state
-        .vaults
-        .get(&vault_path)
-        .ok_or("No hay vault abierto")?;
-    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-    let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
-
-    let note = vault.read_note(&note_id).map_err(|e| e.to_string())?;
-    let from_note = NoteId(note_id);
-
-    let mut seen = std::collections::HashSet::new();
-    let links: Vec<ResolvedLinkDto> = note
-        .links
-        .iter()
-        .filter(|link| seen.insert(link.target.clone()))
-        .map(|link| {
-            let resolved = index.resolve_wikilink(&link.target, &from_note);
-            let (resolved_id, resolved_title) = match resolved {
-                Some(ref id) => (
-                    Some(id.0.clone()),
-                    index.metadata.get(id).map(|m| m.title.clone()),
-                ),
-                None => (None, None),
-            };
-            ResolvedLinkDto {
-                target: link.target.clone(),
-                note_id: resolved_id,
-                title: resolved_title,
-            }
-        })
-        .collect();
-
-    Ok(links)
 }
 
 #[tauri::command]
@@ -3857,21 +3642,6 @@ fn suggest_wikilinks(
                 subtitle: metadata.id.0.clone(),
                 insert_text,
             })
-        })
-        .collect())
-}
-
-#[tauri::command]
-fn get_note_outline(content: String) -> Result<Vec<OutlineHeadingDto>, String> {
-    let headings = vault_ai_vault::parser::headings::extract_headings(&content);
-    Ok(headings
-        .into_iter()
-        .map(|h| OutlineHeadingDto {
-            id: h.id,
-            title: h.title,
-            level: h.level,
-            anchor: h.anchor,
-            head: h.head,
         })
         .collect())
 }
@@ -3999,20 +3769,14 @@ pub fn run() {
             move_vault_entry_to_trash,
             ai_get_text_file_hash,
             ai_restore_text_file,
-            compute_line_diffs,
             compute_tracked_file_patches,
             search_notes,
             advanced_search,
             get_backlinks,
-            get_all_links,
             get_graph_snapshot,
-            get_local_graph,
-            get_attachment_links,
             get_tags,
-            resolve_outgoing_links,
             resolve_wikilinks_batch,
             suggest_wikilinks,
-            get_note_outline,
             debug_set_timing,
             spellcheck::spellcheck_list_languages,
             spellcheck::spellcheck_list_catalog,
@@ -4238,34 +4002,6 @@ mod tests {
         assert_eq!(index[0].id, "Docs/Guide.pdf");
         assert_eq!(index[0].file_name_lower, "guide.pdf");
         assert_eq!(index[0].relative_path_lower, "docs/guide.pdf");
-    }
-
-    #[test]
-    fn compute_line_diffs_returns_batch_patches() {
-        let patches = compute_line_diffs(vec![
-            ComputeLineDiffInput {
-                old_text: "a\n".to_string(),
-                new_text: "a\nb\n".to_string(),
-            },
-            ComputeLineDiffInput {
-                old_text: "x\ny\n".to_string(),
-                new_text: "x\nY\n".to_string(),
-            },
-        ])
-        .unwrap();
-
-        assert_eq!(patches.len(), 2);
-        assert_eq!(patches[0].edits.len(), 1);
-        assert_eq!(patches[0].edits[0].old_start, 1);
-        assert_eq!(patches[0].edits[0].old_end, 1);
-        assert_eq!(patches[0].edits[0].new_start, 1);
-        assert_eq!(patches[0].edits[0].new_end, 2);
-
-        assert_eq!(patches[1].edits.len(), 1);
-        assert_eq!(patches[1].edits[0].old_start, 1);
-        assert_eq!(patches[1].edits[0].old_end, 2);
-        assert_eq!(patches[1].edits[0].new_start, 1);
-        assert_eq!(patches[1].edits[0].new_end, 2);
     }
 
     #[test]
