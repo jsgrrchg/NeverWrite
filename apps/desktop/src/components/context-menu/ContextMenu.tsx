@@ -43,7 +43,12 @@ export function ContextMenu<T>({
         if (!element) return;
         const rect = element.getBoundingClientRect();
         setPosition(
-            getViewportSafeMenuPosition(menu.x, menu.y, rect.width, rect.height),
+            getViewportSafeMenuPosition(
+                menu.x,
+                menu.y,
+                rect.width,
+                rect.height,
+            ),
         );
     }, [menu.x, menu.y, entries.length]);
 
@@ -56,7 +61,27 @@ export function ContextMenu<T>({
         const handleKey = (event: KeyboardEvent) => {
             if (event.key === "Escape") onClose();
         };
-        const handleScroll = () => onClose();
+        const handleScroll = (event: Event) => {
+            const target = event.target;
+            // Always close on document-level scroll
+            if (target === document || target === document.documentElement) {
+                onClose();
+                return;
+            }
+            // Only close if the scrolling element geometrically contains the
+            // menu anchor point — ignore unrelated panels (e.g. AI chat streaming)
+            if (target instanceof HTMLElement) {
+                const rect = target.getBoundingClientRect();
+                if (
+                    menu.x >= rect.left &&
+                    menu.x <= rect.right &&
+                    menu.y >= rect.top &&
+                    menu.y <= rect.bottom
+                ) {
+                    onClose();
+                }
+            }
+        };
 
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);
@@ -67,7 +92,7 @@ export function ContextMenu<T>({
             document.removeEventListener("keydown", handleKey);
             window.removeEventListener("scroll", handleScroll, true);
         };
-    }, [onClose]);
+    }, [onClose, menu.x, menu.y]);
 
     return createPortal(
         <div
