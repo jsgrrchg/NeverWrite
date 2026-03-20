@@ -1550,12 +1550,69 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     handleNoteDeleted: (noteId) => {
-        const tabsToClose = get().tabs.filter(
-            (t) => isNoteTab(t) && t.noteId === noteId,
-        );
-        for (const tab of tabsToClose) {
-            get().closeTab(tab.id);
-        }
+        set((state) => {
+            const idsToClose = new Set(
+                state.tabs
+                    .filter((t) => isNoteTab(t) && t.noteId === noteId)
+                    .map((t) => t.id),
+            );
+            if (idsToClose.size === 0) return state;
+
+            const tabs = state.tabs.filter((t) => !idsToClose.has(t.id));
+            const activationHistory = state.activationHistory.filter(
+                (id) => !idsToClose.has(id),
+            );
+            const tabNavigationHistory = state.tabNavigationHistory.filter(
+                (id) => !idsToClose.has(id),
+            );
+
+            let activeTabId = state.activeTabId;
+            if (activeTabId && idsToClose.has(activeTabId)) {
+                const closedIdx = state.tabs.findIndex(
+                    (t) => t.id === activeTabId,
+                );
+                activeTabId =
+                    [...activationHistory]
+                        .reverse()
+                        .find((id) => tabs.some((tab) => tab.id === id)) ??
+                    tabs[Math.min(closedIdx, tabs.length - 1)]?.id ??
+                    null;
+            }
+
+            let tabNavigationIndex = Math.min(
+                state.tabNavigationIndex,
+                tabNavigationHistory.length - 1,
+            );
+            if (activeTabId) {
+                const lastActiveIndex =
+                    tabNavigationHistory.lastIndexOf(activeTabId);
+                if (lastActiveIndex === -1) {
+                    const navigation = pushTabToNavigation(
+                        tabNavigationHistory,
+                        tabNavigationIndex,
+                        activeTabId,
+                    );
+                    return {
+                        tabs,
+                        activeTabId,
+                        activationHistory,
+                        tabNavigationHistory: navigation.history,
+                        tabNavigationIndex: navigation.index,
+                    };
+                }
+                tabNavigationIndex = lastActiveIndex;
+            } else {
+                tabNavigationIndex = -1;
+            }
+
+            return {
+                tabs,
+                activeTabId,
+                activationHistory,
+                tabNavigationHistory,
+                tabNavigationIndex,
+            };
+        });
     },
 
     handleNoteRenamed: (oldNoteId, newNoteId, newTitle) => {

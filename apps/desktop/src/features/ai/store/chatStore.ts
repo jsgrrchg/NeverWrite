@@ -4639,10 +4639,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 const nextQueue = prioritizeQueuedMessage(queue, messageId);
-                shouldDrain =
+
+                if (
                     session.status === "idle" &&
                     nextQueue[0]?.id === messageId &&
-                    !_queueDrainLocks.has(sessionId);
+                    !_queueDrainLocks.has(sessionId)
+                ) {
+                    _queueDrainLocks.add(sessionId);
+                    shouldDrain = true;
+                }
 
                 return nextQueue === queue
                     ? {
@@ -4662,7 +4667,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
 
             if (shouldDrain) {
-                await get().tryDrainQueue(sessionId);
+                try {
+                    const nextItem = get().queuedMessagesBySessionId[
+                        sessionId
+                    ]?.find((item) => item.status === "queued");
+                    if (nextItem) {
+                        await dispatchMessage(sessionId, nextItem, "queue");
+                    }
+                } finally {
+                    _queueDrainLocks.delete(sessionId);
+                }
             }
         },
 

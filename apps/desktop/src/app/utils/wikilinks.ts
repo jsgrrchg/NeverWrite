@@ -1,4 +1,4 @@
-const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+const WIKILINK_RE = /\[\[([^\[\]]+)\]\]/g;
 
 export interface WikilinkMatch {
     from: number;
