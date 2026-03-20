@@ -9,13 +9,16 @@ import { indentMore, indentLess } from "@codemirror/commands";
 export const MARKDOWN_LIST_LINE_RE =
     /^(\s*)(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
 export const MARKDOWN_LIST_ITEM_RE =
-    /^([ \t]*)(?:(\d+)([.)])|([-+*]))[ \t]+(?:\[( |x|X)\][ \t]+)?(.*)$/;
+    /^([ \t]*)(?:(\d+)([.)])|([-+*]))[ \t]+(?:\[( |x|X|~|\/)\][ \t]+)?(.*)$/;
+
+export type MarkdownTaskMarker = " " | "x" | "X" | "~" | "/" | null;
 
 export type MarkdownListItem = {
     indent: string;
     marker: string;
     orderedNumber: number | null;
     orderedDelimiter: ")" | "." | null;
+    taskMarker: MarkdownTaskMarker;
     isTask: boolean;
     content: string;
     prefixLength: number;
@@ -53,6 +56,7 @@ export function parseMarkdownListItem(
         marker,
         orderedNumber,
         orderedDelimiter,
+        taskMarker: (taskMarker as MarkdownTaskMarker | undefined) ?? null,
         isTask: taskMarker !== undefined,
         content,
         prefixLength: fullMatch.length - content.length,

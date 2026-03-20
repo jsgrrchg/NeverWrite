@@ -42,6 +42,7 @@ export const baseTheme = EditorView.theme({
         paddingBottom: "72px",
         scrollbarColor: "var(--app-scrollbar-thumb) transparent",
         minWidth: 0,
+        overflowAnchor: "auto",
     },
     '&[data-line-wrapping="false"] .cm-scroller': {
         overflowX: "auto",

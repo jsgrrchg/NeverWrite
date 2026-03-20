@@ -5,7 +5,7 @@
  * so colors automatically adapt to light/dark mode.
  *
  * Instead of relying on the gutter (which is hidden in live preview),
- * we use a left border on the line itself for the colored stripe.
+ * we use an inset shadow so the diff indicator doesn't shift line layout.
  */
 
 import { EditorView } from "@codemirror/view";
@@ -14,25 +14,58 @@ export const inlineDiffTheme = EditorView.baseTheme({
     // ── Added / modified line backgrounds with left border stripe ─────
     ".cm-diff-added": {
         backgroundColor: "color-mix(in srgb, var(--diff-add) 18%, transparent)",
-        borderLeft: "3px solid var(--diff-add)",
-        paddingLeft: "6px !important",
+        boxShadow: "inset 3px 0 0 0 var(--diff-add)",
+        transition: "background-color 160ms ease, box-shadow 160ms ease",
     },
     ".cm-diff-modified": {
         backgroundColor:
             "color-mix(in srgb, var(--diff-update) 18%, transparent)",
-        borderLeft: "3px solid var(--diff-update)",
-        paddingLeft: "6px !important",
+        boxShadow: "inset 3px 0 0 0 var(--diff-update)",
+        transition: "background-color 160ms ease, box-shadow 160ms ease",
     },
     ".cm-diff-inline-add": {
         backgroundColor: "color-mix(in srgb, var(--diff-add) 28%, transparent)",
         borderRadius: "3px",
         boxDecorationBreak: "clone",
+        transition: "background-color 160ms ease, opacity 160ms ease",
     },
     ".cm-diff-inline-modified": {
         backgroundColor:
             "color-mix(in srgb, var(--diff-update) 28%, transparent)",
         borderRadius: "3px",
         boxDecorationBreak: "clone",
+        transition: "background-color 160ms ease, opacity 160ms ease",
+    },
+    ".cm-diff-word-changed": {
+        backgroundColor:
+            "color-mix(in srgb, var(--diff-update) 18%, transparent)",
+        borderRadius: "3px",
+        boxDecorationBreak: "clone",
+        transition: "background-color 160ms ease, opacity 160ms ease",
+    },
+    ".cm-diff-word-line-bg": {
+        backgroundColor:
+            "color-mix(in srgb, var(--diff-update) 10%, transparent)",
+        boxShadow: "inset 3px 0 0 0 var(--diff-update)",
+        transition: "background-color 160ms ease, box-shadow 160ms ease",
+    },
+    ".cm-diff-word-removed": {
+        backgroundColor:
+            "color-mix(in srgb, var(--diff-remove) 16%, transparent)",
+        borderRadius: "3px",
+        boxDecorationBreak: "clone",
+        transition: "background-color 160ms ease, opacity 160ms ease",
+    },
+    ".cm-diff-pending": {
+        animation: "cm-diff-pulse 1.5s ease-in-out infinite",
+    },
+    "@keyframes cm-diff-pulse": {
+        "0%, 100%": {
+            opacity: "1",
+        },
+        "50%": {
+            opacity: "0.72",
+        },
     },
 
     // ── Deleted text block (block widget via StateField) ──────────────
@@ -46,6 +79,12 @@ export const inlineDiffTheme = EditorView.baseTheme({
         fontFamily: "inherit",
         fontSize: "inherit",
         lineHeight: "var(--text-input-line-height)",
+        overflowAnchor: "none",
+        transformOrigin: "top left",
+        animation: "cm-diff-widget-enter 140ms ease-out",
+        transition:
+            "background-color 160ms ease, border-color 160ms ease, opacity 160ms ease, transform 160ms ease",
+        willChange: "opacity, transform",
     },
     ".cm-diff-deleted-line": {
         color: "color-mix(in srgb, var(--diff-remove) 50%, var(--text-primary))",
@@ -65,10 +104,19 @@ export const inlineDiffTheme = EditorView.baseTheme({
         display: "inline-flex",
         alignItems: "center",
         gap: "6px",
-        float: "right",
-        marginTop: "0px",
-        marginRight: "4px",
+        marginLeft: "8px",
+        verticalAlign: "text-top",
+        position: "relative",
+        zIndex: "1",
+        opacity: "0.92",
+        transform: "translateY(1px)",
+        transition: "opacity 140ms ease, transform 140ms ease",
     },
+    ".cm-line:hover .cm-diff-hunk-controls, .cm-diff-deleted-block:hover .cm-diff-deleted-controls":
+        {
+            opacity: "1",
+            transform: "translateY(0)",
+        },
     ".cm-diff-hunk-btn": {
         fontSize: "11px",
         fontFamily: "inherit",
@@ -81,7 +129,8 @@ export const inlineDiffTheme = EditorView.baseTheme({
         lineHeight: "20px",
         whiteSpace: "nowrap",
         userSelect: "none",
-        transition: "background-color 0.1s, color 0.1s",
+        transition:
+            "background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease",
     },
     ".cm-diff-hunk-btn:hover": {
         backgroundColor: "var(--bg-tertiary)",
@@ -105,5 +154,15 @@ export const inlineDiffTheme = EditorView.baseTheme({
         backgroundColor:
             "color-mix(in srgb, var(--diff-remove) 18%, var(--bg-secondary))",
         color: "var(--diff-remove)",
+    },
+    "@keyframes cm-diff-widget-enter": {
+        from: {
+            opacity: "0",
+            transform: "translateY(-4px) scaleY(0.98)",
+        },
+        to: {
+            opacity: "1",
+            transform: "translateY(0) scaleY(1)",
+        },
     },
 });

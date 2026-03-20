@@ -1,7 +1,7 @@
 import type { AIChatMessage, AIChatSession } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import {
-    getTrackedFilesForWorkCycle,
+    getTrackedFilesForSession,
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 
@@ -52,21 +52,17 @@ export function startNewWorkCycle(session: AIChatSession): AIChatSession {
     // Carry forward actionLog tracked files to the new work cycle so
     // they accumulate across prompts until the user explicitly resets.
     let nextActionLog = session.actionLog;
-    const oldCycleId = keepVisibleCycle ? null : session.visibleWorkCycleId;
-
-    if (oldCycleId && nextActionLog) {
-        const oldFiles = getTrackedFilesForWorkCycle(nextActionLog, oldCycleId);
-        if (Object.keys(oldFiles).length > 0) {
-            // Move tracked files from old cycle to new cycle
-            nextActionLog = setTrackedFilesForWorkCycle(
-                nextActionLog,
-                oldCycleId,
-                {},
-            );
+    if (nextActionLog) {
+        const accumulatedFiles = getTrackedFilesForSession(nextActionLog);
+        nextActionLog = {
+            ...nextActionLog,
+            trackedFilesByWorkCycleId: {},
+        };
+        if (Object.keys(accumulatedFiles).length > 0) {
             nextActionLog = setTrackedFilesForWorkCycle(
                 nextActionLog,
                 nextWorkCycleId,
-                oldFiles,
+                accumulatedFiles,
             );
         }
     }
@@ -108,8 +104,8 @@ export function selectVisibleTrackedFiles(
     const session = state.sessionsById[sessionId];
     if (!session?.actionLog) return EMPTY_TRACKED_FILES;
 
-    const workCycleId = session.visibleWorkCycleId ?? session.activeWorkCycleId;
-    const tracked = getTrackedFilesForWorkCycle(session.actionLog, workCycleId);
+    const tracked = getTrackedFilesForSession(session.actionLog);
+
     if (Object.keys(tracked).length === 0) {
         return EMPTY_TRACKED_FILES;
     }

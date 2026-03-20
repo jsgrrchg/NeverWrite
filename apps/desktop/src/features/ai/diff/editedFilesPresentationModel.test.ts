@@ -86,6 +86,13 @@ describe("editedFilesPresentationModel", () => {
                 }),
             ),
         ).toBe(false);
+        expect(
+            canResolveFileHunks(
+                makeFile({
+                    reviewState: "pending",
+                }),
+            ),
+        ).toBe(false);
     });
 
     it("allows per-hunk resolution for large files (unreviewedEdits always provides exact hunks)", () => {
@@ -123,5 +130,19 @@ describe("editedFilesPresentationModel", () => {
 
         expect(items[0]?.canResolveHunks).toBe(true);
         expect(items[1]?.canResolveHunks).toBe(false);
+    });
+
+    it("disables review actions for pending files", () => {
+        const [item] = deriveReviewItems(
+            [
+                makeFile({
+                    reviewState: "pending",
+                }),
+            ],
+            new Set<string>(),
+        );
+
+        expect(item?.canReject).toBe(false);
+        expect(item?.canResolveHunks).toBe(false);
     });
 });

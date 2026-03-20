@@ -16,6 +16,9 @@ import {
     getSyntaxExtension,
     getWrappingExtension,
 } from "./editorExtensions";
+import { getInlineDiffExtension } from "./extensions/inlineDiff";
+import { syncInlineDiffForPaths } from "./inlineDiffSync";
+import { useChatStore } from "../ai/store/chatStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { loadCodeLanguage } from "./codeLanguage";
 import { searchTheme } from "./extensions/searchTheme";
@@ -145,6 +148,7 @@ export function FileTextTabView() {
                     search({ top: true }),
                     searchTheme,
                     keymap.of(searchKeymap),
+                    getInlineDiffExtension(),
                     EditorView.updateListener.of((update) => {
                         if (
                             !update.docChanged ||
@@ -263,6 +267,37 @@ export function FileTextTabView() {
             });
         });
     }, [languageMimeType, languagePath, tab]);
+
+    useEffect(() => {
+        const syncInlineDiff = () => {
+            const currentTab = tabRef.current;
+            syncInlineDiffForPaths(
+                viewRef.current,
+                currentTab ? [currentTab.path, currentTab.relativePath] : [],
+                useChatStore.getState().sessionsById,
+            );
+        };
+
+        syncInlineDiff();
+        const unsub = useChatStore.subscribe((state) => {
+            const currentTab = tabRef.current;
+            syncInlineDiffForPaths(
+                viewRef.current,
+                currentTab ? [currentTab.path, currentTab.relativePath] : [],
+                state.sessionsById,
+            );
+        });
+        return unsub;
+    }, []);
+
+    useEffect(() => {
+        const currentTab = tabRef.current;
+        syncInlineDiffForPaths(
+            viewRef.current,
+            currentTab ? [currentTab.path, currentTab.relativePath] : [],
+            useChatStore.getState().sessionsById,
+        );
+    }, [tab]);
 
     useEffect(() => {
         return () => {

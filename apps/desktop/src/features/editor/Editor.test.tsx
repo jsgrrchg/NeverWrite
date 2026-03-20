@@ -4,6 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
+import { useChatStore } from "../ai/store/chatStore";
+import {
+    buildPatchFromTexts,
+    buildTextRangePatchFromTexts,
+    emptyActionLogState,
+    setTrackedFilesForWorkCycle,
+} from "../ai/store/actionLogModel";
+import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { Editor } from "./Editor";
@@ -22,6 +30,55 @@ function getEditorView() {
     const view = EditorView.findFromDOM(editorElement as HTMLElement);
     expect(view).not.toBeNull();
     return view!;
+}
+
+function seedTrackedDiff(
+    targetPath: string,
+    diffBase: string,
+    currentText: string,
+) {
+    const workCycleId = "wc-inline-diff";
+    const trackedFile: TrackedFile = {
+        identityKey: targetPath,
+        originPath: targetPath,
+        path: targetPath,
+        previousPath: null,
+        status: { kind: "modified" },
+        diffBase,
+        currentText,
+        unreviewedRanges: buildTextRangePatchFromTexts(diffBase, currentText),
+        unreviewedEdits: buildPatchFromTexts(diffBase, currentText),
+        version: 1,
+        isText: true,
+        updatedAt: 1,
+    };
+
+    useChatStore.setState({
+        sessionsById: {
+            "session-inline-diff": {
+                sessionId: "session-inline-diff",
+                historySessionId: "session-inline-diff",
+                status: "idle",
+                activeWorkCycleId: workCycleId,
+                visibleWorkCycleId: workCycleId,
+                actionLog: setTrackedFilesForWorkCycle(
+                    emptyActionLogState(),
+                    workCycleId,
+                    { [trackedFile.identityKey]: trackedFile },
+                ),
+                runtimeId: "test-runtime",
+                modelId: "test-model",
+                modeId: "default",
+                models: [],
+                modes: [],
+                configOptions: [],
+                messages: [],
+                attachments: [],
+            },
+        },
+        sessionOrder: ["session-inline-diff"],
+        activeSessionId: "session-inline-diff",
+    });
 }
 
 describe("Editor", () => {
@@ -963,7 +1020,8 @@ describe("Editor", () => {
         });
 
         expect(view.state.doc.toString()).toBe("Deleted body");
-        expect(useEditorStore.getState().tabs[0]?.content).toBe(
+        const tab = useEditorStore.getState().tabs[0];
+        expect(tab && "content" in tab ? tab.content : undefined).toBe(
             "Restored body",
         );
 
@@ -1011,6 +1069,97 @@ describe("Editor", () => {
             "save_note",
             expect.anything(),
         );
+    });
+
+    it("recreates the editor view and shows the next note immediately on tab switch", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Current body",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+
+        renderComponent(<Editor />);
+
+        const firstView = getEditorView();
+        expect(firstView.state.doc.toString()).toBe("Current body");
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+            await flushPromises();
+        });
+
+        const secondView = getEditorView();
+        expect(secondView).not.toBe(firstView);
+        expect(secondView.state.doc.toString()).toBe("Other body");
+        expect(screen.getByText("Other body")).toBeInTheDocument();
+    });
+
+    it("reapplies pending inline diff decorations when returning to a note tab", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "new line",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "other body",
+                },
+            ],
+            "tab-1",
+        );
+        seedTrackedDiff("notes/current.md", "old line", "new line");
+
+        renderComponent(<Editor />);
+        expect(
+            document.querySelector(
+                ".cm-diff-inline-modified, .cm-diff-word-changed",
+            ),
+        ).not.toBeNull();
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+            await flushPromises();
+        });
+
+        expect(
+            document.querySelector(
+                ".cm-diff-inline-modified, .cm-diff-word-changed",
+            ),
+        ).toBeNull();
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-1");
+            await flushPromises();
+        });
+
+        expect(
+            document.querySelector(
+                ".cm-diff-inline-modified, .cm-diff-word-changed",
+            ),
+        ).not.toBeNull();
+
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            activeSessionId: null,
+        });
     });
 
     it("closes the active tab on Cmd+W", async () => {

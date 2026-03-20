@@ -157,6 +157,28 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("keeps deeply overindented markdown bullets in live preview via fallback", () => {
+        const doc = "- root\n        - deep child";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 7, 17)).toBe(true);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 7 &&
+                    deco.className.split(" ").includes("cm-lp-li-line"),
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("keeps an active empty list item in live preview without showing raw markers", () => {
         const { plugin, parent, view } = createView(
             "- ",
@@ -190,6 +212,36 @@ describe("createInlineLivePreviewPlugin", () => {
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-task-line"),
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("rebuilds task preview when the checkbox state changes", () => {
+        const doc = "- [ ] task";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        let decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-task-checked"),
+            ),
+        ).toBe(false);
+
+        view.dispatch({
+            changes: { from: 3, to: 4, insert: "x" },
+            selection: EditorSelection.cursor(doc.length),
+        });
+
+        decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-task-checked"),
             ),
         ).toBe(true);
 

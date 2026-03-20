@@ -13,8 +13,11 @@ import { selectVisibleTrackedFiles } from "./editedFilesBufferModel";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import {
     buildPatchFromTexts,
+    buildTextRangePatchFromTexts,
+    emptyActionLogState,
     emptyPatch,
     hashTextContent,
+    setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
 import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
@@ -209,11 +212,28 @@ function createQueuedMessage(
     };
 }
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
+type MockTrackedFilePatch = {
+    linePatch: ReturnType<typeof buildPatchFromTexts>;
+    textRangePatch: ReturnType<typeof buildTextRangePatchFromTexts>;
+};
+
 describe("chatStore", () => {
     beforeEach(() => {
         resetChatStore();
         resetChatTabsStore();
         vi.clearAllMocks();
+        delete (globalThis as Record<string, unknown>)
+            .__VAULTAI_FORCE_RUST_LINE_DIFFS__;
         useVaultStore.setState({ vaultPath: null, notes: [] });
         useEditorStore.setState({
             tabs: [],
@@ -515,6 +535,127 @@ describe("chatStore", () => {
         expect(userMessages.at(-1)?.workCycleId).toBe(
             updatedSession.activeWorkCycleId,
         );
+    });
+
+    it("keeps accumulated tracked edits visible when a new prompt starts before the previous review is resolved", async () => {
+        await useChatStore.getState().initialize();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const firstTracked = createTrackedFile(
+            "/vault/src/watcher.rs",
+            "original",
+            "first edit",
+        );
+
+        useChatStore.setState({
+            sessionsById: {
+                ...useChatStore.getState().sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    activeWorkCycleId: "cycle-old",
+                    visibleWorkCycleId: "cycle-old",
+                    actionLog: setTrackedFilesForWorkCycle(
+                        emptyActionLogState(),
+                        "cycle-old",
+                        {
+                            [firstTracked.identityKey]: firstTracked,
+                        },
+                    ),
+                    messages: [
+                        {
+                            id: "permission:req-1",
+                            role: "assistant",
+                            kind: "permission",
+                            content: "Edit watcher",
+                            title: "Permission request",
+                            timestamp: Date.now() - 1_000,
+                            workCycleId: "cycle-old",
+                            permissionRequestId: "req-1",
+                            permissionOptions: [
+                                {
+                                    option_id: "allow_once",
+                                    name: "Allow once",
+                                    kind: "allow_once",
+                                },
+                            ],
+                            diffs: [
+                                {
+                                    path: "/vault/src/watcher.rs",
+                                    kind: "update",
+                                    old_text: "original",
+                                    new_text: "first edit",
+                                },
+                            ],
+                            meta: {
+                                status: "pending",
+                                target: "/vault/src/watcher.rs",
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Second turn"));
+        await useChatStore.getState().sendMessage();
+
+        let updatedSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(updatedSession.visibleWorkCycleId).toBe("cycle-old");
+        expect(updatedSession.activeWorkCycleId).not.toBe("cycle-old");
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            {
+                identityKey: "/vault/src/watcher.rs",
+                diffBase: "original",
+                currentText: "first edit",
+            },
+        ]);
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-cycle-b-same-file",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs again",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "first edit",
+                    new_text: "second edit",
+                },
+            ],
+        });
+
+        updatedSession = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            {
+                identityKey: "/vault/src/watcher.rs",
+                diffBase: "original",
+                currentText: "second edit",
+            },
+        ]);
+        const oldCycleTracked =
+            updatedSession.actionLog?.trackedFilesByWorkCycleId?.["cycle-old"];
+        expect(
+            oldCycleTracked == null ||
+                Object.keys(oldCycleTracked).length === 0,
+        ).toBe(true);
     });
 
     it("clears the auth error banner when setup status becomes ready again", async () => {
@@ -2257,6 +2398,105 @@ describe("chatStore", () => {
         ).toBe(true);
     });
 
+    it("waits for pending Rust diff consolidation before starting a new work cycle", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+
+        const pendingPatches = createDeferred<MockTrackedFilePatch[]>();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "compute_tracked_file_patches") {
+                return pendingPatches.promise;
+            }
+
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return sessionPayload;
+        });
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-cycle-a",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const firstWorkCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId;
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        const sendPromise = useChatStore.getState().sendMessage();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]
+                ?.activeWorkCycleId,
+        ).toBe(firstWorkCycleId);
+
+        pendingPatches.resolve([
+            {
+                linePatch: buildPatchFromTexts("old line", "new line"),
+                textRangePatch: buildTextRangePatchFromTexts(
+                    "old line",
+                    "new line",
+                ),
+            },
+        ]);
+        await sendPromise;
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.activeWorkCycleId).toBeTruthy();
+        expect(session.activeWorkCycleId).not.toBe(firstWorkCycleId);
+        expect(session.visibleWorkCycleId).toBe(session.activeWorkCycleId);
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            {
+                identityKey: "/vault/src/watcher.rs",
+                diffBase: "old line",
+                currentText: "new line",
+            },
+        ]);
+
+        const oldCycleTracked =
+            firstWorkCycleId == null
+                ? null
+                : session.actionLog?.trackedFilesByWorkCycleId?.[
+                      firstWorkCycleId
+                  ];
+        expect(
+            oldCycleTracked == null ||
+                Object.keys(oldCycleTracked).length === 0,
+        ).toBe(true);
+    });
+
     it("merges accumulated entries when the same file is edited across cycles", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command) => {
@@ -2371,6 +2611,97 @@ describe("chatStore", () => {
 
         // Entry should be auto-removed since diffBase === currentText
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+    });
+
+    it("replays user edits queued behind a pending Rust diff consolidation", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+
+        const pendingPatches = createDeferred<MockTrackedFilePatch[]>();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "compute_tracked_file_patches") {
+                return pendingPatches.promise;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return sessionPayload;
+        });
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-user-edit",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc",
+                    new_text: "aaa\nBBB\nccc",
+                },
+            ],
+        });
+
+        // JS consolidation creates the buffer entry immediately
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(1);
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc",
+        );
+
+        pendingPatches.resolve([
+            {
+                linePatch: buildPatchFromTexts(
+                    "aaa\nbbb\nccc",
+                    "aaa\nBBB\nccc",
+                ),
+                textRangePatch: buildTextRangePatchFromTexts(
+                    "aaa\nbbb\nccc",
+                    "aaa\nBBB\nccc",
+                ),
+            },
+        ]);
+        // Wait for Rust refinement + queued user-edit replay to complete
+        for (let attempt = 0; attempt < 10; attempt++) {
+            const buf = getVisibleBuffer(activeSessionId);
+            if (buf[0]?.diffBase === "aaXa\nbbb\nccc") break;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0]).toMatchObject({
+            identityKey: "/notes/file.md",
+            diffBase: "aaXa\nbbb\nccc",
+            currentText: "aaXa\nBBB\nccc",
+        });
+        expect(buffer[0].unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 1,
+                oldEnd: 2,
+                newStart: 1,
+                newEnd: 2,
+            },
+        ]);
     });
 
     it("applies user text edits from the editor while preserving untouched agent spans", async () => {
@@ -2631,6 +2962,78 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
+    it("keepEditedFile removes only the targeted entry and keeps other work-cycle entries intact", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const visibleWorkCycleId = "wc-visible";
+        const hiddenWorkCycleId = "wc-hidden";
+        const visibleEntry = createTrackedFile(
+            "/vault/visible.md",
+            "before visible",
+            "after visible",
+        );
+        const hiddenEntry = createTrackedFile(
+            "/vault/hidden.md",
+            "before hidden",
+            "after hidden",
+        );
+
+        useChatStore.setState((state) => {
+            const session = state.sessionsById[activeSessionId]!;
+            let actionLog = emptyActionLogState();
+            actionLog = setTrackedFilesForWorkCycle(
+                actionLog,
+                visibleWorkCycleId,
+                {
+                    [visibleEntry.identityKey]: visibleEntry,
+                },
+            );
+            actionLog = setTrackedFilesForWorkCycle(
+                actionLog,
+                hiddenWorkCycleId,
+                {
+                    [hiddenEntry.identityKey]: hiddenEntry,
+                },
+            );
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [activeSessionId]: {
+                        ...session,
+                        visibleWorkCycleId,
+                        activeWorkCycleId: hiddenWorkCycleId,
+                        actionLog,
+                    },
+                },
+            };
+        });
+
+        useChatStore
+            .getState()
+            .keepEditedFile(activeSessionId, visibleEntry.identityKey);
+
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            expect.objectContaining({
+                identityKey: hiddenEntry.identityKey,
+                path: hiddenEntry.path,
+            }),
+        ]);
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog
+                ?.trackedFilesByWorkCycleId[visibleWorkCycleId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog
+                ?.trackedFilesByWorkCycleId[hiddenWorkCycleId],
+        ).toMatchObject({
+            [hiddenEntry.identityKey]: expect.objectContaining({
+                path: hiddenEntry.path,
+            }),
+        });
+    });
+
     function getEditedBufferEntry(sessionId: string, workCycleId: string) {
         const session = useChatStore.getState().sessionsById[sessionId]!;
         expect(session.visibleWorkCycleId).toBe(workCycleId);
@@ -2702,6 +3105,97 @@ describe("chatStore", () => {
             previousPath: null,
             content: "old line",
         });
+    });
+
+    it("skips deleting an agent-created note if the open editor content has changed", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/new-note",
+                    path: "/vault/notes/new-note.md",
+                    title: "New note",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "note",
+                    noteId: "notes/new-note",
+                    title: "New note",
+                    content: "user edited content",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-created-note",
+            title: "Create note",
+            kind: "write",
+            status: "completed",
+            target: "/vault/notes/new-note.md",
+            summary: "Created new note",
+            diffs: [
+                {
+                    path: "/vault/notes/new-note.md",
+                    kind: "add",
+                    old_text: null,
+                    new_text: "agent content",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(activeSessionId, entry.identityKey);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_restore_text_file",
+            expect.anything(),
+        );
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            noteId: "notes/new-note",
+            content: "user edited content",
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog
+                ?.lastRejectUndo,
+        ).toBeNull();
     });
 
     it("marks a reject as conflict when the file changed after the tool completed", async () => {
@@ -3138,6 +3632,179 @@ describe("chatStore", () => {
         ).toBe(true);
     });
 
+    it("reloads an open markdown note when rejecting a deleted hunk from an absolute path", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "alpha\ngamma",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-hunk-reject-deletion",
+            title: "Delete a line",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/notes/current.md",
+            summary: "Deleted a line",
+            diffs: [
+                {
+                    path: "/vault/notes/current.md",
+                    kind: "update",
+                    old_text: "alpha\nbeta\ngamma",
+                    new_text: "alpha\ngamma",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+        const hunk = entry.unreviewedEdits.edits[0]!;
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                hunk.newStart,
+                hunk.newEnd,
+            );
+
+        const editorState = useEditorStore.getState();
+        const tab = editorState.tabs[0];
+        expect(tab).toMatchObject({
+            noteId: "notes/current",
+            content: "alpha\nbeta\ngamma",
+        });
+        expect(editorState._pendingForceReloads.has("notes/current")).toBe(
+            true,
+        );
+    });
+
+    it("keeps hunk review disabled while the tracked file is pending and finalizes it on message completion", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyMessageStarted({
+            session_id: activeSessionId,
+            message_id: "assistant-1",
+        });
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-pending-hunk",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const pendingEntry = getEditedBufferEntry(activeSessionId, workCycleId);
+        const hunk = pendingEntry.unreviewedEdits.edits[0]!;
+
+        expect(pendingEntry.reviewState).toBe("pending");
+
+        invokeMock.mockImplementation(async (command) => {
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                activeSessionId,
+                pendingEntry.identityKey,
+                "rejected",
+                hunk.newStart,
+                hunk.newEnd,
+            );
+
+        const stillPending = getEditedBufferEntry(activeSessionId, workCycleId);
+        expect(stillPending.currentText).toBe("new line");
+        expect(stillPending.reviewState).toBe("pending");
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_restore_text_file",
+            expect.anything(),
+        );
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-1",
+        });
+
+        expect(
+            getEditedBufferEntry(activeSessionId, workCycleId).reviewState,
+        ).toBe("finalized");
+    });
+
     it("rejects a hunk only when the on-disk hash still matches the applied snapshot", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -3530,6 +4197,91 @@ describe("chatStore", () => {
             previousPath: null,
             content: "old line",
         });
+    });
+
+    it("clears tracking without deleting when rejectAll hits an agent-created note edited in the editor", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/new-note",
+                    path: "/vault/notes/new-note.md",
+                    title: "New note",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "note",
+                    noteId: "notes/new-note",
+                    title: "New note",
+                    content: "user edited content",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-created-note-bulk",
+            title: "Create note",
+            kind: "write",
+            status: "completed",
+            target: "/vault/notes/new-note.md",
+            summary: "Created new note",
+            diffs: [
+                {
+                    path: "/vault/notes/new-note.md",
+                    kind: "add",
+                    old_text: null,
+                    new_text: "agent content",
+                },
+            ],
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore.getState().rejectAllEditedFiles(activeSessionId);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_restore_text_file",
+            expect.anything(),
+        );
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog
+                ?.lastRejectUndo,
+        ).toBeNull();
     });
 
     it("consolidates successful rejects before a later rejectAll failure", async () => {

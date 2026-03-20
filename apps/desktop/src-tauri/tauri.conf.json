@@ -33,18 +33,6 @@
                 "scope": ["**"]
             }
         },
-        "windows": [
-            {
-                "title": "VaultAI",
-                "width": 1200,
-                "height": 800,
-                "titleBarStyle": "Overlay",
-                "hiddenTitle": true,
-                "trafficLightPosition": {
-                    "x": 14,
-                    "y": 20
-                }
-            }
-        ]
+        "windows": []
     }
 }

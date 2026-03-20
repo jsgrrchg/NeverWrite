@@ -15,7 +15,6 @@ import { livePreviewTheme } from "./livePreviewTheme";
 const TASK_TOGGLE_MARKER_WIDTH_EM = 1.2;
 const TASK_TOGGLE_SIZE_EM = 0.92;
 const TASK_TOGGLE_GAP_EM = 0.65;
-const TASK_TOGGLE_TOP_EM = 0.3;
 
 const POINTER_INTERACTIVE_PREVIEW_SELECTOR = [
     ".cm-lp-link",
@@ -40,13 +39,19 @@ function getTaskToggleMetrics(taskLine: HTMLElement) {
     const style =
         taskLine.ownerDocument.defaultView?.getComputedStyle(taskLine);
     const fontSize = Number.parseFloat(style?.fontSize ?? "");
+    const lineHeight = Number.parseFloat(style?.lineHeight ?? "");
     const paddingLeft = Number.parseFloat(style?.paddingLeft ?? "");
+    const paddingTop = Number.parseFloat(style?.paddingTop ?? "");
 
     if (
         !Number.isFinite(fontSize) ||
         fontSize <= 0 ||
+        !Number.isFinite(lineHeight) ||
+        lineHeight <= 0 ||
         !Number.isFinite(paddingLeft) ||
-        paddingLeft <= 0
+        paddingLeft <= 0 ||
+        !Number.isFinite(paddingTop) ||
+        paddingTop < 0
     ) {
         return null;
     }
@@ -60,7 +65,8 @@ function getTaskToggleMetrics(taskLine: HTMLElement) {
             0,
             paddingLeft - markerGap - markerWidth / 2 - checkboxSize / 2,
         );
-    const checkboxTop = rect.top + fontSize * TASK_TOGGLE_TOP_EM;
+    const checkboxTop =
+        rect.top + paddingTop + Math.max(0, (lineHeight - checkboxSize) / 2);
 
     return {
         left: checkboxLeft,

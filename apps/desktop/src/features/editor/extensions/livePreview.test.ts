@@ -10,7 +10,9 @@ describe("isPointerInsideTaskToggleZone", () => {
         const taskLine = document.createElement("div");
         taskLine.className = "cm-lp-task-line";
         taskLine.style.paddingLeft = "28px";
+        taskLine.style.paddingTop = "0px";
         taskLine.style.fontSize = "16px";
+        taskLine.style.lineHeight = "24px";
         taskLine.dataset.lpTaskFrom = "0";
 
         vi.spyOn(taskLine, "getBoundingClientRect").mockReturnValue({
@@ -33,7 +35,9 @@ describe("isPointerInsideTaskToggleZone", () => {
         const taskLine = document.createElement("div");
         taskLine.className = "cm-lp-task-line";
         taskLine.style.paddingLeft = "28px";
+        taskLine.style.paddingTop = "0px";
         taskLine.style.fontSize = "16px";
+        taskLine.style.lineHeight = "24px";
         taskLine.dataset.lpTaskFrom = "0";
 
         vi.spyOn(taskLine, "getBoundingClientRect").mockReturnValue({
@@ -48,7 +52,7 @@ describe("isPointerInsideTaskToggleZone", () => {
             toJSON: () => ({}),
         });
 
-        expect(isPointerInsideTaskToggleZone(taskLine, 112, 40)).toBe(false);
+        expect(isPointerInsideTaskToggleZone(taskLine, 112, 41)).toBe(false);
         expect(isPointerInsideTaskToggleZone(taskLine, 99, 28)).toBe(false);
     });
 });
