@@ -42,6 +42,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
+import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
 import { searchTheme } from "./extensions/searchTheme";
 import {
     continueMarkdownListItem,
@@ -1577,6 +1578,7 @@ export function Editor({
                         navigateWikilink,
                     ),
                     urlLinksExtension,
+                    imagePasteDropExtension(),
                     EditorView.updateListener.of((update) => {
                         if (!update.docChanged || isInternalRef.current) return;
                         const tab = activeTabRef.current;
