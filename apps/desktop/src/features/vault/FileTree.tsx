@@ -726,12 +726,16 @@ interface FlatTreeRowViewProps {
     onFileMouseDown: (entry: VaultEntryDto, e: React.MouseEvent) => void;
     onFileContextMenu: (e: React.MouseEvent, entry: VaultEntryDto) => void;
     renamingNoteId: string | null;
+    renamingFolderPath: string | null;
+    renamingEntryPath: string | null;
     creatingMode: "note" | "folder" | null;
     newItemName: string;
     onNewItemNameChange: (value: string) => void;
     onCreateConfirm: () => void;
     onCreateCancel: () => void;
-    onRenameConfirm: (note: NoteDto, newName: string) => void;
+    onRenameNoteConfirm: (note: NoteDto, newName: string) => void;
+    onRenameFolderConfirm: (path: string, newName: string) => void;
+    onRenameEntryConfirm: (entry: VaultEntryDto, newName: string) => void;
     onRenameCancel: () => void;
     showExtensions: boolean;
     stickyTop?: number;
@@ -765,12 +769,16 @@ const FlatTreeRowView = memo(
         onFileMouseDown,
         onFileContextMenu,
         renamingNoteId,
+        renamingFolderPath,
+        renamingEntryPath,
         creatingMode,
         newItemName,
         onNewItemNameChange,
         onCreateConfirm,
         onCreateCancel,
-        onRenameConfirm,
+        onRenameNoteConfirm,
+        onRenameFolderConfirm,
+        onRenameEntryConfirm,
         onRenameCancel,
         showExtensions,
         stickyTop,
@@ -787,15 +795,22 @@ const FlatTreeRowView = memo(
             row.kind === "folder" && draggingFolderPath === row.path;
         const isExpanded =
             row.kind === "folder" && expandedFolders.has(row.path);
-        const isRenaming =
+        const isRenamingFolder =
+            row.kind === "folder" && row.path === renamingFolderPath;
+        const isRenamingEntry =
+            row.kind === "file" && row.entry.path === renamingEntryPath;
+        const isRenamingNote =
             row.kind === "note" && row.note.id === renamingNoteId;
 
         useEffect(() => {
-            if (isRenaming && renameInputRef.current) {
+            if (
+                (isRenamingFolder || isRenamingEntry || isRenamingNote) &&
+                renameInputRef.current
+            ) {
                 renameInputRef.current.focus();
                 renameInputRef.current.select();
             }
-        }, [isRenaming]);
+        }, [isRenamingEntry, isRenamingFolder, isRenamingNote]);
 
         useEffect(() => {
             if (
@@ -809,6 +824,63 @@ const FlatTreeRowView = memo(
         }, [creatingMode, row]);
 
         if (isFolder) {
+            if (isRenamingFolder) {
+                return (
+                    <div
+                        className="flex items-center gap-1.5 py-0.5"
+                        style={{
+                            paddingLeft,
+                            fontSize: metrics.fontSize,
+                            minHeight: metrics.rowHeight,
+                            ...TREE_ROW_BOX_STYLE,
+                        }}
+                    >
+                        <ChevronIcon
+                            open={!!isExpanded}
+                            size={metrics.smallIcon}
+                        />
+                        <FolderIcon
+                            open={!!isExpanded}
+                            size={metrics.mediumIcon}
+                        />
+                        <input
+                            ref={renameInputRef}
+                            defaultValue={row.name}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    const value =
+                                        event.currentTarget.value.trim();
+                                    if (value) {
+                                        onRenameFolderConfirm(row.path, value);
+                                    } else {
+                                        onRenameCancel();
+                                    }
+                                }
+                                if (event.key === "Escape") {
+                                    onRenameCancel();
+                                }
+                            }}
+                            onBlur={() => {
+                                const value =
+                                    renameInputRef.current?.value.trim() ?? "";
+                                if (value) {
+                                    onRenameFolderConfirm(row.path, value);
+                                } else {
+                                    onRenameCancel();
+                                }
+                            }}
+                            className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--accent)",
+                                color: "var(--text-primary)",
+                                fontSize: metrics.inputFontSize,
+                            }}
+                        />
+                    </div>
+                );
+            }
+
             return (
                 <button
                     onMouseDown={(event) => onFolderMouseDown(row.path, event)}
@@ -951,6 +1023,63 @@ const FlatTreeRowView = memo(
             const entry = row.entry;
             const isActive = activeEntryPath === entry.path;
             const isSelected = selectedEntryPaths.has(entry.path);
+
+            if (isRenamingEntry) {
+                return (
+                    <div
+                        className="flex items-center gap-1.5 py-0.5"
+                        style={{
+                            paddingLeft: paddingLeft + noteOffset,
+                            fontSize: metrics.fontSize,
+                            minHeight: metrics.rowHeight,
+                            ...TREE_ROW_BOX_STYLE,
+                        }}
+                    >
+                        {entry.extension.toLowerCase() === "excalidraw" ? (
+                            <MapFileIcon size={metrics.smallIcon} />
+                        ) : isImageLikeVaultEntry(entry) ? (
+                            <ImageFileIcon size={metrics.smallIcon} />
+                        ) : (
+                            <GenericFileIcon size={metrics.smallIcon} />
+                        )}
+                        <input
+                            ref={renameInputRef}
+                            defaultValue={entry.file_name}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    const value =
+                                        event.currentTarget.value.trim();
+                                    if (value) {
+                                        onRenameEntryConfirm(entry, value);
+                                    } else {
+                                        onRenameCancel();
+                                    }
+                                }
+                                if (event.key === "Escape") {
+                                    onRenameCancel();
+                                }
+                            }}
+                            onBlur={() => {
+                                const value =
+                                    renameInputRef.current?.value.trim() ?? "";
+                                if (value) {
+                                    onRenameEntryConfirm(entry, value);
+                                } else {
+                                    onRenameCancel();
+                                }
+                            }}
+                            className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--accent)",
+                                color: "var(--text-primary)",
+                                fontSize: metrics.inputFontSize,
+                            }}
+                        />
+                    </div>
+                );
+            }
+
             return (
                 <div
                     role="button"
@@ -1011,7 +1140,7 @@ const FlatTreeRowView = memo(
         const isSelected = selectedNoteIds.has(note.id);
         const isDraggingThis = draggingNoteIds.has(note.id);
 
-        if (isRenaming) {
+        if (isRenamingNote) {
             return (
                 <div
                     className="flex items-center gap-1.5 py-0.5"
@@ -1029,7 +1158,7 @@ const FlatTreeRowView = memo(
                         onKeyDown={(e) => {
                             if (e.key === "Enter") {
                                 const value = e.currentTarget.value.trim();
-                                if (value) onRenameConfirm(note, value);
+                                if (value) onRenameNoteConfirm(note, value);
                                 else onRenameCancel();
                             }
                             if (e.key === "Escape") onRenameCancel();
@@ -1037,7 +1166,7 @@ const FlatTreeRowView = memo(
                         onBlur={() => {
                             const value =
                                 renameInputRef.current?.value.trim() ?? "";
-                            if (value) onRenameConfirm(note, value);
+                            if (value) onRenameNoteConfirm(note, value);
                             else onRenameCancel();
                         }}
                         className="flex-1 text-xs px-1.5 py-0.5 rounded outline-none min-w-0"
@@ -1110,6 +1239,8 @@ const FlatTreeRowView = memo(
         if (prev.metrics !== next.metrics) return false;
         if (prev.stickyTop !== next.stickyTop) return false;
         if (prev.renamingNoteId !== next.renamingNoteId) return false;
+        if (prev.renamingFolderPath !== next.renamingFolderPath) return false;
+        if (prev.renamingEntryPath !== next.renamingEntryPath) return false;
         if (prev.creatingMode !== next.creatingMode) return false;
         if (prev.newItemName !== next.newItemName) return false;
         if (prev.showExtensions !== next.showExtensions) return false;
@@ -1332,6 +1463,12 @@ export function FileTree() {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<FileTreeContextPayload> | null>(null);
     const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
+    const [renamingFolderPath, setRenamingFolderPath] = useState<string | null>(
+        null,
+    );
+    const [renamingEntryPath, setRenamingEntryPath] = useState<string | null>(
+        null,
+    );
     const [, setClipboardVersion] = useState(0);
     const [focusedFolderPath, setFocusedFolderPath] = useState("");
 
@@ -1634,7 +1771,11 @@ export function FileTree() {
         });
     }, []);
 
-    const handleRenameCancel = useCallback(() => setRenamingNoteId(null), []);
+    const handleRenameCancel = useCallback(() => {
+        setRenamingNoteId(null);
+        setRenamingFolderPath(null);
+        setRenamingEntryPath(null);
+    }, []);
 
     // Scroll to row by index helper
     const scrollToRow = useCallback(
@@ -1787,12 +1928,8 @@ export function FileTree() {
         [applyMovedIds, renameNote],
     );
 
-    const moveFolder = useCallback(
-        async (folderPath: string, targetFolder: string) => {
-            const folderName = getBaseName(folderPath);
-            const nextFolderPath = targetFolder
-                ? `${targetFolder}/${folderName}`
-                : folderName;
+    const relocateFolder = useCallback(
+        async (folderPath: string, nextFolderPath: string) => {
             if (folderPath === nextFolderPath) return null;
             const sourceAbsolutePath = vaultPath
                 ? `${vaultPath}/${folderPath}`
@@ -1926,10 +2063,22 @@ export function FileTree() {
         [refreshStructure, vaultPath],
     );
 
-    const moveVaultEntry = useCallback(
-        async (entry: VaultEntryDto, targetFolder: string) => {
-            const nextRelativePath = buildEntryMovePath(entry, targetFolder);
-            if (!nextRelativePath) return null;
+    const moveFolder = useCallback(
+        (folderPath: string, targetFolder: string) => {
+            const folderName = getBaseName(folderPath);
+            const nextFolderPath = targetFolder
+                ? `${targetFolder}/${folderName}`
+                : folderName;
+            return relocateFolder(folderPath, nextFolderPath);
+        },
+        [relocateFolder],
+    );
+
+    const relocateVaultEntry = useCallback(
+        async (entry: VaultEntryDto, nextRelativePath: string) => {
+            if (!nextRelativePath || nextRelativePath === entry.relative_path) {
+                return entry;
+            }
 
             try {
                 const updated = await vaultInvoke<VaultEntryDto>(
@@ -1975,6 +2124,15 @@ export function FileTree() {
             }
         },
         [],
+    );
+
+    const moveVaultEntry = useCallback(
+        async (entry: VaultEntryDto, targetFolder: string) => {
+            const nextRelativePath = buildEntryMovePath(entry, targetFolder);
+            if (!nextRelativePath) return null;
+            return relocateVaultEntry(entry, nextRelativePath);
+        },
+        [relocateVaultEntry],
     );
 
     const getDragTargetFolder = useCallback(
@@ -2971,6 +3129,8 @@ export function FileTree() {
     };
 
     const handleRenameStart = (note: NoteDto) => {
+        setRenamingFolderPath(null);
+        setRenamingEntryPath(null);
         setRenamingNoteId(note.id);
     };
 
@@ -2997,6 +3157,54 @@ export function FileTree() {
             renameGuardRef.current = false;
         }
     };
+
+    const handleFolderRenameStart = useCallback((path: string) => {
+        setRenamingNoteId(null);
+        setRenamingEntryPath(null);
+        setRenamingFolderPath(path);
+    }, []);
+
+    const handleFolderRenameConfirm = useCallback(
+        async (folderPath: string, newName: string) => {
+            if (renameGuardRef.current) return;
+            renameGuardRef.current = true;
+            try {
+                setRenamingFolderPath(null);
+                const parentPath = getParentPath(folderPath);
+                const nextFolderPath = parentPath
+                    ? `${parentPath}/${newName}`
+                    : newName;
+                await relocateFolder(folderPath, nextFolderPath);
+            } finally {
+                renameGuardRef.current = false;
+            }
+        },
+        [relocateFolder],
+    );
+
+    const handleEntryRenameStart = useCallback((entry: VaultEntryDto) => {
+        setRenamingNoteId(null);
+        setRenamingFolderPath(null);
+        setRenamingEntryPath(entry.path);
+    }, []);
+
+    const handleEntryRenameConfirm = useCallback(
+        async (entry: VaultEntryDto, newName: string) => {
+            if (renameGuardRef.current) return;
+            renameGuardRef.current = true;
+            try {
+                setRenamingEntryPath(null);
+                const parentPath = getParentPath(entry.relative_path);
+                const nextRelativePath = parentPath
+                    ? `${parentPath}/${newName}`
+                    : newName;
+                await relocateVaultEntry(entry, nextRelativePath);
+            } finally {
+                renameGuardRef.current = false;
+            }
+        },
+        [relocateVaultEntry],
+    );
 
     const handleDelete = useCallback(
         async (notesToDelete: NoteDto[]) => {
@@ -3308,6 +3516,10 @@ export function FileTree() {
                         action: () => handleToggleFolder(path),
                     },
                     {
+                        label: "Rename",
+                        action: () => handleFolderRenameStart(path),
+                    },
+                    {
                         label: "Reveal in Finder",
                         action: () => handleRevealFolderInFinder(path),
                     },
@@ -3459,6 +3671,10 @@ export function FileTree() {
                         action: () => void openPath(entry.path),
                     },
                     {
+                        label: "Rename",
+                        action: () => handleEntryRenameStart(entry),
+                    },
+                    {
                         label: "Reveal in Finder",
                         action: () => void revealItemInDir(entry.path),
                     },
@@ -3589,9 +3805,25 @@ export function FileTree() {
 
     const renameConfirmRef = useRef(handleRenameConfirm);
     renameConfirmRef.current = handleRenameConfirm;
-    const stableRenameConfirm = useCallback(
+    const stableRenameNoteConfirm = useCallback(
         (note: NoteDto, newName: string) =>
             renameConfirmRef.current(note, newName),
+        [],
+    );
+
+    const renameFolderConfirmRef = useRef(handleFolderRenameConfirm);
+    renameFolderConfirmRef.current = handleFolderRenameConfirm;
+    const stableRenameFolderConfirm = useCallback(
+        (path: string, newName: string) =>
+            renameFolderConfirmRef.current(path, newName),
+        [],
+    );
+
+    const renameEntryConfirmRef = useRef(handleEntryRenameConfirm);
+    renameEntryConfirmRef.current = handleEntryRenameConfirm;
+    const stableRenameEntryConfirm = useCallback(
+        (entry: VaultEntryDto, newName: string) =>
+            renameEntryConfirmRef.current(entry, newName),
         [],
     );
 
@@ -3804,7 +4036,18 @@ export function FileTree() {
                 tabIndex={0}
                 onScroll={handleTreeScroll}
                 onKeyDown={handleTreeKeyDown}
-                onMouseDown={() => treeScrollRef.current?.focus()}
+                onMouseDown={(event) => {
+                    const target = event.target;
+                    if (
+                        target instanceof HTMLElement &&
+                        target.closest(
+                            "input, textarea, select, [contenteditable='true']",
+                        )
+                    ) {
+                        return;
+                    }
+                    treeScrollRef.current?.focus();
+                }}
                 onContextMenu={(event) => {
                     if (event.target !== event.currentTarget) return;
                     handleBlankContextMenu(event);
@@ -3909,6 +4152,12 @@ export function FileTree() {
                                                 stableFileContextMenu
                                             }
                                             renamingNoteId={renamingNoteId}
+                                            renamingFolderPath={
+                                                renamingFolderPath
+                                            }
+                                            renamingEntryPath={
+                                                renamingEntryPath
+                                            }
                                             creatingMode={creatingMode}
                                             newItemName={newItemName}
                                             onNewItemNameChange={setNewItemName}
@@ -3916,8 +4165,14 @@ export function FileTree() {
                                                 void confirmCreate()
                                             }
                                             onCreateCancel={cancelCreate}
-                                            onRenameConfirm={
-                                                stableRenameConfirm
+                                            onRenameNoteConfirm={
+                                                stableRenameNoteConfirm
+                                            }
+                                            onRenameFolderConfirm={
+                                                stableRenameFolderConfirm
+                                            }
+                                            onRenameEntryConfirm={
+                                                stableRenameEntryConfirm
                                             }
                                             onRenameCancel={handleRenameCancel}
                                             showExtensions={
@@ -4021,6 +4276,12 @@ export function FileTree() {
                                                 stableFileContextMenu
                                             }
                                             renamingNoteId={renamingNoteId}
+                                            renamingFolderPath={
+                                                renamingFolderPath
+                                            }
+                                            renamingEntryPath={
+                                                renamingEntryPath
+                                            }
                                             creatingMode={creatingMode}
                                             newItemName={newItemName}
                                             onNewItemNameChange={setNewItemName}
@@ -4028,8 +4289,14 @@ export function FileTree() {
                                                 void confirmCreate()
                                             }
                                             onCreateCancel={cancelCreate}
-                                            onRenameConfirm={
-                                                stableRenameConfirm
+                                            onRenameNoteConfirm={
+                                                stableRenameNoteConfirm
+                                            }
+                                            onRenameFolderConfirm={
+                                                stableRenameFolderConfirm
+                                            }
+                                            onRenameEntryConfirm={
+                                                stableRenameEntryConfirm
                                             }
                                             onRenameCancel={handleRenameCancel}
                                             showExtensions={
