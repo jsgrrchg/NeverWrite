@@ -21,22 +21,27 @@ type DecorationInfo = {
     to: number;
     className: string;
     style: string;
+    attributes: Record<string, string>;
     hasWidget: boolean;
 };
 
-function readClassName(deco: Decoration): string {
+function readAttributes(deco: Decoration): Record<string, string> {
     const spec = deco.spec as {
         class?: string;
         attributes?: Record<string, string>;
     };
-    return spec.class ?? spec.attributes?.class ?? "";
+    return {
+        ...(spec.class ? { class: spec.class } : {}),
+        ...(spec.attributes ?? {}),
+    };
+}
+
+function readClassName(deco: Decoration): string {
+    return readAttributes(deco).class ?? "";
 }
 
 function readStyle(deco: Decoration): string {
-    const spec = deco.spec as {
-        attributes?: Record<string, string>;
-    };
-    return spec.attributes?.style ?? "";
+    return readAttributes(deco).style ?? "";
 }
 
 function collectDecorations(
@@ -56,6 +61,7 @@ function collectDecorations(
                 to,
                 className: readClassName(deco),
                 style: readStyle(deco),
+                attributes: readAttributes(deco),
                 hasWidget: "widget" in deco.spec && deco.spec.widget != null,
             });
         },
