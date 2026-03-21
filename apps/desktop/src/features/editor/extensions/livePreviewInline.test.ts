@@ -378,11 +378,31 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
-    it("keeps heading markers hidden on the active line", () => {
+    it("shows raw heading syntax while the caret is editing that heading line", () => {
         const doc = "## Heading";
         const { plugin, parent, view } = createView(
             doc,
             EditorSelection.cursor(1),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 3)).toBe(false);
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-h2"),
+            ),
+        ).toBe(false);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("applies heading live preview again once the caret leaves that heading line", () => {
+        const doc = "## Heading\nNext line";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
         );
 
         const decorations = collectDecorations(view, plugin);
