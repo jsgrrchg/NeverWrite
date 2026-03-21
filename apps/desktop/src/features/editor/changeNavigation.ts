@@ -1,5 +1,7 @@
 import type { EditorView } from "@codemirror/view";
+import { goToNextChunk, goToPreviousChunk } from "@codemirror/merge";
 import type { ChangeRailMarker } from "./changePresentationModel";
+import { readMergeChunkSnapshot } from "./mergeChunks";
 
 export function revealChangeMarker(
     view: EditorView | null,
@@ -53,9 +55,11 @@ export function getMarkerKeyForLine(
     let bestDistance = Number.POSITIVE_INFINITY;
 
     for (const marker of markers) {
-        const start = marker.newStart;
+        const start = marker.startLine;
         const endExclusive =
-            marker.newEnd > marker.newStart ? marker.newEnd : marker.newStart + 1;
+            marker.endLine > marker.startLine
+                ? marker.endLine
+                : marker.startLine + 1;
 
         if (lineNumber >= start && lineNumber < endExclusive) {
             return marker.key;
@@ -99,8 +103,23 @@ export function getMarkerKeyForViewport(
 
 function getMarkerAnchorPosition(view: EditorView, marker: ChangeRailMarker) {
     const totalLines = Math.max(view.state.doc.lines, 1);
-    const targetLine = clamp(marker.newStart + 1, 1, totalLines);
+    const targetLine = clamp(marker.anchorLine + 1, 1, totalLines);
     return view.state.doc.line(targetLine).from;
+}
+
+export function navigateByChunk(
+    view: EditorView | null,
+    direction: 1 | -1,
+) {
+    if (!view || !readMergeChunkSnapshot(view.state)) {
+        return false;
+    }
+
+    const command = direction === 1 ? goToNextChunk : goToPreviousChunk;
+    return command({
+        state: view.state,
+        dispatch: view.dispatch.bind(view),
+    });
 }
 
 function clamp(value: number, min: number, max: number) {

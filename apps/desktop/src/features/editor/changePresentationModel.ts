@@ -1,3 +1,5 @@
+import type { Text } from "@codemirror/state";
+import type { Chunk } from "@codemirror/merge";
 import type {
     LineEdit,
     ReviewState,
@@ -7,6 +9,11 @@ import {
     getTrackedFileReviewState,
     syncDerivedLinePatch,
 } from "../ai/store/actionLogModel";
+import {
+    getChunkKind,
+    getChunkLineRangeInDocB,
+    getChunkMarkerKey,
+} from "./mergeChunkRange";
 
 export type ChangePresentationLevel =
     | "small"
@@ -18,11 +25,9 @@ export type ChangeRailMarkerKind = "add" | "modify" | "delete";
 
 export interface ChangeRailMarker {
     key: string;
-    editIndex: number;
-    newStart: number;
-    newEnd: number;
-    oldStart: number;
-    oldEnd: number;
+    startLine: number;
+    endLine: number;
+    anchorLine: number;
     kind: ChangeRailMarkerKind;
     reviewState: ReviewState;
     topRatio: number;
@@ -42,13 +47,12 @@ export interface FileChangePresentation {
     showWordDiff: boolean;
     collapseLargeDeletes: boolean;
     reducedInlineMode: boolean;
-    railMarkers: ChangeRailMarker[];
     collapsedDeleteBlockIndexes: number[];
 }
 
 const SMALL_MAX_LINES = 3;
 const SMALL_MAX_VISIBLE_CHARS = 120;
-const MEDIUM_MAX_HUNKS = 8;
+export const MEDIUM_MAX_HUNKS = 8;
 const MEDIUM_MAX_LINES = 40;
 const MEDIUM_MAX_HUNK_LINES = 12;
 export const LARGE_DELETE_COLLAPSE_LINES = 8;
@@ -63,8 +67,6 @@ export function deriveFileChangePresentation(
     const reviewState = getTrackedFileReviewState(syncedFile);
     const currentLines = splitLinesForDisplay(syncedFile.currentText);
     const baseLines = splitLinesForDisplay(syncedFile.diffBase);
-    const totalLines = Math.max(currentLines.length, 1);
-
     let additions = 0;
     let deletions = 0;
     let totalChangedLines = 0;
@@ -72,7 +74,7 @@ export function deriveFileChangePresentation(
     let largestDeleteBlockLines = 0;
     let visibleChars = 0;
 
-    const railMarkers = edits.map((edit, index) => {
+    edits.forEach((edit) => {
         const oldLineCount = Math.max(edit.oldEnd - edit.oldStart, 0);
         const newLineCount = Math.max(edit.newEnd - edit.newStart, 0);
         const changedLineCount = getChangedLineCount(edit);
@@ -88,8 +90,6 @@ export function deriveFileChangePresentation(
             );
         }
         visibleChars += getVisibleCharCount(edit, baseLines, currentLines);
-
-        return buildRailMarker(edit, index, totalLines, reviewState);
     });
 
     const level = classifyPresentationLevel({
@@ -99,8 +99,7 @@ export function deriveFileChangePresentation(
         largestDeleteBlockLines,
         visibleChars,
     });
-    const collapseLargeDeletes =
-        level === "large" || level === "very-large";
+    const collapseLargeDeletes = level === "large" || level === "very-large";
     const collapsedDeleteBlockIndexes = collapseLargeDeletes
         ? edits.flatMap((edit, index) =>
               edit.newStart === edit.newEnd &&
@@ -125,9 +124,36 @@ export function deriveFileChangePresentation(
         showWordDiff: level === "small" || level === "medium",
         collapseLargeDeletes,
         reducedInlineMode: level === "large" || level === "very-large",
-        railMarkers,
         collapsedDeleteBlockIndexes,
     };
+}
+
+export function deriveMarkersFromChunks(
+    chunks: readonly Chunk[],
+    docB: Text,
+    reviewState: ReviewState,
+): ChangeRailMarker[] {
+    const totalLines = Math.max(docB.lines, 1);
+
+    return chunks.map((chunk, index) => {
+        const range = getChunkLineRangeInDocB(chunk, docB);
+        const lineSpan = Math.max(range.endLine - range.startLine, 1);
+        const minHeightRatio = 1 / totalLines;
+        const heightRatio = clamp(lineSpan / totalLines, minHeightRatio, 1);
+        const rawTopRatio = totalLines <= 1 ? 0 : range.anchorLine / totalLines;
+        const maxTopRatio = Math.max(0, 1 - heightRatio);
+
+        return {
+            key: getChunkMarkerKey(chunk, index),
+            startLine: range.startLine,
+            endLine: range.endLine,
+            anchorLine: range.anchorLine,
+            kind: getChunkKind(chunk),
+            reviewState,
+            topRatio: clamp(rawTopRatio, 0, maxTopRatio),
+            heightRatio,
+        };
+    });
 }
 
 function classifyPresentationLevel(metrics: {
@@ -162,50 +188,6 @@ function classifyPresentationLevel(metrics: {
     }
 
     return "medium";
-}
-
-function buildRailMarker(
-    edit: LineEdit,
-    index: number,
-    totalLines: number,
-    reviewState: ReviewState,
-): ChangeRailMarker {
-    const kind = getMarkerKind(edit);
-    const lineSpan = Math.max(getChangedLineCount(edit), 1);
-    const anchorLine =
-        totalLines <= 1
-            ? 0
-            : clamp(edit.newStart, 0, Math.max(totalLines - 1, 0));
-    const minHeightRatio = 1 / totalLines;
-    const unclampedHeightRatio = lineSpan / totalLines;
-    const heightRatio = clamp(unclampedHeightRatio, minHeightRatio, 1);
-    const rawTopRatio = totalLines <= 1 ? 0 : anchorLine / totalLines;
-    const maxTopRatio = Math.max(0, 1 - heightRatio);
-    const topRatio = clamp(rawTopRatio, 0, maxTopRatio);
-
-    return {
-        key: getChangeRailMarkerKey(edit, index),
-        editIndex: index,
-        newStart: edit.newStart,
-        newEnd: edit.newEnd,
-        oldStart: edit.oldStart,
-        oldEnd: edit.oldEnd,
-        kind,
-        reviewState,
-        topRatio,
-        heightRatio,
-    };
-}
-
-function getMarkerKind(edit: LineEdit): ChangeRailMarkerKind {
-    if (edit.oldStart === edit.oldEnd) return "add";
-    if (edit.newStart === edit.newEnd) return "delete";
-    return "modify";
-}
-
-export function getChangeRailMarkerKey(edit: LineEdit, index: number) {
-    const kind = getMarkerKind(edit);
-    return `edit-${index}-${kind}-${edit.newStart}-${edit.newEnd}-${edit.oldStart}-${edit.oldEnd}`;
 }
 
 function getChangedLineCount(edit: LineEdit) {

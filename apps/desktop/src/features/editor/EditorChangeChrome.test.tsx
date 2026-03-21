@@ -11,6 +11,7 @@ import { EditorChangeChrome } from "./EditorChangeChrome";
 function makeTrackedFile(
     diffBase: string,
     currentText: string,
+    reviewState: "pending" | "finalized" = "finalized",
 ): TrackedFile {
     const linePatch = buildPatchFromTexts(diffBase, currentText);
 
@@ -20,7 +21,7 @@ function makeTrackedFile(
         path: "/vault/test.md",
         previousPath: null,
         status: { kind: "modified" },
-        reviewState: "finalized",
+        reviewState,
         diffBase,
         currentText,
         unreviewedRanges: buildTextRangePatchFromTexts(
@@ -62,6 +63,7 @@ describe("EditorChangeChrome", () => {
             );
 
             const cta = screen.getByRole("button", { name: "Open review" });
+            expect(screen.getByText("Ready for review")).toBeInTheDocument();
             fireEvent.click(cta);
 
             expect(openReview).toHaveBeenCalledWith("session-1", {
@@ -70,5 +72,18 @@ describe("EditorChangeChrome", () => {
         } finally {
             useEditorStore.setState({ ...originalState });
         }
+    });
+
+    it("shows the pending review label without a rail snapshot", () => {
+        render(
+            <EditorChangeChrome
+                trackedFile={makeTrackedFile("alpha", "alpHa", "pending")}
+                sessionId="session-1"
+                view={null}
+            />,
+        );
+
+        expect(screen.getByText("Pending review")).toBeInTheDocument();
+        expect(screen.queryByLabelText("Change rail")).not.toBeInTheDocument();
     });
 });

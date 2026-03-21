@@ -1,4 +1,5 @@
 import { act, fireEvent, screen } from "@testing-library/react";
+import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorView, keymap } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
@@ -229,6 +230,55 @@ describe("Editor", () => {
         expect(document.querySelector(".cm-editor")).toHaveAttribute(
             "data-live-preview",
             "false",
+        );
+    });
+
+    it("activates merge view only in source mode", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "new line",
+            },
+        ]);
+        seedTrackedDiff("notes/current.md", "old line", "new line");
+
+        renderComponent(<Editor />);
+
+        let view = getEditorView();
+        expect(getChunks(view.state)).toBeNull();
+        expect(document.querySelector(".cm-lineNumbers")).toBeNull();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "true",
+        );
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+            await flushPromises();
+        });
+
+        view = getEditorView();
+        expect(getChunks(view.state)?.chunks.length).toBe(1);
+        expect(getOriginalDoc(view.state).toString()).toBe("old line");
+        expect(document.querySelector(".cm-lineNumbers")).not.toBeNull();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "false",
+        );
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", true);
+            await flushPromises();
+        });
+
+        view = getEditorView();
+        expect(getChunks(view.state)).toBeNull();
+        expect(document.querySelector(".cm-lineNumbers")).toBeNull();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "true",
         );
     });
 
@@ -1106,7 +1156,46 @@ describe("Editor", () => {
         expect(screen.getByText("Other body")).toBeInTheDocument();
     });
 
-    it("reapplies pending inline diff decorations when returning to a note tab", async () => {
+    it("keeps the scroll header ahead of the gutters in source mode across tab switches", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Current body",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+
+        renderComponent(<Editor />);
+
+        const firstView = getEditorView();
+        expect(firstView.scrollDOM.firstElementChild).toHaveClass(
+            "cm-lp-scroll-header",
+        );
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+            await flushPromises();
+        });
+
+        const secondView = getEditorView();
+        expect(secondView.scrollDOM.firstElementChild).toHaveClass(
+            "cm-lp-scroll-header",
+        );
+        expect(secondView.state.doc.toString()).toBe("Other body");
+    });
+
+    it("reapplies merge view when returning to a note tab in source mode", async () => {
         setEditorTabs(
             [
                 {
@@ -1124,36 +1213,25 @@ describe("Editor", () => {
             ],
             "tab-1",
         );
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
         seedTrackedDiff("notes/current.md", "old line", "new line");
 
         renderComponent(<Editor />);
-        expect(
-            document.querySelector(
-                ".cm-diff-inline-modified, .cm-diff-word-changed",
-            ),
-        ).not.toBeNull();
+        expect(getChunks(getEditorView().state)?.chunks.length).toBe(1);
 
         await act(async () => {
             useEditorStore.getState().switchTab("tab-2");
             await flushPromises();
         });
 
-        expect(
-            document.querySelector(
-                ".cm-diff-inline-modified, .cm-diff-word-changed",
-            ),
-        ).toBeNull();
+        expect(getChunks(getEditorView().state)).toBeNull();
 
         await act(async () => {
             useEditorStore.getState().switchTab("tab-1");
             await flushPromises();
         });
 
-        expect(
-            document.querySelector(
-                ".cm-diff-inline-modified, .cm-diff-word-changed",
-            ),
-        ).not.toBeNull();
+        expect(getChunks(getEditorView().state)?.chunks.length).toBe(1);
 
         await act(async () => {
             useChatStore.setState({
@@ -1166,6 +1244,7 @@ describe("Editor", () => {
     });
 
     it("shows the change rail for tracked note diffs and navigates to the hunk", async () => {
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
         setEditorTabs([
             {
                 id: "tab-1",
@@ -1195,9 +1274,9 @@ describe("Editor", () => {
             await flushPromises();
         });
 
-        expect(view.state.doc.lineAt(view.state.selection.main.head).number).toBe(
-            2,
-        );
+        expect(
+            view.state.doc.lineAt(view.state.selection.main.head).number,
+        ).toBe(2);
     });
 
     it("closes the active tab on Cmd+W", async () => {

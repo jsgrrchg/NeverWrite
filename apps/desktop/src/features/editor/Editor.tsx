@@ -86,6 +86,8 @@ import {
     getSpellcheckExtension,
     getEditorFontFamily,
 } from "./editorExtensions";
+import { mergeViewCompartment } from "./extensions/mergeViewDiff";
+import { syncMergeViewForPaths } from "./mergeViewSync";
 import {
     activateWikilinkSuggesterAnnotation,
     markdownAutopairExtension,
@@ -134,8 +136,6 @@ import {
 } from "./extensions/grammar";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { useCommandStore } from "../command-palette/store/commandStore";
-import { getInlineDiffExtension } from "./extensions/inlineDiff";
-import { syncInlineDiffForPaths } from "./inlineDiffSync";
 import { EditorChangeChrome } from "./EditorChangeChrome";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 import {
@@ -209,6 +209,26 @@ export function Editor({
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
     const spellcheckRequestIdRef = useRef(0);
     const [editorView, setEditorView] = useState<EditorView | null>(null);
+
+    const attachScrollHeader = useCallback((view: EditorView) => {
+        if (!scrollHeaderRef.current) {
+            const header = document.createElement("div");
+            header.className = "cm-lp-scroll-header";
+            scrollHeaderRef.current = header;
+        }
+
+        const header = scrollHeaderRef.current;
+        if (!header) {
+            return;
+        }
+
+        const firstChild = view.scrollDOM.firstChild;
+        if (firstChild !== header) {
+            view.scrollDOM.insertBefore(header, firstChild);
+        }
+
+        view.requestMeasure();
+    }, []);
 
     useEffect(() => {
         wikilinkSuggesterRef.current = wikilinkSuggester;
@@ -1441,6 +1461,7 @@ export function Editor({
                             noteId,
                         }),
                     ),
+                    mergeViewCompartment.of([]),
                     livePreviewCompartment.of(
                         getLivePreviewExtension(
                             handleOpenLinkContextMenu,
@@ -1588,7 +1609,6 @@ export function Editor({
                                 );
                         },
                     ),
-                    getInlineDiffExtension(),
                     EditorView.updateListener.of((update) => {
                         if (
                             update.transactions.some((transaction) =>
@@ -1651,18 +1671,7 @@ export function Editor({
             });
             viewRef.current = nextView;
             setEditorView(nextView);
-
-            if (!scrollHeaderRef.current) {
-                const header = document.createElement("div");
-                header.className = "cm-lp-scroll-header";
-                nextView.scrollDOM.insertBefore(header, nextView.contentDOM);
-                scrollHeaderRef.current = header;
-            } else if (!nextView.scrollDOM.contains(scrollHeaderRef.current)) {
-                nextView.scrollDOM.insertBefore(
-                    scrollHeaderRef.current,
-                    nextView.contentDOM,
-                );
-            }
+            attachScrollHeader(nextView);
 
             if (shouldRestoreFocus) {
                 nextView.focus();
@@ -1707,6 +1716,7 @@ export function Editor({
             return nextView;
         },
         [
+            attachScrollHeader,
             handleEditorContextMenu,
             updateSelectionToolbar,
             updateWikilinkSuggester,
@@ -1853,10 +1863,7 @@ export function Editor({
             scrollHeaderRef.current &&
             !view.scrollDOM.contains(scrollHeaderRef.current)
         ) {
-            view.scrollDOM.insertBefore(
-                scrollHeaderRef.current,
-                view.contentDOM,
-            );
+            attachScrollHeader(view);
         }
 
         restoreTabScrollPosition(activeNoteId, view);
@@ -1925,6 +1932,9 @@ export function Editor({
                             noteId: activeNoteId,
                         }),
                     ),
+                    // Reset merge view to empty — syncMergeViewForPaths will
+                    // re-enable it with fresh data in a later effect.
+                    mergeViewCompartment.reconfigure([]),
                 ],
             });
         }
@@ -1950,6 +1960,7 @@ export function Editor({
         activeTabId,
         activeNoteId,
         activeTab?.content,
+        attachScrollHeader,
         isTabDirty,
         markTabSaved,
         restoreTabScrollPosition,
@@ -2004,14 +2015,78 @@ export function Editor({
     // Reconfigure live preview when vault metadata or the setting changes
     useEffect(() => {
         viewRef.current?.dispatch({
-            effects: livePreviewCompartment.reconfigure(
-                getLivePreviewExtension(
-                    handleOpenLinkContextMenu,
-                    livePreviewEnabled,
+            effects: [
+                livePreviewCompartment.reconfigure(
+                    getLivePreviewExtension(
+                        handleOpenLinkContextMenu,
+                        livePreviewEnabled,
+                    ),
                 ),
-            ),
+            ],
         });
-    }, [handleOpenLinkContextMenu, vaultPath, livePreviewEnabled]);
+        syncMergeViewForPaths(
+            viewRef.current,
+            activeNoteId ? [`${activeNoteId}.md`] : [],
+            useChatStore.getState().sessionsById,
+            {
+                mode: livePreviewEnabled ? "preview" : "source",
+            },
+        );
+    }, [
+        activeNoteId,
+        handleOpenLinkContextMenu,
+        livePreviewEnabled,
+        vaultPath,
+    ]);
+
+    useEffect(() => {
+        const syncMerge = () => {
+            const noteId = activeTabRef.current?.noteId;
+            syncMergeViewForPaths(
+                viewRef.current,
+                noteId ? [`${noteId}.md`] : [],
+                useChatStore.getState().sessionsById,
+                {
+                    mode: useSettingsStore.getState().livePreviewEnabled
+                        ? "preview"
+                        : "source",
+                },
+            );
+        };
+
+        syncMerge();
+        const unsub = useChatStore.subscribe((state) => {
+            const noteId = activeTabRef.current?.noteId;
+            syncMergeViewForPaths(
+                viewRef.current,
+                noteId ? [`${noteId}.md`] : [],
+                state.sessionsById,
+                {
+                    mode: useSettingsStore.getState().livePreviewEnabled
+                        ? "preview"
+                        : "source",
+                },
+            );
+        });
+        return unsub;
+    }, []);
+
+    useEffect(() => {
+        const noteId = activeTabRef.current?.noteId;
+        syncMergeViewForPaths(
+            viewRef.current,
+            noteId ? [`${noteId}.md`] : [],
+            useChatStore.getState().sessionsById,
+            {
+                mode: livePreviewEnabled ? "preview" : "source",
+            },
+        );
+    }, [
+        activeTabId,
+        activeNoteId,
+        livePreviewEnabled,
+        trackedFileMatch?.trackedFile.version,
+    ]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
@@ -2136,34 +2211,6 @@ export function Editor({
         });
         return unsub;
     }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
-
-    const syncInlineDiff = useCallback(() => {
-        const noteId = activeTabRef.current?.noteId;
-        syncInlineDiffForPaths(
-            viewRef.current,
-            noteId ? [`${noteId}.md`] : [],
-            useChatStore.getState().sessionsById,
-        );
-    }, []);
-
-    // Sync inline diff decorations with chatStore TrackedFile changes.
-    useEffect(() => {
-        syncInlineDiff();
-        const unsub = useChatStore.subscribe((state) => {
-            const noteId = activeTabRef.current?.noteId;
-            syncInlineDiffForPaths(
-                viewRef.current,
-                noteId ? [`${noteId}.md`] : [],
-                state.sessionsById,
-            );
-        });
-        return unsub;
-    }, [syncInlineDiff]);
-
-    // Re-apply pending inline diff when switching tabs or restoring a saved view.
-    useEffect(() => {
-        syncInlineDiff();
-    }, [activeTabId, activeNoteId, syncInlineDiff]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
@@ -2470,7 +2517,10 @@ export function Editor({
             <div className="min-h-0 flex-1 relative">
                 <div className="flex h-full min-w-0">
                     <div className="min-w-0 flex-1 relative">
-                        <div ref={containerRef} className="h-full relative z-1" />
+                        <div
+                            ref={containerRef}
+                            className="h-full relative z-1"
+                        />
                     </div>
                     <EditorChangeChrome
                         trackedFile={trackedFileMatch?.trackedFile ?? null}
