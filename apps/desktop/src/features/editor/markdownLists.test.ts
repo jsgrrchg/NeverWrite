@@ -56,6 +56,19 @@ describe("markdownLists", () => {
         expect(state.doc.toString()).toBe("- One\n- Two\n- ");
     });
 
+    it("continues ordered sublists with numbering local to the nested level", () => {
+        const { handled, state } = applyListCommand(
+            "1. Parent\n   1. Child\n2. Next parent",
+            EditorSelection.cursor(21),
+            continueMarkdownListItem,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe(
+            "1. Parent\n   1. Child\n   2. \n2. Next parent",
+        );
+    });
+
     it("keeps splitting the item when Enter is pressed in the content", () => {
         const { handled, state } = applyListCommand(
             "- OneTwo",
@@ -89,6 +102,30 @@ describe("markdownLists", () => {
         expect(state.doc.toString()).toBe("  - One\n  - Two");
     });
 
+    it("indents ordered list items enough to create a nested level in one Tab", () => {
+        const { handled, state } = applyListCommand(
+            "1. One\n1. Two",
+            EditorSelection.range(7, 13),
+            insertConfiguredTab,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe("1. One\n   1. Two");
+    });
+
+    it("renumbers parent and child ordered items when creating a nested sublist", () => {
+        const { handled, state } = applyListCommand(
+            "1. Parent\n2. Child\n3. Child\n4. Next parent",
+            EditorSelection.range(10, 28),
+            insertConfiguredTab,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe(
+            "1. Parent\n   1. Child\n   2. Child\n2. Next parent",
+        );
+    });
+
     it("outdents selected markdown list items on Shift+Tab", () => {
         const { handled, state } = applyListCommand(
             "  - One\n  - Two",
@@ -98,5 +135,29 @@ describe("markdownLists", () => {
 
         expect(handled).toBe(true);
         expect(state.doc.toString()).toBe("- One\n- Two");
+    });
+
+    it("outdents ordered list items using the same nesting step", () => {
+        const { handled, state } = applyListCommand(
+            "1. One\n   1. Two",
+            EditorSelection.range(7, 16),
+            removeConfiguredTab,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe("1. One\n2. Two");
+    });
+
+    it("renumbers ordered items correctly when flattening a nested sublist", () => {
+        const { handled, state } = applyListCommand(
+            "1. Parent\n   1. Child\n   2. Child\n2. Next parent",
+            EditorSelection.range(10, 34),
+            removeConfiguredTab,
+        );
+
+        expect(handled).toBe(true);
+        expect(state.doc.toString()).toBe(
+            "1. Parent\n2. Child\n3. Child\n4. Next parent",
+        );
     });
 });

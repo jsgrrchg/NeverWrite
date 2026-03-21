@@ -2,6 +2,7 @@ import {
     ChangeSet,
     EditorSelection,
     type EditorState,
+    type TransactionSpec,
 } from "@codemirror/state";
 import { indentUnit } from "@codemirror/language";
 import { indentMore, indentLess } from "@codemirror/commands";
@@ -73,6 +74,126 @@ export function buildContinuedListPrefix(item: MarkdownListItem): string {
     return `${item.indent}${orderedMarker} ${taskSuffix}`;
 }
 
+function getListIndentStep(item: MarkdownListItem, unitLength: number) {
+    if (item.orderedNumber === null) return unitLength;
+    return Math.max(unitLength, item.marker.length + 1);
+}
+
+type OrderedListContext = {
+    indentWidth: number;
+    kind: "ordered" | "unordered";
+    nextNumber: number;
+};
+
+function getIndentWidth(indent: string) {
+    let width = 0;
+    for (const char of indent) {
+        width += char === "\t" ? 4 : 1;
+    }
+    return width;
+}
+
+function getOrderedMarkerRange(
+    line: ReturnType<EditorState["doc"]["line"]>,
+    item: MarkdownListItem,
+) {
+    if (item.orderedNumber === null) return null;
+
+    const from = line.from + item.indent.length;
+    const to = from + String(item.orderedNumber).length;
+    return { from, to };
+}
+
+function getOrderedListNormalization(
+    state: EditorState,
+): { changes: ChangeSet; selection: EditorSelection } | null {
+    const contexts: OrderedListContext[] = [];
+    const specs: Array<{ from: number; to: number; insert: string }> = [];
+
+    for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
+        const line = state.doc.line(lineNumber);
+        const item = parseMarkdownListItem(line.text);
+        if (!item) continue;
+
+        const indentWidth = getIndentWidth(item.indent);
+        while (
+            contexts.length > 0 &&
+            indentWidth < contexts[contexts.length - 1].indentWidth
+        ) {
+            contexts.pop();
+        }
+
+        const kind = item.orderedNumber !== null ? "ordered" : "unordered";
+        const top = contexts[contexts.length - 1];
+        let expectedNumber: number | null = null;
+
+        if (!top || indentWidth > top.indentWidth) {
+            if (kind === "ordered") {
+                expectedNumber = top ? 1 : (item.orderedNumber ?? 1);
+                contexts.push({
+                    indentWidth,
+                    kind,
+                    nextNumber: expectedNumber + 1,
+                });
+            } else {
+                contexts.push({ indentWidth, kind, nextNumber: 0 });
+            }
+        } else if (top.kind === kind) {
+            if (kind === "ordered") {
+                expectedNumber = top.nextNumber;
+                top.nextNumber += 1;
+            }
+        } else {
+            contexts.pop();
+            if (kind === "ordered") {
+                expectedNumber = item.orderedNumber ?? 1;
+                contexts.push({
+                    indentWidth,
+                    kind,
+                    nextNumber: expectedNumber + 1,
+                });
+            } else {
+                contexts.push({ indentWidth, kind, nextNumber: 0 });
+            }
+        }
+
+        if (kind !== "ordered" || expectedNumber === item.orderedNumber) {
+            continue;
+        }
+
+        const markerRange = getOrderedMarkerRange(line, item);
+        if (!markerRange) continue;
+        specs.push({
+            from: markerRange.from,
+            to: markerRange.to,
+            insert: String(expectedNumber),
+        });
+    }
+
+    if (!specs.length) return null;
+
+    const changes = ChangeSet.of(specs, state.doc.length);
+    return {
+        changes,
+        selection: mapSelectionThroughChanges(state, changes),
+    };
+}
+
+function updateListState(state: EditorState, baseSpec: TransactionSpec) {
+    const normalized = getOrderedListNormalization(
+        state.update(baseSpec).state,
+    );
+    if (!normalized) {
+        return state.update(baseSpec);
+    }
+
+    return state.update(baseSpec, {
+        changes: normalized.changes,
+        selection: normalized.selection,
+        sequential: true,
+    });
+}
+
 export function continueMarkdownListItem({
     state,
     dispatch,
@@ -92,7 +213,7 @@ export function continueMarkdownListItem({
 
     if (item.isEmpty) {
         dispatch(
-            state.update({
+            updateListState(state, {
                 changes: { from: line.from, to: line.to, insert: "" },
                 selection: EditorSelection.cursor(line.from),
                 scrollIntoView: true,
@@ -108,7 +229,7 @@ export function continueMarkdownListItem({
     const anchor = insertAt + insert.length;
 
     dispatch(
-        state.update({
+        updateListState(state, {
             changes: { from: insertAt, to: insertAt, insert },
             selection: EditorSelection.cursor(anchor),
             scrollIntoView: true,
@@ -140,11 +261,14 @@ export function backspaceMarkdownListMarker({
     if (range.from < line.from || range.from > prefixEnd) return false;
 
     const unit = state.facet(indentUnit);
-    const deleteIndentLength = getOutdentDeleteLength(item.indent, unit.length);
+    const deleteIndentLength = getOutdentDeleteLength(
+        item.indent,
+        getListIndentStep(item, unit.length),
+    );
 
     if (deleteIndentLength > 0) {
         dispatch(
-            state.update({
+            updateListState(state, {
                 changes: {
                     from: line.from,
                     to: line.from + deleteIndentLength,
@@ -160,7 +284,7 @@ export function backspaceMarkdownListMarker({
     }
 
     dispatch(
-        state.update({
+        updateListState(state, {
             changes: { from: line.from, to: line.to, insert: "" },
             selection: EditorSelection.cursor(line.from),
             scrollIntoView: true,
@@ -240,12 +364,22 @@ export function indentMarkdownListItems({
 
     const unit = state.facet(indentUnit);
     const changes = ChangeSet.of(
-        lines.map((line) => ({ from: line.from, insert: unit })),
+        lines.map((line) => {
+            const item = parseMarkdownListItem(line.text);
+            const step = item
+                ? getListIndentStep(item, unit.length)
+                : unit.length;
+
+            return {
+                from: line.from,
+                insert: " ".repeat(step),
+            };
+        }),
         state.doc.length,
     );
 
     dispatch(
-        state.update({
+        updateListState(state, {
             changes,
             selection: mapSelectionThroughChanges(state, changes),
             scrollIntoView: true,
@@ -294,7 +428,11 @@ export function outdentMarkdownListItems({
         .map((line) => {
             const match = line.text.match(MARKDOWN_LIST_LINE_RE);
             const prefix = match?.[1] ?? "";
-            const deleteLength = getOutdentDeleteLength(prefix, unit.length);
+            const item = parseMarkdownListItem(line.text);
+            const deleteLength = getOutdentDeleteLength(
+                prefix,
+                item ? getListIndentStep(item, unit.length) : unit.length,
+            );
             if (!deleteLength) return null;
             return {
                 from: line.from,
@@ -308,7 +446,7 @@ export function outdentMarkdownListItems({
     const changes = ChangeSet.of(specs, state.doc.length);
 
     dispatch(
-        state.update({
+        updateListState(state, {
             changes,
             selection: mapSelectionThroughChanges(state, changes),
             scrollIntoView: true,
