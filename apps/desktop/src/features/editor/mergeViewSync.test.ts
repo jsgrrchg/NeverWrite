@@ -242,4 +242,108 @@ describe("mergeViewSync", () => {
             useChatStore.setState(originalState);
         }
     });
+
+    it("maps inline deletion chunks to the tracked file line edit range", () => {
+        const originalState = useChatStore.getState();
+        const resolveHunkEdits = vi.fn();
+        useChatStore.setState({
+            ...originalState,
+            resolveHunkEdits,
+        });
+
+        try {
+            const { view, destroy } = mountView("alpha gamma\nomega");
+            const path = "notes/current.md";
+            const session = createSession("session-1", "wc-1", [
+                createTrackedFile(
+                    path,
+                    "alpha beta gamma\nomega",
+                    "alpha gamma\nomega",
+                ),
+            ]);
+
+            syncMergeViewForPaths(view, [path], {
+                [session.sessionId]: session,
+            });
+
+            const rejectButton = view.dom.querySelector(
+                '[data-merge-decision="reject"]',
+            ) as HTMLButtonElement | null;
+
+            expect(rejectButton).not.toBeNull();
+
+            if (rejectButton) {
+                fireEvent.mouseDown(rejectButton);
+            }
+
+            expect(resolveHunkEdits).toHaveBeenCalledWith(
+                "session-1",
+                path,
+                "rejected",
+                0,
+                1,
+            );
+
+            destroy();
+        } finally {
+            useChatStore.setState(originalState);
+        }
+    });
+
+    it("refreshes merge decisions when the tracked file changes without changing presentation flags", () => {
+        const originalState = useChatStore.getState();
+        const resolveHunkEdits = vi.fn();
+        useChatStore.setState({
+            ...originalState,
+            resolveHunkEdits,
+        });
+
+        try {
+            const doc = "alpha\nbeta\ngamma";
+            const { view, destroy } = mountView(doc);
+            const path = "notes/current.md";
+            const firstFile = createTrackedFile(path, "alpha\nbeta", doc);
+            const secondFile = createTrackedFile(
+                path,
+                "ALPHA\nbeta\ngamma",
+                doc,
+            );
+            secondFile.version = 2;
+            const firstSession = createSession("session-1", "wc-1", [
+                firstFile,
+            ]);
+            const secondSession = createSession("session-1", "wc-1", [
+                secondFile,
+            ]);
+
+            syncMergeViewForPaths(view, [path], {
+                [firstSession.sessionId]: firstSession,
+            });
+            syncMergeViewForPaths(view, [path], {
+                [secondSession.sessionId]: secondSession,
+            });
+
+            const acceptButton = view.dom.querySelector(
+                '[data-merge-decision="accept"]',
+            ) as HTMLButtonElement | null;
+
+            expect(acceptButton).not.toBeNull();
+
+            if (acceptButton) {
+                fireEvent.mouseDown(acceptButton);
+            }
+
+            expect(resolveHunkEdits).toHaveBeenCalledWith(
+                "session-1",
+                path,
+                "accepted",
+                0,
+                1,
+            );
+
+            destroy();
+        } finally {
+            useChatStore.setState(originalState);
+        }
+    });
 });

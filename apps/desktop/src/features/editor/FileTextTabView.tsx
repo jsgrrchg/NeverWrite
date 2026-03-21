@@ -28,7 +28,6 @@ import { useChatStore } from "../ai/store/chatStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { loadCodeLanguage } from "./codeLanguage";
 import { searchTheme } from "./extensions/searchTheme";
-import { EditorChangeChrome } from "./EditorChangeChrome";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 
 type SavedVaultFileDetail = {
@@ -49,7 +48,7 @@ export function FileTextTabView() {
     const applyingExternalUpdateRef = useRef(false);
     const lastSavedContentByPathRef = useRef(new Map<string, string>());
     const saveRequestIdByPathRef = useRef(new Map<string, number>());
-    const [editorView, setEditorView] = useState<EditorView | null>(null);
+    const [, setEditorView] = useState<EditorView | null>(null);
 
     const tab = useEditorStore((state) => {
         return getActiveFileTab(state);
@@ -441,13 +440,11 @@ export function FileTextTabView() {
             <div className="min-h-0 flex-1 relative">
                 <div className="flex h-full min-w-0">
                     <div className="min-w-0 flex-1 relative">
-                        <div ref={containerRef} className="h-full relative z-1" />
+                        <div
+                            ref={containerRef}
+                            className="h-full relative z-1"
+                        />
                     </div>
-                    <EditorChangeChrome
-                        trackedFile={trackedFileMatch?.trackedFile ?? null}
-                        sessionId={trackedFileMatch?.sessionId ?? null}
-                        view={editorView}
-                    />
                 </div>
             </div>
         </div>

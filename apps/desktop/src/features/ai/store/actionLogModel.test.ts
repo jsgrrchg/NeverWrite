@@ -916,6 +916,22 @@ describe("Accept operations", () => {
             },
         ]);
     });
+
+    it("keepEditsInRange accepts pure deletions selected as point ranges", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "aaa\nbbb\nccc",
+                new_text: "aaa\nccc",
+            }),
+            1000,
+        );
+
+        const accepted = keepEditsInRange(file, 1, 1);
+
+        expect(accepted.diffBase).toBe("aaa\nccc");
+        expect(accepted.currentText).toBe("aaa\nccc");
+        expect(accepted.unreviewedEdits.edits).toEqual([]);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -990,6 +1006,24 @@ describe("Reject operations", () => {
                 text: "alpHa",
             },
         ]);
+    });
+
+    it("rejectEditsInRanges reverts pure deletions selected as point ranges", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "aaa\nbbb\nccc",
+                new_text: "aaa\nccc",
+            }),
+            1000,
+        );
+
+        const { file: rejected, undoData } = rejectEditsInRanges(file, [
+            { start: 1, end: 1 },
+        ]);
+
+        expect(rejected.currentText).toBe("aaa\nbbb\nccc");
+        expect(rejected.unreviewedEdits.edits).toEqual([]);
+        expect(undoData.editsToRestore).toHaveLength(1);
     });
 });
 

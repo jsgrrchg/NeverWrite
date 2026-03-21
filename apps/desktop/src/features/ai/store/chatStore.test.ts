@@ -9,6 +9,7 @@ import type {
     AIComposerPart,
     QueuedChatMessage,
 } from "../types";
+import { deriveReviewItems } from "../diff/editedFilesPresentationModel";
 import { selectVisibleTrackedFiles } from "./editedFilesBufferModel";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import {
@@ -2556,6 +2557,108 @@ describe("chatStore", () => {
                 currentText: "second edit",
             },
         ]);
+    });
+
+    it("keeps earlier agent hunks rejectable when the user edits the file and the agent edits it again later", async () => {
+        await useChatStore.getState().initialize();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return sessionPayload;
+        });
+
+        const activeSessionId = getActiveSessionId();
+
+        // Cycle A: agent edits line 1.
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-cycle-a-user-interleaved",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+
+        // User edits a different line before resolving the pending agent hunk.
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        // Cycle B: same file gets another agent edit on a different line.
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-cycle-b-user-interleaved",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+
+        // Finishing the second turn should restore review controls, not
+        // silently accept the older hunk.
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-cycle-b",
+        });
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0]).toMatchObject({
+            identityKey: "/notes/file.md",
+            diffBase: "aaXa\nbbb\nccc\nddd",
+            currentText: "aaXa\nBBB\nccc\nDDD",
+            reviewState: "finalized",
+        });
+        expect(buffer[0].unreviewedEdits.edits).toEqual([
+            {
+                oldStart: 1,
+                oldEnd: 2,
+                newStart: 1,
+                newEnd: 2,
+            },
+            {
+                oldStart: 3,
+                oldEnd: 4,
+                newStart: 3,
+                newEnd: 4,
+            },
+        ]);
+
+        const reviewItems = deriveReviewItems(
+            buffer,
+            new Set(["/notes/file.md"]),
+        );
+        expect(reviewItems).toHaveLength(1);
+        expect(reviewItems[0]).toMatchObject({
+            canReject: true,
+            canResolveHunks: true,
+        });
     });
 
     it("auto-removes a carried entry when a later cycle reverts the file", async () => {

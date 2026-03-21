@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorView } from "@codemirror/view";
 import { fireEvent } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     buildReplaceOriginalDocEffect,
     createMergeViewExtension,
@@ -28,6 +28,7 @@ function mountMergeView(
         reviewState: "finalized",
         sessionId: "session-1",
         statusKind: "modified",
+        trackedVersion: 1,
         highlightChanges: true,
         allowInlineDiffs: true,
         enableControls: true,
@@ -135,6 +136,46 @@ describe("mergeViewDiff", () => {
         expect(calls[0]?.decision).toBe("rejected");
         expect(view.state.doc.toString()).toBe("alpha\n");
 
+        destroy();
+    });
+
+    it("resolves the chunk from the deleted widget container instead of the button DOM node", () => {
+        const calls: MergeDecisionPayload[] = [];
+        const { view, destroy } = mountMergeView({
+            doc: "alpha\n",
+            original: "alpha\nbeta\n",
+            onDecision(context) {
+                calls.push(context);
+            },
+        });
+
+        const rejectButton = view.dom.querySelector(
+            '[data-merge-decision="reject"]',
+        ) as HTMLButtonElement | null;
+
+        expect(rejectButton).not.toBeNull();
+
+        const originalPosAtDOM = view.posAtDOM.bind(view);
+        const posAtDOMSpy = vi
+            .spyOn(view, "posAtDOM")
+            .mockImplementation((node, offset) => {
+                if (
+                    node instanceof HTMLElement &&
+                    node.dataset.mergeDecision === "reject"
+                ) {
+                    return 999;
+                }
+                return originalPosAtDOM(node, offset);
+            });
+
+        if (rejectButton) {
+            fireEvent.mouseDown(rejectButton);
+        }
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.decision).toBe("rejected");
+
+        posAtDOMSpy.mockRestore();
         destroy();
     });
 

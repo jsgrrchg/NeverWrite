@@ -26,6 +26,7 @@ export const mergeViewTheme = EditorView.baseTheme({
         boxDecorationBreak: "clone",
     },
     "&[data-merge-enabled='true'] .cm-deletedChunk": {
+        position: "relative",
         backgroundColor:
             "color-mix(in srgb, var(--diff-remove) 10%, transparent)",
         borderLeft: "3px solid var(--diff-remove)",
@@ -44,10 +45,17 @@ export const mergeViewTheme = EditorView.baseTheme({
             animation: "cm-merge-pulse 1.5s ease-in-out infinite",
         },
     "&[data-merge-enabled='true'] .cm-chunkButtons": {
+        position: "absolute",
+        top: "4px",
+        right: "8px",
         display: "flex",
-        justifyContent: "flex-end",
         gap: "6px",
-        paddingTop: "4px",
+        opacity: "0",
+        transition: "opacity 150ms ease",
+        zIndex: "1",
+    },
+    "&[data-merge-enabled='true'] .cm-deletedChunk:hover .cm-chunkButtons": {
+        opacity: "1",
     },
     "&[data-merge-enabled='true'] .cm-merge-action": {
         fontSize: "11px",
