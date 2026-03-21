@@ -516,6 +516,38 @@ export const livePreviewTheme = EditorView.baseTheme({
         background: "var(--accent) !important",
         color: "white !important",
     },
+    ".cm-pdf-embed-wrapper": {
+        display: "flex",
+        justifyContent: "center",
+        padding: "4px 0",
+    },
+    ".cm-pdf-embed-chip": {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "6px",
+        padding: "6px 12px",
+        borderRadius: "6px",
+        background: "var(--bg-secondary)",
+        border: "1px solid var(--border)",
+        cursor: "pointer",
+        fontSize: "13px",
+        color: "var(--text-primary)",
+        transition: "background 0.15s",
+    },
+    ".cm-pdf-embed-chip:hover": {
+        background: "var(--bg-tertiary)",
+    },
+    ".cm-pdf-embed-icon": {
+        width: "16px",
+        height: "16px",
+        flexShrink: "0",
+        color: "var(--text-secondary)",
+    },
+    ".cm-pdf-embed-name": {
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+    },
     ".cm-youtube-link-wrapper": {
         padding: "8px 0",
         display: "flex",
