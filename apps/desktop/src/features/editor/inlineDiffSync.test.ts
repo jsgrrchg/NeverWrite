@@ -146,4 +146,58 @@ describe("inlineDiffSync", () => {
 
         destroy();
     });
+
+    it("derives presentation flags from the matched tracked file", () => {
+        const { view, destroy } = mountView("alpha\nbeta\ngamma");
+        const path = "notes/current.md";
+        const session = createSession("session-1", "wc-1", [
+            createTrackedFile(
+                path,
+                Array.from({ length: 12 }, (_, index) => `old-${index}`).join(
+                    "\n",
+                ),
+                "old-0\nold-10\nold-11",
+            ),
+        ]);
+
+        syncInlineDiffForPaths(view, [path], {
+            [session.sessionId]: session,
+        });
+
+        const state = view.state.field(inlineDiffField);
+        expect(state.presentation.level).toBe("large");
+        expect(state.presentation.showInlineActions).toBe(false);
+        expect(state.presentation.collapseLargeDeletes).toBe(true);
+        expect(state.presentation.collapsedDeleteBlockIndexes).toEqual([0]);
+
+        destroy();
+    });
+
+    it("does not throw when syncing after the document shrinks", () => {
+        const path = "notes/current.md";
+        const diffBase = Array.from({ length: 12 }, (_, index) => `old-${index}`).join(
+            "\n",
+        );
+        const currentText = "old-0\nold-10\nold-11";
+        const { view, destroy } = mountView(diffBase);
+        const session = createSession("session-1", "wc-1", [
+            createTrackedFile(path, diffBase, currentText),
+        ]);
+
+        view.dispatch({
+            changes: {
+                from: 0,
+                to: view.state.doc.length,
+                insert: currentText,
+            },
+        });
+
+        expect(() => {
+            syncInlineDiffForPaths(view, [path], {
+                [session.sessionId]: session,
+            });
+        }).not.toThrow();
+
+        destroy();
+    });
 });

@@ -289,10 +289,60 @@ describe("FileTabView", () => {
       document.querySelector(".cm-diff-inline-modified, .cm-diff-word-changed"),
     ).not.toBeNull();
 
-    useChatStore.setState({
-      sessionsById: {},
-      sessionOrder: [],
-      activeSessionId: null,
+    await act(async () => {
+      useChatStore.setState({
+        sessionsById: {},
+        sessionOrder: [],
+        activeSessionId: null,
+      });
+      await Promise.resolve();
     });
+  });
+
+  it("shows the change rail for tracked file diffs and navigates to the hunk", async () => {
+    setEditorTabs([
+      {
+        id: "text-tab",
+        kind: "file",
+        relativePath: "src/config.toml",
+        title: "config.toml",
+        path: "/vault/src/config.toml",
+        mimeType: "application/toml",
+        viewer: "text",
+        content: 'name = "VaultAI"\nversion = "2.0.0"\nmode = "dev"',
+      },
+    ]);
+    seedTrackedDiff(
+      "/vault/src/config.toml",
+      'name = "VaultAI"\nversion = "1.0.0"\nmode = "dev"',
+      'name = "VaultAI"\nversion = "2.0.0"\nmode = "dev"',
+    );
+
+    renderComponent(<FileTabView />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const view = EditorView.findFromDOM(
+      document.querySelector(".cm-editor") as HTMLElement,
+    );
+    expect(view).not.toBeNull();
+
+    act(() => {
+      view!.dispatch({ selection: { anchor: 0, head: 0 } });
+    });
+
+    expect(screen.getByLabelText("Change rail")).toBeInTheDocument();
+    expect(screen.getByText("1 change")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Change 1"));
+      await Promise.resolve();
+    });
+
+    expect(view!.state.doc.lineAt(view!.state.selection.main.head).number).toBe(
+      2,
+    );
   });
 });

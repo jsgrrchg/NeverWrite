@@ -32,12 +32,22 @@ import type {
     HunkWordDiffs,
     LineEdit,
 } from "../../ai/diff/actionLogTypes";
+import type { ChangePresentationLevel } from "../changePresentationModel";
 import { computeWordDiffsForHunk } from "../../ai/store/actionLogModel";
 import { inlineDiffTheme } from "./inlineDiffTheme";
 
 // ---------------------------------------------------------------------------
 // Public state management
 // ---------------------------------------------------------------------------
+
+export interface InlineDiffPresentationState {
+    level: ChangePresentationLevel;
+    showInlineActions: boolean;
+    showWordDiff: boolean;
+    collapseLargeDeletes: boolean;
+    reducedInlineMode: boolean;
+    collapsedDeleteBlockIndexes: number[];
+}
 
 export interface InlineDiffState {
     edits: LineEdit[];
@@ -49,6 +59,9 @@ export interface InlineDiffState {
     diffBase: string;
     reviewState: "pending" | "finalized";
     version: number;
+    presentation: InlineDiffPresentationState;
+    activeEditIndex?: number | null;
+    hoveredEditIndex?: number | null;
 }
 
 const emptyState: InlineDiffState = {
@@ -60,17 +73,73 @@ const emptyState: InlineDiffState = {
     diffBase: "",
     reviewState: "finalized",
     version: 0,
+    presentation: {
+        level: "small",
+        showInlineActions: false,
+        showWordDiff: false,
+        collapseLargeDeletes: false,
+        reducedInlineMode: false,
+        collapsedDeleteBlockIndexes: [],
+    },
+    activeEditIndex: null,
+    hoveredEditIndex: null,
 };
 
 export const setInlineDiff = StateEffect.define<InlineDiffState>();
 export const clearInlineDiff = StateEffect.define<null>();
+export const setInlineDiffActiveEditIndex = StateEffect.define<number | null>();
+export const setInlineDiffHoveredEditIndex = StateEffect.define<number | null>();
+
+function normalizeEditIndex(
+    editCount: number,
+    candidate: number | null | undefined,
+) {
+    return typeof candidate === "number" &&
+        candidate >= 0 &&
+        candidate < editCount
+        ? candidate
+        : null;
+}
 
 export const inlineDiffField = StateField.define<InlineDiffState>({
     create: () => emptyState,
     update(value, tr) {
         for (const effect of tr.effects) {
-            if (effect.is(setInlineDiff)) return effect.value;
+            if (effect.is(setInlineDiff)) {
+                return {
+                    ...effect.value,
+                    activeEditIndex: normalizeEditIndex(
+                        effect.value.edits.length,
+                        effect.value.activeEditIndex ?? value.activeEditIndex,
+                    ),
+                    hoveredEditIndex: normalizeEditIndex(
+                        effect.value.edits.length,
+                        effect.value.hoveredEditIndex ??
+                            value.hoveredEditIndex,
+                    ),
+                };
+            }
             if (effect.is(clearInlineDiff)) return emptyState;
+            if (effect.is(setInlineDiffActiveEditIndex)) {
+                const nextIndex = normalizeEditIndex(
+                    value.edits.length,
+                    effect.value,
+                );
+                if (nextIndex === (value.activeEditIndex ?? null)) {
+                    return value;
+                }
+                return { ...value, activeEditIndex: nextIndex };
+            }
+            if (effect.is(setInlineDiffHoveredEditIndex)) {
+                const nextIndex = normalizeEditIndex(
+                    value.edits.length,
+                    effect.value,
+                );
+                if (nextIndex === (value.hoveredEditIndex ?? null)) {
+                    return value;
+                }
+                return { ...value, hoveredEditIndex: nextIndex };
+            }
         }
         return value;
     },
@@ -87,6 +156,7 @@ const addedInlineMarkDeco = Decoration.mark({ class: "cm-diff-inline-add" });
 const modifiedInlineMarkDeco = Decoration.mark({
     class: "cm-diff-inline-modified",
 });
+const focusedLineDeco = Decoration.line({ class: "cm-diff-focused" });
 const wordChangedInlineMarkDeco = Decoration.mark({
     class: "cm-diff-word-changed",
 });
@@ -332,6 +402,8 @@ class DeletedBlockWidget extends WidgetType {
     private newEnd: number;
     private showControls: boolean;
     private reviewState: "pending" | "finalized";
+    private collapsed: boolean;
+    private focused: boolean;
 
     constructor(
         deletedLines: string[],
@@ -340,6 +412,9 @@ class DeletedBlockWidget extends WidgetType {
         newStart: number,
         newEnd: number,
         reviewState: "pending" | "finalized",
+        showControls: boolean,
+        collapsed: boolean,
+        focused: boolean,
     ) {
         super();
         this.deletedLines = deletedLines;
@@ -348,7 +423,9 @@ class DeletedBlockWidget extends WidgetType {
         this.newStart = newStart;
         this.newEnd = newEnd;
         this.reviewState = reviewState;
-        this.showControls = reviewState === "finalized";
+        this.showControls = showControls;
+        this.collapsed = collapsed;
+        this.focused = focused;
     }
 
     toDOM() {
@@ -357,17 +434,32 @@ class DeletedBlockWidget extends WidgetType {
             this.reviewState === "pending"
                 ? "cm-diff-deleted-block cm-diff-pending"
                 : "cm-diff-deleted-block";
-        const highlightWords = shouldHighlightDeletedWords(this.deletedLines);
+        if (this.focused) {
+            wrapper.classList.add("cm-diff-deleted-block-focused");
+        }
+        if (this.collapsed) {
+            const summaryEl = document.createElement("div");
+            summaryEl.className = "cm-diff-deleted-summary";
+            summaryEl.textContent =
+                this.deletedLines.length === 1
+                    ? "1 deleted line"
+                    : `${this.deletedLines.length} deleted lines`;
+            wrapper.appendChild(summaryEl);
+        } else {
+            const highlightWords = shouldHighlightDeletedWords(
+                this.deletedLines,
+            );
 
-        for (const line of this.deletedLines) {
-            const lineEl = document.createElement("div");
-            lineEl.className = "cm-diff-deleted-line";
-            if (highlightWords) {
-                appendDeletedLineContent(lineEl, line);
-            } else {
-                lineEl.textContent = line || "\u00a0"; // nbsp for empty lines
+            for (const line of this.deletedLines) {
+                const lineEl = document.createElement("div");
+                lineEl.className = "cm-diff-deleted-line";
+                if (highlightWords) {
+                    appendDeletedLineContent(lineEl, line);
+                } else {
+                    lineEl.textContent = line || "\u00a0"; // nbsp for empty lines
+                }
+                wrapper.appendChild(lineEl);
             }
-            wrapper.appendChild(lineEl);
         }
 
         if (this.showControls) {
@@ -427,12 +519,18 @@ class DeletedBlockWidget extends WidgetType {
             this.newStart === other.newStart &&
             this.newEnd === other.newEnd &&
             this.reviewState === other.reviewState &&
+            this.showControls === other.showControls &&
+            this.collapsed === other.collapsed &&
+            this.focused === other.focused &&
             this.deletedLines.length === other.deletedLines.length &&
             this.deletedLines.every((l, i) => l === other.deletedLines[i])
         );
     }
 
     get estimatedHeight() {
+        if (this.collapsed) {
+            return this.showControls ? 56 : 28;
+        }
         return this.deletedLines.length * 22 + 30;
     }
     ignoreEvent() {
@@ -455,8 +553,10 @@ function buildLineDecorations(view: EditorView): DecorationSet {
     const totalLines = doc.lines;
     const wordDiffsByEditIndex = new Map<number, HunkWordDiffs>();
     const wordDiffEditIndexes = new Set<number>();
+    const reducedInlineMode = diffState.presentation.reducedInlineMode;
+    const showWordDiff = diffState.presentation.showWordDiff;
 
-    if (diffState.diffBase.length > 0) {
+    if (showWordDiff && !reducedInlineMode && diffState.diffBase.length > 0) {
         for (const [index, edit] of diffState.edits.entries()) {
             const wordDiffs = computeWordDiffsForHunk(
                 diffState.diffBase,
@@ -476,35 +576,40 @@ function buildLineDecorations(view: EditorView): DecorationSet {
 
     const decos: Array<{ from: number; to: number; deco: Decoration }> = [];
 
-    for (const span of diffState.spans) {
-        const from = clampOffset(doc, span.currentFrom);
-        const to = clampOffset(doc, span.currentTo);
-        if (!shouldRenderInlineMark(doc, span) || from === to) continue;
-        if (
-            spanHandledByWordDiff(
-                doc,
-                span,
-                diffState.edits,
-                wordDiffEditIndexes,
-            )
-        ) {
-            continue;
-        }
+    if (!reducedInlineMode) {
+        for (const span of diffState.spans) {
+            const from = clampOffset(doc, span.currentFrom);
+            const to = clampOffset(doc, span.currentTo);
+            if (!shouldRenderInlineMark(doc, span) || from === to) continue;
+            if (
+                spanHandledByWordDiff(
+                    doc,
+                    span,
+                    diffState.edits,
+                    wordDiffEditIndexes,
+                )
+            ) {
+                continue;
+            }
 
-        decos.push({
-            from,
-            to,
-            deco:
-                span.baseFrom === span.baseTo
-                    ? addedInlineMarkDeco
-                    : modifiedInlineMarkDeco,
-        });
+            decos.push({
+                from,
+                to,
+                deco:
+                    span.baseFrom === span.baseTo
+                        ? addedInlineMarkDeco
+                        : modifiedInlineMarkDeco,
+            });
+        }
     }
 
     for (const [index, edit] of diffState.edits.entries()) {
         const isAdded = edit.oldStart === edit.oldEnd;
         const isDeleted = edit.newStart === edit.newEnd;
         const wordDiffs = wordDiffsByEditIndex.get(index);
+        const isFocused =
+            diffState.activeEditIndex === index ||
+            diffState.hoveredEditIndex === index;
 
         // Deletions are handled by the block-widget StateField below
         if (isDeleted) continue;
@@ -534,7 +639,10 @@ function buildLineDecorations(view: EditorView): DecorationSet {
                     deco: wordChangedInlineMarkDeco,
                 });
             }
-        } else if (shouldUseLineBackgroundForEdit(doc, edit, diffState.spans)) {
+        } else if (
+            reducedInlineMode ||
+            shouldUseLineBackgroundForEdit(doc, edit, diffState.spans)
+        ) {
             const lineDeco = isAdded ? addedLineDeco : modifiedLineDeco;
             for (
                 let lineIdx = edit.newStart;
@@ -563,9 +671,26 @@ function buildLineDecorations(view: EditorView): DecorationSet {
             }
         }
 
+        if (isFocused) {
+            for (
+                let lineIdx = edit.newStart;
+                lineIdx < edit.newEnd;
+                lineIdx++
+            ) {
+                if (lineIdx >= totalLines) break;
+                const lineFrom = doc.line(lineIdx + 1).from;
+                decos.push({
+                    from: lineFrom,
+                    to: lineFrom,
+                    deco: focusedLineDeco,
+                });
+            }
+        }
+
         // Hunk controls on first line (inline widget, floated right via CSS)
         if (
             diffState.reviewState === "finalized" &&
+            (diffState.presentation.showInlineActions || isFocused) &&
             diffState.sessionId &&
             diffState.identityKey &&
             edit.newStart < totalLines
@@ -633,6 +758,9 @@ function buildDeletedBlockDecorations(state: EditorState): DecorationSet {
     const totalLines = doc.lines;
     const builder = new RangeSetBuilder<Decoration>();
     const decos: Array<{ from: number; deco: Decoration }> = [];
+    const collapsedDeleteIndexes = new Set(
+        diffState.presentation.collapsedDeleteBlockIndexes,
+    );
 
     for (let i = 0; i < diffState.edits.length; i++) {
         const edit = diffState.edits[i];
@@ -641,6 +769,8 @@ function buildDeletedBlockDecorations(state: EditorState): DecorationSet {
         const deletedLines = diffState.deletedTexts[i];
         if (!deletedLines || deletedLines.length === 0) continue;
         if (!diffState.sessionId || !diffState.identityKey) continue;
+        const isFocused =
+            diffState.activeEditIndex === i || diffState.hoveredEditIndex === i;
 
         // Place the block widget before the line at newStart
         let pos: number;
@@ -660,6 +790,10 @@ function buildDeletedBlockDecorations(state: EditorState): DecorationSet {
                     edit.newStart,
                     edit.newEnd,
                     diffState.reviewState,
+                    diffState.reviewState === "finalized" &&
+                        (diffState.presentation.showInlineActions || isFocused),
+                    collapsedDeleteIndexes.has(i),
+                    isFocused,
                 ),
                 block: true,
                 side: -1, // before the line

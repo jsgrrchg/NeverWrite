@@ -136,6 +136,8 @@ import { useSpellcheckStore } from "../spellcheck/store";
 import { useCommandStore } from "../command-palette/store/commandStore";
 import { getInlineDiffExtension } from "./extensions/inlineDiff";
 import { syncInlineDiffForPaths } from "./inlineDiffSync";
+import { EditorChangeChrome } from "./EditorChangeChrome";
+import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 import {
     buildSpellcheckContextMenuEntries,
     findTextInputWordRange,
@@ -206,6 +208,7 @@ export function Editor({
     const [isDraggingVault, setIsDraggingVault] = useState(false);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
     const spellcheckRequestIdRef = useRef(0);
+    const [editorView, setEditorView] = useState<EditorView | null>(null);
 
     useEffect(() => {
         wikilinkSuggesterRef.current = wikilinkSuggester;
@@ -263,6 +266,7 @@ export function Editor({
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
     const openVault = useVaultStore((s) => s.openVault);
+    const sessionsById = useChatStore((state) => state.sessionsById);
 
     // Only re-renders when the active tab identity changes, not on content updates
     const activeTabInfo = useEditorStore(
@@ -291,6 +295,12 @@ export function Editor({
     const titleSpellcheckLanguage = titleSpellcheckEnabled
         ? resolveFrontendSpellcheckLanguage(spellcheckPrimaryLanguage)
         : undefined;
+    const trackedFileMatch = activeTabInfo?.noteId
+        ? resolveTrackedFileMatchForPaths(
+              [`${activeTabInfo.noteId}.md`],
+              sessionsById,
+          ).match
+        : null;
 
     const getCurrentBody = useCallback(() => {
         return (
@@ -1640,6 +1650,7 @@ export function Editor({
                 parent,
             });
             viewRef.current = nextView;
+            setEditorView(nextView);
 
             if (!scrollHeaderRef.current) {
                 const header = document.createElement("div");
@@ -1748,6 +1759,7 @@ export function Editor({
             scrollHeaderRef.current = null;
             viewRef.current?.destroy();
             viewRef.current = null;
+            setEditorView(null);
             setSelectionToolbar(null);
             wikilinkSuggesterArmedRef.current = false;
             setWikilinkSuggester(null);
@@ -2456,7 +2468,16 @@ export function Editor({
             style={editorShellStyle}
         >
             <div className="min-h-0 flex-1 relative">
-                <div ref={containerRef} className="h-full relative z-1" />
+                <div className="flex h-full min-w-0">
+                    <div className="min-w-0 flex-1 relative">
+                        <div ref={containerRef} className="h-full relative z-1" />
+                    </div>
+                    <EditorChangeChrome
+                        trackedFile={trackedFileMatch?.trackedFile ?? null}
+                        sessionId={trackedFileMatch?.sessionId ?? null}
+                        view={editorView}
+                    />
+                </div>
                 {!activeTabInfo && (
                     <div
                         className="absolute inset-0 z-2 flex items-center justify-center select-none pointer-events-none"

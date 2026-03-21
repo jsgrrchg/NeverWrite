@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { AgentTextSpan, LineEdit } from "../../ai/diff/actionLogTypes";
-import { getInlineDiffExtension, setInlineDiff } from "./inlineDiff";
+import {
+    getInlineDiffExtension,
+    setInlineDiff,
+    setInlineDiffActiveEditIndex,
+} from "./inlineDiff";
+import type { InlineDiffPresentationState } from "./inlineDiff";
 
 function mountView(doc: string) {
     const parent = document.createElement("div");
@@ -32,6 +37,7 @@ function applyInlineDiff(
     deletedTexts: string[][] = edits.map(() => []),
     diffBase = "",
     reviewState: "pending" | "finalized" = "finalized",
+    presentation?: Partial<InlineDiffPresentationState>,
 ) {
     view.dispatch({
         effects: setInlineDiff.of({
@@ -43,6 +49,15 @@ function applyInlineDiff(
             diffBase,
             reviewState,
             version: 1,
+            presentation: {
+                level: "small",
+                showInlineActions: reviewState === "finalized",
+                showWordDiff: true,
+                collapseLargeDeletes: false,
+                reducedInlineMode: false,
+                collapsedDeleteBlockIndexes: [],
+                ...presentation,
+            },
         }),
     });
 }
@@ -286,6 +301,94 @@ describe("inlineDiff", () => {
         expect(view.dom.querySelectorAll(".cm-diff-word-removed").length).toBe(
             3,
         );
+
+        destroy();
+    });
+
+    it("uses reduced inline mode to prefer line backgrounds over word diff", () => {
+        const baseText = "alpha beta gamma";
+        const currentText = "alpha BETA delta gamma";
+        const { view, destroy } = mountView(currentText);
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [{ baseFrom: 6, baseTo: 16, currentFrom: 6, currentTo: 16 }],
+            undefined,
+            baseText,
+            "finalized",
+            {
+                level: "large",
+                showInlineActions: false,
+                showWordDiff: false,
+                reducedInlineMode: true,
+            },
+        );
+
+        expect(view.dom.querySelector(".cm-diff-word-changed")).toBeNull();
+        expect(view.dom.querySelector(".cm-diff-modified")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-hunk-controls")).toBeNull();
+
+        destroy();
+    });
+
+    it("collapses large deleted blocks when configured", () => {
+        const { view, destroy } = mountView("aaa\nccc");
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 1, oldEnd: 10, newStart: 1, newEnd: 1 }],
+            [{ baseFrom: 4, baseTo: 20, currentFrom: 4, currentTo: 4 }],
+            [["1", "2", "3", "4", "5", "6", "7", "8", "9"]],
+            "",
+            "finalized",
+            {
+                level: "large",
+                showInlineActions: false,
+                showWordDiff: false,
+                collapseLargeDeletes: true,
+                reducedInlineMode: true,
+                collapsedDeleteBlockIndexes: [0],
+            },
+        );
+
+        expect(
+            view.dom.querySelector(".cm-diff-deleted-summary")?.textContent,
+        ).toBe("9 deleted lines");
+        expect(view.dom.querySelector(".cm-diff-deleted-line")).toBeNull();
+        expect(view.dom.querySelector(".cm-diff-deleted-controls")).toBeNull();
+
+        destroy();
+    });
+
+    it("shows controls for the active hunk even in reduced inline mode", () => {
+        const baseText = "alpha beta gamma";
+        const currentText = "alpha BETA delta gamma";
+        const { view, destroy } = mountView(currentText);
+
+        applyInlineDiff(
+            view,
+            [{ oldStart: 0, oldEnd: 1, newStart: 0, newEnd: 1 }],
+            [{ baseFrom: 6, baseTo: 16, currentFrom: 6, currentTo: 16 }],
+            undefined,
+            baseText,
+            "finalized",
+            {
+                level: "large",
+                showInlineActions: false,
+                showWordDiff: false,
+                reducedInlineMode: true,
+            },
+        );
+
+        expect(view.dom.querySelector(".cm-diff-hunk-controls")).toBeNull();
+
+        view.dispatch({
+            effects: [setInlineDiffActiveEditIndex.of(0)],
+        });
+
+        expect(view.dom.querySelector(".cm-diff-focused")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-diff-hunk-controls")).not.toBeNull();
 
         destroy();
     });

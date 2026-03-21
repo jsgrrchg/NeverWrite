@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, type CSSProperties } from "react";
+import {
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    type CSSProperties,
+} from "react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Compartment, EditorState } from "@codemirror/state";
 import { search, searchKeymap } from "@codemirror/search";
@@ -22,6 +28,8 @@ import { useChatStore } from "../ai/store/chatStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { loadCodeLanguage } from "./codeLanguage";
 import { searchTheme } from "./extensions/searchTheme";
+import { EditorChangeChrome } from "./EditorChangeChrome";
+import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 
 type SavedVaultFileDetail = {
     relative_path: string;
@@ -41,6 +49,7 @@ export function FileTextTabView() {
     const applyingExternalUpdateRef = useRef(false);
     const lastSavedContentByPathRef = useRef(new Map<string, string>());
     const saveRequestIdByPathRef = useRef(new Map<string, number>());
+    const [editorView, setEditorView] = useState<EditorView | null>(null);
 
     const tab = useEditorStore((state) => {
         return getActiveFileTab(state);
@@ -51,8 +60,15 @@ export function FileTextTabView() {
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const sessionsById = useChatStore((state) => state.sessionsById);
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;
+    const trackedFileMatch = tab
+        ? resolveTrackedFileMatchForPaths(
+              [tab.path, tab.relativePath],
+              sessionsById,
+          ).match
+        : null;
 
     useEffect(() => {
         tabRef.current = tab;
@@ -133,7 +149,7 @@ export function FileTextTabView() {
             return;
         }
 
-        viewRef.current = new EditorView({
+        const nextView = new EditorView({
             state: EditorState.create({
                 doc: tab.content,
                 extensions: [
@@ -174,12 +190,19 @@ export function FileTextTabView() {
             }),
             parent: container,
         });
+        viewRef.current = nextView;
+        queueMicrotask(() => {
+            setEditorView(nextView);
+        });
     }, [isDark, lineWrapping, scheduleSave, tab]);
 
     useEffect(() => {
         if (!tab) {
             viewRef.current?.destroy();
             viewRef.current = null;
+            queueMicrotask(() => {
+                setEditorView(null);
+            });
             loadRequestRef.current += 1;
             return;
         }
@@ -329,6 +352,7 @@ export function FileTextTabView() {
             loadRequestRef.current += 1;
             viewRef.current?.destroy();
             viewRef.current = null;
+            setEditorView(null);
         };
     }, []);
 
@@ -406,7 +430,16 @@ export function FileTextTabView() {
             </div>
 
             <div className="min-h-0 flex-1 relative">
-                <div ref={containerRef} className="h-full relative z-1" />
+                <div className="flex h-full min-w-0">
+                    <div className="min-w-0 flex-1 relative">
+                        <div ref={containerRef} className="h-full relative z-1" />
+                    </div>
+                    <EditorChangeChrome
+                        trackedFile={trackedFileMatch?.trackedFile ?? null}
+                        sessionId={trackedFileMatch?.sessionId ?? null}
+                        view={editorView}
+                    />
+                </div>
             </div>
         </div>
     );
