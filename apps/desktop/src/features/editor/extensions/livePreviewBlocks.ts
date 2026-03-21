@@ -24,6 +24,7 @@ import {
 
 import { useEditorStore, isNoteTab } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { emitFileTreeNoteDrag } from "../../ai/dragEvents";
 import {
     type DecoEntry,
     linkReferenceField,
@@ -295,6 +296,131 @@ function buildResizedWikilink(
     return `![[${target}|${newWidth}]]`;
 }
 
+function getMimeTypeFromPath(path: string): string {
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    const map: Record<string, string> = {
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        gif: "image/gif",
+        webp: "image/webp",
+        svg: "image/svg+xml",
+        bmp: "image/bmp",
+        ico: "image/x-icon",
+        avif: "image/avif",
+        pdf: "application/pdf",
+    };
+    return map[ext] ?? "application/octet-stream";
+}
+
+const DRAG_THRESHOLD = 5;
+
+// Inject global drag cursor style once
+let dragStyleInjected = false;
+function ensureDragStyle() {
+    if (dragStyleInjected) return;
+    dragStyleInjected = true;
+    const style = document.createElement("style");
+    style.textContent =
+        "body.vaultai-embed-dragging,body.vaultai-embed-dragging *{cursor:grabbing!important;user-select:none!important}";
+    document.head.appendChild(style);
+}
+
+function createDragGhost(label: string, x: number, y: number): HTMLElement {
+    const ghost = document.createElement("div");
+    ghost.textContent = label;
+    ghost.style.cssText = [
+        "position:fixed",
+        "pointer-events:none",
+        "z-index:99999",
+        "padding:5px 12px",
+        "border-radius:8px",
+        "font-size:12px",
+        "font-family:system-ui,sans-serif",
+        "background:var(--accent,#3b82f6)",
+        "color:white",
+        "opacity:0.92",
+        "white-space:nowrap",
+        "box-shadow:0 4px 12px rgba(0,0,0,0.25)",
+        "transform:translate(-50%,-120%)",
+    ].join(";");
+    ghost.style.left = x + "px";
+    ghost.style.top = y + "px";
+    document.body.appendChild(ghost);
+    return ghost;
+}
+
+function setupEmbedDrag(element: HTMLElement, resolvedPath: string) {
+    const fileName = resolvedPath.split("/").pop() ?? "file";
+    const mimeType = getMimeTypeFromPath(resolvedPath);
+    const file = { filePath: resolvedPath, fileName, mimeType };
+    element.style.cursor = "grab";
+
+    element.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest(".cm-image-size-toolbar")) return;
+        e.preventDefault();
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        let started = false;
+        let ghost: HTMLElement | null = null;
+
+        const onMove = (ev: MouseEvent) => {
+            ev.preventDefault();
+            const dx = ev.clientX - startX;
+            const dy = ev.clientY - startY;
+            if (!started && dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD)
+                return;
+            if (!started) {
+                started = true;
+                ensureDragStyle();
+                document.body.classList.add("vaultai-embed-dragging");
+                element.style.opacity = "0.35";
+                ghost = createDragGhost(fileName, ev.clientX, ev.clientY);
+                emitFileTreeNoteDrag({
+                    phase: "start",
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    notes: [],
+                    files: [file],
+                });
+            }
+            if (ghost) {
+                ghost.style.left = ev.clientX + "px";
+                ghost.style.top = ev.clientY + "px";
+            }
+            emitFileTreeNoteDrag({
+                phase: "move",
+                x: ev.clientX,
+                y: ev.clientY,
+                notes: [],
+                files: [file],
+            });
+        };
+
+        const onUp = (ev: MouseEvent) => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+            if (started) {
+                element.style.opacity = "";
+                document.body.classList.remove("vaultai-embed-dragging");
+                ghost?.remove();
+                emitFileTreeNoteDrag({
+                    phase: "end",
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    notes: [],
+                    files: [file],
+                });
+            }
+        };
+
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+}
+
 class ImageWidget extends WidgetType {
     private src: string;
     private alt: string;
@@ -304,6 +430,7 @@ class ImageWidget extends WidgetType {
     private to: number;
     private width: number | null;
     private isWikilink: boolean;
+    private resolvedPath: string | null;
 
     constructor(
         src: string,
@@ -314,6 +441,7 @@ class ImageWidget extends WidgetType {
         title: string | null = null,
         width: number | null = null,
         isWikilink = false,
+        resolvedPath: string | null = null,
     ) {
         super();
         this.src = src;
@@ -324,6 +452,7 @@ class ImageWidget extends WidgetType {
         this.to = to;
         this.width = width;
         this.isWikilink = isWikilink;
+        this.resolvedPath = resolvedPath;
     }
 
     eq(other: ImageWidget) {
@@ -345,6 +474,7 @@ class ImageWidget extends WidgetType {
         if (this.isWikilink) {
             wrapper.dataset.embedTarget = this.alt;
             wrapper.dataset.embedKind = "image";
+            if (this.resolvedPath) setupEmbedDrag(wrapper, this.resolvedPath);
         }
 
         const content = document.createElement("div");
@@ -440,13 +570,21 @@ class PdfEmbedWidget extends WidgetType {
     private target: string;
     private from: number;
     private to: number;
+    private resolvedPath: string | null;
 
-    constructor(fileName: string, target: string, from: number, to: number) {
+    constructor(
+        fileName: string,
+        target: string,
+        from: number,
+        to: number,
+        resolvedPath: string | null = null,
+    ) {
         super();
         this.fileName = fileName;
         this.target = target;
         this.from = from;
         this.to = to;
+        this.resolvedPath = resolvedPath;
     }
 
     eq(other: PdfEmbedWidget) {
@@ -461,6 +599,7 @@ class PdfEmbedWidget extends WidgetType {
         wrapper.dataset.sourceTo = String(this.to);
         wrapper.dataset.embedTarget = this.target;
         wrapper.dataset.embedKind = "pdf";
+        if (this.resolvedPath) setupEmbedDrag(wrapper, this.resolvedPath);
 
         const chip = document.createElement("div");
         chip.className = "cm-pdf-embed-chip";
@@ -1717,6 +1856,11 @@ function buildBlockDecorations(
                                   null,
                                   embedParsed.width ?? null,
                                   true,
+                                  resolvePreviewAssetPath(
+                                      embedParsed.target,
+                                      vaultRoot,
+                                      activeNotePath,
+                                  ),
                               )
                             : PDF_EXTENSION.test(embedParsed.target)
                               ? new PdfEmbedWidget(
@@ -1725,6 +1869,11 @@ function buildBlockDecorations(
                                     embedParsed.target,
                                     node.from,
                                     node.to,
+                                    resolvePreviewAssetPath(
+                                        embedParsed.target,
+                                        vaultRoot,
+                                        activeNotePath,
+                                    ),
                                 )
                               : new NoteEmbedWidget(
                                     embedParsed.target,
