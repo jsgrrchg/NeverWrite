@@ -2,9 +2,11 @@ import {
     Decoration,
     type DecorationSet,
     EditorView,
+    ViewPlugin,
     WidgetType,
 } from "@codemirror/view";
 import {
+    type Extension,
     type EditorState,
     RangeSetBuilder,
     StateField,
@@ -244,6 +246,54 @@ async function loadNotePreviewContent(noteId: string) {
     return request;
 }
 
+// --- Image size toolbar ---
+
+const IMAGE_SIZE_PRESETS: { label: string; width: number | null }[] = [
+    { label: "S", width: 200 },
+    { label: "M", width: 400 },
+    { label: "L", width: null },
+];
+
+function buildImageSizeToolbar(
+    from: number,
+    to: number,
+    currentWidth: number | null,
+): HTMLElement {
+    const toolbar = document.createElement("div");
+    toolbar.className = "cm-image-size-toolbar";
+    for (const preset of IMAGE_SIZE_PRESETS) {
+        const btn = document.createElement("button");
+        btn.className = "cm-image-size-btn";
+        if (preset.width === currentWidth) {
+            btn.classList.add("cm-image-size-btn-active");
+        }
+        btn.textContent = preset.label;
+        btn.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            btn.dispatchEvent(
+                new CustomEvent("cm-image-resize", {
+                    bubbles: true,
+                    detail: { from, to, width: preset.width },
+                }),
+            );
+        });
+        toolbar.appendChild(btn);
+    }
+    return toolbar;
+}
+
+function buildResizedWikilink(
+    oldText: string,
+    newWidth: number | null,
+): string {
+    const match = oldText.match(/^!\[\[([^|\]]+)(?:\|[^\]]*?)?\]\]$/);
+    if (!match) return oldText;
+    const target = match[1];
+    if (newWidth == null) return `![[${target}]]`;
+    return `![[${target}|${newWidth}]]`;
+}
+
 class ImageWidget extends WidgetType {
     private src: string;
     private alt: string;
@@ -251,6 +301,8 @@ class ImageWidget extends WidgetType {
     private title: string | null;
     private from: number;
     private to: number;
+    private width: number | null;
+    private isWikilink: boolean;
 
     constructor(
         src: string,
@@ -259,6 +311,8 @@ class ImageWidget extends WidgetType {
         to: number,
         href: string | null = null,
         title: string | null = null,
+        width: number | null = null,
+        isWikilink = false,
     ) {
         super();
         this.src = src;
@@ -267,6 +321,8 @@ class ImageWidget extends WidgetType {
         this.title = title;
         this.from = from;
         this.to = to;
+        this.width = width;
+        this.isWikilink = isWikilink;
     }
 
     eq(other: ImageWidget) {
@@ -274,7 +330,8 @@ class ImageWidget extends WidgetType {
             this.src === other.src &&
             this.alt === other.alt &&
             this.href === other.href &&
-            this.title === other.title
+            this.title === other.title &&
+            this.width === other.width
         );
     }
 
@@ -302,6 +359,10 @@ class ImageWidget extends WidgetType {
         img.loading = "lazy";
         img.decoding = "async";
         if (this.title) img.title = this.title;
+        if (this.width) {
+            img.style.width = `${this.width}px`;
+            img.style.maxWidth = "100%";
+        }
 
         img.onerror = () => {
             img.style.display = "none";
@@ -314,6 +375,16 @@ class ImageWidget extends WidgetType {
         };
 
         content.appendChild(img);
+
+        if (this.isWikilink) {
+            const toolbar = buildImageSizeToolbar(
+                this.from,
+                this.to,
+                this.width,
+            );
+            wrapper.appendChild(toolbar);
+        }
+
         wrapper.appendChild(content);
         return wrapper;
     }
@@ -1443,19 +1514,29 @@ function isRenderableImageUrl(url: string): boolean {
 
 function parseWikilinkEmbedTarget(
     raw: string,
-): { target: string; heading?: string } | null {
+): { target: string; heading?: string; width?: number } | null {
     const match = raw.match(/^!\[\[([^\]]+)\]\]$/);
     if (!match) return null;
-    const inner = match[1].split("|", 1)[0]?.trim() ?? "";
+    const parts = match[1].split("|");
+    const inner = parts[0]?.trim() ?? "";
     if (!inner) return null;
+
+    let width: number | undefined;
+    const dimStr = parts[1]?.trim();
+    if (dimStr) {
+        const dimMatch = dimStr.match(/^(\d+)(?:x\d+)?$/);
+        if (dimMatch) width = Number(dimMatch[1]);
+    }
+
     const hashIdx = inner.indexOf("#");
     if (hashIdx >= 0) {
         return {
             target: inner.slice(0, hashIdx),
             heading: inner.slice(hashIdx + 1),
+            width,
         };
     }
-    return { target: inner };
+    return { target: inner, width };
 }
 
 function isStandaloneLinkNode(
@@ -1567,6 +1648,8 @@ function buildBlockDecorations(
                                   node.to,
                                   null,
                                   null,
+                                  embedParsed.width ?? null,
+                                  true,
                               )
                             : new NoteEmbedWidget(
                                   embedParsed.target,
@@ -1750,6 +1833,35 @@ function buildTableDecorations(
         builder.add(deco.from, deco.to, deco.deco);
     }
     return builder.finish();
+}
+
+export function createImageResizeExtension(): Extension {
+    return ViewPlugin.define((view) => {
+        const handler = (e: Event) => {
+            const detail = (e as CustomEvent).detail as {
+                from: number;
+                to: number;
+                width: number | null;
+            };
+            const oldText = view.state.doc.sliceString(detail.from, detail.to);
+            const newText = buildResizedWikilink(oldText, detail.width);
+            if (newText !== oldText) {
+                view.dispatch({
+                    changes: {
+                        from: detail.from,
+                        to: detail.to,
+                        insert: newText,
+                    },
+                });
+            }
+        };
+        view.dom.addEventListener("cm-image-resize", handler);
+        return {
+            destroy() {
+                view.dom.removeEventListener("cm-image-resize", handler);
+            },
+        };
+    });
 }
 
 export function createImageLivePreviewExtension(vaultRoot: string | null) {

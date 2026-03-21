@@ -6,6 +6,7 @@ import { dispatchOpenYouTubeModal } from "../youtube";
 import {
     createCodeBlockLivePreviewExtension,
     createImageLivePreviewExtension,
+    createImageResizeExtension,
     createTableLivePreviewExtension,
     type TableInteractionHandlers,
 } from "./livePreviewBlocks";
@@ -442,6 +443,7 @@ export function livePreviewExtension(
         createInlineLivePreviewPlugin(),
         createCodeBlockLivePreviewExtension(),
         createImageLivePreviewExtension(vaultRoot),
+        createImageResizeExtension(),
         createTableLivePreviewExtension(interactions),
         clickHandler,
         livePreviewTheme,
