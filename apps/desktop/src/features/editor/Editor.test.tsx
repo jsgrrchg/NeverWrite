@@ -354,6 +354,55 @@ describe("Editor", () => {
         );
     });
 
+    it("applies heading actions from the floating selection toolbar", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        const coordsSpy = vi.spyOn(view, "coordsAtPos").mockImplementation(
+            () =>
+                ({
+                    left: 40,
+                    right: 180,
+                    top: 20,
+                    bottom: 40,
+                }) as DOMRect,
+        );
+
+        await act(async () => {
+            view.focus();
+            view.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 5,
+                },
+            });
+        });
+
+        const headingButton = await screen.findByRole("button", {
+            name: "Heading 1",
+        });
+
+        await act(async () => {
+            fireEvent.mouseDown(headingButton);
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("# Hello world\nBody");
+        expect(screen.getByDisplayValue("Hello world")).toBeInTheDocument();
+        expect(useEditorStore.getState().tabs[0]?.title).toBe("Hello world");
+
+        coordsSpy.mockRestore();
+    });
+
     it("registers structural editor commands and executes them from the command palette store", async () => {
         setEditorTabs([
             {

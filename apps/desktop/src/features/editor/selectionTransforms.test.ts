@@ -7,6 +7,7 @@ import {
     getCodeBlockTransform,
     getHeadingTransform,
     getHorizontalRuleTransform,
+    getSelectionTransform,
     getSetCodeBlockLanguageTransform,
 } from "./selectionTransforms";
 
@@ -75,6 +76,24 @@ describe("getHeadingTransform", () => {
         expect(applyHeading("One\nTwo", EditorSelection.range(0, 7), 3)).toBe(
             "### One\n### Two",
         );
+    });
+
+    it("resolves heading toolbar actions through the shared selection transform switch", () => {
+        const state = EditorState.create({
+            doc: "Hello world",
+            selection: EditorSelection.range(0, 5),
+            extensions: [EditorState.allowMultipleSelections.of(true)],
+        });
+
+        const transform = getSelectionTransform(state, "heading-2");
+        expect(transform).not.toBeNull();
+
+        const nextState = state.update({
+            changes: transform!.changes,
+            selection: transform!.selection,
+        }).state;
+
+        expect(nextState.doc.toString()).toBe("## Hello world");
     });
 
     it("toggles a blockquote on the current line with only a caret", () => {

@@ -75,6 +75,10 @@ const TOOLBAR_BUTTONS: ToolbarButton[] = [
     { action: "code", label: "</>", title: "Code" },
     { action: "wikilink", label: "Wiki", title: "Wikilink" },
     { action: "link", label: "Link", title: "Link" },
+    { action: "heading-1", label: "H1", title: "Heading 1" },
+    { action: "heading-2", label: "H2", title: "Heading 2" },
+    { action: "heading-3", label: "H3", title: "Heading 3" },
+    { action: "heading-0", label: "Tx", title: "Remove Heading" },
     { action: "quote", label: "Quote", title: "Quote" },
     { action: "task", label: "Task", title: "Task" },
 ];
