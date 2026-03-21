@@ -1882,6 +1882,10 @@ useEditorStore.subscribe((state) => {
     if (_sessionTimer) clearTimeout(_sessionTimer);
     _sessionTimer = setTimeout(() => {
         _lastSessionJson = json;
-        localStorage.setItem(getSessionKey(vaultPath), json);
+        try {
+            localStorage.setItem(getSessionKey(vaultPath), json);
+        } catch (error) {
+            console.warn("Failed to persist editor session", error);
+        }
     }, 500);
 });

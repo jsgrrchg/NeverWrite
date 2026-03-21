@@ -859,13 +859,25 @@ export function AIChatComposer({
     const closeMentionPicker = () => setMentionState(EMPTY_MENTION_STATE);
     const closeSlashPicker = () => setSlashState(EMPTY_SLASH_STATE);
 
+    const partsRef = useRef(parts);
+    const onChangeRef = useRef(onChange);
+    const onMentionAttachRef = useRef(onMentionAttach);
+    const onFolderAttachRef = useRef(onFolderAttach);
+
+    useEffect(() => {
+        partsRef.current = parts;
+        onChangeRef.current = onChange;
+        onMentionAttachRef.current = onMentionAttach;
+        onFolderAttachRef.current = onFolderAttach;
+    }, [onChange, onFolderAttach, onMentionAttach, parts]);
+
     const syncFromDom = () => {
         const composer = composerRef.current;
         if (!composer) return;
         onChange(readPartsFromDom(composer));
     };
 
-    const focusComposerAtEnd = () => {
+    const focusComposerAtEnd = useCallback(() => {
         window.setTimeout(() => {
             const composer = composerRef.current;
             if (!composer) return;
@@ -873,7 +885,7 @@ export function AIChatComposer({
             const last = composer.lastChild;
             if (last) setCaretAfterNode(last);
         }, 0);
-    };
+    }, []);
 
     const prevPartsCountRef = useRef(parts.length);
     useEffect(() => {
@@ -1099,21 +1111,24 @@ export function AIChatComposer({
 
                 // Folder drop
                 if (detail.folder) {
-                    onChange(
+                    onChangeRef.current(
                         appendFolderMentionPart(
-                            parts,
+                            partsRef.current,
                             detail.folder.path,
                             detail.folder.name,
                         ),
                     );
-                    onFolderAttach(detail.folder.path, detail.folder.name);
+                    onFolderAttachRef.current(
+                        detail.folder.path,
+                        detail.folder.name,
+                    );
                     focusComposerAtEnd();
                     return;
                 }
 
                 // File drop (PDFs, etc.) — inline pills
                 if (detail.files && detail.files.length > 0) {
-                    let current = parts;
+                    let current = partsRef.current;
                     for (const file of detail.files) {
                         current = appendFileAttachmentPart(current, {
                             filePath: file.filePath,
@@ -1121,16 +1136,16 @@ export function AIChatComposer({
                             label: file.fileName,
                         });
                     }
-                    onChange(current);
+                    onChangeRef.current(current);
                     focusComposerAtEnd();
                     return;
                 }
 
                 // Notes drop
                 if (detail.notes.length === 0) return;
-                onChange(
+                onChangeRef.current(
                     appendMentionParts(
-                        parts,
+                        partsRef.current,
                         detail.notes.map((note) => ({
                             noteId: note.id,
                             label: note.title,
@@ -1138,7 +1153,7 @@ export function AIChatComposer({
                         })),
                     ),
                 );
-                detail.notes.forEach((note) => onMentionAttach(note));
+                detail.notes.forEach((note) => onMentionAttachRef.current(note));
                 focusComposerAtEnd();
             }
         };
@@ -1146,7 +1161,7 @@ export function AIChatComposer({
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
         return () =>
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
-    }, [onChange, onFolderAttach, onMentionAttach, parts]);
+    }, [focusComposerAtEnd]);
 
     // Native Finder/Explorer file drop
     useEffect(() => {
@@ -1208,7 +1223,7 @@ export function AIChatComposer({
                         txt: "text/plain",
                         md: "text/markdown",
                     };
-                    let currentParts = parts;
+                    let currentParts = partsRef.current;
                     for (const filePath of paths) {
                         const fileName = filePath.split("/").pop() ?? "file";
                         const dotIdx = fileName.lastIndexOf(".");
@@ -1217,7 +1232,7 @@ export function AIChatComposer({
 
                         if (!hasExt) {
                             // No extension → treat as folder
-                            onFolderAttach(filePath, fileName);
+                            onFolderAttachRef.current(filePath, fileName);
                             currentParts = appendFolderMentionPart(
                                 currentParts,
                                 filePath,
@@ -1239,7 +1254,7 @@ export function AIChatComposer({
                             );
                         }
                     }
-                    onChange(currentParts);
+                    onChangeRef.current(currentParts);
                     focusComposerAtEnd();
                     return;
                 }
@@ -1248,15 +1263,20 @@ export function AIChatComposer({
                 setExternalDragActive(false);
             })
             .then((fn) => {
-                if (mounted) unlisten = fn;
-                else fn();
+                if (mounted) {
+                    unlisten = fn;
+                    return;
+                }
+                void fn();
             });
 
         return () => {
             mounted = false;
-            unlisten?.();
+            const cleanup = unlisten;
+            unlisten = null;
+            void cleanup?.();
         };
-    }, [onFolderAttach, onChange, parts]);
+    }, [focusComposerAtEnd]);
 
     const MIN_COMPOSER_HEIGHT = 64;
     const MAX_COMPOSER_HEIGHT = 480;
