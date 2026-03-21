@@ -3,7 +3,12 @@ import type { AIChatNoteSummary } from "./types";
 export const FILE_TREE_NOTE_DRAG_EVENT = "vaultai:file-tree-note-drag";
 
 // "attach" skips the position check — used by context menu "Add to Chat"
-export type FileTreeNoteDragPhase = "start" | "move" | "end" | "cancel" | "attach";
+export type FileTreeNoteDragPhase =
+    | "start"
+    | "move"
+    | "end"
+    | "cancel"
+    | "attach";
 
 export interface FileTreeDraggedFile {
     filePath: string;
@@ -26,13 +31,4 @@ export function emitFileTreeNoteDrag(detail: FileTreeNoteDragDetail) {
             detail,
         }),
     );
-}
-
-// Unified drag payload for vault entries (note or pdf)
-export interface DraggedVaultEntry {
-    type: "vault-entry";
-    kind: "note" | "pdf";
-    path: string;
-    title: string;
-    mimeType: string | null;
 }
