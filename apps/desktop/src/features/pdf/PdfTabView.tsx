@@ -33,6 +33,7 @@ const PINCH_SENSITIVITY = 0.0025;
 const PINCH_COMMIT_DELAY = 150;
 const CONTINUOUS_PAGE_GAP = 20;
 const CONTINUOUS_OVERSCAN_PX = 1200;
+const CONTINUOUS_MAX_RENDERED_PAGES = 15;
 const VIEWPORT_HEIGHT_FALLBACK = 800;
 const PDF_TEXT_CONTENT_OPTIONS = {
     includeMarkedContent: true,
@@ -188,6 +189,29 @@ function findClosestLayoutIndex(
     return nextDistance < currentDistance ? nextIndex : currentIndex;
 }
 
+function clampContinuousWindow(
+    layouts: PdfPageLayout[],
+    startIndex: number,
+    endIndex: number,
+): PdfPageLayout[] {
+    if (layouts.length <= CONTINUOUS_MAX_RENDERED_PAGES) {
+        return layouts.slice(startIndex, endIndex);
+    }
+
+    const midpoint = Math.floor((startIndex + endIndex - 1) / 2);
+    let nextStart = Math.max(
+        0,
+        midpoint - Math.floor(CONTINUOUS_MAX_RENDERED_PAGES / 2),
+    );
+    let nextEnd = Math.min(
+        layouts.length,
+        nextStart + CONTINUOUS_MAX_RENDERED_PAGES,
+    );
+
+    nextStart = Math.max(0, nextEnd - CONTINUOUS_MAX_RENDERED_PAGES);
+    return layouts.slice(nextStart, nextEnd);
+}
+
 export function PdfTabView() {
     const tab = useEditorStore((s) => {
         const current = s.tabs.find(
@@ -211,7 +235,7 @@ export function PdfTabView() {
 }
 
 function PdfViewer({ tab }: { tab: PdfTab }) {
-    const containerRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const previousViewModeRef = useRef(tab.viewMode);
@@ -228,6 +252,8 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     );
     const [retryCount, setRetryCount] = useState(0);
     const [scrollTop, setScrollTop] = useState(0);
+    const [scrollContainer, setScrollContainer] =
+        useState<HTMLDivElement | null>(null);
     const [viewportHeight, setViewportHeight] = useState(
         VIEWPORT_HEIGHT_FALLBACK,
     );
@@ -273,7 +299,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         const endIndex =
             findLastLayoutStartingBefore(continuousLayouts, visibleEnd) + 1;
 
-        return continuousLayouts.slice(startIndex, endIndex);
+        return clampContinuousWindow(continuousLayouts, startIndex, endIndex);
     }, [continuousLayouts, effectiveViewportHeight, scrollTop, tab.viewMode]);
     const totalContinuousHeight =
         continuousLayouts.length > 0
@@ -298,6 +324,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 return;
             }
             delete pageRefs.current[pageNumber];
+        },
+        [],
+    );
+
+    const registerContainerElement = useCallback(
+        (element: HTMLDivElement | null) => {
+            containerRef.current = element;
+            setScrollContainer(element);
         },
         [],
     );
@@ -411,15 +445,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     ]);
 
     useEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
+        if (!scrollContainer) return;
 
         let frame = 0;
         const syncViewportMetrics = () => {
             setViewportHeight(
-                container.clientHeight || VIEWPORT_HEIGHT_FALLBACK,
+                scrollContainer.clientHeight || VIEWPORT_HEIGHT_FALLBACK,
             );
-            setScrollTop(container.scrollTop);
+            setScrollTop(scrollContainer.scrollTop);
         };
         const scheduleSync = () => {
             window.cancelAnimationFrame(frame);
@@ -427,14 +460,16 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         };
 
         syncViewportMetrics();
-        container.addEventListener("scroll", scheduleSync, { passive: true });
+        scrollContainer.addEventListener("scroll", scheduleSync, {
+            passive: true,
+        });
         window.addEventListener("resize", scheduleSync);
         return () => {
             window.cancelAnimationFrame(frame);
-            container.removeEventListener("scroll", scheduleSync);
+            scrollContainer.removeEventListener("scroll", scheduleSync);
             window.removeEventListener("resize", scheduleSync);
         };
-    }, []);
+    }, [scrollContainer]);
 
     useEffect(() => {
         if (tab.viewMode !== "continuous" || !pdf || pageMetrics) return;
@@ -845,7 +880,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             </div>
 
             <div
-                ref={containerRef}
+                ref={registerContainerElement}
                 className={`flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
                 style={{
                     padding: 24,
