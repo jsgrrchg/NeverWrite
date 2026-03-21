@@ -363,6 +363,89 @@ describe("FileTree", () => {
         ]);
     });
 
+    it("renames a folder from the context menu using the inline input", async () => {
+        const user = userEvent.setup();
+
+        vi.mocked(invoke).mockImplementation(async (command, args) => {
+            if (command === "move_folder") {
+                expect(args).toEqual({
+                    relativePath: "plans",
+                    newRelativePath: "roadmap",
+                    vaultPath: "/vault",
+                });
+                return undefined;
+            }
+            if (command === "list_notes") {
+                return [
+                    {
+                        id: "roadmap/alpha",
+                        path: "/vault/roadmap/alpha.md",
+                        title: "Alpha",
+                        modified_at: 1,
+                        created_at: 1,
+                    },
+                ];
+            }
+            if (command === "list_vault_entries") {
+                return [buildFolderEntry("roadmap")];
+            }
+            if (command === "get_graph_revision") {
+                return 1;
+            }
+            return undefined;
+        });
+
+        setVaultNotes([
+            {
+                id: "plans/alpha",
+                path: "/vault/plans/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([buildFolderEntry("plans")]);
+        setEditorTabs([
+            {
+                id: "tab-alpha",
+                noteId: "plans/alpha",
+                title: "Alpha",
+                content: "Alpha",
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "plans");
+
+        fireEvent.contextMenu(getFolderRow("plans"));
+        await user.click(await screen.findByText("Rename"));
+
+        const input = screen.getByDisplayValue("plans");
+        await user.click(input);
+        expect(screen.getByDisplayValue("plans")).toBeInTheDocument();
+        expect(invoke).not.toHaveBeenCalledWith(
+            "move_folder",
+            expect.anything(),
+        );
+        fireEvent.change(input, { target: { value: "roadmap" } });
+        fireEvent.blur(input);
+
+        await waitFor(() => {
+            expect(invoke).toHaveBeenCalledWith("move_folder", {
+                relativePath: "plans",
+                newRelativePath: "roadmap",
+                vaultPath: "/vault",
+            });
+        });
+        await screen.findByText("roadmap");
+        expect(useEditorStore.getState().tabs).toEqual([
+            expect.objectContaining({
+                id: "tab-alpha",
+                noteId: "roadmap/alpha",
+            }),
+        ]);
+    });
+
     it("moves all selected notes from the context menu with a plural label", async () => {
         const user = userEvent.setup();
         const renameNote = vi
@@ -617,6 +700,119 @@ describe("FileTree", () => {
         expect(
             activeTab && isFileTab(activeTab) ? activeTab.relativePath : null,
         ).toBe("docs/config.toml");
+    });
+
+    it("renames a generic file from the context menu using the inline input", async () => {
+        const user = userEvent.setup();
+
+        vi.mocked(invoke).mockImplementation(async (command, args) => {
+            if (command === "move_vault_entry") {
+                expect(args).toEqual({
+                    relativePath: "docs/config.toml",
+                    newRelativePath: "docs/settings.toml",
+                    vaultPath: "/vault",
+                });
+                return {
+                    id: "docs/settings.toml",
+                    path: "/vault/docs/settings.toml",
+                    relative_path: "docs/settings.toml",
+                    title: "settings",
+                    file_name: "settings.toml",
+                    extension: "toml",
+                    kind: "file",
+                    modified_at: 2,
+                    created_at: 1,
+                    size: 64,
+                    mime_type: "application/toml",
+                };
+            }
+            if (command === "list_vault_entries") {
+                return [
+                    buildFolderEntry("docs"),
+                    {
+                        id: "docs/settings.toml",
+                        path: "/vault/docs/settings.toml",
+                        relative_path: "docs/settings.toml",
+                        title: "settings",
+                        file_name: "settings.toml",
+                        extension: "toml",
+                        kind: "file",
+                        modified_at: 2,
+                        created_at: 1,
+                        size: 64,
+                        mime_type: "application/toml",
+                    },
+                ];
+            }
+
+            return undefined;
+        });
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            {
+                id: "docs/config.toml",
+                path: "/vault/docs/config.toml",
+                relative_path: "docs/config.toml",
+                title: "Config",
+                file_name: "config.toml",
+                extension: "toml",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 64,
+                mime_type: "application/toml",
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+        setEditorTabs([
+            {
+                id: "file-tab",
+                kind: "file",
+                relativePath: "docs/config.toml",
+                path: "/vault/docs/config.toml",
+                title: "config.toml",
+                content: "name = 'vault'",
+                mimeType: "application/toml",
+                viewer: "text",
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.contextMenu(getFileRow("Config"));
+        await user.click(await screen.findByText("Rename"));
+
+        const input = screen.getByDisplayValue("config.toml");
+        await user.click(input);
+        expect(screen.getByDisplayValue("config.toml")).toBeInTheDocument();
+        expect(invoke).not.toHaveBeenCalledWith(
+            "move_vault_entry",
+            expect.anything(),
+        );
+        fireEvent.change(input, { target: { value: "settings.toml" } });
+        fireEvent.blur(input);
+
+        await waitFor(() => {
+            expect(invoke).toHaveBeenCalledWith("move_vault_entry", {
+                relativePath: "docs/config.toml",
+                newRelativePath: "docs/settings.toml",
+                vaultPath: "/vault",
+            });
+        });
+        await screen.findByText("settings");
+        expect(useEditorStore.getState().tabs).toEqual([
+            expect.objectContaining({
+                id: "file-tab",
+                relativePath: "docs/settings.toml",
+                path: "/vault/docs/settings.toml",
+                title: "settings.toml",
+            }),
+        ]);
     });
 
     it("renders the new note input inline inside the tree even when the vault is empty", async () => {
