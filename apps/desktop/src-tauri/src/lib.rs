@@ -3721,7 +3721,6 @@ pub fn run() {
         .manage(Mutex::new(ai::AiManager::new()))
         .manage(ai::auth_terminal::AiAuthTerminalManager::new())
         .manage(devtools::DevTerminalManager::new())
-        .manage(ai::whisper::WhisperDownloadCancel::new())
         .manage(spellcheck::SpellcheckState::new())
         .setup(|app| {
             // Create the main window programmatically so we can set the
@@ -3822,16 +3821,6 @@ pub fn run() {
             ai::commands::ai_delete_runtime_sessions_for_vault,
             ai::commands::ai_prune_session_histories,
             ai::commands::ai_register_file_baseline,
-            ai::whisper::whisper_list_models,
-            ai::whisper::whisper_get_status,
-            ai::whisper::whisper_download_model,
-            ai::whisper::whisper_delete_model,
-            ai::whisper::whisper_set_selected_model,
-            ai::whisper::whisper_set_enabled,
-            ai::whisper::whisper_check_audio_file,
-            ai::whisper::whisper_transcribe,
-            ai::whisper::whisper_transcribe_recording,
-            ai::whisper::whisper_cancel_download,
             devtools::commands::devtools_create_terminal_session,
             devtools::commands::devtools_write_terminal_session,
             devtools::commands::devtools_resize_terminal_session,
