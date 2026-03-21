@@ -35,6 +35,7 @@ import {
 import { selectionTouchesRange } from "./selectionActivity";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
+const PDF_EXTENSION = /\.pdf([?#].*)?$/i;
 const MAX_REMOTE_IMAGE_URL_LENGTH = 4096;
 const TABLE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
@@ -341,6 +342,10 @@ class ImageWidget extends WidgetType {
         wrapper.setAttribute("contenteditable", "false");
         wrapper.dataset.sourceFrom = String(this.from);
         wrapper.dataset.sourceTo = String(this.to);
+        if (this.isWikilink) {
+            wrapper.dataset.embedTarget = this.alt;
+            wrapper.dataset.embedKind = "image";
+        }
 
         const content = document.createElement("div");
         content.className = "cm-inline-image-content";
@@ -422,6 +427,68 @@ class SkippedImageWidget extends WidgetType {
         fallback.textContent = this.label;
 
         wrapper.appendChild(fallback);
+        return wrapper;
+    }
+
+    ignoreEvent() {
+        return true;
+    }
+}
+
+class PdfEmbedWidget extends WidgetType {
+    private fileName: string;
+    private target: string;
+    private from: number;
+    private to: number;
+
+    constructor(fileName: string, target: string, from: number, to: number) {
+        super();
+        this.fileName = fileName;
+        this.target = target;
+        this.from = from;
+        this.to = to;
+    }
+
+    eq(other: PdfEmbedWidget) {
+        return this.target === other.target;
+    }
+
+    toDOM() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cm-pdf-embed-wrapper";
+        wrapper.setAttribute("contenteditable", "false");
+        wrapper.dataset.sourceFrom = String(this.from);
+        wrapper.dataset.sourceTo = String(this.to);
+        wrapper.dataset.embedTarget = this.target;
+        wrapper.dataset.embedKind = "pdf";
+
+        const chip = document.createElement("div");
+        chip.className = "cm-pdf-embed-chip";
+        chip.dataset.wikilinkTarget = this.target;
+
+        const icon = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "svg",
+        );
+        icon.setAttribute("viewBox", "0 0 24 24");
+        icon.setAttribute("fill", "none");
+        icon.setAttribute("stroke", "currentColor");
+        icon.setAttribute("stroke-width", "1.5");
+        icon.setAttribute("stroke-linecap", "round");
+        icon.setAttribute("stroke-linejoin", "round");
+        icon.setAttribute("class", "cm-pdf-embed-icon");
+        icon.innerHTML =
+            '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>' +
+            '<path d="M14 2v6h6"/><path d="M10 13v4"/>' +
+            '<path d="M14 13v4"/><path d="M10 13h4"/>';
+
+        const name = document.createElement("span");
+        name.className = "cm-pdf-embed-name";
+        name.textContent = this.fileName;
+
+        chip.appendChild(icon);
+        chip.appendChild(name);
+        wrapper.appendChild(chip);
         return wrapper;
     }
 
@@ -1651,12 +1718,20 @@ function buildBlockDecorations(
                                   embedParsed.width ?? null,
                                   true,
                               )
-                            : new NoteEmbedWidget(
-                                  embedParsed.target,
-                                  node.from,
-                                  node.to,
-                                  embedParsed.heading,
-                              ),
+                            : PDF_EXTENSION.test(embedParsed.target)
+                              ? new PdfEmbedWidget(
+                                    embedParsed.target.split("/").pop() ??
+                                        embedParsed.target,
+                                    embedParsed.target,
+                                    node.from,
+                                    node.to,
+                                )
+                              : new NoteEmbedWidget(
+                                    embedParsed.target,
+                                    node.from,
+                                    node.to,
+                                    embedParsed.heading,
+                                ),
                         block: true,
                         inclusive: false,
                     }),

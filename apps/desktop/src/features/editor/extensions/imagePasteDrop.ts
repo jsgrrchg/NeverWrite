@@ -2,7 +2,8 @@ import { type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 
-const IMAGE_MIME_RE = /^image\/(png|jpe?g|gif|svg\+xml|webp|bmp|x-icon|avif)$/;
+const ACCEPTED_MIME_RE =
+    /^(image\/(png|jpe?g|gif|svg\+xml|webp|bmp|x-icon|avif)|application\/pdf)$/;
 
 const MIME_TO_EXT: Record<string, string> = {
     "image/png": "png",
@@ -13,9 +14,10 @@ const MIME_TO_EXT: Record<string, string> = {
     "image/bmp": "bmp",
     "image/x-icon": "ico",
     "image/avif": "avif",
+    "application/pdf": "pdf",
 };
 
-const MAX_IMAGE_SIZE = 25 * 1024 * 1024; // 25 MB
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 
 function buildTimestamp(): string {
     const now = new Date();
@@ -31,20 +33,21 @@ function buildTimestamp(): string {
 }
 
 function buildFileName(file: File): string {
-    const ext = MIME_TO_EXT[file.type] ?? "png";
-    if (file.name && file.name !== "image.png" && file.name !== "image") {
+    const ext = MIME_TO_EXT[file.type] ?? "bin";
+    const defaultNames = new Set(["image.png", "image", "blob"]);
+    if (file.name && !defaultNames.has(file.name)) {
         const base = file.name.replace(/\.[^.]+$/, "");
         return `${base}-${buildTimestamp()}.${ext}`;
     }
     return `paste-${buildTimestamp()}.${ext}`;
 }
 
-function extractImageFiles(dataTransfer: DataTransfer | null): File[] {
+function extractFiles(dataTransfer: DataTransfer | null): File[] {
     if (!dataTransfer) return [];
     const files: File[] = [];
     for (let i = 0; i < dataTransfer.files.length; i++) {
         const file = dataTransfer.files[i];
-        if (IMAGE_MIME_RE.test(file.type) && file.size <= MAX_IMAGE_SIZE) {
+        if (ACCEPTED_MIME_RE.test(file.type) && file.size <= MAX_FILE_SIZE) {
             files.push(file);
         }
     }
@@ -90,11 +93,12 @@ function hideDragOverlay(view: EditorView) {
     view.dom.classList.remove("cm-drag-active");
 }
 
-function hasImageFiles(dataTransfer: DataTransfer | null): boolean {
+function hasAcceptedFiles(dataTransfer: DataTransfer | null): boolean {
     if (!dataTransfer) return false;
     for (let i = 0; i < dataTransfer.items.length; i++) {
         const item = dataTransfer.items[i];
-        if (item.kind === "file" && IMAGE_MIME_RE.test(item.type)) return true;
+        if (item.kind === "file" && ACCEPTED_MIME_RE.test(item.type))
+            return true;
     }
     return false;
 }
@@ -115,7 +119,7 @@ const dragOverlayTheme = EditorView.baseTheme({
 export function imagePasteDropExtension(): Extension {
     const handlers = EditorView.domEventHandlers({
         paste(event: ClipboardEvent, view: EditorView) {
-            const files = extractImageFiles(event.clipboardData);
+            const files = extractFiles(event.clipboardData);
             if (files.length === 0) return false;
 
             event.preventDefault();
@@ -133,7 +137,7 @@ export function imagePasteDropExtension(): Extension {
         },
 
         drop(event: DragEvent, view: EditorView) {
-            const files = extractImageFiles(event.dataTransfer);
+            const files = extractFiles(event.dataTransfer);
             if (files.length === 0) return false;
 
             event.preventDefault();
@@ -156,14 +160,14 @@ export function imagePasteDropExtension(): Extension {
         },
 
         dragenter(event: DragEvent, view: EditorView) {
-            if (!hasImageFiles(event.dataTransfer)) return false;
+            if (!hasAcceptedFiles(event.dataTransfer)) return false;
             dragDepth++;
             if (dragDepth === 1) showDragOverlay(view);
             return false;
         },
 
         dragleave(event: DragEvent, view: EditorView) {
-            if (!hasImageFiles(event.dataTransfer)) return false;
+            if (!hasAcceptedFiles(event.dataTransfer)) return false;
             dragDepth--;
             if (dragDepth <= 0) {
                 dragDepth = 0;
@@ -173,7 +177,7 @@ export function imagePasteDropExtension(): Extension {
         },
 
         dragover(event: DragEvent) {
-            if (!hasImageFiles(event.dataTransfer)) return false;
+            if (!hasAcceptedFiles(event.dataTransfer)) return false;
             event.preventDefault();
             return false;
         },

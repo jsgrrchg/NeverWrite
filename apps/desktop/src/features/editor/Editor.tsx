@@ -43,6 +43,7 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
+import { fileTreeDropExtension } from "./extensions/fileTreeDrop";
 import { searchTheme } from "./extensions/searchTheme";
 import {
     continueMarkdownListItem,
@@ -69,6 +70,10 @@ import {
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
 import { MetaBadge, EditableNoteTitle } from "./EditorHeader";
 import { LinkContextMenu } from "./LinkContextMenu";
+import {
+    EmbedContextMenu,
+    type EmbedContextMenuState,
+} from "./EmbedContextMenu";
 import {
     type LinkContextMenuState,
     baseTheme,
@@ -197,6 +202,8 @@ export function Editor({
     const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
     const [linkContextMenu, setLinkContextMenu] =
         useState<LinkContextMenuState | null>(null);
+    const [embedContextMenu, setEmbedContextMenu] =
+        useState<EmbedContextMenuState | null>(null);
     const [editorContextMenu, setEditorContextMenu] =
         useState<ContextMenuState<SpellcheckContextMenuPayload> | null>(null);
     const [titleContextMenu, setTitleContextMenu] =
@@ -651,6 +658,7 @@ export function Editor({
             wikilinkSuggesterArmedRef.current = false;
             setWikilinkSuggester(null);
             setEditorContextMenu(null);
+            setEmbedContextMenu(null);
             setLinkContextMenu(menu);
         },
         [],
@@ -1046,6 +1054,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1065,6 +1074,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1084,6 +1094,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1103,6 +1114,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1122,6 +1134,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1141,6 +1154,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1148,6 +1162,26 @@ export function Editor({
                     y: event.clientY,
                     href: noteEmbed.dataset.wikilinkTarget,
                     noteTarget: noteEmbed.dataset.wikilinkTarget,
+                });
+                return true;
+            }
+
+            const embedEl = target?.closest(
+                "[data-embed-target]",
+            ) as HTMLElement | null;
+            if (embedEl?.dataset.embedTarget && embedEl.dataset.embedKind) {
+                event.preventDefault();
+                event.stopPropagation?.();
+                setEditorContextMenu(null);
+                setTitleContextMenu(null);
+                setLinkContextMenu(null);
+                setSelectionToolbar(null);
+                wikilinkSuggesterArmedRef.current = false;
+                setEmbedContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    target: embedEl.dataset.embedTarget,
+                    kind: embedEl.dataset.embedKind as "pdf" | "image",
                 });
                 return true;
             }
@@ -1160,6 +1194,7 @@ export function Editor({
                 event.stopPropagation?.();
                 setEditorContextMenu(null);
                 setTitleContextMenu(null);
+                setEmbedContextMenu(null);
                 setSelectionToolbar(null);
                 wikilinkSuggesterArmedRef.current = false;
                 setLinkContextMenu({
@@ -1196,6 +1231,7 @@ export function Editor({
             wikilinkSuggesterArmedRef.current = false;
             setWikilinkSuggester(null);
             setLinkContextMenu(null);
+            setEmbedContextMenu(null);
             setTitleContextMenu(null);
             const hasSelection = !view.state.selection.main.empty;
             const canCheckSpelling =
@@ -1579,6 +1615,7 @@ export function Editor({
                     ),
                     urlLinksExtension,
                     imagePasteDropExtension(),
+                    fileTreeDropExtension(),
                     EditorView.updateListener.of((update) => {
                         if (!update.docChanged || isInternalRef.current) return;
                         const tab = activeTabRef.current;
@@ -2611,6 +2648,7 @@ export function Editor({
                                 event.stopPropagation();
                                 setEditorContextMenu(null);
                                 setLinkContextMenu(null);
+                                setEmbedContextMenu(null);
                                 setSelectionToolbar(null);
                                 const target = event.currentTarget;
                                 const selectionStart =
@@ -2736,6 +2774,12 @@ export function Editor({
                     />,
                     document.body,
                 )}
+            {embedContextMenu && (
+                <EmbedContextMenu
+                    menu={embedContextMenu}
+                    onClose={() => setEmbedContextMenu(null)}
+                />
+            )}
             {editorContextMenu && (
                 <ContextMenu
                     menu={editorContextMenu}
