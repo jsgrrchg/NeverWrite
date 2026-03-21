@@ -165,7 +165,6 @@ function getOrderedListReservedMarkerWidth(
     if (cursor.firstChild()) {
         do {
             if (cursor.name !== "ListItem") continue;
-
             const itemCursor = cursor.node.cursor();
             if (!itemCursor.firstChild()) continue;
 
