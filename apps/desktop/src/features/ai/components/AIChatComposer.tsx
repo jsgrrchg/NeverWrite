@@ -37,7 +37,6 @@ import type {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
-import { VoiceRecordingOverlay } from "./VoiceRecordingOverlay";
 
 interface AIChatComposerProps {
     parts: AIComposerPart[];
@@ -60,16 +59,10 @@ interface AIChatComposerProps {
     onFolderAttach: (folderPath: string, name: string) => void;
     onToggleAutoContext?: () => void;
     onToggleExpanded?: () => void;
-    onAttachAudio?: () => void;
     onAttachFile?: () => void;
     onPasteImage?: (file: File) => void;
     onSubmit: () => void;
     onStop: () => void;
-    isRecording?: boolean;
-    isTranscribing?: boolean;
-    voiceStream?: MediaStream | null;
-    voiceError?: string | null;
-    onMicClick?: () => void;
 }
 
 interface MentionState {
@@ -784,16 +777,10 @@ export function AIChatComposer({
     onFolderAttach,
     onToggleAutoContext,
     onToggleExpanded,
-    onAttachAudio,
     onAttachFile,
     onPasteImage,
     onSubmit,
     onStop,
-    isRecording,
-    isTranscribing,
-    voiceStream,
-    voiceError,
-    onMicClick,
 }: AIChatComposerProps) {
     const [attachMenuOpen, setAttachMenuOpen] = useState(false);
     const composerRef = useRef<HTMLDivElement>(null);
@@ -893,7 +880,7 @@ export function AIChatComposer({
             focusComposerAtEnd();
         }
         prevPartsCountRef.current = parts.length;
-    }, [parts.length]);
+    }, [parts.length, focusComposerAtEnd]);
 
     const updateMentionPicker = () => {
         const composer = composerRef.current;
@@ -1153,7 +1140,9 @@ export function AIChatComposer({
                         })),
                     ),
                 );
-                detail.notes.forEach((note) => onMentionAttachRef.current(note));
+                detail.notes.forEach((note) =>
+                    onMentionAttachRef.current(note),
+                );
                 focusComposerAtEnd();
             }
         };
@@ -1423,35 +1412,25 @@ export function AIChatComposer({
                         </svg>
                     )}
                 </button>
-                {isRecording || isTranscribing ? (
-                    <VoiceRecordingOverlay
-                        stream={voiceStream ?? null}
-                        isRecording={!!isRecording}
-                        isTranscribing={!!isTranscribing}
-                        onStop={() => onMicClick?.()}
-                    />
-                ) : (
-                    isEmpty && (
-                        <div
-                            className="pointer-events-none absolute left-3.5 top-2.5"
-                            style={{
-                                right: 32,
-                                overflow: "hidden",
-                                whiteSpace: "nowrap",
-                                textOverflow: "ellipsis",
-                                color: "var(--text-secondary)",
-                                opacity: 0.6,
-                                fontSize: composerFontSize,
-                                fontFamily:
-                                    getEditorFontFamily(composerFontFamily),
-                                top: expanded ? 14 : 10,
-                                left: expanded ? 16 : 14,
-                            }}
-                        >
-                            Message {runtimeName} — @ to include context, / for
-                            commands
-                        </div>
-                    )
+                {isEmpty && (
+                    <div
+                        className="pointer-events-none absolute left-3.5 top-2.5"
+                        style={{
+                            right: 32,
+                            overflow: "hidden",
+                            whiteSpace: "nowrap",
+                            textOverflow: "ellipsis",
+                            color: "var(--text-secondary)",
+                            opacity: 0.6,
+                            fontSize: composerFontSize,
+                            fontFamily: getEditorFontFamily(composerFontFamily),
+                            top: expanded ? 14 : 10,
+                            left: expanded ? 16 : 14,
+                        }}
+                    >
+                        Message {runtimeName} — @ to include context, / for
+                        commands
+                    </div>
                 )}
                 <div
                     ref={bindComposerRef}
@@ -1685,7 +1664,7 @@ export function AIChatComposer({
                     }}
                 >
                     <div className="min-w-0 flex-1">{footer}</div>
-                    {(onAttachAudio || onAttachFile) && (
+                    {onAttachFile && (
                         <div className="relative">
                             <button
                                 type="button"
@@ -1748,48 +1727,6 @@ export function AIChatComposer({
                                             padding: "4px 0",
                                         }}
                                     >
-                                        {onAttachAudio && (
-                                            <button
-                                                type="button"
-                                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-                                                style={{
-                                                    color: "var(--text-primary)",
-                                                    backgroundColor:
-                                                        "transparent",
-                                                    border: "none",
-                                                }}
-                                                onMouseEnter={(e) => {
-                                                    (
-                                                        e.currentTarget as HTMLElement
-                                                    ).style.backgroundColor =
-                                                        "color-mix(in srgb, var(--text-secondary) 10%, transparent)";
-                                                }}
-                                                onMouseLeave={(e) => {
-                                                    (
-                                                        e.currentTarget as HTMLElement
-                                                    ).style.backgroundColor =
-                                                        "transparent";
-                                                }}
-                                                onClick={() => {
-                                                    setAttachMenuOpen(false);
-                                                    onAttachAudio();
-                                                }}
-                                            >
-                                                <svg
-                                                    width="14"
-                                                    height="14"
-                                                    viewBox="0 0 16 16"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    strokeWidth="1.5"
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                >
-                                                    <path d="M8 1v8M5 6a3 3 0 0 0 6 0M6 12h4M8 12v2" />
-                                                </svg>
-                                                Audio
-                                            </button>
-                                        )}
                                         {onAttachFile && (
                                             <button
                                                 type="button"
@@ -1904,152 +1841,38 @@ export function AIChatComposer({
                             )}
                         </button>
                     )}
-                    {isRecording || isTranscribing ? (
-                        <button
-                            type="button"
-                            onClick={onMicClick}
-                            disabled={isTranscribing}
-                            className="flex shrink-0 items-center justify-center rounded-full"
-                            style={{
-                                width: 28,
-                                height: 28,
-                                color: "#fff",
-                                backgroundColor: isTranscribing
-                                    ? "var(--accent)"
-                                    : "#b91c1c",
-                                border: "none",
-                                opacity: isTranscribing ? 0.7 : 1,
-                                transition: "all 0.15s ease",
-                                animation: isRecording
-                                    ? "voice-pulse 1.5s ease-in-out infinite"
-                                    : "none",
-                            }}
-                            aria-label={
-                                isTranscribing
-                                    ? "Transcribing..."
-                                    : "Stop recording"
-                            }
-                            title={
-                                isTranscribing
-                                    ? "Transcribing..."
-                                    : "Stop recording"
-                            }
+                    <button
+                        type="button"
+                        onClick={onSubmit}
+                        disabled={!canSubmit}
+                        className="flex shrink-0 items-center justify-center rounded-full"
+                        style={{
+                            width: 28,
+                            height: 28,
+                            color: isEmpty ? "var(--text-secondary)" : "#fff",
+                            backgroundColor: isEmpty
+                                ? "transparent"
+                                : "var(--accent)",
+                            border: "none",
+                            opacity: canSubmit ? 1 : 0.4,
+                            transition: "all 0.15s ease",
+                        }}
+                        aria-label={isStreaming ? "Queue" : "Send"}
+                        title={isStreaming ? "Queue" : "Send"}
+                    >
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
                         >
-                            {isTranscribing ? (
-                                <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 16 16"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    style={{
-                                        animation: "spin 1s linear infinite",
-                                    }}
-                                >
-                                    <path d="M8 1a7 7 0 1 0 7 7" />
-                                </svg>
-                            ) : (
-                                <svg
-                                    width="14"
-                                    height="14"
-                                    viewBox="0 0 16 16"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <rect
-                                        x="5"
-                                        y="1"
-                                        width="6"
-                                        height="10"
-                                        rx="3"
-                                    />
-                                    <path d="M3 7a5 5 0 0 0 10 0" />
-                                    <path d="M8 12v2.5M6 14.5h4" />
-                                </svg>
-                            )}
-                        </button>
-                    ) : isEmpty && onMicClick && !isStreaming ? (
-                        <button
-                            type="button"
-                            onClick={onMicClick}
-                            disabled={disabled}
-                            className="flex shrink-0 items-center justify-center rounded-full"
-                            style={{
-                                width: 28,
-                                height: 28,
-                                color: voiceError
-                                    ? "#ef4444"
-                                    : "var(--text-secondary)",
-                                backgroundColor: "transparent",
-                                border: "none",
-                                opacity: disabled ? 0.4 : 1,
-                                transition: "all 0.15s ease",
-                            }}
-                            aria-label={voiceError ?? "Record voice"}
-                            title={voiceError ?? "Record voice"}
-                        >
-                            <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            >
-                                <rect
-                                    x="5"
-                                    y="1"
-                                    width="6"
-                                    height="10"
-                                    rx="3"
-                                />
-                                <path d="M3 7a5 5 0 0 0 10 0" />
-                                <path d="M8 12v2.5M6 14.5h4" />
-                            </svg>
-                        </button>
-                    ) : (
-                        <button
-                            type="button"
-                            onClick={onSubmit}
-                            disabled={!canSubmit}
-                            className="flex shrink-0 items-center justify-center rounded-full"
-                            style={{
-                                width: 28,
-                                height: 28,
-                                color: isEmpty
-                                    ? "var(--text-secondary)"
-                                    : "#fff",
-                                backgroundColor: isEmpty
-                                    ? "transparent"
-                                    : "var(--accent)",
-                                border: "none",
-                                opacity: canSubmit ? 1 : 0.4,
-                                transition: "all 0.15s ease",
-                            }}
-                            aria-label={isStreaming ? "Queue" : "Send"}
-                            title={isStreaming ? "Queue" : "Send"}
-                        >
-                            <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            >
-                                <path d="M8 12V4M4 7l4-3 4 3" />
-                            </svg>
-                        </button>
-                    )}
+                            <path d="M8 12V4M4 7l4-3 4 3" />
+                        </svg>
+                    </button>
                     {isStreaming && (
                         <button
                             type="button"
