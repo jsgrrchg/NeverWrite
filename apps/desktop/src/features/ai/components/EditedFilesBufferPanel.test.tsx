@@ -240,7 +240,7 @@ describe("EditedFilesBufferPanel", () => {
             screen.getByRole("button", { name: "Reject All" }),
         ).toBeInTheDocument();
         expect(
-            screen.getByRole("button", { name: "Review All" }),
+            screen.getByRole("button", { name: "Review" }),
         ).toBeInTheDocument();
         expect(
             screen.getByRole("button", { name: "Keep All" }),
@@ -387,7 +387,7 @@ describe("EditedFilesBufferPanel", () => {
 
         renderComponent(<EditedFilesBufferPanel />);
 
-        fireEvent.click(screen.getByRole("button", { name: "Review All" }));
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
 
         const { tabs, activeTabId } = useEditorStore.getState();
         const reviewTab = tabs.find(

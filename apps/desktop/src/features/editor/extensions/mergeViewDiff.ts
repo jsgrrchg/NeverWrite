@@ -32,6 +32,7 @@ export interface MergeDecisionPayload {
 export interface CreateMergeViewExtensionConfig {
     original: string;
     diffChanges?: readonly Change[];
+    trackedVersion: number | null;
     sessionId: string | null;
     identityKey: string | null;
     reviewState: ReviewState;
@@ -49,6 +50,7 @@ export const mergeViewCompartment = new Compartment();
 
 export const mergeSessionIdFacet = defineSingleFacet<string | null>(null);
 export const mergeIdentityKeyFacet = defineSingleFacet<string | null>(null);
+export const mergeTrackedVersionFacet = defineSingleFacet<number | null>(null);
 export const mergeReviewStateFacet =
     defineSingleFacet<ReviewState>("finalized");
 export const mergeLevelFacet =
@@ -64,6 +66,7 @@ export function createMergeViewExtension(
         mergeChunkSnapshotPlugin,
         mergeSessionIdFacet.of(config.sessionId),
         mergeIdentityKeyFacet.of(config.identityKey),
+        mergeTrackedVersionFacet.of(config.trackedVersion),
         mergeReviewStateFacet.of(config.reviewState),
         mergeLevelFacet.of(config.level),
         mergeStatusKindFacet.of(config.statusKind),
@@ -139,9 +142,14 @@ function findMergeChunkAtCurrentDom(
     view: EditorView,
     target: HTMLElement,
 ): Chunk | null {
-    const pos = view.posAtDOM(target);
+    const chunkDom = resolveMergeChunkDom(target);
+    const pos = view.posAtDOM(chunkDom);
     const snapshot = readMergeChunkSnapshot(view.state);
     return snapshot ? findMergeChunkAtPos(snapshot.chunks, pos) : null;
+}
+
+function resolveMergeChunkDom(target: HTMLElement) {
+    return (target.closest(".cm-deletedChunk") as HTMLElement | null) ?? target;
 }
 
 export function readMergeViewRuntimeState(state: EditorState | null) {

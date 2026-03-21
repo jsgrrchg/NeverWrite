@@ -16,6 +16,7 @@ export interface MergeStructuralConfig {
     shouldShowMerge: boolean;
     sessionId: string | null;
     identityKey: string | null;
+    trackedVersion: number | null;
     reviewState: ReviewState;
     level: ChangePresentationLevel;
     statusKind: string | null;
@@ -43,6 +44,7 @@ export function buildMergeStructuralSignature(config: MergeStructuralConfig) {
         config.shouldShowMerge,
         config.sessionId,
         config.identityKey,
+        config.trackedVersion,
         config.reviewState,
         config.level,
         config.statusKind,

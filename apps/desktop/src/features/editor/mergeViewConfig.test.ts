@@ -72,6 +72,7 @@ describe("mergeViewConfig", () => {
             sessionId: "session-1",
             shouldShowMerge: true,
             statusKind: "modified",
+            trackedVersion: 1,
         });
         const b = buildMergeStructuralSignature({
             identityKey: "note.md",
@@ -81,6 +82,32 @@ describe("mergeViewConfig", () => {
             sessionId: "session-1",
             shouldShowMerge: true,
             statusKind: "modified",
+            trackedVersion: 1,
+        });
+
+        expect(a).not.toBe(b);
+    });
+
+    it("includes tracked version in the structural signature", () => {
+        const a = buildMergeStructuralSignature({
+            identityKey: "note.md",
+            level: "medium",
+            mode: "source",
+            reviewState: "finalized",
+            sessionId: "session-1",
+            shouldShowMerge: true,
+            statusKind: "modified",
+            trackedVersion: 1,
+        });
+        const b = buildMergeStructuralSignature({
+            identityKey: "note.md",
+            level: "medium",
+            mode: "source",
+            reviewState: "finalized",
+            sessionId: "session-1",
+            shouldShowMerge: true,
+            statusKind: "modified",
+            trackedVersion: 2,
         });
 
         expect(a).not.toBe(b);

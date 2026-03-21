@@ -1243,6 +1243,53 @@ function buildComputeLineDiffInput(diff: AIFileDiff) {
     };
 }
 
+function summarizeTrackedFileForDebug(file: TrackedFile | null | undefined) {
+    if (!file) {
+        return null;
+    }
+
+    return {
+        identityKey: file.identityKey,
+        path: file.path,
+        originPath: file.originPath,
+        previousPath: file.previousPath,
+        reviewState: getTrackedFileReviewState(file),
+        version: file.version,
+        updatedAt: file.updatedAt,
+        diffBaseLength: file.diffBase.length,
+        currentTextLength: file.currentText.length,
+        editCount: file.unreviewedEdits.edits.length,
+        edits: file.unreviewedEdits.edits,
+        spanCount: file.unreviewedRanges?.spans.length ?? null,
+        spans: file.unreviewedRanges?.spans ?? null,
+    };
+}
+
+function matchesTrackedFileForDebug(file: TrackedFile, diff: AIFileDiff) {
+    return (
+        file.identityKey === diff.path ||
+        file.path === diff.path ||
+        file.originPath === diff.path ||
+        file.previousPath === diff.path ||
+        (diff.previous_path != null &&
+            (file.identityKey === diff.previous_path ||
+                file.path === diff.previous_path ||
+                file.originPath === diff.previous_path ||
+                file.previousPath === diff.previous_path))
+    );
+}
+
+function summarizeRelevantTrackedFilesForDebug(
+    files: Record<string, TrackedFile>,
+    diffs: AIFileDiff[],
+) {
+    const relevant = Object.values(files).filter((file) =>
+        diffs.some((diff) => matchesTrackedFileForDebug(file, diff)),
+    );
+
+    return relevant.map((file) => summarizeTrackedFileForDebug(file));
+}
+
 async function precomputeTrackedFilePatches(
     diffs: AIFileDiff[],
 ): Promise<Array<PrecomputedTrackedFilePatches | undefined> | undefined> {
@@ -1306,12 +1353,37 @@ function consolidateActionLogDiffs(
     if (!workCycleId || diffs.length === 0) return session;
     const actionLog = session.actionLog ?? emptyActionLogState();
     const currentFiles = getTrackedFilesForSession(actionLog);
+    const relevantBefore = summarizeRelevantTrackedFilesForDebug(
+        currentFiles,
+        diffs,
+    );
     const nextFiles = consolidateTrackedFiles(
         currentFiles,
         diffs,
         timestamp,
         precomputedPatches,
     );
+    const relevantAfter = summarizeRelevantTrackedFilesForDebug(
+        nextFiles,
+        diffs,
+    );
+    if (relevantBefore.length > 0 || relevantAfter.length > 0) {
+        console.debug("[tracked-review] consolidate agent diffs", {
+            sessionId: session.sessionId,
+            workCycleId,
+            diffs: diffs.map((diff) => ({
+                path: diff.path,
+                previousPath: diff.previous_path ?? null,
+                kind: diff.kind,
+                oldTextLength:
+                    diff.kind === "add" ? 0 : (diff.old_text ?? "").length,
+                newTextLength:
+                    diff.kind === "delete" ? 0 : (diff.new_text ?? "").length,
+            })),
+            relevantBefore,
+            relevantAfter,
+        });
+    }
     const nextActionLog = replaceTrackedFilesInActionLogState(
         actionLog,
         workCycleId,
@@ -1340,6 +1412,17 @@ function finalizeActionLogForWorkCycle(
     if (finalizedFiles === files) {
         return session;
     }
+
+    console.debug("[tracked-review] finalize work cycle", {
+        sessionId: session.sessionId,
+        workCycleId: targetWorkCycleId,
+        before: Object.values(files).map((file) =>
+            summarizeTrackedFileForDebug(file),
+        ),
+        after: Object.values(finalizedFiles).map((file) =>
+            summarizeTrackedFileForDebug(file),
+        ),
+    });
 
     return {
         ...session,
@@ -1707,6 +1790,19 @@ function applyUserEditToTrackedFileInSession(
             userEdits,
             newFullText,
         );
+
+        console.debug("[tracked-review] apply user edit to tracked file", {
+            sessionId,
+            fileId,
+            trackedKey,
+            userEdits,
+            newFullTextLength: newFullText.length,
+            before: summarizeTrackedFileForDebug(tracked),
+            after: summarizeTrackedFileForDebug(updated),
+            removed:
+                patchIsEmpty(updated.unreviewedEdits) &&
+                updated.path === updated.originPath,
+        });
 
         const nextFiles = { ...files };
         if (
@@ -5363,14 +5459,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ) => {
             const { sessionsById } = get();
             const session = sessionsById[sessionId];
-            if (!session?.actionLog) return;
+            if (!session?.actionLog) {
+                return;
+            }
 
             const tracked = findTrackedFileInAccumulatedSession(
                 session,
                 identityKey,
             );
-            if (!tracked) return;
-            if (getTrackedFileReviewState(tracked) === "pending") {
+            if (!tracked) {
+                return;
+            }
+
+            const reviewState = getTrackedFileReviewState(tracked);
+            if (reviewState === "pending") {
                 return;
             }
 

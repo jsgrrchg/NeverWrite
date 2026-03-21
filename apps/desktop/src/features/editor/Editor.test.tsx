@@ -1243,42 +1243,6 @@ describe("Editor", () => {
         });
     });
 
-    it("shows the change rail for tracked note diffs and navigates to the hunk", async () => {
-        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
-        setEditorTabs([
-            {
-                id: "tab-1",
-                noteId: "notes/current",
-                title: "Current",
-                content: "first line\nchanged line\nthird line",
-            },
-        ]);
-        seedTrackedDiff(
-            "notes/current.md",
-            "first line\nsecond line\nthird line",
-            "first line\nchanged line\nthird line",
-        );
-
-        renderComponent(<Editor />);
-
-        const view = getEditorView();
-        act(() => {
-            view.dispatch({ selection: { anchor: 0, head: 0 } });
-        });
-
-        expect(screen.getByLabelText("Change rail")).toBeInTheDocument();
-        expect(screen.getByText("1 change")).toBeInTheDocument();
-
-        await act(async () => {
-            fireEvent.click(screen.getByLabelText("Change 1"));
-            await flushPromises();
-        });
-
-        expect(
-            view.state.doc.lineAt(view.state.selection.main.head).number,
-        ).toBe(2);
-    });
-
     it("closes the active tab on Cmd+W", async () => {
         setEditorTabs(
             [

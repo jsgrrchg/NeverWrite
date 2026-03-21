@@ -52,7 +52,8 @@ export type EditorFontFamily =
     | "slab"
     | "typewriter"
     | "newspaper"
-    | "condensed";
+    | "condensed"
+    | "andale";
 
 export type TabOpenBehavior = "history" | "new_tab";
 export type SpellcheckLanguage = "system" | string;
@@ -71,24 +72,26 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "typewriter",
     "newspaper",
     "condensed",
+    "andale",
 ];
 
 export const EDITOR_FONT_FAMILY_OPTIONS: {
     value: EditorFontFamily;
     label: string;
 }[] = [
-    { value: "system", label: "System" },
-    { value: "sans", label: "Sans" },
-    { value: "serif", label: "Serif" },
+    { value: "andale", label: "Andale Mono" },
+    { value: "condensed", label: "Condensed" },
+    { value: "courier", label: "Courier New" },
+    { value: "humanist", label: "Humanist" },
+    { value: "mono", label: "Monospace" },
+    { value: "newspaper", label: "Newspaper" },
     { value: "reading", label: "Reading" },
     { value: "rounded", label: "Rounded" },
-    { value: "humanist", label: "Humanist" },
-    { value: "newspaper", label: "Newspaper" },
+    { value: "sans", label: "Sans" },
+    { value: "serif", label: "Serif" },
     { value: "slab", label: "Slab" },
+    { value: "system", label: "System" },
     { value: "typewriter", label: "Typewriter" },
-    { value: "courier", label: "Courier New" },
-    { value: "condensed", label: "Condensed" },
-    { value: "mono", label: "Monospace" },
 ];
 
 const defaults: Settings = {

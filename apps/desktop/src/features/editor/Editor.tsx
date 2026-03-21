@@ -136,7 +136,6 @@ import {
 } from "./extensions/grammar";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { useCommandStore } from "../command-palette/store/commandStore";
-import { EditorChangeChrome } from "./EditorChangeChrome";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 import {
     buildSpellcheckContextMenuEntries,
@@ -208,7 +207,7 @@ export function Editor({
     const [isDraggingVault, setIsDraggingVault] = useState(false);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
     const spellcheckRequestIdRef = useRef(0);
-    const [editorView, setEditorView] = useState<EditorView | null>(null);
+    const [, setEditorView] = useState<EditorView | null>(null);
 
     const attachScrollHeader = useCallback((view: EditorView) => {
         if (!scrollHeaderRef.current) {
@@ -2192,6 +2191,9 @@ export function Editor({
             // Capture scroll position as a CM6 effect so it is
             // restored within the same transaction — no visible jump.
             const scrollEffect = view.scrollSnapshot();
+            const effects = isForced
+                ? [scrollEffect, mergeViewCompartment.reconfigure([])]
+                : [scrollEffect];
 
             isInternalRef.current = true;
             view.dispatch({
@@ -2205,7 +2207,7 @@ export function Editor({
                     head: Math.min(selection.head, nextDocLength),
                 },
                 annotations: [changeAuthorAnnotation.of("agent")],
-                effects: scrollEffect,
+                effects,
             });
             isInternalRef.current = false;
         });
@@ -2522,11 +2524,6 @@ export function Editor({
                             className="h-full relative z-1"
                         />
                     </div>
-                    <EditorChangeChrome
-                        trackedFile={trackedFileMatch?.trackedFile ?? null}
-                        sessionId={trackedFileMatch?.sessionId ?? null}
-                        view={editorView}
-                    />
                 </div>
                 {!activeTabInfo && (
                     <div

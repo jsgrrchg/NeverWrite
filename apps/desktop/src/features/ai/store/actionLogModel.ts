@@ -35,6 +35,10 @@ import {
     rejectEditsInRangesRust,
     syncDerivedLinePatchRust,
 } from "./actionLogRustEngine";
+import {
+    keepEditsInRangeFallback,
+    rejectEditsInRangesFallback,
+} from "./actionLogJsFallback";
 
 // ---------------------------------------------------------------------------
 // Patch primitives
@@ -609,6 +613,18 @@ export function keepEditsInRange(
     startLine: number,
     endLine: number,
 ): TrackedFile {
+    // Temporary safety valve for inline merge hunks that resolve to a point
+    // range in the editor. The JS path matches those cases reliably in the
+    // app runtime while we keep the Rust/WASM path for the general case.
+    if (startLine === endLine) {
+        console.debug("[merge-inline] forcing JS fallback for point keep", {
+            identityKey: file.identityKey,
+            startLine,
+            endLine,
+        });
+        return keepEditsInRangeFallback(file, startLine, endLine);
+    }
+
     return keepEditsInRangeRust(file, startLine, endLine);
 }
 
@@ -631,6 +647,17 @@ export function rejectEditsInRanges(
     file: TrackedFile,
     ranges: Array<{ start: number; end: number }>,
 ): { file: TrackedFile; undoData: PerFileUndo } {
+    // Temporary safety valve for inline merge hunks that resolve to point
+    // ranges. Keep the fallback narrowly scoped so the normal Rust/WASM path
+    // remains the default for non-point hunk resolution.
+    if (ranges.every((range) => range.start === range.end)) {
+        console.debug("[merge-inline] forcing JS fallback for point reject", {
+            identityKey: file.identityKey,
+            ranges,
+        });
+        return rejectEditsInRangesFallback(file, ranges);
+    }
+
     return rejectEditsInRangesRust(file, ranges);
 }
 

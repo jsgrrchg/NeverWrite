@@ -260,6 +260,8 @@ export function getEditorFontFamily(fontFamily: EditorFontFamily) {
             return '"Times New Roman", "Georgia", "Source Serif 4", "Iowan Old Style", serif';
         case "condensed":
             return '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", "Helvetica Neue", sans-serif';
+        case "andale":
+            return '"Andale Mono", Menlo, Monaco, Consolas, monospace';
         case "system":
         default:
             return 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';

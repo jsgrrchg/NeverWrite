@@ -1305,7 +1305,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
-    switchTab: (tabId) => set((state) => activateTab(state, tabId)),
+    switchTab: (tabId) =>
+        set((state) =>
+            state.activeTabId === tabId ? state : activateTab(state, tabId),
+        ),
 
     updateTabContent: (tabId, content) => {
         set((state) => ({

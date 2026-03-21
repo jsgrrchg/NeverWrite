@@ -882,6 +882,39 @@ describe("editorStore tab management", () => {
         expect(useEditorStore.getState().activeTabId).toBe("tab-c");
     });
 
+    it("does not rewrite state when switching to the already active tab", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+                makeTab({
+                    id: "tab-b",
+                    noteId: "notes/b",
+                    title: "B",
+                    content: "b",
+                }),
+            ],
+            activeTabId: "tab-b",
+            activationHistory: ["tab-a", "tab-b"],
+            tabNavigationHistory: ["tab-a", "tab-b"],
+            tabNavigationIndex: 1,
+        });
+
+        const before = useEditorStore.getState();
+        useEditorStore.getState().switchTab("tab-b");
+        const after = useEditorStore.getState();
+
+        expect(after.activeTabId).toBe("tab-b");
+        expect(after.activationHistory).toEqual(["tab-a", "tab-b"]);
+        expect(after.tabNavigationHistory).toEqual(["tab-a", "tab-b"]);
+        expect(after.tabNavigationIndex).toBe(1);
+        expect(after).toBe(before);
+    });
+
     it("updates title and content when clean tabs reload from disk", () => {
         useEditorStore.setState({
             tabs: [

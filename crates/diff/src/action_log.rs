@@ -93,6 +93,10 @@ pub fn patch_is_empty(patch: &LinePatch) -> bool {
 }
 
 pub fn ranges_overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> bool {
+    if a_start == a_end && b_start == b_end {
+        return a_start == b_start;
+    }
+
     a_start < b_end && b_start < a_end
 }
 
@@ -874,6 +878,25 @@ mod tests {
     fn reject_edits_in_ranges_reverts_selected_hunks() {
         let file = tracked_file("aaa\nbbb\nccc", "aaa\nBBB\nccc");
         let rejected = reject_edits_in_ranges(&file, &[LineRange { start: 1, end: 2 }]);
+
+        assert_eq!(rejected.file.current_text, "aaa\nbbb\nccc");
+        assert!(rejected.file.unreviewed_edits.edits.is_empty());
+        assert_eq!(rejected.undo_data.edits_to_restore.len(), 1);
+    }
+
+    #[test]
+    fn keep_edits_in_point_range_accepts_pure_deletions() {
+        let file = tracked_file("aaa\nbbb\nccc", "aaa\nccc");
+        let accepted = keep_edits_in_range(&file, 1, 1);
+
+        assert_eq!(accepted.diff_base, "aaa\nccc");
+        assert!(accepted.unreviewed_edits.edits.is_empty());
+    }
+
+    #[test]
+    fn reject_edits_in_point_ranges_reverts_pure_deletions() {
+        let file = tracked_file("aaa\nbbb\nccc", "aaa\nccc");
+        let rejected = reject_edits_in_ranges(&file, &[LineRange { start: 1, end: 1 }]);
 
         assert_eq!(rejected.file.current_text, "aaa\nbbb\nccc");
         assert!(rejected.file.unreviewed_edits.edits.is_empty());

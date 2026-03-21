@@ -451,6 +451,51 @@ describe("AIReviewView", () => {
         );
     });
 
+    it("keeps review controls visible for accumulated hunks on the same file", () => {
+        const sessionId = "sess-accumulated";
+        const file = makeTrackedFile({
+            identityKey: "accumulated-entry",
+            path: "/vault/notes/file.md",
+            originPath: "/vault/notes/file.md",
+            diffBase: "aaXa\nbbb\nccc\nddd",
+            currentText: "aaXa\nBBB\nccc\nDDD",
+            reviewState: "finalized",
+        });
+
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+            rejectEditedFile: vi.fn(async () => {}),
+            keepEditedFile: vi.fn(),
+            keepAllEditedFiles: vi.fn(),
+            rejectAllEditedFiles: vi.fn(async () => {}),
+            resolveEditedFileWithMergedText: vi.fn(async () => {}),
+            resolveHunkEdits: vi.fn(async () => {}),
+        });
+
+        renderComponent(<AIReviewView />);
+
+        expect(screen.getByText("file.md")).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Reject" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Accept hunk 1" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Reject hunk 1" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Accept hunk 2" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Reject hunk 2" }),
+        ).toBeInTheDocument();
+    });
+
     it("shows summary with file count", () => {
         const sessionId = "sess-7";
         const files = [
