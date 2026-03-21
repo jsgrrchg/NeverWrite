@@ -554,6 +554,11 @@ const headingRule: NodeRule = (node, context) => {
     const headingLevel = getHeadingLevel(node.name);
     if (headingLevel === null) return;
 
+    registerRevealSensitiveRange(context, "line", node.from, node.to);
+    if (selectionTouchesLine(context.state, node.from, node.to)) {
+        return;
+    }
+
     if (
         headingLevel === 1 &&
         isLeadingDocumentHeading(context.state, node.from)
