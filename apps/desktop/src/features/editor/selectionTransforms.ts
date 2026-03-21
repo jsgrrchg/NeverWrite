@@ -11,6 +11,10 @@ export type SelectionToolbarAction =
     | "code"
     | "link"
     | "wikilink"
+    | "heading-1"
+    | "heading-2"
+    | "heading-3"
+    | "heading-0"
     | "quote"
     | "task";
 
@@ -728,6 +732,14 @@ export function getSelectionTransform(
             return toggleMarkdownLink(state);
         case "wikilink":
             return toggleWrappedMainSelection(state, "[[", "]]");
+        case "heading-1":
+            return getHeadingTransform(state, 1);
+        case "heading-2":
+            return getHeadingTransform(state, 2);
+        case "heading-3":
+            return getHeadingTransform(state, 3);
+        case "heading-0":
+            return getHeadingTransform(state, 0);
         case "quote":
             return getBlockquoteTransform(state);
         case "task":
