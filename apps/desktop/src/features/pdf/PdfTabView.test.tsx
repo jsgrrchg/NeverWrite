@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PdfTabView } from "./PdfTabView";
@@ -126,7 +126,7 @@ describe("PdfTabView", () => {
         const pdfDocument = {
             destroy: vi.fn(),
             getPage: vi.fn().mockImplementation(async () => createMockPage()),
-            numPages: 10,
+            numPages: 30,
         };
 
         getDocumentMock.mockReturnValue({
@@ -155,13 +155,40 @@ describe("PdfTabView", () => {
 
         await user.click(screen.getByTitle("Switch to continuous view"));
 
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
         await waitFor(() => {
             expect(screen.getByText("Continuous")).toBeInTheDocument();
             const canvases = container.querySelectorAll("canvas");
             const textLayers = container.querySelectorAll(".textLayer");
             expect(canvases.length).toBeGreaterThan(0);
             expect(canvases.length).toBeLessThan(pdfDocument.numPages);
+            expect(canvases.length).toBeLessThanOrEqual(15);
             expect(textLayers.length).toBe(canvases.length);
+            expect(
+                container.querySelector('[data-page-number="1"]'),
+            ).toBeTruthy();
+        });
+
+        Object.defineProperty(scrollSurface, "scrollTop", {
+            configurable: true,
+            writable: true,
+            value: 14000,
+        });
+
+        fireEvent.scroll(scrollSurface);
+
+        await waitFor(() => {
+            expect(
+                container.querySelector('[data-page-number="18"]'),
+            ).toBeTruthy();
+            expect(
+                container.querySelector('[data-page-number="1"]'),
+            ).toBeFalsy();
         });
     });
 
