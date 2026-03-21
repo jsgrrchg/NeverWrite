@@ -38,7 +38,7 @@ interface PersistedSession {
         path: string;
         mimeType?: string | null;
         viewer?: FileViewerMode;
-        content: string;
+        content?: string;
         history?: Array<{
             relativePath: string;
             title: string;
@@ -1755,43 +1755,6 @@ useEditorStore.subscribe((state) => {
         isNoteTab(tab),
     );
     const session: PersistedSession = {
-        tabs: persistedTabs.map((tab) =>
-            isPdfTab(tab)
-                ? {
-                      id: tab.id,
-                      kind: "pdf",
-                      entryId: tab.entryId,
-                      title: tab.title,
-                      path: tab.path,
-                      page: tab.page,
-                      zoom: tab.zoom,
-                      viewMode: tab.viewMode,
-                      history: tab.history,
-                      historyIndex: tab.historyIndex,
-                  }
-                : isFileTab(tab)
-                  ? {
-                        id: tab.id,
-                        kind: "file",
-                        relativePath: tab.relativePath,
-                        title: tab.title,
-                        path: tab.path,
-                        mimeType: tab.mimeType,
-                        viewer: tab.viewer,
-                        content: tab.content,
-                        history: tab.history,
-                        historyIndex: tab.historyIndex,
-                    }
-                  : {
-                        id: tab.id,
-                        kind: "note",
-                        noteId: tab.noteId,
-                        title: tab.title,
-                        content: tab.content,
-                        history: tab.history,
-                        historyIndex: tab.historyIndex,
-                    },
-        ),
         activeTabId: activeTab?.id ?? null,
         noteIds: noteTabs
             .filter((t) => t.noteId)
@@ -1844,7 +1807,6 @@ useEditorStore.subscribe((state) => {
                     path: t.path,
                     mimeType: t.mimeType,
                     viewer: t.viewer,
-                    content: t.content,
                     history: t.history
                         .filter((h): h is FileHistoryEntry => h.kind === "file")
                         .map((h) => ({

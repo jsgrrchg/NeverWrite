@@ -1,4 +1,5 @@
 import { act, fireEvent, screen } from "@testing-library/react";
+import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import userEvent from "@testing-library/user-event";
@@ -236,7 +237,7 @@ describe("FileTabView", () => {
     expect(screen.getByText("next.toml")).toBeInTheDocument();
   });
 
-  it("reapplies pending inline diff decorations when returning to a text file tab", async () => {
+  it("reapplies merge view when returning to a text file tab", async () => {
     setEditorTabs(
       [
         {
@@ -269,25 +270,28 @@ describe("FileTabView", () => {
     );
 
     renderComponent(<FileTabView />);
-    expect(
-      document.querySelector(".cm-diff-inline-modified, .cm-diff-word-changed"),
-    ).not.toBeNull();
+    let view = EditorView.findFromDOM(
+      document.querySelector(".cm-editor") as HTMLElement,
+    );
+    expect(view).not.toBeNull();
+    expect(getChunks(view!.state)?.chunks.length).toBe(1);
+    expect(getOriginalDoc(view!.state).toString()).toBe('name = "Old"');
 
     await act(async () => {
       useEditorStore.getState().switchTab("text-tab-2");
     });
 
-    expect(
-      document.querySelector(".cm-diff-inline-modified, .cm-diff-word-changed"),
-    ).toBeNull();
+    view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement);
+    expect(view).not.toBeNull();
+    expect(getChunks(view!.state)).toBeNull();
 
     await act(async () => {
       useEditorStore.getState().switchTab("text-tab-1");
     });
 
-    expect(
-      document.querySelector(".cm-diff-inline-modified, .cm-diff-word-changed"),
-    ).not.toBeNull();
+    view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement);
+    expect(view).not.toBeNull();
+    expect(getChunks(view!.state)?.chunks.length).toBe(1);
 
     await act(async () => {
       useChatStore.setState({

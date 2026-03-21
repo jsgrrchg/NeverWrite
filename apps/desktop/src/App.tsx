@@ -1102,6 +1102,27 @@ export default function App() {
             }
 
             for (const fileEntry of session?.fileTabs ?? []) {
+                let content = fileEntry.content ?? "";
+                const viewer =
+                    fileEntry.viewer ??
+                    (fileEntry.mimeType?.startsWith("image/")
+                        ? "image"
+                        : "text");
+
+                if (!content && viewer === "text") {
+                    try {
+                        const detail = await vaultInvoke<{ content: string }>(
+                            "read_vault_file",
+                            {
+                                relativePath: fileEntry.relativePath,
+                            },
+                        );
+                        content = detail.content;
+                    } catch {
+                        content = "";
+                    }
+                }
+
                 const history = (
                     fileEntry.history ?? [
                         {
@@ -1109,11 +1130,7 @@ export default function App() {
                             title: fileEntry.title,
                             path: fileEntry.path,
                             mimeType: fileEntry.mimeType ?? null,
-                            viewer:
-                                fileEntry.viewer ??
-                                (fileEntry.mimeType?.startsWith("image/")
-                                    ? "image"
-                                    : "text"),
+                            viewer,
                         },
                     ]
                 ).map((h) => ({
@@ -1131,7 +1148,7 @@ export default function App() {
                     history.length - 1,
                 );
                 if (history[historyIndex]) {
-                    history[historyIndex].content = fileEntry.content;
+                    history[historyIndex].content = content;
                 }
 
                 restoredTabs.push({
@@ -1141,12 +1158,8 @@ export default function App() {
                     title: fileEntry.title,
                     path: fileEntry.path,
                     mimeType: fileEntry.mimeType ?? null,
-                    viewer:
-                        fileEntry.viewer ??
-                        (fileEntry.mimeType?.startsWith("image/")
-                            ? "image"
-                            : "text"),
-                    content: fileEntry.content,
+                    viewer,
+                    content,
                     history,
                     historyIndex,
                 });

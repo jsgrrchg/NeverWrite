@@ -1333,9 +1333,9 @@ describe("Inline diff positioning", () => {
         expect(file.status.kind).toBe("deleted");
         expect(file.currentText).toBe("");
         // Deletion produces edits (old lines removed) but in the editor
-        // the file is empty so there's nothing to decorate inline.
+        // the file is empty so there is no B-side content to decorate.
         // shouldShowInlineDiff still returns true — the editor
-        // handles this via the deleted-block widget in inlineDiff.ts.
+        // handles this through the merge view deleted chunk widget.
         // This test just documents the behavior.
     });
 });

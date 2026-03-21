@@ -182,6 +182,34 @@ describe("editorStore session persistence", () => {
             viewer: "image",
         });
         expect(session?.activeFilePath).toBe("assets/cover.avif");
+        expect(session?.tabs).toBeUndefined();
+        expect(session?.fileTabs?.[0]).not.toHaveProperty("content");
+    });
+
+    it("does not persist note contents in the top-level session payload", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/lean-2026" });
+
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-1",
+                    noteId: "notes/large",
+                    title: "Large",
+                    content: "x".repeat(20_000),
+                }),
+            ],
+            activeTabId: "tab-1",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const session = readPersistedSession("/vaults/lean-2026");
+        expect(session?.tabs).toBeUndefined();
+        expect(session?.noteIds?.[0]).toMatchObject({
+            noteId: "notes/large",
+            title: "Large",
+        });
     });
 
     it("swallows storage quota errors while persisting", async () => {

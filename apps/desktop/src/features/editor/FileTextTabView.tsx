@@ -22,8 +22,8 @@ import {
     getSyntaxExtension,
     getWrappingExtension,
 } from "./editorExtensions";
-import { getInlineDiffExtension } from "./extensions/inlineDiff";
-import { syncInlineDiffForPaths } from "./inlineDiffSync";
+import { mergeViewCompartment } from "./extensions/mergeViewDiff";
+import { syncMergeViewForPaths } from "./mergeViewSync";
 import { useChatStore } from "../ai/store/chatStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { loadCodeLanguage } from "./codeLanguage";
@@ -164,7 +164,7 @@ export function FileTextTabView() {
                     search({ top: true }),
                     searchTheme,
                     keymap.of(searchKeymap),
-                    getInlineDiffExtension(),
+                    mergeViewCompartment.of([]),
                     EditorView.updateListener.of((update) => {
                         if (
                             !update.docChanged ||
@@ -194,7 +194,13 @@ export function FileTextTabView() {
         queueMicrotask(() => {
             setEditorView(nextView);
         });
-    }, [isDark, lineWrapping, scheduleSave, tab]);
+    }, [
+        isDark,
+        lineWrapping,
+        scheduleSave,
+        tab,
+        trackedFileMatch?.trackedFile.diffBase,
+    ]);
 
     useEffect(() => {
         if (!tab) {
@@ -292,22 +298,24 @@ export function FileTextTabView() {
     }, [languageMimeType, languagePath, tab]);
 
     useEffect(() => {
-        const syncInlineDiff = () => {
+        const syncMerge = () => {
             const currentTab = tabRef.current;
-            syncInlineDiffForPaths(
+            syncMergeViewForPaths(
                 viewRef.current,
                 currentTab ? [currentTab.path, currentTab.relativePath] : [],
                 useChatStore.getState().sessionsById,
+                { mode: "source" },
             );
         };
 
-        syncInlineDiff();
+        syncMerge();
         const unsub = useChatStore.subscribe((state) => {
             const currentTab = tabRef.current;
-            syncInlineDiffForPaths(
+            syncMergeViewForPaths(
                 viewRef.current,
                 currentTab ? [currentTab.path, currentTab.relativePath] : [],
                 state.sessionsById,
+                { mode: "source" },
             );
         });
         return unsub;
@@ -315,12 +323,13 @@ export function FileTextTabView() {
 
     useEffect(() => {
         const currentTab = tabRef.current;
-        syncInlineDiffForPaths(
+        syncMergeViewForPaths(
             viewRef.current,
             currentTab ? [currentTab.path, currentTab.relativePath] : [],
             useChatStore.getState().sessionsById,
+            { mode: "source" },
         );
-    }, [tab]);
+    }, [tab, trackedFileMatch?.trackedFile.version]);
 
     useEffect(() => {
         return () => {

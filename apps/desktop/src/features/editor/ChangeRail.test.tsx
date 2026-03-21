@@ -1,94 +1,90 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ChangeRail } from "./ChangeRail";
 import type { ChangeRailMarker } from "./changePresentationModel";
+import { ChangeRail } from "./ChangeRail";
 
 function makeMarker(
     key: string,
-    overrides: Partial<ChangeRailMarker> = {},
+    kind: ChangeRailMarker["kind"],
+    editIndex: number,
 ): ChangeRailMarker {
     return {
         key,
-        editIndex: 0,
-        newStart: 0,
-        newEnd: 1,
-        oldStart: 0,
-        oldEnd: 1,
-        kind: "modify",
+        startLine: editIndex * 3,
+        endLine: editIndex * 3 + (kind === "delete" ? 0 : 1),
+        anchorLine: editIndex * 3,
+        kind,
         reviewState: "finalized",
-        topRatio: 0,
+        topRatio: editIndex * 0.25,
         heightRatio: 0.2,
-        ...overrides,
     };
 }
 
 describe("ChangeRail", () => {
-    it("renders markers and navigation controls", () => {
+    it("renders navigation and marker controls for the current snapshot", () => {
+        const onMarkerHover = vi.fn();
+        const onMarkerClick = vi.fn();
+        const onPreviousChange = vi.fn();
+        const onNextChange = vi.fn();
+
         render(
-            <div style={{ height: 240 }}>
-                <ChangeRail
-                    markers={[makeMarker("first"), makeMarker("second")]}
-                    activeMarkerKey="first"
-                    hoveredMarkerKey={null}
-                    onMarkerHover={() => {}}
-                    onMarkerClick={() => {}}
-                    onPreviousChange={() => {}}
-                    onNextChange={() => {}}
-                />
-            </div>,
+            <ChangeRail
+                markers={[
+                    makeMarker("edit-0", "add", 0),
+                    makeMarker("edit-1", "modify", 1),
+                ]}
+                activeMarkerKey="edit-1"
+                hoveredMarkerKey="edit-0"
+                onMarkerHover={onMarkerHover}
+                onMarkerClick={onMarkerClick}
+                onPreviousChange={onPreviousChange}
+                onNextChange={onNextChange}
+            />,
         );
 
         expect(screen.getByLabelText("Change rail")).toBeInTheDocument();
-        expect(screen.getByLabelText("Previous change")).toBeInTheDocument();
-        expect(screen.getByLabelText("Next change")).toBeInTheDocument();
-        expect(screen.getAllByLabelText(/Change \d+/)).toHaveLength(2);
+        expect(screen.getByRole("button", { name: "Previous change" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Next change" })).toBeInTheDocument();
+
+        const activeMarker = screen.getByRole("button", { name: "Change 2" });
+        expect(activeMarker).toHaveAttribute("aria-current", "true");
+
+        fireEvent.mouseEnter(screen.getByRole("button", { name: "Change 1" }));
+        expect(onMarkerHover).toHaveBeenCalledWith("edit-0");
+
+        fireEvent.click(activeMarker);
+        expect(onMarkerClick).toHaveBeenCalledWith("edit-1");
+
+        fireEvent.click(screen.getByRole("button", { name: "Previous change" }));
+        fireEvent.click(screen.getByRole("button", { name: "Next change" }));
+        expect(onPreviousChange).toHaveBeenCalledTimes(1);
+        expect(onNextChange).toHaveBeenCalledTimes(1);
     });
 
-    it("calls hover and click callbacks for markers", () => {
-        const onMarkerHover = vi.fn();
-        const onMarkerClick = vi.fn();
-
-        render(
-            <div style={{ height: 240 }}>
-                <ChangeRail
-                    markers={[makeMarker("first")]}
-                    activeMarkerKey={null}
-                    hoveredMarkerKey={null}
-                    onMarkerHover={onMarkerHover}
-                    onMarkerClick={onMarkerClick}
-                />
-            </div>,
+    it("returns null when hidden or empty", () => {
+        const { container, rerender } = render(
+            <ChangeRail
+                markers={[]}
+                activeMarkerKey={null}
+                hoveredMarkerKey={null}
+                onMarkerHover={() => undefined}
+                onMarkerClick={() => undefined}
+            />,
         );
 
-        const marker = screen.getByLabelText("Change 1");
-        fireEvent.mouseEnter(marker);
-        fireEvent.click(marker);
-        fireEvent.mouseLeave(marker);
+        expect(container).toBeEmptyDOMElement();
 
-        expect(onMarkerHover).toHaveBeenNthCalledWith(1, "first");
-        expect(onMarkerHover).toHaveBeenLastCalledWith(null);
-        expect(onMarkerClick).toHaveBeenCalledWith("first");
-    });
-
-    it("marks the active rail marker", () => {
-        render(
-            <div style={{ height: 240 }}>
-                <ChangeRail
-                    markers={[makeMarker("first"), makeMarker("second")]}
-                    activeMarkerKey="second"
-                    hoveredMarkerKey={null}
-                    onMarkerHover={() => {}}
-                    onMarkerClick={() => {}}
-                />
-            </div>,
+        rerender(
+            <ChangeRail
+                hidden
+                markers={[makeMarker("edit-0", "add", 0)]}
+                activeMarkerKey={null}
+                hoveredMarkerKey={null}
+                onMarkerHover={() => undefined}
+                onMarkerClick={() => undefined}
+            />,
         );
 
-        expect(screen.getByLabelText("Change 2")).toHaveAttribute(
-            "aria-current",
-            "true",
-        );
-        expect(screen.getByLabelText("Change 1")).not.toHaveAttribute(
-            "aria-current",
-        );
+        expect(container).toBeEmptyDOMElement();
     });
 });

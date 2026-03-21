@@ -89,11 +89,13 @@ export function ChangeRail({
                                         ? 0.65
                                         : 0.78,
                                 boxShadow: isActive
-                                    ? "0 0 0 1px color-mix(in srgb, white 55%, transparent)"
-                                    : "none",
+                                    ? "0 0 0 1px color-mix(in srgb, white 55%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent)"
+                                    : isHovered
+                                      ? "0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent)"
+                                      : "none",
                                 transform:
                                     isActive || isHovered
-                                        ? "scaleX(1.1)"
+                                        ? "scaleX(1.14)"
                                         : "scaleX(1)",
                                 transition:
                                     "opacity 140ms ease, transform 140ms ease, box-shadow 140ms ease",
@@ -123,7 +125,8 @@ function getMarkerColor(kind: ChangeRailMarker["kind"]) {
 }
 
 const railNavButtonStyle = {
-    border: "1px solid var(--border)",
-    backgroundColor: "var(--bg-secondary)",
+    border: "1px solid color-mix(in srgb, var(--border) 75%, transparent)",
+    backgroundColor: "color-mix(in srgb, var(--bg-secondary) 82%, var(--bg-primary))",
     color: "var(--text-secondary)",
+    boxShadow: "0 1px 0 color-mix(in srgb, white 6%, transparent)",
 } as const;

@@ -1,10 +1,15 @@
+import { Text } from "@codemirror/state";
+import { Chunk } from "@codemirror/merge";
 import { describe, expect, it } from "vitest";
 import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import {
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
 } from "../ai/store/actionLogModel";
-import { deriveFileChangePresentation } from "./changePresentationModel";
+import {
+    deriveFileChangePresentation,
+    deriveMarkersFromChunks,
+} from "./changePresentationModel";
 
 function makeTrackedFile(
     diffBase: string,
@@ -36,6 +41,14 @@ function replaceLines(
     return Array.from({ length: lineCount }, (_, index) =>
         replacements[index] ?? `line-${index}`,
     ).join("\n");
+}
+
+function buildMarkers(diffBase: string, currentText: string) {
+    return deriveMarkersFromChunks(
+        Chunk.build(Text.of(diffBase.split("\n")), Text.of(currentText.split("\n"))),
+        Text.of(currentText.split("\n")),
+        "finalized",
+    );
 }
 
 describe("changePresentationModel", () => {
@@ -121,53 +134,59 @@ describe("changePresentationModel", () => {
         expect(presentation.showWordDiff).toBe(false);
     });
 
-    it("builds add rail markers with proportional ranges", () => {
-        const presentation = deriveFileChangePresentation(
-            makeTrackedFile("alpha\nbeta", "alpha\nbeta\nnew line"),
-        );
+    it("derives add markers from merge chunks", () => {
+        const markers = buildMarkers("alpha\nbeta", "alpha\nbeta\nnew line");
 
-        expect(presentation.railMarkers).toHaveLength(1);
-        expect(presentation.railMarkers[0]?.kind).toBe("add");
-        expect(presentation.railMarkers[0]?.topRatio).toBeGreaterThanOrEqual(0);
-        expect(presentation.railMarkers[0]?.heightRatio).toBeGreaterThan(0);
+        expect(markers).toHaveLength(1);
+        expect(markers[0]?.kind).toBe("add");
+        expect(markers[0]?.startLine).toBe(2);
+        expect(markers[0]?.endLine).toBe(3);
     });
 
-    it("builds modify rail markers with proportional ranges", () => {
-        const presentation = deriveFileChangePresentation(
-            makeTrackedFile("alpha\nbeta", "alpha\nBETA"),
-        );
+    it("derives modify markers from merge chunks", () => {
+        const markers = buildMarkers("alpha\nbeta", "alpha\nBETA");
 
-        expect(presentation.railMarkers).toHaveLength(1);
-        expect(presentation.railMarkers[0]?.kind).toBe("modify");
-        expect(presentation.railMarkers[0]?.topRatio).toBeGreaterThanOrEqual(0);
-        expect(presentation.railMarkers[0]?.heightRatio).toBeGreaterThan(0);
+        expect(markers).toHaveLength(1);
+        expect(markers[0]?.kind).toBe("modify");
+        expect(markers[0]?.heightRatio).toBeGreaterThan(0);
     });
 
-    it("builds delete rail markers with a stable minimum height", () => {
-        const presentation = deriveFileChangePresentation(
-            makeTrackedFile("alpha\nbeta\ngamma", "alpha\ngamma"),
-        );
+    it("derives delete markers from merge chunks", () => {
+        const markers = buildMarkers("alpha\nbeta\ngamma", "alpha\ngamma");
 
-        expect(presentation.railMarkers).toHaveLength(1);
-        expect(presentation.railMarkers[0]?.kind).toBe("delete");
-        expect(presentation.railMarkers[0]?.topRatio).toBeGreaterThanOrEqual(0);
-        expect(presentation.railMarkers[0]?.heightRatio).toBeGreaterThan(0);
+        expect(markers).toHaveLength(1);
+        expect(markers[0]?.kind).toBe("delete");
+        expect(markers[0]?.startLine).toBe(1);
+        expect(markers[0]?.endLine).toBe(1);
     });
 
-    it("keeps large delete markers proportional near the end of the file", () => {
-        const diffBase = replaceLines(12, {});
-        const currentText = replaceLines(8, {});
+    it("keeps add markers stable at EOF", () => {
+        const markers = buildMarkers("alpha\nbeta", "alpha\nbeta\ngamma");
+
+        expect(markers).toHaveLength(1);
+        expect(markers[0]?.kind).toBe("add");
+        expect(markers[0]?.startLine).toBe(2);
+        expect(markers[0]?.endLine).toBe(3);
+    });
+
+    it("keeps delete markers stable near EOF", () => {
+        const markers = buildMarkers("alpha\nbeta\ngamma", "alpha\nbeta");
+
+        expect(markers).toHaveLength(1);
+        expect(markers[0]?.kind).toBe("delete");
+        expect(markers[0]?.startLine).toBe(2);
+        expect(markers[0]?.endLine).toBe(2);
+    });
+
+    it("suppresses inline actions while review is pending", () => {
         const presentation = deriveFileChangePresentation(
-            makeTrackedFile(diffBase, currentText, {
-                unreviewedEdits: {
-                    edits: [{ oldStart: 8, oldEnd: 12, newStart: 8, newEnd: 8 }],
-                },
+            makeTrackedFile("alpha", "alpHa", {
+                reviewState: "pending",
             }),
         );
 
-        expect(presentation.railMarkers).toHaveLength(1);
-        expect(presentation.railMarkers[0]?.kind).toBe("delete");
-        expect(presentation.railMarkers[0]?.heightRatio).toBeCloseTo(0.5, 5);
-        expect(presentation.railMarkers[0]?.topRatio).toBeCloseTo(0.5, 5);
+        expect(presentation.reviewState).toBe("pending");
+        expect(presentation.showInlineActions).toBe(false);
+        expect(presentation.showWordDiff).toBe(true);
     });
 });
