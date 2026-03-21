@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isNoteTab,
     markSessionReady,
@@ -182,6 +182,53 @@ describe("editorStore session persistence", () => {
             viewer: "image",
         });
         expect(session?.activeFilePath).toBe("assets/cover.avif");
+    });
+
+    it("swallows storage quota errors while persisting", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/quota-2026" });
+
+        const quotaError = new DOMException(
+            "Quota exceeded",
+            "QuotaExceededError",
+        );
+        const setItemMock = vi.fn(() => {
+            throw quotaError;
+        });
+        const originalSetItem = window.localStorage.setItem;
+        Object.defineProperty(window.localStorage, "setItem", {
+            configurable: true,
+            value: setItemMock,
+        });
+        const warnSpy = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => undefined);
+
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-1",
+                    noteId: "notes/quota",
+                    title: "Quota",
+                    content: "content",
+                }),
+            ],
+            activeTabId: "tab-1",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        expect(setItemMock).toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(
+            "Failed to persist editor session",
+            quotaError,
+        );
+
+        Object.defineProperty(window.localStorage, "setItem", {
+            configurable: true,
+            value: originalSetItem,
+        });
+        warnSpy.mockRestore();
     });
 
     it("falls back to the legacy global session key when needed", () => {
