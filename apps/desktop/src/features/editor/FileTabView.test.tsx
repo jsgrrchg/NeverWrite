@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, createEvent, fireEvent, screen } from "@testing-library/react";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -189,6 +189,130 @@ describe("FileTabView", () => {
             relativePath: "src/config.toml",
             content: 'name = "VaultAI"\nversion = "1.0.0"',
         });
+    });
+
+    it("shows native selection visuals for text files without markdown quick actions", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/config.toml",
+                title: "config.toml",
+                path: "/vault/src/config.toml",
+                mimeType: "application/toml",
+                viewer: "text",
+                content: 'name = "VaultAI"',
+            },
+        ]);
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        await act(async () => {
+            view!.focus();
+            view!.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 4,
+                },
+            });
+        });
+
+        expect(view!.dom.querySelector(".cm-selectionLayer")).toBeInstanceOf(
+            HTMLElement,
+        );
+        expect(
+            screen.queryByRole("button", { name: "Bold" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Heading 1" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("does not enable markdown autopair handlers for text files", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/config.toml",
+                title: "config.toml",
+                path: "/vault/src/config.toml",
+                mimeType: "application/toml",
+                viewer: "text",
+                content: 'name = "VaultAI"',
+            },
+        ]);
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+        expect(view!.state.facet(EditorView.inputHandler)).toHaveLength(0);
+    });
+
+    it("uses the app context menu for text files instead of the native OS menu", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/config.toml",
+                title: "config.toml",
+                path: "/vault/src/config.toml",
+                mimeType: "application/toml",
+                viewer: "text",
+                content: 'name = "VaultAI"',
+            },
+        ]);
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        await act(async () => {
+            view!.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 4,
+                },
+            });
+        });
+
+        const event = createEvent.contextMenu(view!.dom, {
+            clientX: 24,
+            clientY: 32,
+        });
+        const preventDefaultSpy = vi.spyOn(event, "preventDefault");
+
+        await act(async () => {
+            fireEvent(view!.dom, event);
+        });
+
+        expect(preventDefaultSpy).toHaveBeenCalled();
+        expect(screen.getByText("Undo")).toBeInTheDocument();
+        expect(screen.getByText("Redo")).toBeInTheDocument();
+        expect(screen.getByText("Cut")).toBeInTheDocument();
+        expect(screen.getByText("Copy")).toBeInTheDocument();
+        expect(screen.getByText("Paste")).toBeInTheDocument();
+        expect(screen.getByText("Select All")).toBeInTheDocument();
     });
 
     it("recreates the text editor and shows the next file immediately on tab switch", async () => {

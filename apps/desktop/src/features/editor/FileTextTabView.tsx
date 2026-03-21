@@ -6,9 +6,19 @@ import {
     type CSSProperties,
 } from "react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Compartment, EditorState } from "@codemirror/state";
+import { redo, undo } from "@codemirror/commands";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import { search, searchKeymap } from "@codemirror/search";
-import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+import {
+    EditorView,
+    drawSelection,
+    keymap,
+    lineNumbers,
+} from "@codemirror/view";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 import {
     useEditorStore,
     isFileTab,
@@ -45,10 +55,13 @@ export function FileTextTabView() {
     const loadRequestRef = useRef(0);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const tabRef = useRef<FileTab | null>(null);
+    const contextMenuCleanupRef = useRef<(() => void) | null>(null);
     const applyingExternalUpdateRef = useRef(false);
     const lastSavedContentByPathRef = useRef(new Map<string, string>());
     const saveRequestIdByPathRef = useRef(new Map<string, number>());
     const [, setEditorView] = useState<EditorView | null>(null);
+    const [editorContextMenu, setEditorContextMenu] =
+        useState<ContextMenuState<{ hasSelection: boolean }> | null>(null);
 
     const tab = useEditorStore((state) => {
         return getActiveFileTab(state);
@@ -72,6 +85,113 @@ export function FileTextTabView() {
     useEffect(() => {
         tabRef.current = tab;
     }, [tab]);
+
+    const copySelectedText = useCallback(async () => {
+        const view = viewRef.current;
+        if (!view) return;
+
+        const selection = view.state.selection.main;
+        if (selection.empty) return;
+
+        try {
+            await navigator.clipboard.writeText(
+                view.state.sliceDoc(selection.from, selection.to),
+            );
+        } catch (error) {
+            console.error("Error copying file selection:", error);
+        }
+    }, []);
+
+    const cutSelectedText = useCallback(async () => {
+        const view = viewRef.current;
+        if (!view) return;
+
+        const selection = view.state.selection.main;
+        if (selection.empty) return;
+
+        try {
+            await navigator.clipboard.writeText(
+                view.state.sliceDoc(selection.from, selection.to),
+            );
+            view.dispatch({
+                changes: {
+                    from: selection.from,
+                    to: selection.to,
+                    insert: "",
+                },
+                selection: { anchor: selection.from },
+                userEvent: "delete.cut",
+            });
+            view.focus();
+        } catch (error) {
+            console.error("Error cutting file selection:", error);
+        }
+    }, []);
+
+    const pasteClipboardText = useCallback(async () => {
+        const view = viewRef.current;
+        if (!view) return;
+
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text.length === 0) return;
+
+            const selection = view.state.selection.main;
+            view.dispatch({
+                changes: {
+                    from: selection.from,
+                    to: selection.to,
+                    insert: text,
+                },
+                selection: { anchor: selection.from + text.length },
+                userEvent: "input.paste",
+            });
+            view.focus();
+        } catch (error) {
+            console.error("Error pasting into file editor:", error);
+        }
+    }, []);
+
+    const selectAllText = useCallback(() => {
+        const view = viewRef.current;
+        if (!view) return;
+
+        view.dispatch({
+            selection: EditorSelection.single(0, view.state.doc.length),
+        });
+        view.focus();
+    }, []);
+
+    const handleEditorContextMenu = useCallback((event: MouseEvent) => {
+        const view = viewRef.current;
+        if (!view) return;
+
+        const pos = view.posAtCoords({
+            x: event.clientX,
+            y: event.clientY,
+        });
+        const selection = view.state.selection.main;
+
+        if (
+            pos !== null &&
+            (selection.empty || pos < selection.from || pos > selection.to)
+        ) {
+            view.dispatch({
+                selection: { anchor: pos },
+            });
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        setEditorContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: {
+                hasSelection: !view.state.selection.main.empty,
+            },
+        });
+    }, []);
 
     const saveFile = useCallback(
         async (
@@ -156,6 +276,7 @@ export function FileTextTabView() {
                     wrappingCompartmentRef.current.of(
                         getWrappingExtension(lineWrapping),
                     ),
+                    drawSelection(),
                     EditorView.editorAttributes.of({
                         "data-live-preview": "false",
                     }),
@@ -189,11 +310,29 @@ export function FileTextTabView() {
             }),
             parent: container,
         });
+
+        const handleNativeContextMenu = (event: MouseEvent) => {
+            handleEditorContextMenu(event);
+        };
+        nextView.dom.addEventListener(
+            "contextmenu",
+            handleNativeContextMenu,
+            true,
+        );
+        contextMenuCleanupRef.current = () => {
+            nextView.dom.removeEventListener(
+                "contextmenu",
+                handleNativeContextMenu,
+                true,
+            );
+        };
+
         viewRef.current = nextView;
         queueMicrotask(() => {
             setEditorView(nextView);
         });
     }, [
+        handleEditorContextMenu,
         isDark,
         lineWrapping,
         scheduleSave,
@@ -203,8 +342,11 @@ export function FileTextTabView() {
 
     useEffect(() => {
         if (!tab) {
+            contextMenuCleanupRef.current?.();
+            contextMenuCleanupRef.current = null;
             viewRef.current?.destroy();
             viewRef.current = null;
+            setEditorContextMenu(null);
             queueMicrotask(() => {
                 setEditorView(null);
             });
@@ -331,6 +473,10 @@ export function FileTextTabView() {
     }, [tab, trackedFileMatch?.trackedFile.version]);
 
     useEffect(() => {
+        setEditorContextMenu(null);
+    }, [tab?.id]);
+
+    useEffect(() => {
         return () => {
             if (saveTimerRef.current) {
                 clearTimeout(saveTimerRef.current);
@@ -357,9 +503,12 @@ export function FileTextTabView() {
                 clearTimeout(saveTimerRef.current);
                 saveTimerRef.current = null;
             }
+            contextMenuCleanupRef.current?.();
+            contextMenuCleanupRef.current = null;
             loadRequestRef.current += 1;
             viewRef.current?.destroy();
             viewRef.current = null;
+            setEditorContextMenu(null);
             setEditorView(null);
         };
     }, []);
@@ -447,6 +596,52 @@ export function FileTextTabView() {
                     </div>
                 </div>
             </div>
+            {editorContextMenu && (
+                <ContextMenu
+                    menu={editorContextMenu}
+                    onClose={() => setEditorContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Undo",
+                            action: () => {
+                                const view = viewRef.current;
+                                if (!view) return;
+                                undo(view);
+                                view.focus();
+                            },
+                        },
+                        {
+                            label: "Redo",
+                            action: () => {
+                                const view = viewRef.current;
+                                if (!view) return;
+                                redo(view);
+                                view.focus();
+                            },
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Cut",
+                            action: () => void cutSelectedText(),
+                            disabled: !editorContextMenu.payload.hasSelection,
+                        },
+                        {
+                            label: "Copy",
+                            action: () => void copySelectedText(),
+                            disabled: !editorContextMenu.payload.hasSelection,
+                        },
+                        {
+                            label: "Paste",
+                            action: () => void pasteClipboardText(),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Select All",
+                            action: () => selectAllText(),
+                        },
+                    ]}
+                />
+            )}
         </div>
     );
 }
