@@ -49,6 +49,10 @@ export const inlineDiffTheme = EditorView.baseTheme({
         boxShadow: "inset 3px 0 0 0 var(--diff-update)",
         transition: "background-color 160ms ease, box-shadow 160ms ease",
     },
+    ".cm-diff-focused": {
+        outline: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
+        outlineOffset: "-1px",
+    },
     ".cm-diff-word-removed": {
         backgroundColor:
             "color-mix(in srgb, var(--diff-remove) 16%, transparent)",
@@ -91,6 +95,16 @@ export const inlineDiffTheme = EditorView.baseTheme({
         opacity: "0.75",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",
+    },
+    ".cm-diff-deleted-block-focused": {
+        boxShadow:
+            "inset 3px 0 0 0 var(--diff-remove), 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent)",
+    },
+    ".cm-diff-deleted-summary": {
+        color: "color-mix(in srgb, var(--diff-remove) 68%, var(--text-primary))",
+        fontSize: "11px",
+        fontWeight: "600",
+        letterSpacing: "0.01em",
     },
     ".cm-diff-deleted-controls": {
         display: "flex",

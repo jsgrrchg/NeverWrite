@@ -1,36 +1,14 @@
 import type { EditorView } from "@codemirror/view";
 import type { AgentTextSpan, LineEdit } from "../ai/diff/actionLogTypes";
 import type { InlineDiffState } from "./extensions/inlineDiff";
-import {
-    getTrackedFilesForSession,
-    syncDerivedLinePatch,
-    shouldShowInlineDiff,
-} from "../ai/store/actionLogModel";
 import type { AIChatSession } from "../ai/types";
+import { deriveFileChangePresentation } from "./changePresentationModel";
 import {
     clearInlineDiff,
     inlineDiffField,
     setInlineDiff,
 } from "./extensions/inlineDiff";
-
-function normalizePath(path: string) {
-    return path.replace(/\\/g, "/");
-}
-
-function matchesTrackedFilePath(targetPath: string, candidatePath: string) {
-    const normalizedTarget = normalizePath(targetPath);
-    const normalizedCandidate = normalizePath(candidatePath);
-
-    if (normalizedTarget === normalizedCandidate) {
-        return true;
-    }
-
-    if (!normalizedCandidate.startsWith("/")) {
-        return normalizedTarget.endsWith(`/${normalizedCandidate}`);
-    }
-
-    return false;
-}
+import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 
 function editsEqual(a: LineEdit[], b: LineEdit[]): boolean {
     if (a.length !== b.length) return false;
@@ -77,10 +55,28 @@ function inlineDiffStatesEqual(
         current.diffBase === next.diffBase &&
         current.reviewState === next.reviewState &&
         current.version === next.version &&
+        current.presentation.level === next.presentation.level &&
+        current.presentation.showInlineActions ===
+            next.presentation.showInlineActions &&
+        current.presentation.showWordDiff ===
+            next.presentation.showWordDiff &&
+        current.presentation.collapseLargeDeletes ===
+            next.presentation.collapseLargeDeletes &&
+        current.presentation.reducedInlineMode ===
+            next.presentation.reducedInlineMode &&
+        deletedBlockIndexesEqual(
+            current.presentation.collapsedDeleteBlockIndexes,
+            next.presentation.collapsedDeleteBlockIndexes,
+        ) &&
         editsEqual(current.edits, next.edits) &&
         spansEqual(current.spans, next.spans) &&
         deletedTextsEqual(current.deletedTexts, next.deletedTexts)
     );
+}
+
+function deletedBlockIndexesEqual(a: number[], b: number[]) {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
 }
 
 function dispatchInlineDiffEffect(
@@ -90,7 +86,7 @@ function dispatchInlineDiffEffect(
         | ReturnType<typeof clearInlineDiff.of>,
 ) {
     view.dispatch({
-        effects: [view.scrollSnapshot(), effect],
+        effects: [effect],
     });
 }
 
@@ -100,74 +96,23 @@ export function syncInlineDiffForPaths(
     sessionsById: Record<string, AIChatSession>,
 ) {
     if (!view) return;
-
-    const normalizedCandidates = candidatePaths
-        .map((path) => normalizePath(path))
-        .filter((path) => path.length > 0);
     const currentDiffState = view.state.field(inlineDiffField);
 
-    if (normalizedCandidates.length === 0) {
+    if (candidatePaths.length === 0) {
         if (currentDiffState.edits.length > 0) {
             dispatchInlineDiffEffect(view, clearInlineDiff.of(null));
         }
         return;
     }
 
-    let foundEdits: import("../ai/diff/actionLogTypes").LineEdit[] = [];
-    let foundSpans: import("../ai/diff/actionLogTypes").AgentTextSpan[] = [];
-    let foundSessionId: string | null = null;
-    let foundIdentityKey: string | null = null;
-    let foundVersion = 0;
-    let foundDiffBase = "";
-    let foundReviewState: "pending" | "finalized" = "finalized";
-    // Track whether we actually found a matching tracked file in any session.
-    // When false, we only retain the current decorations while the inline diff
-    // is still pending, to bridge short async consolidation gaps without
-    // leaving finalized decorations stuck after Keep/Reject.
-    let foundFile = false;
+    const { match, foundTrackedFile } = resolveTrackedFileMatchForPaths(
+        candidatePaths,
+        sessionsById,
+    );
 
-    for (const [sessionId, session] of Object.entries(sessionsById)) {
-        if (!session.actionLog) continue;
-
-        const files = getTrackedFilesForSession(session.actionLog);
-
-        let tracked: import("../ai/diff/actionLogTypes").TrackedFile | null =
-            null;
-        for (const file of Object.values(files)) {
-            const pathsToCheck = [file.path, file.identityKey];
-            if (
-                normalizedCandidates.some((candidate) =>
-                    pathsToCheck.some((path) =>
-                        matchesTrackedFilePath(path, candidate),
-                    ),
-                )
-            ) {
-                tracked = file;
-                break;
-            }
-        }
-
-        if (!tracked) continue;
-        foundFile = true;
-
-        const syncedTracked = syncDerivedLinePatch(tracked);
-        if (!shouldShowInlineDiff(syncedTracked)) {
-            continue;
-        }
-
-        foundEdits = syncedTracked.unreviewedEdits.edits;
-        foundSpans = syncedTracked.unreviewedRanges?.spans ?? [];
-        foundSessionId = sessionId;
-        foundIdentityKey = syncedTracked.identityKey;
-        foundVersion = syncedTracked.version;
-        foundDiffBase = syncedTracked.diffBase;
-        foundReviewState = syncedTracked.reviewState ?? "finalized";
-        break;
-    }
-
-    if (foundEdits.length === 0) {
+    if (!match) {
         const shouldRetainPendingState =
-            !foundFile &&
+            !foundTrackedFile &&
             currentDiffState.edits.length > 0 &&
             currentDiffState.reviewState === "pending";
 
@@ -177,22 +122,33 @@ export function syncInlineDiffForPaths(
         return;
     }
 
-    const baseLines = foundDiffBase ? foundDiffBase.split("\n") : [];
-    const deletedTexts = foundEdits.map((edit) =>
+    const { trackedFile, sessionId } = match;
+    const baseLines = trackedFile.diffBase ? trackedFile.diffBase.split("\n") : [];
+    const deletedTexts = trackedFile.unreviewedEdits.edits.map((edit) =>
         edit.newStart === edit.newEnd && baseLines.length > 0
             ? baseLines.slice(edit.oldStart, edit.oldEnd)
             : [],
     );
+    const presentation = deriveFileChangePresentation(trackedFile);
 
     const nextState: InlineDiffState = {
-        edits: foundEdits,
-        spans: foundSpans,
+        edits: trackedFile.unreviewedEdits.edits,
+        spans: trackedFile.unreviewedRanges?.spans ?? [],
         deletedTexts,
-        sessionId: foundSessionId,
-        identityKey: foundIdentityKey,
-        diffBase: foundDiffBase,
-        reviewState: foundReviewState,
-        version: foundVersion,
+        sessionId,
+        identityKey: trackedFile.identityKey,
+        diffBase: trackedFile.diffBase,
+        reviewState: presentation.reviewState,
+        version: trackedFile.version,
+        presentation: {
+            level: presentation.level,
+            showInlineActions: presentation.showInlineActions,
+            showWordDiff: presentation.showWordDiff,
+            collapseLargeDeletes: presentation.collapseLargeDeletes,
+            reducedInlineMode: presentation.reducedInlineMode,
+            collapsedDeleteBlockIndexes:
+                presentation.collapsedDeleteBlockIndexes,
+        },
     };
 
     if (inlineDiffStatesEqual(currentDiffState, nextState)) {
