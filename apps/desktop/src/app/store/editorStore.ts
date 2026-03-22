@@ -784,7 +784,8 @@ export interface PendingSelectionReveal {
 }
 
 export interface EditorSelectionContext {
-    noteId: string;
+    noteId: string | null;
+    path: string | null;
     text: string;
     from: number;
     to: number;

@@ -1,7 +1,7 @@
 import { act, createEvent, fireEvent, screen } from "@testing-library/react";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import userEvent from "@testing-library/user-event";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { describe, expect, it, vi } from "vitest";
@@ -290,6 +290,73 @@ describe("FileTabView", () => {
         expect(
             screen.queryByRole("button", { name: "Heading 1" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("registers Cmd+L for text files and sends the selection to the composer", async () => {
+        useChatStore.setState({
+            activeSessionId: "session-file-selection",
+            composerPartsBySessionId: {},
+        });
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/config.toml",
+                title: "config.toml",
+                path: "/vault/src/config.toml",
+                mimeType: "application/toml",
+                viewer: "text",
+                content: 'name = "VaultAI"',
+            },
+        ]);
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        await act(async () => {
+            view!.focus();
+            view!.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 16,
+                },
+            });
+        });
+
+        const addToChatBinding = view!.state
+            .facet(keymap)
+            .flat()
+            .find((binding) => binding.key === "Mod-l");
+
+        expect(addToChatBinding).toBeDefined();
+        expect(addToChatBinding?.run?.(view!)).toBe(true);
+
+        expect(useEditorStore.getState().currentSelection).toMatchObject({
+            noteId: null,
+            path: "/vault/src/config.toml",
+            text: 'name = "VaultAI"',
+            startLine: 1,
+            endLine: 1,
+        });
+
+        const parts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-file-selection"
+            ] ?? [];
+        const selectionPart = parts.find((p) => p.type === "selection_mention");
+
+        expect(selectionPart).toMatchObject({
+            type: "selection_mention",
+            noteId: null,
+            path: "/vault/src/config.toml",
+            selectedText: 'name = "VaultAI"',
+        });
     });
 
     it("does not enable markdown autopair handlers for text files", async () => {

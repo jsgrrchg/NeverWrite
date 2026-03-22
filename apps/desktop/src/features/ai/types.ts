@@ -453,7 +453,7 @@ export type AIComposerPart =
     | {
           id: string;
           type: "selection_mention";
-          noteId: string;
+          noteId: string | null;
           label: string;
           path: string;
           selectedText: string;
