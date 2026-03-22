@@ -8,6 +8,7 @@ export function getDangerButtonStyle(disabled = false): React.CSSProperties {
         border: "1px solid color-mix(in srgb, var(--diff-remove) 28%, var(--border))",
         opacity: disabled ? 0.45 : 1,
         cursor: disabled ? "not-allowed" : "pointer",
+        transition: "background-color 100ms ease, opacity 100ms ease",
     };
 }
 
@@ -19,6 +20,7 @@ export function getAccentButtonStyle(
         backgroundColor:
             "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
         border: `1px solid color-mix(in srgb, ${accent} 55%, var(--border))`,
+        transition: "background-color 100ms ease, opacity 100ms ease",
     };
 }
 
@@ -28,6 +30,7 @@ export function getNeutralButtonStyle(): React.CSSProperties {
         backgroundColor:
             "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
         border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+        transition: "background-color 100ms ease, opacity 100ms ease",
     };
 }
 

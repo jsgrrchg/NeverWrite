@@ -106,7 +106,9 @@ export function EditedFilesBufferPanel({
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const entries = useVaultStore((state) => state.entries);
-    const [showUndoOnlyBanner, setShowUndoOnlyBanner] = useState(false);
+    const [autoDismissedBannerKey, setAutoDismissedBannerKey] = useState<
+        string | null
+    >(null);
     const dismissedUndoBannerKeysRef = useRef<Set<string>>(new Set());
 
     const openablePathSet = useMemo(
@@ -130,21 +132,18 @@ export function EditedFilesBufferPanel({
             ? `${activeSessionId}:${undoRejectTimestamp}`
             : null;
 
+    const showUndoOnlyBanner =
+        isUndoOnly &&
+        !!undoOnlyBannerKey &&
+        autoDismissedBannerKey !== undoOnlyBannerKey;
+
     useEffect(() => {
-        if (!isUndoOnly || !undoOnlyBannerKey) {
-            setShowUndoOnlyBanner(false);
-            return;
-        }
+        if (!isUndoOnly || !undoOnlyBannerKey) return;
+        if (dismissedUndoBannerKeysRef.current.has(undoOnlyBannerKey)) return;
 
-        if (dismissedUndoBannerKeysRef.current.has(undoOnlyBannerKey)) {
-            setShowUndoOnlyBanner(false);
-            return;
-        }
-
-        setShowUndoOnlyBanner(true);
         const timeoutId = window.setTimeout(() => {
             dismissedUndoBannerKeysRef.current.add(undoOnlyBannerKey);
-            setShowUndoOnlyBanner(false);
+            setAutoDismissedBannerKey(undoOnlyBannerKey);
         }, UNDO_ONLY_BANNER_TIMEOUT_MS);
 
         return () => {
@@ -176,7 +175,7 @@ export function EditedFilesBufferPanel({
                         type="button"
                         title="Undo last reject"
                         onClick={() => void undoLastReject(activeSessionId)}
-                        className="rounded-md p-1"
+                        className="review-action-btn rounded-md p-1"
                         style={getNeutralButtonStyle()}
                     >
                         <svg
@@ -315,7 +314,7 @@ export function EditedFilesBufferPanel({
                                 ),
                             })
                         }
-                        className="rounded-md px-2 py-0.5"
+                        className="review-action-btn rounded-md px-2 py-0.5"
                         style={{
                             ...getNeutralButtonStyle(),
                             fontSize: "11px",
@@ -333,7 +332,7 @@ export function EditedFilesBufferPanel({
                             void rejectAllEditedFiles(activeSessionId)
                         }
                         disabled={rejectableCount === 0}
-                        className="rounded-md p-1"
+                        className="review-action-btn rounded-md p-1"
                         style={getDangerButtonStyle(rejectableCount === 0)}
                     >
                         <svg
@@ -355,7 +354,7 @@ export function EditedFilesBufferPanel({
                         type="button"
                         title="Keep All"
                         onClick={() => keepAllEditedFiles(activeSessionId)}
-                        className="rounded-md p-1"
+                        className="review-action-btn rounded-md p-1"
                         style={getAccentButtonStyle()}
                     >
                         <svg

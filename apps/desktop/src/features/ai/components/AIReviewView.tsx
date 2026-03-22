@@ -105,7 +105,7 @@ function ReviewEmptyState({
                     <button
                         type="button"
                         onClick={onUndo}
-                        className="rounded-md px-3 py-1.5 text-xs"
+                        className="review-action-btn rounded-md px-3 py-1.5 text-xs"
                         style={{
                             fontWeight: 500,
                             ...getNeutralButtonStyle(),
@@ -348,7 +348,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                     onClick={() =>
                                         void undoLastReject(tab.sessionId)
                                     }
-                                    className="rounded-md px-2 py-1 text-xs"
+                                    className="review-action-btn rounded-md px-2 py-1 text-xs"
                                     style={{
                                         fontWeight: 500,
                                         ...getNeutralButtonStyle(),
@@ -365,7 +365,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                         ? expansion.collapseAll
                                         : expansion.expandAll
                                 }
-                                className="rounded-md px-2 py-1 text-xs"
+                                className="review-action-btn rounded-md px-2 py-1 text-xs"
                                 style={{
                                     fontWeight: 500,
                                     ...getNeutralButtonStyle(),
@@ -376,7 +376,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                             <button
                                 type="button"
                                 onClick={() => setWideMode((prev) => !prev)}
-                                className="rounded-md px-2 py-1 text-xs"
+                                className="review-action-btn rounded-md px-2 py-1 text-xs"
                                 style={{
                                     fontWeight: 500,
                                     ...getNeutralButtonStyle(),
@@ -395,7 +395,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                     void rejectAllEditedFiles(tab.sessionId)
                                 }
                                 disabled={rejectableCount === 0}
-                                className="rounded-md px-2 py-1 text-xs"
+                                className="review-action-btn rounded-md px-2 py-1 text-xs"
                                 style={{
                                     fontWeight: 600,
                                     ...getDangerButtonStyle(
@@ -410,7 +410,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                 onClick={() =>
                                     keepAllEditedFiles(tab.sessionId)
                                 }
-                                className="rounded-md px-2.5 py-1 text-xs"
+                                className="review-action-btn rounded-md px-2.5 py-1 text-xs"
                                 style={{
                                     fontWeight: 600,
                                     ...getAccentButtonStyle(),
