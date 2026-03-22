@@ -475,6 +475,8 @@ describe("editorStore navigation history", () => {
                 }),
             ],
             activeTabId: "tab-a",
+            _noteReloadVersions: {},
+            _noteReloadMetadata: {},
         });
 
         for (let i = 1; i <= 35; i++) {
@@ -936,6 +938,58 @@ describe("editorStore tab management", () => {
         expect(useEditorStore.getState().tabs[0]).toMatchObject({
             title: "New title",
             content: "New body",
+        });
+    });
+
+    it("tracks logical reloads even when content stays the same", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "Same title",
+                    content: "Same body",
+                }),
+            ],
+            activeTabId: "tab-a",
+        });
+        const initialVersion =
+            useEditorStore.getState()._noteReloadVersions["notes/a"] ?? 0;
+
+        useEditorStore.getState().reloadNoteContent("notes/a", {
+            title: "Same title",
+            content: "Same body",
+            origin: "external",
+            revision: 2,
+            opId: "external-2",
+        });
+
+        let state = useEditorStore.getState();
+        expect(state.tabs[0]).toMatchObject({
+            title: "Same title",
+            content: "Same body",
+        });
+        expect(state._noteReloadVersions["notes/a"]).toBe(initialVersion + 1);
+        expect(state._noteReloadMetadata["notes/a"]).toMatchObject({
+            origin: "external",
+            revision: 2,
+            opId: "external-2",
+        });
+
+        useEditorStore.getState().reloadNoteContent("notes/a", {
+            title: "Same title",
+            content: "Same body",
+            origin: "external",
+            revision: 3,
+            opId: "external-3",
+        });
+
+        state = useEditorStore.getState();
+        expect(state._noteReloadVersions["notes/a"]).toBe(initialVersion + 2);
+        expect(state._noteReloadMetadata["notes/a"]).toMatchObject({
+            origin: "external",
+            revision: 3,
+            opId: "external-3",
         });
     });
 });

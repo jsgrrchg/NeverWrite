@@ -1236,11 +1236,15 @@ describe("Editor", () => {
         });
         await flushPromises();
 
-        expect(mockInvoke()).toHaveBeenCalledWith("save_note", {
-            noteId: "notes/current",
-            content: "Updated body",
-            vaultPath: "/vault",
-        });
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "save_note",
+            expect.objectContaining({
+                noteId: "notes/current",
+                content: "Updated body",
+                vaultPath: "/vault",
+                opId: expect.any(String),
+            }),
+        );
     });
 
     it("updates the visible title when clean content reloads from disk", async () => {
@@ -1349,6 +1353,8 @@ describe("Editor", () => {
             useEditorStore.getState().reloadNoteContent("notes/current", {
                 title: "Current",
                 content: "External body",
+                origin: "external",
+                revision: 2,
             });
             await flushPromises();
         });
@@ -1408,8 +1414,11 @@ describe("Editor", () => {
         vi.useRealTimers();
     });
 
-    it("ignores a recent local save echo while newer edits remain unsaved", async () => {
+    it("ignores a local save ack identified by opId while newer edits remain unsaved", async () => {
         vi.useFakeTimers();
+        const randomUuidSpy = vi
+            .spyOn(globalThis.crypto, "randomUUID")
+            .mockReturnValue("local-save-1");
 
         let saveCallCount = 0;
         mockInvoke().mockImplementation(async (command, args) => {
@@ -1467,6 +1476,7 @@ describe("Editor", () => {
             expect.objectContaining({
                 noteId: "notes/current",
                 content: "OriginalA",
+                opId: "local-save-1",
             }),
         ]);
 
@@ -1495,6 +1505,9 @@ describe("Editor", () => {
             useEditorStore.getState().reloadNoteContent("notes/current", {
                 title: "Current",
                 content: "OriginalA",
+                origin: "user",
+                opId: "local-save-1",
+                revision: 1,
             });
             await flushPromises();
         });
@@ -1507,6 +1520,7 @@ describe("Editor", () => {
 
         vi.clearAllTimers();
         vi.useRealTimers();
+        randomUuidSpy.mockRestore();
     });
 
     it("does not save a clean tab when switching notes", async () => {

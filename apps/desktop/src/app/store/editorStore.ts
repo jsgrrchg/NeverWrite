@@ -796,11 +796,22 @@ export interface EditorSelectionContext {
 interface ReloadedNoteDetail {
     content: string;
     title: string;
+    origin?: "user" | "agent" | "external" | "system" | "unknown";
+    opId?: string | null;
+    revision?: number;
+    contentHash?: string | null;
 }
 
 interface ReloadedFileDetail {
     content: string;
     title: string;
+}
+
+interface NoteReloadMetadata {
+    origin: "user" | "agent" | "external" | "system" | "unknown";
+    opId: string | null;
+    revision: number;
+    contentHash: string | null;
 }
 
 interface EditorStore {
@@ -814,6 +825,8 @@ interface EditorStore {
     currentSelection: EditorSelectionContext | null;
     _pendingForceReloads: Set<string>;
     _pendingForceFileReloads: Set<string>;
+    _noteReloadVersions: Record<string, number>;
+    _noteReloadMetadata: Record<string, NoteReloadMetadata | undefined>;
     noteExternalConflicts: Set<string>;
     fileExternalConflicts: Set<string>;
     openNote: (noteId: string, title: string, content: string) => void;
@@ -890,6 +903,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     currentSelection: null,
     _pendingForceReloads: new Set<string>(),
     _pendingForceFileReloads: new Set<string>(),
+    _noteReloadVersions: {},
+    _noteReloadMetadata: {},
     noteExternalConflicts: new Set<string>(),
     fileExternalConflicts: new Set<string>(),
 
@@ -1534,6 +1549,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     reloadNoteContent: (noteId, detail) => {
         set((state) => ({
+            _noteReloadVersions: {
+                ...state._noteReloadVersions,
+                [noteId]: (state._noteReloadVersions[noteId] ?? 0) + 1,
+            },
+            _noteReloadMetadata: {
+                ...state._noteReloadMetadata,
+                [noteId]: {
+                    origin: detail.origin ?? "unknown",
+                    opId: detail.opId ?? null,
+                    revision: detail.revision ?? 0,
+                    contentHash: detail.contentHash ?? null,
+                },
+            },
             tabs: state.tabs.map((t) => {
                 if (!isNoteTab(t) || t.noteId !== noteId) return t;
                 if (t.content === detail.content && t.title === detail.title) {
@@ -1562,6 +1590,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             next.add(noteId);
             return {
                 _pendingForceReloads: next,
+                _noteReloadVersions: {
+                    ...state._noteReloadVersions,
+                    [noteId]: (state._noteReloadVersions[noteId] ?? 0) + 1,
+                },
+                _noteReloadMetadata: {
+                    ...state._noteReloadMetadata,
+                    [noteId]: {
+                        origin: detail.origin ?? "system",
+                        opId: detail.opId ?? null,
+                        revision: detail.revision ?? 0,
+                        contentHash: detail.contentHash ?? null,
+                    },
+                },
                 tabs: state.tabs.map((t) => {
                     if (!isNoteTab(t) || t.noteId !== noteId) return t;
                     if (

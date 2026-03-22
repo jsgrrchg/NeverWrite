@@ -31,6 +31,12 @@ export function setEditorTabs(
         activationHistory: activeTabId ? [activeTabId] : [],
         tabNavigationHistory: activeTabId ? [activeTabId] : [],
         tabNavigationIndex: activeTabId ? 0 : -1,
+        _pendingForceReloads: new Set<string>(),
+        _pendingForceFileReloads: new Set<string>(),
+        _noteReloadVersions: {},
+        _noteReloadMetadata: {},
+        noteExternalConflicts: new Set<string>(),
+        fileExternalConflicts: new Set<string>(),
     });
 }
 
