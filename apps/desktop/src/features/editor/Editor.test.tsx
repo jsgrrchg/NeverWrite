@@ -317,6 +317,34 @@ describe("Editor", () => {
         expect(useEditorStore.getState().tabs[0]?.title).toBe("Hello world");
     });
 
+    it("registers Cmd+B and applies bold formatting to the current selection", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        await act(async () => {
+            view.focus();
+            view.dispatch({ selection: { anchor: 0, head: 5 } });
+        });
+
+        const boldBinding = view.state
+            .facet(keymap)
+            .flat()
+            .find((binding) => binding.key === "Mod-b");
+
+        expect(boldBinding).toBeDefined();
+        expect(boldBinding?.run?.(view)).toBe(true);
+        expect(view.state.doc.toString()).toBe("**Hello** world");
+    });
+
     it("registers heading commands and keeps frontmatter title as the visible title", async () => {
         setEditorTabs([
             {
