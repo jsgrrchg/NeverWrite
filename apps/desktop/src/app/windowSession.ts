@@ -87,7 +87,11 @@ export function writeWindowSessionEntry(
         localStorage.removeItem(key);
         return;
     }
-    localStorage.setItem(key, JSON.stringify(entry));
+    try {
+        localStorage.setItem(key, JSON.stringify(entry));
+    } catch (error) {
+        console.warn("Failed to write window session entry:", error);
+    }
 }
 
 export function readWindowSessionEntry(label: string) {
@@ -182,12 +186,16 @@ export async function refreshWindowSessionSnapshot() {
             (entry): entry is PersistedWindowSessionEntry => entry !== null,
         );
 
-    localStorage.setItem(
-        WINDOW_SESSION_SNAPSHOT_KEY,
-        JSON.stringify(
-            sortWindowSessionEntries(entries).map((entry) => entry.label),
-        ),
-    );
+    try {
+        localStorage.setItem(
+            WINDOW_SESSION_SNAPSHOT_KEY,
+            JSON.stringify(
+                sortWindowSessionEntries(entries).map((entry) => entry.label),
+            ),
+        );
+    } catch (error) {
+        console.warn("Failed to write window session snapshot:", error);
+    }
 
     return entries;
 }

@@ -935,7 +935,7 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
         hasGraphTab && (isGraphActive || keepAliveRef.current != null);
 
     return (
-        <div className="relative flex-1 min-h-0 w-full">
+        <div className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden">
             {keepGraphMounted && (
                 <div
                     style={{
@@ -1518,9 +1518,9 @@ export default function App() {
 
     if (windowMode === "note") {
         return (
-            <div className="h-full flex flex-col overflow-hidden">
+            <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
                 <UnifiedBar windowMode="note" />
-                <div className="flex-1 overflow-hidden">
+                <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
                     <EditorPanel emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
                 </div>
                 <YouTubeModalHost />

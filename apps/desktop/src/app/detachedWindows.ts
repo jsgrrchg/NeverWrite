@@ -18,6 +18,61 @@ const DETACHED_WINDOW_CURSOR_OFFSET_X = 120;
 const DETACHED_WINDOW_CURSOR_OFFSET_Y = 18;
 export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
 
+/**
+ * Purge stale localStorage entries left behind by closed/crashed windows.
+ * Removes drop-zone bounds and unconsumed detached-window payloads whose
+ * window label no longer exists.
+ */
+async function purgeStaleLocalStorageEntries() {
+    try {
+        const windows = await getAllWebviewWindows();
+        const liveLabels = new Set(windows.map((w) => w.label));
+        const keysToRemove: string[] = [];
+
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (!key) continue;
+
+            let label: string | null = null;
+            if (key.startsWith(WINDOW_TAB_DROP_ZONE_STORAGE_PREFIX)) {
+                label = key.slice(WINDOW_TAB_DROP_ZONE_STORAGE_PREFIX.length);
+            } else if (key.startsWith(DETACHED_WINDOW_STORAGE_PREFIX)) {
+                label = key.slice(DETACHED_WINDOW_STORAGE_PREFIX.length);
+            }
+            if (label && !liveLabels.has(label)) {
+                keysToRemove.push(key);
+            }
+        }
+
+        for (const key of keysToRemove) {
+            localStorage.removeItem(key);
+        }
+    } catch {
+        // Best-effort cleanup
+    }
+}
+
+/**
+ * Write to localStorage with quota-exceeded recovery: purge stale entries
+ * from closed/crashed windows and retry once.
+ */
+async function safeSetItem(key: string, value: string) {
+    try {
+        window.localStorage.setItem(key, value);
+    } catch {
+        await purgeStaleLocalStorageEntries();
+        try {
+            window.localStorage.setItem(key, value);
+        } catch (retryError) {
+            console.warn(
+                "localStorage.setItem failed after cleanup:",
+                key,
+                retryError,
+            );
+        }
+    }
+}
+
 export interface DetachedWindowPayload {
     tabs: Tab[];
     activeTabId: string | null;
@@ -117,7 +172,7 @@ export function publishWindowTabDropZone(
         ...bounds,
         updatedAt: Date.now(),
     };
-    window.localStorage.setItem(key, JSON.stringify(stored));
+    void safeSetItem(key, JSON.stringify(stored));
 }
 
 function readWindowTabDropZone(label: string) {
@@ -326,7 +381,7 @@ export async function openDetachedNoteWindow(
     },
 ) {
     const label = `${DETACHED_WINDOW_PREFIX}-${crypto.randomUUID()}`;
-    window.localStorage.setItem(
+    await safeSetItem(
         getDetachedWindowStorageKey(label),
         JSON.stringify(payload),
     );
