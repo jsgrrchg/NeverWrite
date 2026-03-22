@@ -3,7 +3,7 @@ import { buildTabFileDragDetail } from "./tabDragAttachments";
 import type { FileTab, NoteTab, PdfTab, ReviewTab } from "../../app/store/editorStore";
 
 describe("buildTabFileDragDetail", () => {
-    it("builds a markdown file attachment for note tabs", () => {
+    it("builds a note mention payload for note tabs", () => {
         const tab: NoteTab = {
             id: "note-1",
             noteId: "notes/daily.md",
@@ -14,22 +14,16 @@ describe("buildTabFileDragDetail", () => {
         };
 
         expect(
-            buildTabFileDragDetail(
-                tab,
-                "move",
-                { clientX: 24, clientY: 48 },
-                "/vault",
-            ),
+            buildTabFileDragDetail(tab, "move", { clientX: 24, clientY: 48 }),
         ).toEqual({
             phase: "move",
             x: 24,
             y: 48,
-            notes: [],
-            files: [
+            notes: [
                 {
-                    filePath: "/vault/notes/daily.md",
-                    fileName: "daily.md",
-                    mimeType: "text/markdown",
+                    id: "notes/daily.md",
+                    title: "Daily",
+                    path: "notes/daily.md",
                 },
             ],
         });
@@ -50,12 +44,7 @@ describe("buildTabFileDragDetail", () => {
         };
 
         expect(
-            buildTabFileDragDetail(
-                tab,
-                "attach",
-                { clientX: 10, clientY: 12 },
-                "/vault",
-            ),
+            buildTabFileDragDetail(tab, "attach", { clientX: 10, clientY: 12 }),
         )?.toMatchObject({
             files: [
                 {
@@ -82,12 +71,7 @@ describe("buildTabFileDragDetail", () => {
         };
 
         expect(
-            buildTabFileDragDetail(
-                tab,
-                "start",
-                { clientX: 1, clientY: 2 },
-                "/vault",
-            ),
+            buildTabFileDragDetail(tab, "start", { clientX: 1, clientY: 2 }),
         )?.toMatchObject({
             files: [
                 {
@@ -108,12 +92,7 @@ describe("buildTabFileDragDetail", () => {
         };
 
         expect(
-            buildTabFileDragDetail(
-                tab,
-                "move",
-                { clientX: 5, clientY: 6 },
-                "/vault",
-            ),
+            buildTabFileDragDetail(tab, "move", { clientX: 5, clientY: 6 }),
         ).toBeNull();
     });
 });

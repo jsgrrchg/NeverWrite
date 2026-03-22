@@ -17,32 +17,7 @@ interface TabDragCoordinates {
     clientY: number;
 }
 
-function isAbsoluteFilePath(value: string) {
-    return (
-        value.startsWith("/") ||
-        value.startsWith("\\\\") ||
-        /^[A-Za-z]:[\\/]/.test(value)
-    );
-}
-
-function joinVaultFilePath(vaultPath: string, relativePath: string) {
-    if (isAbsoluteFilePath(relativePath)) {
-        return relativePath;
-    }
-
-    const separator = vaultPath.includes("\\") ? "\\" : "/";
-    const normalizedBase = vaultPath.replace(/[\\/]+$/, "");
-    const normalizedRelative = relativePath
-        .replace(/\\/g, "/")
-        .replace(/^\/+/, "");
-    const joined = `${normalizedBase}/${normalizedRelative}`;
-    return separator === "\\" ? joined.replace(/\//g, "\\") : joined;
-}
-
-function buildDraggedFiles(
-    tab: Tab,
-    vaultPath: string | null,
-): FileTreeDraggedFile[] | null {
+function buildDraggedFiles(tab: Tab): FileTreeDraggedFile[] | null {
     if (isPdfTab(tab)) {
         return [
             {
@@ -59,17 +34,6 @@ function buildDraggedFiles(
                 filePath: tab.path,
                 fileName: getPathBaseName(tab.path) || tab.title,
                 mimeType: tab.mimeType ?? "application/octet-stream",
-            },
-        ];
-    }
-
-    if (isNoteTab(tab) && vaultPath) {
-        const filePath = joinVaultFilePath(vaultPath, tab.noteId);
-        return [
-            {
-                filePath,
-                fileName: getPathBaseName(tab.noteId) || tab.title,
-                mimeType: "text/markdown",
             },
         ];
     }
@@ -91,9 +55,23 @@ export function buildTabFileDragDetail(
     tab: Tab,
     phase: FileTreeNoteDragPhase,
     coords: TabDragCoordinates,
-    vaultPath: string | null,
 ): FileTreeNoteDragDetail | null {
-    const files = buildDraggedFiles(tab, vaultPath);
+    if (isNoteTab(tab)) {
+        return {
+            phase,
+            x: coords.clientX,
+            y: coords.clientY,
+            notes: [
+                {
+                    id: tab.noteId,
+                    title: tab.title,
+                    path: tab.noteId,
+                },
+            ],
+        };
+    }
+
+    const files = buildDraggedFiles(tab);
     if (!files) {
         return null;
     }
