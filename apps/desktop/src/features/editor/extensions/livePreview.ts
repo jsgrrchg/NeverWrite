@@ -16,6 +16,7 @@ import { livePreviewTheme } from "./livePreviewTheme";
 const TASK_TOGGLE_MARKER_WIDTH_EM = 1.2;
 const TASK_TOGGLE_SIZE_EM = 0.92;
 const TASK_TOGGLE_GAP_EM = 0.65;
+const TASK_TOGGLE_HOVER_CLASS = "cm-lp-task-toggle-hover";
 
 const POINTER_INTERACTIVE_PREVIEW_SELECTOR = [
     ".cm-lp-link",
@@ -103,6 +104,39 @@ function getTaskLinePointerTarget(
     return isPointerInsideTaskToggleZone(taskLine, clientX, clientY)
         ? taskLine
         : null;
+}
+
+function clearHoveredTaskToggle(root: ParentNode) {
+    for (const hovered of root.querySelectorAll(
+        `.${TASK_TOGGLE_HOVER_CLASS}`,
+    )) {
+        hovered.classList.remove(TASK_TOGGLE_HOVER_CLASS);
+    }
+}
+
+export function syncTaskToggleHoverState(
+    root: ParentNode,
+    target: HTMLElement,
+    clientX: number,
+    clientY: number,
+): HTMLElement | null {
+    const taskLine = getTaskLinePointerTarget(target, clientX, clientY);
+    const activeHover = root.querySelector(
+        `.${TASK_TOGGLE_HOVER_CLASS}`,
+    ) as HTMLElement | null;
+
+    if (!taskLine) {
+        if (activeHover) {
+            activeHover.classList.remove(TASK_TOGGLE_HOVER_CLASS);
+        }
+        return null;
+    }
+
+    if (activeHover && activeHover !== taskLine) {
+        activeHover.classList.remove(TASK_TOGGLE_HOVER_CLASS);
+    }
+    taskLine.classList.add(TASK_TOGGLE_HOVER_CLASS);
+    return taskLine;
 }
 
 export function getBlockWidgetSelectionAnchor(
@@ -394,6 +428,19 @@ export function livePreviewExtension(
 
             event.preventDefault();
             return true;
+        },
+        mousemove(event: MouseEvent, view: EditorView) {
+            syncTaskToggleHoverState(
+                view.dom,
+                event.target as HTMLElement,
+                event.clientX,
+                event.clientY,
+            );
+            return false;
+        },
+        mouseleave(_event: MouseEvent, view: EditorView) {
+            clearHoveredTaskToggle(view.dom);
+            return false;
         },
         keydown(event: KeyboardEvent, view: EditorView) {
             if (event.key !== "Enter" && event.key !== " ") {
