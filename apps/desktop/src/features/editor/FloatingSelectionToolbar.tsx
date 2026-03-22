@@ -25,11 +25,35 @@ type ToolbarButton = {
     compact?: boolean;
 };
 
+function ToolbarIcon({ d, fill }: { d: string; fill?: boolean }) {
+    return (
+        <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+        >
+            <path
+                d={d}
+                {...(fill
+                    ? { fill: "currentColor" }
+                    : {
+                          stroke: "currentColor",
+                          strokeWidth: "1.5",
+                          strokeLinecap: "round" as const,
+                          strokeLinejoin: "round" as const,
+                      })}
+            />
+        </svg>
+    );
+}
+
 function HighlightIcon() {
     return (
         <svg
-            width="15"
-            height="15"
+            width="14"
+            height="14"
             viewBox="0 0 16 16"
             fill="none"
             aria-hidden="true"
@@ -58,6 +82,7 @@ function HighlightIcon() {
 }
 
 const TOOLBAR_BUTTONS: ToolbarButton[] = [
+    // Inline formatting
     {
         action: "bold",
         label: "B",
@@ -72,15 +97,45 @@ const TOOLBAR_BUTTONS: ToolbarButton[] = [
         title: "Highlight",
         compact: true,
     },
-    { action: "code", label: "</>", title: "Code" },
-    { action: "wikilink", label: "Wiki", title: "Wikilink" },
-    { action: "link", label: "Link", title: "Link" },
-    { action: "heading-1", label: "H1", title: "Heading 1" },
-    { action: "heading-2", label: "H2", title: "Heading 2" },
-    { action: "heading-3", label: "H3", title: "Heading 3" },
-    { action: "heading-0", label: "Tx", title: "Remove Heading" },
-    { action: "quote", label: "Quote", title: "Quote" },
-    { action: "task", label: "Task", title: "Task" },
+    { action: "code", label: "</>", title: "Code", compact: true },
+    // Links
+    {
+        action: "link",
+        label: (
+            <ToolbarIcon d="M7 9a3 3 0 0 0 4.24.01l2.12-2.12a3 3 0 0 0-4.24-4.24L7.76 4M9 7a3 3 0 0 0-4.24-.01L2.64 9.11a3 3 0 0 0 4.24 4.24L8.24 12" />
+        ),
+        title: "Link",
+        compact: true,
+    },
+    {
+        action: "wikilink",
+        label: <ToolbarIcon d="M6 3v10M10 3v10M3 6h10M3 10h10" />,
+        title: "Wikilink",
+        compact: true,
+    },
+    // Block elements
+    {
+        action: "quote",
+        label: <ToolbarIcon d="M5 4v8M9 4l4 4-4 4" />,
+        title: "Quote",
+        compact: true,
+    },
+    {
+        action: "task",
+        label: <ToolbarIcon d="M3 3h10v10H3zM6 7.5l1.5 1.5L10 6" />,
+        title: "Task",
+        compact: true,
+    },
+    // Headings
+    { action: "heading-1", label: "H1", title: "Heading 1", compact: true },
+    { action: "heading-2", label: "H2", title: "Heading 2", compact: true },
+    { action: "heading-3", label: "H3", title: "Heading 3", compact: true },
+    {
+        action: "heading-0",
+        label: "Tx",
+        title: "Remove Heading",
+        compact: true,
+    },
 ];
 
 export function FloatingSelectionToolbar({
@@ -156,8 +211,8 @@ export function FloatingSelectionToolbar({
                 zIndex: 10020,
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 4,
-                padding: 6,
+                gap: 2,
+                padding: 4,
                 borderRadius: 999,
                 border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
                 background:
@@ -182,10 +237,10 @@ export function FloatingSelectionToolbar({
                         borderRadius: 999,
                         background: "transparent",
                         color: "var(--text-primary)",
-                        minWidth: button.compact ? 28 : 42,
-                        height: 28,
-                        padding: button.compact ? "0 9px" : "0 10px",
-                        fontSize: 12,
+                        minWidth: button.compact ? 26 : 36,
+                        height: 26,
+                        padding: button.compact ? "0 7px" : "0 8px",
+                        fontSize: 11,
                         fontStyle:
                             button.action === "italic" ? "italic" : "normal",
                         fontWeight: button.prominent ? 700 : 560,
@@ -230,10 +285,10 @@ export function FloatingSelectionToolbar({
                             borderRadius: 999,
                             background: "transparent",
                             color: "var(--accent)",
-                            minWidth: 42,
-                            height: 28,
-                            padding: "0 10px",
-                            fontSize: 12,
+                            minWidth: 36,
+                            height: 26,
+                            padding: "0 8px",
+                            fontSize: 11,
                             fontWeight: 600,
                             cursor: "pointer",
                             display: "inline-flex",
