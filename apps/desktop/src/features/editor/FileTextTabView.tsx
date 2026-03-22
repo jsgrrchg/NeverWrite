@@ -346,8 +346,8 @@ export function FileTextTabView() {
             contextMenuCleanupRef.current = null;
             viewRef.current?.destroy();
             viewRef.current = null;
-            setEditorContextMenu(null);
             queueMicrotask(() => {
+                setEditorContextMenu(null);
                 setEditorView(null);
             });
             loadRequestRef.current += 1;
@@ -473,7 +473,7 @@ export function FileTextTabView() {
     }, [tab, trackedFileMatch?.trackedFile.version]);
 
     useEffect(() => {
-        setEditorContextMenu(null);
+        queueMicrotask(() => setEditorContextMenu(null));
     }, [tab?.id]);
 
     useEffect(() => {
