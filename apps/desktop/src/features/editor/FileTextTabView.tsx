@@ -98,6 +98,35 @@ export function FileTextTabView() {
         tabRef.current = tab;
     }, [tab]);
 
+    useEffect(() => {
+        const handler = (event: KeyboardEvent) => {
+            if (event.defaultPrevented) return;
+            if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+
+            const { editorFontSize, setSetting } = useSettingsStore.getState();
+
+            if (event.key === "+" || event.key === "=") {
+                event.preventDefault();
+                setSetting(
+                    "editorFontSize",
+                    Math.min(24, editorFontSize + 1),
+                );
+                return;
+            }
+
+            if (event.key === "-" || event.key === "_") {
+                event.preventDefault();
+                setSetting(
+                    "editorFontSize",
+                    Math.max(10, editorFontSize - 1),
+                );
+            }
+        };
+
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, []);
+
     const copySelectedText = useCallback(async () => {
         const view = viewRef.current;
         if (!view) return;

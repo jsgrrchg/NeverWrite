@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
 import {
     buildPatchFromTexts,
@@ -246,6 +247,49 @@ describe("FileTabView", () => {
             relativePath: "src/config.toml",
             content: 'name = "VaultAI"\nversion = "1.0.0"',
         });
+    });
+
+    it("supports Command plus and minus to adjust font size for text files", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/config.toml",
+                title: "config.toml",
+                path: "/vault/src/config.toml",
+                mimeType: "application/toml",
+                viewer: "text",
+                content: 'name = "VaultAI"',
+            },
+        ]);
+        useSettingsStore.getState().setSetting("editorFontSize", 14);
+
+        renderComponent(<FileTabView />);
+
+        await act(async () => {
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "=",
+                    metaKey: true,
+                    bubbles: true,
+                }),
+            );
+        });
+
+        expect(useSettingsStore.getState().editorFontSize).toBe(15);
+
+        await act(async () => {
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "-",
+                    metaKey: true,
+                    bubbles: true,
+                }),
+            );
+        });
+
+        expect(useSettingsStore.getState().editorFontSize).toBe(14);
     });
 
     it("shows native selection visuals for text files without markdown quick actions", async () => {
