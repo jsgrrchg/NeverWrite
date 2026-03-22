@@ -10,6 +10,13 @@ import { catppuccinTheme } from "./catppuccin";
 import { solarizedTheme } from "./solarized";
 import { tokyoNightTheme } from "./tokyoNight";
 import { gruvboxTheme } from "./gruvbox";
+import { ayuTheme } from "./ayu";
+import { nightOwlTheme } from "./nightOwl";
+import { vesperTheme } from "./vesper";
+import { rosePineTheme } from "./rosePine";
+import { kanagawaTheme } from "./kanagawa";
+import { everforestTheme } from "./everforest";
+import { synthwave84Theme } from "./synthwave84";
 
 export interface ThemeColors {
     bgPrimary: string;
@@ -41,7 +48,14 @@ export type ThemeName =
     | "catppuccin"
     | "solarized"
     | "tokyoNight"
-    | "gruvbox";
+    | "gruvbox"
+    | "ayu"
+    | "nightOwl"
+    | "vesper"
+    | "rosePine"
+    | "kanagawa"
+    | "everforest"
+    | "synthwave84";
 
 export const themes: Record<ThemeName, ThemePalette> = {
     default: defaultTheme,
@@ -56,6 +70,13 @@ export const themes: Record<ThemeName, ThemePalette> = {
     solarized: solarizedTheme,
     tokyoNight: tokyoNightTheme,
     gruvbox: gruvboxTheme,
+    ayu: ayuTheme,
+    nightOwl: nightOwlTheme,
+    vesper: vesperTheme,
+    rosePine: rosePineTheme,
+    kanagawa: kanagawaTheme,
+    everforest: everforestTheme,
+    synthwave84: synthwave84Theme,
 };
 
 const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
