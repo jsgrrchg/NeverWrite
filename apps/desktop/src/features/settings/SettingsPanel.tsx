@@ -1759,6 +1759,8 @@ const SHORTCUTS: { label: string; shortcut: string; category: string }[] = [
     { category: "Navigation", label: "Search in Vault", shortcut: "⌘⇧F" },
     { category: "Vault", label: "New Note", shortcut: "⌘N" },
     { category: "Vault", label: "Open Vault", shortcut: "⌘⇧O" },
+    { category: "Editor", label: "Bold Selection", shortcut: "⌘B" },
+    { category: "Editor", label: "Highlight Selection", shortcut: "⌘⇧H" },
     { category: "Editor", label: "Toggle Live Preview", shortcut: "⌘E" },
     { category: "Editor", label: "Save Note", shortcut: "⌘⇧S (manual)" },
     { category: "Editor", label: "Close Tab", shortcut: "⌘W" },
