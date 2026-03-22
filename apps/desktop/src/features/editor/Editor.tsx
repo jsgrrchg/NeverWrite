@@ -142,7 +142,6 @@ import {
 } from "./extensions/grammar";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { useCommandStore } from "../command-palette/store/commandStore";
-import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 import {
     buildSpellcheckContextMenuEntries,
     findTextInputWordRange,
@@ -157,20 +156,21 @@ type SavedNoteDetail = {
     title: string;
     content: string;
 };
+type ReloadedNoteMetadata = {
+    origin?: "user" | "agent" | "external" | "system" | "unknown";
+    opId?: string | null;
+    revision?: number;
+    contentHash?: string | null;
+};
 type TabScrollPosition = {
     top: number;
     left: number;
-};
-type RecentSavedSnapshot = {
-    content: string;
-    savedAt: number;
 };
 interface EditorProps {
     emptyStateMessage?: string;
 }
 
-const LOCAL_SAVE_ECHO_WINDOW_MS = 5_000;
-const MAX_RECENT_SAVED_SNAPSHOTS = 8;
+const MERGE_SYNC_FOCUS_DEBOUNCE_MS = 120;
 
 function isRecoverableCoordinateLookupError(error: unknown) {
     return (
@@ -194,6 +194,9 @@ export function Editor({
     );
     const restoreScrollFrameRef = useRef<number | null>(null);
     const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
+    const mergeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
     const activeTabRef = useRef<NoteTab | null>(null);
     const wikilinkSuggesterArmedRef = useRef(false);
     const wikilinkSuggesterRef = useRef<WikilinkSuggesterState | null>(null);
@@ -208,9 +211,8 @@ export function Editor({
     const prevTabIdRef = useRef<string | null>(null);
     const prevNoteIdRef = useRef<string | null>(null);
     const lastSavedContentByTabId = useRef<Map<string, string>>(new Map());
-    const recentSavedSnapshotsByTabId = useRef<
-        Map<string, RecentSavedSnapshot[]>
-    >(new Map());
+    const lastAckRevisionByTabId = useRef<Map<string, number>>(new Map());
+    const pendingLocalOpIdByTabId = useRef<Map<string, string>>(new Map());
     // Frontmatter: stores the raw ---...--- block per note so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
     const [activeFrontmatter, setActiveFrontmatter] = useState<string | null>(
@@ -344,16 +346,54 @@ export function Editor({
     const titleSpellcheckLanguage = titleSpellcheckEnabled
         ? resolveFrontendSpellcheckLanguage(spellcheckPrimaryLanguage)
         : undefined;
-    const trackedFileMatch = activeTabInfo?.noteId
-        ? resolveTrackedFileMatchForPaths(
-              [`${activeTabInfo.noteId}.md`],
-              sessionsById,
-          ).match
-        : null;
     const hasExternalConflict = useEditorStore((state) => {
         const noteId = activeTabInfo?.noteId;
         return noteId ? state.noteExternalConflicts.has(noteId) : false;
     });
+
+    const runMergeViewSync = useCallback((mode?: "source" | "preview") => {
+        const noteId = activeTabRef.current?.noteId;
+        syncMergeViewForPaths(
+            viewRef.current,
+            noteId ? [`${noteId}.md`] : [],
+            useChatStore.getState().sessionsById,
+            {
+                mode:
+                    mode ??
+                    (useSettingsStore.getState().livePreviewEnabled
+                        ? "preview"
+                        : "source"),
+            },
+        );
+    }, []);
+
+    const scheduleMergeViewSync = useCallback(
+        ({ preferDebounce = false }: { preferDebounce?: boolean } = {}) => {
+            if (mergeSyncTimerRef.current) {
+                clearTimeout(mergeSyncTimerRef.current);
+                mergeSyncTimerRef.current = null;
+            }
+
+            const mode = useSettingsStore.getState().livePreviewEnabled
+                ? "preview"
+                : "source";
+            const shouldDebounce =
+                preferDebounce &&
+                mode === "source" &&
+                Boolean(viewRef.current?.hasFocus);
+
+            if (!shouldDebounce) {
+                runMergeViewSync(mode);
+                return;
+            }
+
+            mergeSyncTimerRef.current = setTimeout(() => {
+                mergeSyncTimerRef.current = null;
+                runMergeViewSync(mode);
+            }, MERGE_SYNC_FOCUS_DEBOUNCE_MS);
+        },
+        [runMergeViewSync],
+    );
 
     const getCurrentBody = useCallback(() => {
         return (
@@ -372,38 +412,6 @@ export function Editor({
     const markTabSaved = useCallback(
         (tabId: string, serializedContent: string) => {
             lastSavedContentByTabId.current.set(tabId, serializedContent);
-            const now = Date.now();
-            const nextSnapshots = (
-                recentSavedSnapshotsByTabId.current.get(tabId) ?? []
-            )
-                .filter(
-                    (snapshot) =>
-                        now - snapshot.savedAt <= LOCAL_SAVE_ECHO_WINDOW_MS &&
-                        snapshot.content !== serializedContent,
-                )
-                .concat({
-                    content: serializedContent,
-                    savedAt: now,
-                })
-                .slice(-MAX_RECENT_SAVED_SNAPSHOTS);
-            recentSavedSnapshotsByTabId.current.set(tabId, nextSnapshots);
-        },
-        [],
-    );
-
-    const wasRecentlySavedLocally = useCallback(
-        (tabId: string, serializedContent: string) => {
-            const now = Date.now();
-            const nextSnapshots = (
-                recentSavedSnapshotsByTabId.current.get(tabId) ?? []
-            ).filter(
-                (snapshot) =>
-                    now - snapshot.savedAt <= LOCAL_SAVE_ECHO_WINDOW_MS,
-            );
-            recentSavedSnapshotsByTabId.current.set(tabId, nextSnapshots);
-            return nextSnapshots.some(
-                (snapshot) => snapshot.content === serializedContent,
-            );
         },
         [],
     );
@@ -467,10 +475,17 @@ export function Editor({
             ) {
                 return;
             }
+            const localOpId =
+                typeof crypto !== "undefined" &&
+                typeof crypto.randomUUID === "function"
+                    ? crypto.randomUUID()
+                    : `local-save-${Date.now()}-${Math.random()}`;
+            pendingLocalOpIdByTabId.current.set(tab.noteId, localOpId);
             try {
                 const detail = await vaultInvoke<SavedNoteDetail>("save_note", {
                     noteId: tab.noteId,
                     content: serializedContent,
+                    opId: localOpId,
                 });
                 stripFrontmatter(tab.noteId, detail.content);
                 markTabSaved(tab.noteId, detail.content);
@@ -489,6 +504,7 @@ export function Editor({
                 clearNoteExternalConflict(tab.noteId);
                 touchContent();
             } catch (e) {
+                pendingLocalOpIdByTabId.current.delete(tab.noteId);
                 console.error("Error al guardar nota:", e);
             }
         },
@@ -1958,6 +1974,10 @@ export function Editor({
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             if (contentUpdateTimerRef.current)
                 clearTimeout(contentUpdateTimerRef.current);
+            if (mergeSyncTimerRef.current) {
+                clearTimeout(mergeSyncTimerRef.current);
+                mergeSyncTimerRef.current = null;
+            }
             if (restoreScrollFrameRef.current !== null) {
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
@@ -2223,69 +2243,26 @@ export function Editor({
                 ),
             ],
         });
-        syncMergeViewForPaths(
-            viewRef.current,
-            activeNoteId ? [`${activeNoteId}.md`] : [],
-            useChatStore.getState().sessionsById,
-            {
-                mode: livePreviewEnabled ? "preview" : "source",
-            },
-        );
+        scheduleMergeViewSync();
     }, [
-        activeNoteId,
         handleOpenLinkContextMenu,
         livePreviewEnabled,
+        scheduleMergeViewSync,
         vaultPath,
     ]);
 
     useEffect(() => {
-        const syncMerge = () => {
-            const noteId = activeTabRef.current?.noteId;
-            syncMergeViewForPaths(
-                viewRef.current,
-                noteId ? [`${noteId}.md`] : [],
-                useChatStore.getState().sessionsById,
-                {
-                    mode: useSettingsStore.getState().livePreviewEnabled
-                        ? "preview"
-                        : "source",
-                },
-            );
-        };
-
-        syncMerge();
+        runMergeViewSync();
         const unsub = useChatStore.subscribe((state) => {
-            const noteId = activeTabRef.current?.noteId;
-            syncMergeViewForPaths(
-                viewRef.current,
-                noteId ? [`${noteId}.md`] : [],
-                state.sessionsById,
-                {
-                    mode: useSettingsStore.getState().livePreviewEnabled
-                        ? "preview"
-                        : "source",
-                },
-            );
+            void state.sessionsById;
+            scheduleMergeViewSync({ preferDebounce: true });
         });
         return unsub;
-    }, []);
+    }, [runMergeViewSync, scheduleMergeViewSync]);
 
     useEffect(() => {
-        const noteId = activeTabRef.current?.noteId;
-        syncMergeViewForPaths(
-            viewRef.current,
-            noteId ? [`${noteId}.md`] : [],
-            useChatStore.getState().sessionsById,
-            {
-                mode: livePreviewEnabled ? "preview" : "source",
-            },
-        );
-    }, [
-        activeTabId,
-        activeNoteId,
-        livePreviewEnabled,
-        trackedFileMatch?.trackedFile.version,
-    ]);
+        scheduleMergeViewSync();
+    }, [activeTabId, activeNoteId, livePreviewEnabled, scheduleMergeViewSync]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
@@ -2340,15 +2317,14 @@ export function Editor({
 
             // Skip when noteId changed — the tab-switch useEffect handles navigation
             if (tab.noteId !== prevTab.noteId) return;
+            const reloadVersion = state._noteReloadVersions?.[tab.noteId] ?? 0;
+            const prevReloadVersion =
+                prev._noteReloadVersions?.[tab.noteId] ?? 0;
 
             const isForced =
                 state._pendingForceReloads?.has(tab.noteId) ?? false;
 
-            if (
-                tab.content === prevTab.content &&
-                tab.title === prevTab.title &&
-                !isForced
-            ) {
+            if (reloadVersion === prevReloadVersion && !isForced) {
                 return;
             }
 
@@ -2362,10 +2338,25 @@ export function Editor({
             const hasLocalUnsavedChanges =
                 lastSaved !== null && currentSerialized !== lastSaved;
             const incomingSerialized = tab.content;
-            const isEchoOfRecentLocalSave = wasRecentlySavedLocally(
-                tab.noteId,
-                incomingSerialized,
-            );
+            const reloadMeta = (state._noteReloadMetadata?.[tab.noteId] ??
+                null) as ReloadedNoteMetadata | null;
+            const incomingOrigin = reloadMeta?.origin ?? "unknown";
+            const incomingOpId = reloadMeta?.opId ?? null;
+            const incomingRevision = reloadMeta?.revision ?? 0;
+            const lastAckRevision =
+                lastAckRevisionByTabId.current.get(tab.noteId) ?? 0;
+            const pendingLocalOpId =
+                pendingLocalOpIdByTabId.current.get(tab.noteId) ?? null;
+            const isPendingLocalSaveAck =
+                !isForced &&
+                incomingOrigin === "user" &&
+                incomingOpId !== null &&
+                incomingOpId === pendingLocalOpId;
+            const isStaleRevision =
+                !isForced &&
+                incomingRevision > 0 &&
+                incomingRevision <= lastAckRevision &&
+                !isPendingLocalSaveAck;
             const incoming = stripFrontmatter(tab.noteId, incomingSerialized);
             const nextFrontmatter =
                 frontmatterByTabId.current.get(tab.noteId) ?? null;
@@ -2376,8 +2367,30 @@ export function Editor({
             );
             const incomingMatchesCurrentDoc =
                 incomingSerialized === currentSerialized;
+            const acknowledgeIncomingRevision = () => {
+                if (incomingRevision <= 0) return;
+                lastAckRevisionByTabId.current.set(
+                    tab.noteId,
+                    Math.max(lastAckRevision, incomingRevision),
+                );
+            };
+            const clearPendingLocalAck = () => {
+                if (isPendingLocalSaveAck) {
+                    pendingLocalOpIdByTabId.current.delete(tab.noteId);
+                }
+            };
+
+            if (isStaleRevision) {
+                clearPendingLocalAck();
+                return;
+            }
 
             if (!isForced && incomingMatchesCurrentDoc) {
+                acknowledgeIncomingRevision();
+                clearPendingLocalAck();
+                if (lastSaved !== incomingSerialized) {
+                    markTabSaved(tab.noteId, incomingSerialized);
+                }
                 useEditorStore.getState().clearNoteExternalConflict(tab.noteId);
                 if (activeTabRef.current?.id === tabId) {
                     setActiveFrontmatter(nextFrontmatter);
@@ -2387,7 +2400,10 @@ export function Editor({
             }
 
             if (hasLocalUnsavedChanges && !isForced) {
-                if (isEchoOfRecentLocalSave) {
+                if (isPendingLocalSaveAck) {
+                    acknowledgeIncomingRevision();
+                    clearPendingLocalAck();
+                    markTabSaved(tab.noteId, incomingSerialized);
                     useEditorStore
                         .getState()
                         .clearNoteExternalConflict(tab.noteId);
@@ -2399,6 +2415,8 @@ export function Editor({
             if (isForced) {
                 useEditorStore.getState().clearForceReload(tab.noteId);
             }
+            acknowledgeIncomingRevision();
+            clearPendingLocalAck();
             useEditorStore.getState().clearNoteExternalConflict(tab.noteId);
 
             if (activeTabRef.current?.id === tabId) {
@@ -2406,7 +2424,7 @@ export function Editor({
                 setEditableTitle(nextTitle);
             }
             if (incoming !== currentDoc) {
-                markTabSaved(tab.noteId, tab.content);
+                markTabSaved(tab.noteId, incomingSerialized);
             }
             if (incoming === currentDoc) return;
 
@@ -2436,12 +2454,7 @@ export function Editor({
             isInternalRef.current = false;
         });
         return unsub;
-    }, [
-        markTabSaved,
-        serializePersistedContent,
-        stripFrontmatter,
-        wasRecentlySavedLocally,
-    ]);
+    }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
