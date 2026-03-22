@@ -32,6 +32,9 @@ const DEFAULT_GRAPH_MAX_LINKS_GLOBAL: usize = 24_000;
 const DEFAULT_GRAPH_MAX_NODES_LOCAL: usize = 2_500;
 const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
 const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
+const VAULT_CHANGE_ORIGIN_USER: &str = "user";
+const VAULT_CHANGE_ORIGIN_AGENT: &str = "agent";
+const VAULT_CHANGE_ORIGIN_EXTERNAL: &str = "external";
 
 // --- Debug timing ---
 #[cfg(feature = "debug-logs")]
@@ -109,6 +112,7 @@ struct VaultInstance {
     graph_base_snapshot: Option<CachedGraphBaseSnapshot>,
     graph_revision: u64,
     index_revision: u64,
+    note_revisions: HashMap<String, u64>,
     graph_query_cache: HashMap<String, CachedGraphQueryResult>,
     watcher: Option<RecommendedWatcher>,
     open_job_id: u64,
@@ -126,6 +130,7 @@ impl VaultInstance {
             graph_base_snapshot: None,
             graph_revision: 0,
             index_revision: 0,
+            note_revisions: HashMap::new(),
             graph_query_cache: HashMap::new(),
             watcher: None,
             open_job_id: 0,
@@ -139,6 +144,7 @@ struct AppState {
     vaults: HashMap<String, VaultInstance>,
     write_tracker: WriteTracker,
     next_job_id: u64,
+    next_change_op_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +399,75 @@ fn fnv1a_hash_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
+fn next_change_op_id(state: &mut AppState, origin: &str) -> String {
+    let next = state.next_change_op_id;
+    state.next_change_op_id = state.next_change_op_id.saturating_add(1);
+    format!("{origin}-{next}")
+}
+
+fn advance_note_revision(
+    note_revisions: &mut HashMap<String, u64>,
+    note_id: &str,
+    previous_note_id: Option<&str>,
+) -> u64 {
+    let previous_revision = previous_note_id
+        .filter(|previous| *previous != note_id)
+        .and_then(|previous| note_revisions.remove(previous))
+        .unwrap_or(0);
+    let current_revision = note_revisions.get(note_id).copied().unwrap_or(0);
+    let next_revision = previous_revision
+        .max(current_revision)
+        .saturating_add(1)
+        .max(1);
+    note_revisions.insert(note_id.to_string(), next_revision);
+    next_revision
+}
+
+fn note_content_hash(content: &str) -> String {
+    fnv1a_hash_hex(content.as_bytes())
+}
+
+fn build_vault_note_change(
+    vault_path: &str,
+    kind: &str,
+    note: Option<NoteDto>,
+    note_id: Option<String>,
+    entry: Option<VaultEntryDto>,
+    relative_path: Option<String>,
+    origin: &str,
+    op_id: Option<String>,
+    revision: u64,
+    content_hash: Option<String>,
+    graph_revision: u64,
+) -> VaultNoteChangeDto {
+    VaultNoteChangeDto {
+        vault_path: vault_path.to_string(),
+        kind: kind.to_string(),
+        note,
+        note_id,
+        entry,
+        relative_path,
+        origin: origin.to_string(),
+        op_id,
+        revision,
+        content_hash,
+        graph_revision,
+    }
+}
+
+fn emit_vault_note_change(app: &AppHandle, _context: &str, change: VaultNoteChangeDto) {
+    dbg_log!(
+        "{_context} emit change kind={}, note_id={:?}, origin={}, op_id={:?}, revision={}, bytes={:?}",
+        change.kind,
+        change.note_id,
+        change.origin,
+        change.op_id,
+        change.revision,
+        serialized_payload_bytes(&change)
+    );
+    let _ = app.emit(VAULT_NOTE_CHANGED_EVENT, change);
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -557,6 +632,30 @@ fn note_to_detail(note: &NoteDocument) -> NoteDetailDto {
         links: note.links.iter().map(|l| l.target.clone()).collect(),
         frontmatter: note.frontmatter.clone(),
     }
+}
+
+fn note_change_from_document(
+    vault_path: &str,
+    note: &NoteDocument,
+    relative_path: String,
+    origin: &str,
+    op_id: Option<String>,
+    revision: u64,
+    graph_revision: u64,
+) -> VaultNoteChangeDto {
+    build_vault_note_change(
+        vault_path,
+        "upsert",
+        Some(note_document_to_dto(note)),
+        Some(note.id.0.clone()),
+        None,
+        Some(relative_path),
+        origin,
+        op_id,
+        revision,
+        Some(note_content_hash(&note.raw_markdown)),
+        graph_revision,
+    )
 }
 
 // --- Helpers for vault instance access ---
@@ -1151,29 +1250,37 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     }
                 }
                 // Emit a vault entry change so the frontend can refresh its entries list
-                Some(VaultNoteChangeDto {
-                    vault_path: vault_path.to_string(),
-                    kind: "upsert".to_string(),
-                    note: None,
-                    note_id: None,
-                    entry: None,
-                    relative_path: Some(vault.path_to_relative_path(path)),
-                    graph_revision: 0,
-                })
+                Some(build_vault_note_change(
+                    vault_path,
+                    "upsert",
+                    None,
+                    None,
+                    None,
+                    Some(vault.path_to_relative_path(path)),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    0,
+                    None,
+                    0,
+                ))
             }
             VaultEvent::FileDeleted(ref path) if path_has_extension(path, "pdf") => {
                 let pdf_id = vault.path_to_entry_id(path);
                 index.remove_pdf(&NoteId(pdf_id));
                 search_changed = true;
-                Some(VaultNoteChangeDto {
-                    vault_path: vault_path.to_string(),
-                    kind: "delete".to_string(),
-                    note: None,
-                    note_id: None,
-                    entry: None,
-                    relative_path: Some(vault.path_to_relative_path(path)),
-                    graph_revision: 0,
-                })
+                Some(build_vault_note_change(
+                    vault_path,
+                    "delete",
+                    None,
+                    None,
+                    None,
+                    Some(vault.path_to_relative_path(path)),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    0,
+                    None,
+                    0,
+                ))
             }
             VaultEvent::FileRenamed { ref from, ref to }
                 if path_has_extension(from, "pdf") || path_has_extension(to, "pdf") =>
@@ -1209,15 +1316,19 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                         search_changed = true;
                     }
                 }
-                Some(VaultNoteChangeDto {
-                    vault_path: vault_path.to_string(),
-                    kind: "upsert".to_string(),
-                    note: None,
-                    note_id: None,
-                    entry: None,
-                    relative_path: Some(vault.path_to_relative_path(to)),
-                    graph_revision: 0,
-                })
+                Some(build_vault_note_change(
+                    vault_path,
+                    "upsert",
+                    None,
+                    None,
+                    None,
+                    Some(vault.path_to_relative_path(to)),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    0,
+                    None,
+                    0,
+                ))
             }
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path)
                 if path_has_extension(&path, "md") =>
@@ -1226,35 +1337,43 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 let before = graph_note_fingerprint_from_index(index, &NoteId(note_id.clone()));
                 match vault.read_note_from_path(&path) {
                     Ok(note) => {
-                        let dto = note_document_to_dto(&note);
                         let note_id = note.id.0.clone();
                         let after = graph_note_fingerprint_from_document(&note);
+                        let note_for_change = note.clone();
                         index.reindex_note(note);
                         graph_changed = before.as_ref() != Some(&after);
                         search_changed = true;
-                        Some(VaultNoteChangeDto {
-                            vault_path: vault_path.to_string(),
-                            kind: "upsert".to_string(),
-                            note: Some(dto),
-                            note_id: Some(note_id),
-                            entry: None,
-                            relative_path: Some(vault.path_to_relative_path(&path)),
-                            graph_revision: 0,
-                        })
+                        let revision =
+                            advance_note_revision(&mut instance.note_revisions, &note_id, None);
+                        Some(note_change_from_document(
+                            vault_path,
+                            &note_for_change,
+                            vault.path_to_relative_path(&path),
+                            VAULT_CHANGE_ORIGIN_EXTERNAL,
+                            None,
+                            revision,
+                            0,
+                        ))
                     }
                     Err(_) => {
                         graph_changed = before.is_some();
                         index.remove_note(&NoteId(note_id.clone()));
                         search_changed = true;
-                        Some(VaultNoteChangeDto {
-                            vault_path: vault_path.to_string(),
-                            kind: "delete".to_string(),
-                            note: None,
-                            note_id: Some(note_id),
-                            entry: None,
-                            relative_path: Some(vault.path_to_relative_path(&path)),
-                            graph_revision: 0,
-                        })
+                        let revision =
+                            advance_note_revision(&mut instance.note_revisions, &note_id, None);
+                        Some(build_vault_note_change(
+                            vault_path,
+                            "delete",
+                            None,
+                            Some(note_id),
+                            None,
+                            Some(vault.path_to_relative_path(&path)),
+                            VAULT_CHANGE_ORIGIN_EXTERNAL,
+                            None,
+                            revision,
+                            None,
+                            0,
+                        ))
                     }
                 }
             }
@@ -1263,15 +1382,20 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 graph_changed = note_graph_exists(index, &NoteId(note_id.clone()));
                 index.remove_note(&NoteId(note_id.clone()));
                 search_changed = true;
-                Some(VaultNoteChangeDto {
-                    vault_path: vault_path.to_string(),
-                    kind: "delete".to_string(),
-                    note: None,
-                    note_id: Some(note_id),
-                    entry: None,
-                    relative_path: Some(vault.path_to_relative_path(&path)),
-                    graph_revision: 0,
-                })
+                let revision = advance_note_revision(&mut instance.note_revisions, &note_id, None);
+                Some(build_vault_note_change(
+                    vault_path,
+                    "delete",
+                    None,
+                    Some(note_id),
+                    None,
+                    Some(vault.path_to_relative_path(&path)),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    revision,
+                    None,
+                    0,
+                ))
             }
             VaultEvent::FileRenamed { from, to }
                 if path_has_extension(&from, "md") || path_has_extension(&to, "md") =>
@@ -1282,64 +1406,89 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 search_changed = true;
                 match vault.read_note_from_path(&to) {
                     Ok(note) => {
-                        let dto = note_document_to_dto(&note);
                         let note_id = note.id.0.clone();
+                        let note_for_change = note.clone();
                         index.reindex_note(note);
                         graph_changed = true;
                         search_changed = true;
-                        Some(VaultNoteChangeDto {
-                            vault_path: vault_path.to_string(),
-                            kind: "upsert".to_string(),
-                            note: Some(dto),
-                            note_id: Some(note_id),
-                            entry: None,
-                            relative_path: Some(vault.path_to_relative_path(&to)),
-                            graph_revision: 0,
-                        })
+                        let revision = advance_note_revision(
+                            &mut instance.note_revisions,
+                            &note_id,
+                            Some(&old_id),
+                        );
+                        Some(note_change_from_document(
+                            vault_path,
+                            &note_for_change,
+                            vault.path_to_relative_path(&to),
+                            VAULT_CHANGE_ORIGIN_EXTERNAL,
+                            None,
+                            revision,
+                            0,
+                        ))
                     }
-                    Err(_) => Some(VaultNoteChangeDto {
-                        vault_path: vault_path.to_string(),
-                        kind: "delete".to_string(),
-                        note: None,
-                        note_id: Some(old_id),
-                        entry: None,
-                        relative_path: Some(vault.path_to_relative_path(&from)),
-                        graph_revision: 0,
-                    }),
+                    Err(_) => {
+                        let revision =
+                            advance_note_revision(&mut instance.note_revisions, &old_id, None);
+                        Some(build_vault_note_change(
+                            vault_path,
+                            "delete",
+                            None,
+                            Some(old_id),
+                            None,
+                            Some(vault.path_to_relative_path(&from)),
+                            VAULT_CHANGE_ORIGIN_EXTERNAL,
+                            None,
+                            revision,
+                            None,
+                            0,
+                        ))
+                    }
                 }
             }
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
                 let entry = vault.read_vault_entry_from_path(&path).ok();
-                Some(VaultNoteChangeDto {
-                    vault_path: vault_path.to_string(),
-                    kind: "upsert".to_string(),
-                    note: None,
-                    note_id: None,
+                Some(build_vault_note_change(
+                    vault_path,
+                    "upsert",
+                    None,
+                    None,
                     entry,
-                    relative_path: Some(vault.path_to_relative_path(&path)),
-                    graph_revision: 0,
-                })
+                    Some(vault.path_to_relative_path(&path)),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    0,
+                    None,
+                    0,
+                ))
             }
-            VaultEvent::FileDeleted(path) => Some(VaultNoteChangeDto {
-                vault_path: vault_path.to_string(),
-                kind: "delete".to_string(),
-                note: None,
-                note_id: None,
-                entry: None,
-                relative_path: Some(vault.path_to_relative_path(&path)),
-                graph_revision: 0,
-            }),
+            VaultEvent::FileDeleted(path) => Some(build_vault_note_change(
+                vault_path,
+                "delete",
+                None,
+                None,
+                None,
+                Some(vault.path_to_relative_path(&path)),
+                VAULT_CHANGE_ORIGIN_EXTERNAL,
+                None,
+                0,
+                None,
+                0,
+            )),
             VaultEvent::FileRenamed { to, .. } => {
                 let entry = vault.read_vault_entry_from_path(&to).ok();
-                Some(VaultNoteChangeDto {
-                    vault_path: vault_path.to_string(),
-                    kind: "upsert".to_string(),
-                    note: None,
-                    note_id: None,
+                Some(build_vault_note_change(
+                    vault_path,
+                    "upsert",
+                    None,
+                    None,
                     entry,
-                    relative_path: Some(vault.path_to_relative_path(&to)),
-                    graph_revision: 0,
-                })
+                    Some(vault.path_to_relative_path(&to)),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    0,
+                    None,
+                    0,
+                ))
             }
         };
 
@@ -1364,7 +1513,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
     dbg_log!("{_event_label} total: {:.2?}", _watcher_start.elapsed());
 
     if let Some(change) = change {
-        let _ = app.emit(VAULT_NOTE_CHANGED_EVENT, change);
+        emit_vault_note_change(app, &_event_label, change);
     }
 }
 
@@ -2082,20 +2231,24 @@ fn save_note(
     vault_path: String,
     note_id: String,
     content: String,
+    op_id: Option<String>,
+    app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
     let _cmd_start = Instant::now();
     let lock_start = Instant::now();
-    let state = lock!(state)?;
+    let mut state = lock!(state)?;
     let _lock_wait = lock_start.elapsed();
+    let write_tracker = state.write_tracker.clone();
+    let op_id = op_id.unwrap_or_else(|| next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_USER));
     let instance = state
         .vaults
-        .get(&vault_path)
+        .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let path = vault.id_to_path(&note_id);
-    state.write_tracker.track_content(path.clone(), &content);
+    write_tracker.track_content(path.clone(), &content);
 
     vault
         .save_note(&note_id, &content)
@@ -2104,6 +2257,17 @@ fn save_note(
     // Build NoteDocument from content we already have — skip re-reading from disk
     let note = vault_ai_vault::parser::parse_note(&note_id, &path, &content);
     let dto = note_to_detail(&note);
+    let relative_path = vault.path_to_relative_path(&path);
+    let revision = advance_note_revision(&mut instance.note_revisions, &note_id, None);
+    let change = note_change_from_document(
+        &vault_path,
+        &note,
+        relative_path,
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id),
+        revision,
+        instance.graph_revision.max(1),
+    );
     // Reindex deferred to the file watcher's background thread to avoid
     // holding the Mutex during the expensive O(n) index update.
 
@@ -2111,6 +2275,8 @@ fn save_note(
         "save_note({note_id}) mutex wait: {_lock_wait:.2?}, total: {:.2?}",
         _cmd_start.elapsed()
     );
+    drop(state);
+    emit_vault_note_change(&app, "save_note", change);
     Ok(dto)
 }
 
@@ -2119,10 +2285,12 @@ fn create_note(
     vault_path: String,
     path: String,
     content: String,
+    app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
     let mut state = lock!(state)?;
     let write_tracker = state.write_tracker.clone();
+    let op_id = next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_USER);
     let instance = state
         .vaults
         .get_mut(&vault_path)
@@ -2143,6 +2311,16 @@ fn create_note(
     };
 
     let dto = note_to_detail(&note);
+    let revision = advance_note_revision(&mut instance.note_revisions, &note.id.0, None);
+    let change = note_change_from_document(
+        &vault_path,
+        &note,
+        entry.relative_path.clone(),
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id.clone()),
+        revision,
+        instance.graph_revision.max(1),
+    );
 
     if let Some(index) = instance.index.as_mut() {
         index.reindex_note(note);
@@ -2155,6 +2333,8 @@ fn create_note(
         Ok(())
     })?;
 
+    drop(state);
+    emit_vault_note_change(&app, "create_note", change);
     Ok(dto)
 }
 
@@ -2189,10 +2369,12 @@ fn create_folder(
 fn delete_note(
     vault_path: String,
     note_id: String,
+    app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<(), String> {
     let mut state = lock!(state)?;
     let write_tracker = state.write_tracker.clone();
+    let op_id = next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_USER);
     let instance = state
         .vaults
         .get_mut(&vault_path)
@@ -2215,6 +2397,22 @@ fn delete_note(
         Ok(())
     })?;
 
+    let revision = advance_note_revision(&mut instance.note_revisions, &note_id, None);
+    let change = build_vault_note_change(
+        &vault_path,
+        "delete",
+        None,
+        Some(note_id.clone()),
+        None,
+        Some(removed_relative_path),
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id),
+        revision,
+        None,
+        instance.graph_revision.max(1),
+    );
+    drop(state);
+    emit_vault_note_change(&app, "delete_note", change);
     Ok(())
 }
 
@@ -2305,10 +2503,12 @@ fn rename_note(
     vault_path: String,
     note_id: String,
     new_path: String,
+    app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<NoteDetailDto, String> {
     let mut state = lock!(state)?;
     let write_tracker = state.write_tracker.clone();
+    let op_id = next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_USER);
     let instance = state
         .vaults
         .get_mut(&vault_path)
@@ -2332,6 +2532,16 @@ fn rename_note(
     };
 
     let dto = note_to_detail(&note);
+    let revision = advance_note_revision(&mut instance.note_revisions, &note.id.0, Some(&note_id));
+    let change = note_change_from_document(
+        &vault_path,
+        &note,
+        entry.relative_path.clone(),
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id),
+        revision,
+        instance.graph_revision.max(1),
+    );
 
     if let Some(index) = instance.index.as_mut() {
         index.remove_note(&NoteId(note_id));
@@ -2346,6 +2556,8 @@ fn rename_note(
         Ok(())
     })?;
 
+    drop(state);
+    emit_vault_note_change(&app, "rename_note", change);
     Ok(dto)
 }
 
@@ -2461,10 +2673,11 @@ fn ai_restore_text_file(
     path: String,
     previous_path: Option<String>,
     content: Option<String>,
+    app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
-) -> Result<(), String> {
-    let (write_tracker, current_path, restore_path) = {
-        let state = lock!(state)?;
+) -> Result<Option<VaultNoteChangeDto>, String> {
+    let (write_tracker, current_path, restore_path, op_id) = {
+        let mut state = lock!(state)?;
         let instance = state
             .vaults
             .get(&vault_path)
@@ -2475,8 +2688,14 @@ fn ai_restore_text_file(
             .as_deref()
             .map(|value| resolve_vault_scoped_path(&vault.root, value))
             .transpose()?;
+        let op_id = next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_AGENT);
 
-        (state.write_tracker.clone(), current_path, restore_path)
+        (
+            state.write_tracker.clone(),
+            current_path,
+            restore_path,
+            op_id,
+        )
     };
 
     if let Some(target_path) = restore_path.as_ref() {
@@ -2484,43 +2703,134 @@ fn ai_restore_text_file(
     }
     write_tracker.track_any(current_path.clone());
 
+    let final_path = restore_path.clone().unwrap_or_else(|| current_path.clone());
+
     if let Some(text) = content.as_ref() {
-        let final_path = restore_path.as_ref().unwrap_or(&current_path);
         if let Some(parent) = final_path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         write_tracker.track_content(final_path.clone(), text);
-        fs::write(final_path, text).map_err(|error| error.to_string())?;
+        fs::write(&final_path, text).map_err(|error| error.to_string())?;
 
-        if final_path != &current_path && current_path.exists() {
+        if final_path != current_path && current_path.exists() {
             fs::remove_file(&current_path).map_err(|error| error.to_string())?;
         }
+
         let mut state = lock!(state)?;
         let instance = state
             .vaults
             .get_mut(&vault_path)
             .ok_or("No hay vault abierto")?;
-        mutate_entries_cache(instance, |vault, entries| {
-            let current_relative_path = relative_path_from_absolute(&vault.root, &current_path)?;
-            remove_entry_from_cache(entries, &current_relative_path);
 
-            if let Some(target_path) = restore_path.as_ref() {
-                let target_relative_path =
-                    relative_path_from_absolute(&vault.root, target_path.as_path())?;
-                remove_entry_from_cache(entries, &target_relative_path);
-            }
-
-            if !path_is_hidden_from_entries(&vault.root, final_path) && final_path.exists() {
-                let entry = vault
-                    .read_vault_entry_from_path(final_path)
+        let change = if path_has_extension(&final_path, "md") {
+            let (note, entry, relative_path, previous_note_id, current_relative_path) = {
+                let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+                let note = vault
+                    .read_note_from_path(&final_path)
                     .map_err(|error| error.to_string())?;
-                ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
-                upsert_entry_in_cache(entries, entry);
-            }
+                let entry = vault
+                    .read_vault_entry_from_path(&final_path)
+                    .map_err(|error| error.to_string())?;
+                let relative_path = entry.relative_path.clone();
+                let previous_note_id =
+                    if current_path != final_path && path_has_extension(&current_path, "md") {
+                        Some(vault.path_to_id(&current_path))
+                    } else {
+                        None
+                    };
+                let current_relative_path =
+                    relative_path_from_absolute(&vault.root, &current_path)?;
+                (
+                    note,
+                    entry,
+                    relative_path,
+                    previous_note_id,
+                    current_relative_path,
+                )
+            };
 
-            Ok(())
-        })?;
-        return Ok(());
+            let revision = advance_note_revision(
+                &mut instance.note_revisions,
+                &note.id.0,
+                previous_note_id.as_deref(),
+            );
+
+            if let Some(index) = instance.index.as_mut() {
+                if let Some(previous_note_id) = previous_note_id.as_ref() {
+                    if previous_note_id != &note.id.0 {
+                        index.remove_note(&NoteId(previous_note_id.clone()));
+                    }
+                }
+                index.reindex_note(note.clone());
+            }
+            invalidate_graph_query_cache(instance);
+            invalidate_graph_cache(instance);
+
+            mutate_entries_cache(instance, |vault, entries| {
+                remove_entry_from_cache(entries, &current_relative_path);
+                remove_entry_from_cache(entries, &relative_path);
+                ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+                upsert_entry_in_cache(entries, entry.clone());
+                Ok(())
+            })?;
+
+            note_change_from_document(
+                &vault_path,
+                &note,
+                relative_path,
+                VAULT_CHANGE_ORIGIN_AGENT,
+                Some(op_id.clone()),
+                revision,
+                instance.graph_revision.max(1),
+            )
+        } else {
+            let (entry, relative_path, current_relative_path) = {
+                let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+                let relative_path = relative_path_from_absolute(&vault.root, &final_path)?;
+                let entry = if !path_is_hidden_from_entries(&vault.root, &final_path)
+                    && final_path.exists()
+                {
+                    Some(
+                        vault
+                            .read_vault_entry_from_path(&final_path)
+                            .map_err(|error| error.to_string())?,
+                    )
+                } else {
+                    None
+                };
+                let current_relative_path =
+                    relative_path_from_absolute(&vault.root, &current_path)?;
+                (entry, relative_path, current_relative_path)
+            };
+
+            mutate_entries_cache(instance, |vault, entries| {
+                remove_entry_from_cache(entries, &current_relative_path);
+                remove_entry_from_cache(entries, &relative_path);
+                if let Some(entry) = entry.as_ref() {
+                    ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+                    upsert_entry_in_cache(entries, entry.clone());
+                }
+                Ok(())
+            })?;
+
+            build_vault_note_change(
+                &vault_path,
+                "upsert",
+                None,
+                None,
+                entry,
+                Some(relative_path),
+                VAULT_CHANGE_ORIGIN_AGENT,
+                Some(op_id.clone()),
+                0,
+                Some(note_content_hash(text)),
+                instance.graph_revision.max(1),
+            )
+        };
+
+        drop(state);
+        emit_vault_note_change(&app, "ai_restore_text_file", change.clone());
+        return Ok(Some(change));
     }
 
     if current_path.exists() {
@@ -2538,20 +2848,76 @@ fn ai_restore_text_file(
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    mutate_entries_cache(instance, |vault, entries| {
-        let current_relative_path = relative_path_from_absolute(&vault.root, &current_path)?;
-        remove_entry_from_cache(entries, &current_relative_path);
+    let change = if path_has_extension(&current_path, "md") {
+        let (note_id, relative_path) = {
+            let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+            (
+                vault.path_to_id(&current_path),
+                relative_path_from_absolute(&vault.root, &current_path)?,
+            )
+        };
 
-        if let Some(target_path) = restore_path.as_ref() {
-            let target_relative_path =
-                relative_path_from_absolute(&vault.root, target_path.as_path())?;
-            remove_entry_from_cache(entries, &target_relative_path);
+        if let Some(index) = instance.index.as_mut() {
+            index.remove_note(&NoteId(note_id.clone()));
         }
+        invalidate_graph_query_cache(instance);
+        invalidate_graph_cache(instance);
+        mutate_entries_cache(instance, |_, entries| {
+            remove_entry_from_cache(entries, &relative_path);
+            Ok(())
+        })?;
 
-        Ok(())
-    })?;
+        let revision = advance_note_revision(&mut instance.note_revisions, &note_id, None);
+        build_vault_note_change(
+            &vault_path,
+            "delete",
+            None,
+            Some(note_id),
+            None,
+            Some(relative_path),
+            VAULT_CHANGE_ORIGIN_AGENT,
+            Some(op_id.clone()),
+            revision,
+            None,
+            instance.graph_revision.max(1),
+        )
+    } else {
+        let (current_relative_path, target_relative_path) = {
+            let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+            let current_relative_path = relative_path_from_absolute(&vault.root, &current_path)?;
+            let target_relative_path = restore_path
+                .as_ref()
+                .map(|target_path| relative_path_from_absolute(&vault.root, target_path.as_path()))
+                .transpose()?;
+            (current_relative_path, target_relative_path)
+        };
 
-    Ok(())
+        mutate_entries_cache(instance, |_, entries| {
+            remove_entry_from_cache(entries, &current_relative_path);
+            if let Some(target_relative_path) = target_relative_path.as_ref() {
+                remove_entry_from_cache(entries, target_relative_path);
+            }
+            Ok(())
+        })?;
+
+        build_vault_note_change(
+            &vault_path,
+            "delete",
+            None,
+            None,
+            None,
+            Some(current_relative_path),
+            VAULT_CHANGE_ORIGIN_AGENT,
+            Some(op_id),
+            0,
+            None,
+            instance.graph_revision.max(1),
+        )
+    };
+
+    drop(state);
+    emit_vault_note_change(&app, "ai_restore_text_file", change.clone());
+    Ok(Some(change))
 }
 
 #[tauri::command]
@@ -3757,6 +4123,7 @@ pub fn run() {
             vaults: HashMap::new(),
             write_tracker: WriteTracker::new(),
             next_job_id: 0,
+            next_change_op_id: 0,
         }))
         .manage(Mutex::new(ai::AiManager::new()))
         .manage(ai::auth_terminal::AiAuthTerminalManager::new())
@@ -4052,5 +4419,33 @@ mod tests {
         assert_eq!(patches[0].text_range_patch.spans[0].base_to, 4);
         assert_eq!(patches[0].text_range_patch.spans[0].current_from, 3);
         assert_eq!(patches[0].text_range_patch.spans[0].current_to, 4);
+    }
+
+    #[test]
+    fn advance_note_revision_increments_and_preserves_history_across_rename() {
+        let mut revisions = HashMap::new();
+
+        assert_eq!(advance_note_revision(&mut revisions, "notes/a", None), 1);
+        assert_eq!(advance_note_revision(&mut revisions, "notes/a", None), 2);
+        assert_eq!(
+            advance_note_revision(&mut revisions, "notes/b", Some("notes/a")),
+            3
+        );
+        assert_eq!(revisions.get("notes/a"), None);
+        assert_eq!(revisions.get("notes/b"), Some(&3));
+    }
+
+    #[test]
+    fn next_change_op_id_is_monotonic_and_origin_prefixed() {
+        let mut state = AppState {
+            vaults: HashMap::new(),
+            write_tracker: WriteTracker::new(),
+            next_job_id: 0,
+            next_change_op_id: 0,
+        };
+
+        assert_eq!(next_change_op_id(&mut state, "user"), "user-0");
+        assert_eq!(next_change_op_id(&mut state, "external"), "external-1");
+        assert_eq!(state.next_change_op_id, 2);
     }
 }

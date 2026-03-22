@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_vault_change_origin() -> String {
+    "unknown".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageDto {
     pub role: String,
@@ -131,6 +135,14 @@ pub struct VaultNoteChangeDto {
     pub note_id: Option<String>,
     pub entry: Option<VaultEntryDto>,
     pub relative_path: Option<String>,
+    #[serde(default = "default_vault_change_origin")]
+    pub origin: String,
+    #[serde(default)]
+    pub op_id: Option<String>,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub content_hash: Option<String>,
     pub graph_revision: u64,
 }
 

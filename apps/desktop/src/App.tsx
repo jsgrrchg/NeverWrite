@@ -92,6 +92,14 @@ function isTextLikeMimeType(mimeType: string | null | undefined) {
     );
 }
 
+function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
+    return (
+        change.origin === "external" ||
+        change.origin === "unknown" ||
+        change.origin === "agent"
+    );
+}
+
 function SidebarPanel({ view }: { view: SidebarView }) {
     return (
         <div className="h-full flex flex-col overflow-hidden">
@@ -1409,8 +1417,10 @@ export default function App() {
             )
                 return;
 
-            applyVaultNoteChange(event.payload);
-            void refreshEntries();
+            if (shouldApplyVaultChangeToVaultStore(event.payload)) {
+                applyVaultNoteChange(event.payload);
+                void refreshEntries();
+            }
 
             // Reload editor content for open tabs when file changes externally
             const change = event.payload;
@@ -1450,6 +1460,10 @@ export default function App() {
                                 .reloadNoteContent(noteId, {
                                     title: detail.title,
                                     content: detail.content,
+                                    origin: change.origin,
+                                    opId: change.op_id,
+                                    revision: change.revision,
+                                    contentHash: change.content_hash,
                                 });
                         });
                     }, 180);
