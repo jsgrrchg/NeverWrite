@@ -577,15 +577,29 @@ function ToolbarBtn({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                borderRadius: 4,
+                borderRadius: 6,
                 flexShrink: 0,
+                position: "relative",
                 color: active ? "var(--accent)" : "var(--text-secondary)",
-                opacity: active ? 1 : 0.55,
+                opacity: active ? 1 : 0.65,
+                backgroundColor: active
+                    ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                    : "transparent",
+                transition:
+                    "opacity 100ms ease, background-color 100ms ease, color 100ms ease",
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
-            onMouseLeave={(e) =>
-                (e.currentTarget.style.opacity = active ? "1" : "0.55")
-            }
+            onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = "1";
+                if (!active)
+                    e.currentTarget.style.backgroundColor =
+                        "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = active ? "1" : "0.65";
+                e.currentTarget.style.backgroundColor = active
+                    ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                    : "transparent";
+            }}
         >
             <span
                 style={{
@@ -598,6 +612,21 @@ function ToolbarBtn({
             >
                 {children}
             </span>
+            {active && (
+                <span
+                    style={{
+                        position: "absolute",
+                        bottom: 1,
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        width: 4,
+                        height: 4,
+                        borderRadius: "50%",
+                        backgroundColor: "var(--accent)",
+                        opacity: 0.8,
+                    }}
+                />
+            )}
         </button>
     );
 }
@@ -3915,11 +3944,13 @@ export function FileTree() {
         <div className="h-full flex flex-col overflow-hidden">
             {/* Toolbar */}
             <div
-                className="flex items-center justify-center gap-1 shrink-0"
+                className="flex items-center justify-center gap-0.5 shrink-0"
                 style={{
                     height: Math.max(36, Math.round(36 * treeScale)),
                     borderBottom: "1px solid var(--border)",
                     position: "relative",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--bg-tertiary) 30%, transparent)",
                 }}
             >
                 <ToolbarBtn

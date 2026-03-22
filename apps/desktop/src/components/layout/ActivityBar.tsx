@@ -128,7 +128,7 @@ export function ActivityBar({
         borderRadius: 10,
         border: "1px solid transparent",
         transition:
-            "background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease",
+            "background-color 100ms ease, border-color 100ms ease, color 100ms ease, box-shadow 100ms ease",
     } as const;
     const terminalButtonVisible =
         developerModeEnabled && developerTerminalEnabled;
@@ -148,7 +148,7 @@ export function ActivityBar({
 
     return (
         <div
-            className="flex h-full flex-shrink-0 flex-col items-center px-1 py-2"
+            className="flex h-full shrink-0 flex-col items-center px-1 py-2"
             style={{
                 width: 40,
                 background:
@@ -227,7 +227,8 @@ export function ActivityBar({
                             "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
                         e.currentTarget.style.borderColor =
                             "color-mix(in srgb, var(--border) 88%, transparent)";
-                        e.currentTarget.style.color = "var(--text-primary)";
+                        e.currentTarget.style.color =
+                            "color-mix(in srgb, var(--text-primary) 75%, var(--text-secondary))";
                     }}
                     onMouseLeave={(e) => {
                         e.currentTarget.style.backgroundColor = "transparent";
@@ -302,7 +303,8 @@ export function ActivityBar({
                         "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
                     e.currentTarget.style.borderColor =
                         "color-mix(in srgb, var(--border) 88%, transparent)";
-                    e.currentTarget.style.color = "var(--text-primary)";
+                    e.currentTarget.style.color =
+                        "color-mix(in srgb, var(--text-primary) 75%, var(--text-secondary))";
                 }}
                 onMouseLeave={(e) => {
                     if (livePreviewEnabled) return;
@@ -374,7 +376,8 @@ export function ActivityBar({
                         "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
                     e.currentTarget.style.borderColor =
                         "color-mix(in srgb, var(--border) 88%, transparent)";
-                    e.currentTarget.style.color = "var(--text-primary)";
+                    e.currentTarget.style.color =
+                        "color-mix(in srgb, var(--text-primary) 75%, var(--text-secondary))";
                 }}
                 onMouseLeave={(e) => {
                     if (lineWrapping) return;
@@ -449,7 +452,8 @@ export function ActivityBar({
                             "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
                         e.currentTarget.style.borderColor =
                             "color-mix(in srgb, var(--border) 88%, transparent)";
-                        e.currentTarget.style.color = "var(--text-primary)";
+                        e.currentTarget.style.color =
+                            "color-mix(in srgb, var(--text-primary) 75%, var(--text-secondary))";
                     }}
                     onMouseLeave={(e) => {
                         if (terminalPanelActive) return;
@@ -491,7 +495,8 @@ export function ActivityBar({
                         "color-mix(in srgb, var(--bg-primary) 72%, transparent)";
                     e.currentTarget.style.borderColor =
                         "color-mix(in srgb, var(--border) 88%, transparent)";
-                    e.currentTarget.style.color = "var(--text-primary)";
+                    e.currentTarget.style.color =
+                        "color-mix(in srgb, var(--text-primary) 75%, var(--text-secondary))";
                 }}
                 onMouseLeave={(e) => {
                     e.currentTarget.style.backgroundColor = "transparent";

@@ -120,8 +120,6 @@ function getChromeButtonStyle(active = false): CSSProperties {
         color: active ? "var(--text-primary)" : "var(--text-secondary)",
         boxShadow: active ? "0 8px 20px rgba(15, 23, 42, 0.08)" : "none",
         opacity: active ? 1 : 0.78,
-        transition:
-            "background-color 140ms ease, color 140ms ease, border-color 140ms ease, opacity 140ms ease, box-shadow 140ms ease",
     };
 }
 
@@ -1195,7 +1193,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     ? "Show sidebar"
                                     : "Hide sidebar"
                             }
-                            className="no-drag flex items-center justify-center shrink-0"
+                            className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
                             style={{
                                 alignSelf: "center",
                                 marginLeft: 10,
@@ -1210,7 +1208,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 color: "var(--text-secondary)",
                                 opacity: sidebarCollapsed ? 0.55 : 0.85,
                                 cursor: "pointer",
-                                transition: "opacity 140ms ease",
                             }}
                         >
                             <svg
@@ -1271,7 +1268,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             }}
                             disabled={!canGoBack}
                             title="Go back"
-                            className="no-drag flex items-center justify-center shrink-0"
+                            className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
                             style={{
                                 alignSelf: "center",
                                 marginRight: 0,
@@ -1286,7 +1283,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 color: "var(--text-secondary)",
                                 opacity: canGoBack ? 0.85 : 0.35,
                                 cursor: canGoBack ? "pointer" : "default",
-                                transition: "opacity 140ms ease",
                             }}
                         >
                             <svg
@@ -1307,7 +1303,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             onClick={goForward}
                             disabled={!canGoForward}
                             title="Go forward"
-                            className="no-drag flex items-center justify-center shrink-0"
+                            className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
                             style={{
                                 alignSelf: "center",
                                 marginRight: 4,
@@ -1321,7 +1317,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 color: "var(--text-secondary)",
                                 opacity: canGoForward ? 0.85 : 0.35,
                                 cursor: canGoForward ? "pointer" : "default",
-                                transition: "opacity 140ms ease",
                             }}
                         >
                             <svg
@@ -1471,11 +1466,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         event.pointerId,
                                                     )
                                                 }
-                                                className={`group no-drag flex items-center gap-2 px-3 cursor-pointer ${
-                                                    !isActive && !isDragging
-                                                        ? "hover:bg-gray-500/10"
-                                                        : ""
-                                                }`}
+                                                className="group no-drag flex items-center gap-2 px-3 cursor-pointer ub-tab"
+                                                data-active={
+                                                    isActive || undefined
+                                                }
+                                                data-dragging={
+                                                    isDragging || undefined
+                                                }
                                                 style={{
                                                     width: 160,
                                                     height: 30,
@@ -1497,7 +1494,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         : undefined,
                                                     transition: isDragging
                                                         ? "none"
-                                                        : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 150ms ease, color 150ms ease, border-color 150ms ease, box-shadow 150ms ease",
+                                                        : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease",
                                                     boxShadow: isDragging
                                                         ? "0 10px 28px rgba(0, 0, 0, 0.2)"
                                                         : isActive
@@ -1567,7 +1564,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 });
                                         }}
                                         title="New tab"
-                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                        className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
                                         style={{
                                             fontSize: 18,
                                             lineHeight: 1,
@@ -1648,7 +1645,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 activateRightView("chat")
                                             }
                                             title="AI Chat"
-                                            className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                            className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
+                                            data-active={
+                                                (!rightPanelCollapsed &&
+                                                    rightPanelView ===
+                                                        "chat") ||
+                                                undefined
+                                            }
                                             style={getChromeButtonStyle(
                                                 !rightPanelCollapsed &&
                                                     rightPanelView === "chat",
@@ -1675,7 +1678,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 activateRightView("outline")
                                             }
                                             title="Outline panel"
-                                            className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                            className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
+                                            data-active={
+                                                (!rightPanelCollapsed &&
+                                                    rightPanelView ===
+                                                        "outline") ||
+                                                undefined
+                                            }
                                             style={getChromeButtonStyle(
                                                 !rightPanelCollapsed &&
                                                     rightPanelView ===
@@ -1707,7 +1716,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 activateRightView("links")
                                             }
                                             title="Links panel"
-                                            className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                            className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
+                                            data-active={
+                                                (!rightPanelCollapsed &&
+                                                    rightPanelView ===
+                                                        "links") ||
+                                                undefined
+                                            }
                                             style={getChromeButtonStyle(
                                                 !rightPanelCollapsed &&
                                                     rightPanelView === "links",
@@ -1790,7 +1805,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             activateRightView("chat")
                                         }
                                         title="AI Chat"
-                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                        className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
+                                        data-active={
+                                            (!rightPanelCollapsed &&
+                                                rightPanelView === "chat") ||
+                                            undefined
+                                        }
                                         style={getChromeButtonStyle(
                                             !rightPanelCollapsed &&
                                                 rightPanelView === "chat",
@@ -1815,7 +1835,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             activateRightView("outline")
                                         }
                                         title="Outline panel"
-                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                        className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
+                                        data-active={
+                                            (!rightPanelCollapsed &&
+                                                rightPanelView === "outline") ||
+                                            undefined
+                                        }
                                         style={getChromeButtonStyle(
                                             !rightPanelCollapsed &&
                                                 rightPanelView === "outline",
@@ -1844,7 +1869,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             activateRightView("links")
                                         }
                                         title="Links panel"
-                                        className="no-drag flex items-center justify-center hover:bg-gray-500/10 active:bg-gray-500/20 shrink-0"
+                                        className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
+                                        data-active={
+                                            (!rightPanelCollapsed &&
+                                                rightPanelView === "links") ||
+                                            undefined
+                                        }
                                         style={getChromeButtonStyle(
                                             !rightPanelCollapsed &&
                                                 rightPanelView === "links",
