@@ -1,4 +1,11 @@
-import { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import {
+    useMemo,
+    useState,
+    useCallback,
+    useRef,
+    useEffect,
+    useDeferredValue,
+} from "react";
 import {
     useVaultStore,
     getRecentVaults,
@@ -11,6 +18,7 @@ import {
     isNoteTab,
     type NoteTab,
 } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import {
@@ -18,6 +26,15 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { emitFileTreeNoteDrag } from "../../features/ai/dragEvents";
+import { openVaultFileEntry } from "../../app/utils/vaultEntries";
+
+interface SearchResultDto {
+    id: string;
+    path: string;
+    title: string;
+    kind?: string;
+    score: number;
+}
 
 function formatRelativeTime(unixSeconds: number): string {
     const diff = Date.now() / 1000 - unixSeconds;
@@ -54,6 +71,10 @@ export function NewTabView() {
     const openNote = useEditorStore((s) => s.openNote);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
+    const entries = useVaultStore((s) => s.entries);
+    const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
+    const openPdf = useEditorStore((s) => s.openPdf);
+
     const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() =>
         getRecentVaults(),
     );
@@ -64,6 +85,89 @@ export function NewTabView() {
     }> | null>(null);
     const [vaultMenu, setVaultMenu] =
         useState<ContextMenuState<RecentVault> | null>(null);
+
+    // Quick search state
+    const [searchQuery, setSearchQuery] = useState("");
+    const [searchResults, setSearchResults] = useState<SearchResultDto[]>([]);
+    const [hasSearched, setHasSearched] = useState(false);
+    const deferredSearchQuery = useDeferredValue(searchQuery);
+    const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const searchRequestIdRef = useRef(0);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const [searchResultMenu, setSearchResultMenu] =
+        useState<ContextMenuState<SearchResultDto> | null>(null);
+
+    const isSearching = searchQuery.trim().length > 0;
+
+    const doSearch = useCallback(async (q: string) => {
+        const trimmed = q.trim();
+        const requestId = ++searchRequestIdRef.current;
+        if (!trimmed) return;
+        try {
+            const res = await vaultInvoke<SearchResultDto[]>("search_notes", {
+                query: trimmed,
+            });
+            if (requestId !== searchRequestIdRef.current) return;
+            setSearchResults(res);
+            setHasSearched(true);
+        } catch {
+            if (requestId !== searchRequestIdRef.current) return;
+            setSearchResults([]);
+            setHasSearched(true);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        if (!deferredSearchQuery.trim()) {
+            searchRequestIdRef.current += 1;
+            return;
+        }
+        searchTimerRef.current = setTimeout(
+            () => doSearch(deferredSearchQuery),
+            200,
+        );
+        return () => {
+            if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        };
+    }, [deferredSearchQuery, doSearch]);
+
+    const handleSearchQueryChange = (next: string) => {
+        if (!next.trim()) {
+            searchRequestIdRef.current += 1;
+            setSearchResults([]);
+            setHasSearched(false);
+        }
+        setSearchQuery(next);
+    };
+
+    const handleOpenSearchResult = async (result: SearchResultDto) => {
+        if (result.kind === "pdf") {
+            openPdf(result.id, result.title, result.path);
+            return;
+        }
+        if (result.kind === "file") {
+            const entry = entries.find((item) => item.path === result.path);
+            if (!entry) return;
+            await openVaultFileEntry(entry);
+            return;
+        }
+        await handleOpen(result.id, result.title);
+    };
+
+    const handleOpenSearchResultInNewTab = async (result: SearchResultDto) => {
+        if (result.kind === "pdf") {
+            openPdf(result.id, result.title, result.path);
+            return;
+        }
+        if (result.kind === "file") {
+            const entry = entries.find((item) => item.path === result.path);
+            if (!entry) return;
+            await openVaultFileEntry(entry, { newTab: true });
+            return;
+        }
+        await handleOpenInNewTab(result.id, result.title);
+    };
 
     // Mouse-based drag for notes → AI composer
     const dragRef = useRef<{
@@ -219,7 +323,7 @@ export function NewTabView() {
             >
                 <div className="w-full max-w-lg px-8 py-16">
                     {/* Header */}
-                    <div className="mb-8">
+                    <div className="mb-6">
                         <div
                             className="text-[11px] uppercase tracking-[0.16em] mb-1"
                             style={{ color: "var(--accent)" }}
@@ -234,299 +338,558 @@ export function NewTabView() {
                         </h1>
                     </div>
 
-                    {/* Quick actions */}
-                    <div className="grid grid-cols-2 gap-2 mb-8">
-                        <button
-                            onClick={() => void handleNewNote()}
-                            className="rounded-xl px-4 py-3 text-left"
-                            style={{
-                                border: "1px solid var(--border)",
-                                backgroundColor: "var(--bg-secondary)",
-                            }}
-                            onMouseEnter={(e) =>
-                                (e.currentTarget.style.borderColor =
-                                    "var(--accent)")
-                            }
-                            onMouseLeave={(e) =>
-                                (e.currentTarget.style.borderColor =
-                                    "var(--border)")
-                            }
-                        >
-                            <div className="flex items-center gap-2 mb-1">
-                                <svg
-                                    width="14"
-                                    height="14"
-                                    viewBox="0 0 16 16"
-                                    fill="none"
-                                    stroke="var(--accent)"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <path d="M8 3v10M3 8h10" />
-                                </svg>
-                                <span
-                                    className="text-sm font-medium"
-                                    style={{ color: "var(--text-primary)" }}
-                                >
-                                    New Note
-                                </span>
-                            </div>
-                            <span
-                                className="text-xs"
-                                style={{ color: "var(--text-secondary)" }}
+                    {/* Quick search bar */}
+                    {vaultPath && (
+                        <div className="mb-8">
+                            <div
+                                className="flex items-center gap-2.5 px-3.5 rounded-xl"
+                                style={{
+                                    backgroundColor: "var(--bg-secondary)",
+                                    border: "1px solid var(--border)",
+                                    height: 42,
+                                }}
                             >
-                                Create a new note in the vault
-                            </span>
-                        </button>
-
-                        <button
-                            onClick={handleOpenSearch}
-                            className="rounded-xl px-4 py-3 text-left"
-                            style={{
-                                border: "1px solid var(--border)",
-                                backgroundColor: "var(--bg-secondary)",
-                            }}
-                            onMouseEnter={(e) =>
-                                (e.currentTarget.style.borderColor =
-                                    "var(--accent)")
-                            }
-                            onMouseLeave={(e) =>
-                                (e.currentTarget.style.borderColor =
-                                    "var(--border)")
-                            }
-                        >
-                            <div className="flex items-center gap-2 mb-1">
                                 <svg
-                                    width="14"
-                                    height="14"
+                                    width="15"
+                                    height="15"
                                     viewBox="0 0 16 16"
                                     fill="none"
-                                    stroke="var(--accent)"
+                                    stroke="var(--text-secondary)"
                                     strokeWidth="1.5"
                                     strokeLinecap="round"
                                     strokeLinejoin="round"
+                                    className="shrink-0"
                                 >
                                     <circle cx="7" cy="7" r="4.5" />
                                     <path d="M10.5 10.5L14 14" />
                                 </svg>
-                                <span
-                                    className="text-sm font-medium"
+                                <input
+                                    ref={searchInputRef}
+                                    type="text"
+                                    placeholder="Quick search files and notes..."
+                                    value={searchQuery}
+                                    onChange={(e) =>
+                                        handleSearchQueryChange(e.target.value)
+                                    }
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Escape" && searchQuery) {
+                                            handleSearchQueryChange("");
+                                            e.stopPropagation();
+                                        }
+                                    }}
+                                    className="flex-1 bg-transparent text-sm outline-none"
                                     style={{ color: "var(--text-primary)" }}
-                                >
-                                    Search
-                                </span>
+                                    autoFocus
+                                />
+                                {searchQuery && (
+                                    <button
+                                        onClick={() =>
+                                            handleSearchQueryChange("")
+                                        }
+                                        className="shrink-0 opacity-50 hover:opacity-100"
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                        }}
+                                    >
+                                        <svg
+                                            width="12"
+                                            height="12"
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                        >
+                                            <path d="M4 4l8 8M4 12l8-8" />
+                                        </svg>
+                                    </button>
+                                )}
                             </div>
-                            <span
-                                className="text-xs"
-                                style={{ color: "var(--text-secondary)" }}
-                            >
-                                Search across all notes
-                            </span>
-                        </button>
-                    </div>
+                        </div>
+                    )}
 
-                    {/* Recent notes */}
-                    {recentNotes.length > 0 && (
-                        <div className="mb-8">
+                    {/* Search results (replaces everything below when searching) */}
+                    {isSearching ? (
+                        <div>
                             <div
                                 className="text-xs uppercase tracking-[0.12em] mb-3"
                                 style={{ color: "var(--text-secondary)" }}
                             >
-                                Recent
+                                {hasSearched
+                                    ? `${searchResults.length} result${searchResults.length !== 1 ? "s" : ""}`
+                                    : "Searching..."}
                             </div>
-                            <div
-                                className="rounded-xl overflow-hidden"
-                                style={{ border: "1px solid var(--border)" }}
-                            >
-                                {recentNotes.map((note, i) => (
-                                    <button
-                                        key={note.id}
-                                        onClick={() =>
-                                            void handleOpen(note.id, note.title)
-                                        }
-                                        onMouseDown={(e) => {
-                                            if (e.button !== 0) return;
-                                            dragRef.current = {
-                                                note: {
-                                                    id: note.id,
-                                                    title: note.title,
-                                                    path: note.path,
-                                                },
-                                                startX: e.clientX,
-                                                startY: e.clientY,
-                                                active: false,
-                                            };
-                                        }}
-                                        onContextMenu={(e) => {
-                                            e.preventDefault();
-                                            setNoteMenu({
-                                                x: e.clientX,
-                                                y: e.clientY,
-                                                payload: {
-                                                    id: note.id,
-                                                    title: note.title,
-                                                    path: note.path,
-                                                },
-                                            });
-                                        }}
-                                        className="w-full text-left px-4 py-2.5 flex items-center justify-between gap-4"
-                                        style={{
-                                            backgroundColor:
-                                                "var(--bg-secondary)",
-                                            borderTop:
-                                                i > 0
-                                                    ? "1px solid var(--border)"
-                                                    : "none",
-                                        }}
-                                        onMouseEnter={(e) =>
-                                            (e.currentTarget.style.backgroundColor =
-                                                "var(--bg-tertiary)")
-                                        }
-                                        onMouseLeave={(e) =>
-                                            (e.currentTarget.style.backgroundColor =
-                                                "var(--bg-secondary)")
-                                        }
-                                    >
-                                        <div className="min-w-0 flex-1">
-                                            <div
-                                                className="text-sm truncate"
+
+                            {hasSearched && searchResults.length === 0 && (
+                                <div
+                                    className="text-sm py-8 text-center"
+                                    style={{ color: "var(--text-secondary)" }}
+                                >
+                                    No results for &ldquo;
+                                    {searchQuery.trim()}&rdquo;
+                                </div>
+                            )}
+
+                            {searchResults.length > 0 && (
+                                <div
+                                    className="rounded-xl overflow-hidden"
+                                    style={{
+                                        border: "1px solid var(--border)",
+                                    }}
+                                >
+                                    {searchResults.map((r, i) => (
+                                        <button
+                                            key={`${r.id}-${r.kind ?? "note"}`}
+                                            onClick={() =>
+                                                void handleOpenSearchResult(r)
+                                            }
+                                            onAuxClick={(e) => {
+                                                if (e.button !== 1) return;
+                                                e.preventDefault();
+                                                void handleOpenSearchResultInNewTab(
+                                                    r,
+                                                );
+                                            }}
+                                            onContextMenu={(e) => {
+                                                e.preventDefault();
+                                                setSearchResultMenu({
+                                                    x: e.clientX,
+                                                    y: e.clientY,
+                                                    payload: r,
+                                                });
+                                            }}
+                                            className="w-full text-left px-4 py-2.5 flex items-center gap-3"
+                                            style={{
+                                                backgroundColor:
+                                                    "var(--bg-secondary)",
+                                                borderTop:
+                                                    i > 0
+                                                        ? "1px solid var(--border)"
+                                                        : "none",
+                                            }}
+                                            onMouseEnter={(e) =>
+                                                (e.currentTarget.style.backgroundColor =
+                                                    "var(--bg-tertiary)")
+                                            }
+                                            onMouseLeave={(e) =>
+                                                (e.currentTarget.style.backgroundColor =
+                                                    "var(--bg-secondary)")
+                                            }
+                                        >
+                                            {/* Icon */}
+                                            <span
+                                                className="shrink-0"
                                                 style={{
-                                                    color: "var(--text-primary)",
+                                                    color: "var(--text-secondary)",
                                                 }}
                                             >
-                                                {note.title}
-                                            </div>
-                                            {note.id.includes("/") && (
+                                                {r.kind === "pdf" ? (
+                                                    <svg
+                                                        width="14"
+                                                        height="14"
+                                                        viewBox="0 0 16 16"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="1.3"
+                                                    >
+                                                        <path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5L9 1Z" />
+                                                        <path d="M9 1v4h4" />
+                                                        <text
+                                                            x="5"
+                                                            y="12"
+                                                            fontSize="4.5"
+                                                            fill="currentColor"
+                                                            stroke="none"
+                                                            fontWeight="bold"
+                                                        >
+                                                            PDF
+                                                        </text>
+                                                    </svg>
+                                                ) : r.kind === "file" ? (
+                                                    <svg
+                                                        width="14"
+                                                        height="14"
+                                                        viewBox="0 0 16 16"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="1.3"
+                                                    >
+                                                        <path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5L9 1Z" />
+                                                        <path d="M9 1v4h4" />
+                                                    </svg>
+                                                ) : (
+                                                    <svg
+                                                        width="14"
+                                                        height="14"
+                                                        viewBox="0 0 16 16"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="1.3"
+                                                    >
+                                                        <path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5L9 1Z" />
+                                                        <path d="M9 1v4h4" />
+                                                        <path d="M5 8h6M5 10.5h4" />
+                                                    </svg>
+                                                )}
+                                            </span>
+                                            {/* Title + path */}
+                                            <div className="min-w-0 flex-1">
+                                                <div
+                                                    className="text-sm truncate"
+                                                    style={{
+                                                        color: "var(--text-primary)",
+                                                    }}
+                                                >
+                                                    {showExtensions &&
+                                                    (r.kind === "pdf" ||
+                                                        r.kind === "file")
+                                                        ? (r.path
+                                                              .split("/")
+                                                              .pop() ?? r.title)
+                                                        : r.title}
+                                                </div>
                                                 <div
                                                     className="text-[11px] truncate mt-0.5"
                                                     style={{
                                                         color: "var(--text-secondary)",
                                                     }}
                                                 >
-                                                    {note.id
-                                                        .split("/")
-                                                        .slice(0, -1)
-                                                        .join("/")}
+                                                    {r.kind === "pdf" ||
+                                                    r.kind === "file"
+                                                        ? (r.path
+                                                              .split("/vault/")
+                                                              .pop() ?? r.path)
+                                                        : r.id}
                                                 </div>
-                                            )}
-                                        </div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <>
+                            {/* Quick actions */}
+                            <div className="grid grid-cols-2 gap-2 mb-8">
+                                <button
+                                    onClick={() => void handleNewNote()}
+                                    className="rounded-xl px-4 py-3 text-left"
+                                    style={{
+                                        border: "1px solid var(--border)",
+                                        backgroundColor: "var(--bg-secondary)",
+                                    }}
+                                    onMouseEnter={(e) =>
+                                        (e.currentTarget.style.borderColor =
+                                            "var(--accent)")
+                                    }
+                                    onMouseLeave={(e) =>
+                                        (e.currentTarget.style.borderColor =
+                                            "var(--border)")
+                                    }
+                                >
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <svg
+                                            width="14"
+                                            height="14"
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            stroke="var(--accent)"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                        >
+                                            <path d="M8 3v10M3 8h10" />
+                                        </svg>
                                         <span
-                                            className="text-[11px] shrink-0"
+                                            className="text-sm font-medium"
                                             style={{
-                                                color: "var(--text-secondary)",
+                                                color: "var(--text-primary)",
                                             }}
                                         >
-                                            {formatRelativeTime(
-                                                note.modified_at,
-                                            )}
+                                            New Note
                                         </span>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Vaults */}
-                    {vaultsToShow.length > 0 && (
-                        <div className="mb-8">
-                            <div
-                                className="text-xs uppercase tracking-[0.12em] mb-3"
-                                style={{ color: "var(--text-secondary)" }}
-                            >
-                                Vaults
-                            </div>
-                            <div
-                                className="rounded-xl overflow-hidden"
-                                style={{ border: "1px solid var(--border)" }}
-                            >
-                                {vaultsToShow.map((vault, i) => (
-                                    <div
-                                        key={vault.path}
-                                        className="flex items-center"
+                                    </div>
+                                    <span
+                                        className="text-xs"
                                         style={{
-                                            backgroundColor:
-                                                "var(--bg-secondary)",
-                                            borderTop:
-                                                i > 0
-                                                    ? "1px solid var(--border)"
-                                                    : "none",
-                                        }}
-                                        onMouseEnter={(e) =>
-                                            (e.currentTarget.style.backgroundColor =
-                                                "var(--bg-tertiary)")
-                                        }
-                                        onMouseLeave={(e) =>
-                                            (e.currentTarget.style.backgroundColor =
-                                                "var(--bg-secondary)")
-                                        }
-                                        onContextMenu={(e) => {
-                                            e.preventDefault();
-                                            setVaultMenu({
-                                                x: e.clientX,
-                                                y: e.clientY,
-                                                payload: vault,
-                                            });
+                                            color: "var(--text-secondary)",
                                         }}
                                     >
-                                        <button
-                                            onClick={() =>
-                                                void openVault(vault.path)
-                                            }
-                                            className="flex-1 text-left px-4 py-2.5 min-w-0"
+                                        Create a new note in the vault
+                                    </span>
+                                </button>
+
+                                <button
+                                    onClick={handleOpenSearch}
+                                    className="rounded-xl px-4 py-3 text-left"
+                                    style={{
+                                        border: "1px solid var(--border)",
+                                        backgroundColor: "var(--bg-secondary)",
+                                    }}
+                                    onMouseEnter={(e) =>
+                                        (e.currentTarget.style.borderColor =
+                                            "var(--accent)")
+                                    }
+                                    onMouseLeave={(e) =>
+                                        (e.currentTarget.style.borderColor =
+                                            "var(--border)")
+                                    }
+                                >
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <svg
+                                            width="14"
+                                            height="14"
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            stroke="var(--accent)"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
                                         >
-                                            <div className="flex items-center gap-2">
-                                                <svg
-                                                    width="13"
-                                                    height="13"
-                                                    viewBox="0 0 16 16"
-                                                    fill="none"
-                                                    stroke="var(--text-secondary)"
-                                                    strokeWidth="1.4"
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                >
-                                                    <path d="M2 4h5l1.5 1.5H14a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
-                                                </svg>
+                                            <circle cx="7" cy="7" r="4.5" />
+                                            <path d="M10.5 10.5L14 14" />
+                                        </svg>
+                                        <span
+                                            className="text-sm font-medium"
+                                            style={{
+                                                color: "var(--text-primary)",
+                                            }}
+                                        >
+                                            Search
+                                        </span>
+                                    </div>
+                                    <span
+                                        className="text-xs"
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                        }}
+                                    >
+                                        Search across all notes
+                                    </span>
+                                </button>
+                            </div>
+
+                            {/* Recent notes */}
+                            {recentNotes.length > 0 && (
+                                <div className="mb-8">
+                                    <div
+                                        className="text-xs uppercase tracking-[0.12em] mb-3"
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                        }}
+                                    >
+                                        Recent
+                                    </div>
+                                    <div
+                                        className="rounded-xl overflow-hidden"
+                                        style={{
+                                            border: "1px solid var(--border)",
+                                        }}
+                                    >
+                                        {recentNotes.map((note, i) => (
+                                            <button
+                                                key={note.id}
+                                                onClick={() =>
+                                                    void handleOpen(
+                                                        note.id,
+                                                        note.title,
+                                                    )
+                                                }
+                                                onMouseDown={(e) => {
+                                                    if (e.button !== 0) return;
+                                                    dragRef.current = {
+                                                        note: {
+                                                            id: note.id,
+                                                            title: note.title,
+                                                            path: note.path,
+                                                        },
+                                                        startX: e.clientX,
+                                                        startY: e.clientY,
+                                                        active: false,
+                                                    };
+                                                }}
+                                                onContextMenu={(e) => {
+                                                    e.preventDefault();
+                                                    setNoteMenu({
+                                                        x: e.clientX,
+                                                        y: e.clientY,
+                                                        payload: {
+                                                            id: note.id,
+                                                            title: note.title,
+                                                            path: note.path,
+                                                        },
+                                                    });
+                                                }}
+                                                className="w-full text-left px-4 py-2.5 flex items-center justify-between gap-4"
+                                                style={{
+                                                    backgroundColor:
+                                                        "var(--bg-secondary)",
+                                                    borderTop:
+                                                        i > 0
+                                                            ? "1px solid var(--border)"
+                                                            : "none",
+                                                }}
+                                                onMouseEnter={(e) =>
+                                                    (e.currentTarget.style.backgroundColor =
+                                                        "var(--bg-tertiary)")
+                                                }
+                                                onMouseLeave={(e) =>
+                                                    (e.currentTarget.style.backgroundColor =
+                                                        "var(--bg-secondary)")
+                                                }
+                                            >
+                                                <div className="min-w-0 flex-1">
+                                                    <div
+                                                        className="text-sm truncate"
+                                                        style={{
+                                                            color: "var(--text-primary)",
+                                                        }}
+                                                    >
+                                                        {note.title}
+                                                    </div>
+                                                    {note.id.includes("/") && (
+                                                        <div
+                                                            className="text-[11px] truncate mt-0.5"
+                                                            style={{
+                                                                color: "var(--text-secondary)",
+                                                            }}
+                                                        >
+                                                            {note.id
+                                                                .split("/")
+                                                                .slice(0, -1)
+                                                                .join("/")}
+                                                        </div>
+                                                    )}
+                                                </div>
                                                 <span
-                                                    className="text-sm truncate"
+                                                    className="text-[11px] shrink-0"
                                                     style={{
-                                                        color: "var(--text-primary)",
-                                                        fontWeight: vault.pinned
-                                                            ? 500
-                                                            : 400,
+                                                        color: "var(--text-secondary)",
                                                     }}
                                                 >
-                                                    {vault.name}
+                                                    {formatRelativeTime(
+                                                        note.modified_at,
+                                                    )}
                                                 </span>
-                                            </div>
-                                            <div
-                                                className="text-[11px] truncate mt-0.5 pl-5"
-                                                style={{
-                                                    color: "var(--text-secondary)",
-                                                }}
-                                                title={vault.path}
-                                            >
-                                                {vault.path}
-                                            </div>
-                                        </button>
-                                        <button
-                                            onClick={(e) =>
-                                                handleTogglePin(vault.path, e)
-                                            }
-                                            title={
-                                                vault.pinned
-                                                    ? "Unpin vault"
-                                                    : "Pin vault"
-                                            }
-                                            className="shrink-0 px-3 py-2.5 opacity-40 hover:opacity-100"
-                                        >
-                                            <PinIcon pinned={!!vault.pinned} />
-                                        </button>
+                                            </button>
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
-                        </div>
+                                </div>
+                            )}
+
+                            {/* Vaults */}
+                            {vaultsToShow.length > 0 && (
+                                <div className="mb-8">
+                                    <div
+                                        className="text-xs uppercase tracking-[0.12em] mb-3"
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                        }}
+                                    >
+                                        Vaults
+                                    </div>
+                                    <div
+                                        className="rounded-xl overflow-hidden"
+                                        style={{
+                                            border: "1px solid var(--border)",
+                                        }}
+                                    >
+                                        {vaultsToShow.map((vault, i) => (
+                                            <div
+                                                key={vault.path}
+                                                className="flex items-center"
+                                                style={{
+                                                    backgroundColor:
+                                                        "var(--bg-secondary)",
+                                                    borderTop:
+                                                        i > 0
+                                                            ? "1px solid var(--border)"
+                                                            : "none",
+                                                }}
+                                                onMouseEnter={(e) =>
+                                                    (e.currentTarget.style.backgroundColor =
+                                                        "var(--bg-tertiary)")
+                                                }
+                                                onMouseLeave={(e) =>
+                                                    (e.currentTarget.style.backgroundColor =
+                                                        "var(--bg-secondary)")
+                                                }
+                                                onContextMenu={(e) => {
+                                                    e.preventDefault();
+                                                    setVaultMenu({
+                                                        x: e.clientX,
+                                                        y: e.clientY,
+                                                        payload: vault,
+                                                    });
+                                                }}
+                                            >
+                                                <button
+                                                    onClick={() =>
+                                                        void openVault(
+                                                            vault.path,
+                                                        )
+                                                    }
+                                                    className="flex-1 text-left px-4 py-2.5 min-w-0"
+                                                >
+                                                    <div className="flex items-center gap-2">
+                                                        <svg
+                                                            width="13"
+                                                            height="13"
+                                                            viewBox="0 0 16 16"
+                                                            fill="none"
+                                                            stroke="var(--text-secondary)"
+                                                            strokeWidth="1.4"
+                                                            strokeLinecap="round"
+                                                            strokeLinejoin="round"
+                                                        >
+                                                            <path d="M2 4h5l1.5 1.5H14a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
+                                                        </svg>
+                                                        <span
+                                                            className="text-sm truncate"
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                                fontWeight:
+                                                                    vault.pinned
+                                                                        ? 500
+                                                                        : 400,
+                                                            }}
+                                                        >
+                                                            {vault.name}
+                                                        </span>
+                                                    </div>
+                                                    <div
+                                                        className="text-[11px] truncate mt-0.5 pl-5"
+                                                        style={{
+                                                            color: "var(--text-secondary)",
+                                                        }}
+                                                        title={vault.path}
+                                                    >
+                                                        {vault.path}
+                                                    </div>
+                                                </button>
+                                                <button
+                                                    onClick={(e) =>
+                                                        handleTogglePin(
+                                                            vault.path,
+                                                            e,
+                                                        )
+                                                    }
+                                                    title={
+                                                        vault.pinned
+                                                            ? "Unpin vault"
+                                                            : "Pin vault"
+                                                    }
+                                                    className="shrink-0 px-3 py-2.5 opacity-40 hover:opacity-100"
+                                                >
+                                                    <PinIcon
+                                                        pinned={!!vault.pinned}
+                                                    />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </>
                     )}
                 </div>
             </div>
@@ -565,6 +928,47 @@ export function NewTabView() {
                                             id: noteMenu.payload.id,
                                             title: noteMenu.payload.title,
                                             path: noteMenu.payload.path,
+                                        },
+                                    ],
+                                }),
+                        },
+                    ]}
+                />
+            )}
+
+            {searchResultMenu && (
+                <ContextMenu
+                    menu={searchResultMenu}
+                    onClose={() => setSearchResultMenu(null)}
+                    entries={[
+                        {
+                            label: "Open",
+                            action: () =>
+                                void handleOpenSearchResult(
+                                    searchResultMenu.payload,
+                                ),
+                        },
+                        {
+                            label: "Open in New Tab",
+                            action: () =>
+                                void handleOpenSearchResultInNewTab(
+                                    searchResultMenu.payload,
+                                ),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Add to Chat",
+                            action: () =>
+                                emitFileTreeNoteDrag({
+                                    phase: "attach",
+                                    x: 0,
+                                    y: 0,
+                                    notes: [
+                                        {
+                                            id: searchResultMenu.payload.id,
+                                            title: searchResultMenu.payload
+                                                .title,
+                                            path: searchResultMenu.payload.path,
                                         },
                                     ],
                                 }),
