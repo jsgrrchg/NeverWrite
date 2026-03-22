@@ -270,6 +270,7 @@ export function TerminalViewport({
             setSearchResultIndex(-1);
             setSearchResultCount(0);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [closeSearch, openSearch]);
 
     useEffect(() => {
@@ -281,6 +282,7 @@ export function TerminalViewport({
         terminal.options.lineHeight = theme.lineHeight;
         terminal.options.theme = createXtermTheme(theme);
         fitAddonRef.current?.fit();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         theme.background,
         theme.cursor,
@@ -301,9 +303,11 @@ export function TerminalViewport({
             terminal.reset();
             lastSessionIdRef.current = sessionId;
             lastRawOutputRef.current = "";
-            setHasSelection(false);
-            setSearchResultCount(0);
-            setSearchResultIndex(-1);
+            queueMicrotask(() => {
+                setHasSelection(false);
+                setSearchResultCount(0);
+                setSearchResultIndex(-1);
+            });
         }
 
         if (rawOutput === lastRawOutputRef.current) {
@@ -363,7 +367,7 @@ export function TerminalViewport({
             return;
         }
 
-        runSearch("next");
+        queueMicrotask(() => runSearch("next"));
     }, [runSearch, searchCaseSensitive, searchOpen, searchQuery]);
 
     const handleContextMenu = useCallback(

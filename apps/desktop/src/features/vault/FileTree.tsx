@@ -58,7 +58,7 @@ type SortMode =
 
 const SORT_KEY = "vaultai:sort-mode";
 const REVEAL_KEY = "vaultai:reveal-active";
-const VIRTUAL_OVERSCAN = 15;
+const VIRTUAL_OVERSCAN = 40;
 
 const SORT_OPTIONS: { id: SortMode; label: string }[] = [
     { id: "name_asc", label: "Name (A–Z)" },
@@ -698,6 +698,7 @@ interface FlatTreeRowViewProps {
     expandedFolders: Set<string>;
     selectedNoteIds: Set<string>;
     selectedEntryPaths: Set<string>;
+    contextMenuFolderPath: string | null;
     draggingNoteIds: Set<string>;
     draggingFolderPath: string | null;
     dragOverPath: string | null;
@@ -750,6 +751,7 @@ const FlatTreeRowView = memo(
         expandedFolders,
         selectedNoteIds,
         selectedEntryPaths,
+        contextMenuFolderPath,
         draggingNoteIds,
         draggingFolderPath,
         dragOverPath,
@@ -892,6 +894,9 @@ const FlatTreeRowView = memo(
                     }}
                     data-folder-path={row.path}
                     data-drag-over={isDragOver ? "true" : "false"}
+                    data-selected={
+                        contextMenuFolderPath === row.path ? "true" : "false"
+                    }
                     className="file-tree-row flex items-center gap-1.5 text-left text-xs rounded"
                     style={{
                         paddingLeft,
@@ -899,11 +904,19 @@ const FlatTreeRowView = memo(
                         height: metrics.rowHeight,
                         fontSize: metrics.fontSize,
                         ...TREE_ROW_BOX_STYLE,
-                        backgroundColor: isDragOver
-                            ? "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))"
-                            : stickyTop != null
-                              ? "var(--bg-secondary)"
-                              : "transparent",
+                        ...(isDragOver
+                            ? {
+                                  backgroundColor:
+                                      "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))",
+                              }
+                            : contextMenuFolderPath === row.path
+                              ? {
+                                    backgroundColor:
+                                        "color-mix(in srgb, var(--accent) 22%, transparent)",
+                                }
+                              : stickyTop != null
+                                ? { backgroundColor: "var(--bg-secondary)" }
+                                : {}),
                         outline: isDragOver
                             ? "1px solid var(--accent)"
                             : "none",
@@ -999,9 +1012,12 @@ const FlatTreeRowView = memo(
                     className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                     style={{
                         paddingLeft: paddingLeft + noteOffset,
-                        backgroundColor: isSelected
-                            ? "color-mix(in srgb, var(--accent) 22%, transparent)"
-                            : "transparent",
+                        ...(isSelected
+                            ? {
+                                  backgroundColor:
+                                      "color-mix(in srgb, var(--accent) 22%, transparent)",
+                              }
+                            : {}),
                         color: "var(--text-primary)",
                         boxShadow: isActive
                             ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
@@ -1109,9 +1125,12 @@ const FlatTreeRowView = memo(
                     className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                     style={{
                         paddingLeft: paddingLeft + noteOffset,
-                        backgroundColor: isSelected
-                            ? "color-mix(in srgb, var(--accent) 22%, transparent)"
-                            : "transparent",
+                        ...(isSelected
+                            ? {
+                                  backgroundColor:
+                                      "color-mix(in srgb, var(--accent) 22%, transparent)",
+                              }
+                            : {}),
                         color: "var(--text-primary)",
                         boxShadow: isActive
                             ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
@@ -1212,9 +1231,12 @@ const FlatTreeRowView = memo(
                 className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                 style={{
                     paddingLeft: paddingLeft + noteOffset,
-                    backgroundColor: isSelected
-                        ? "color-mix(in srgb, var(--accent) 22%, transparent)"
-                        : "transparent",
+                    ...(isSelected
+                        ? {
+                              backgroundColor:
+                                  "color-mix(in srgb, var(--accent) 22%, transparent)",
+                          }
+                        : {}),
                     color: "var(--text-primary)",
                     boxShadow: isActive
                         ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
@@ -1254,6 +1276,11 @@ const FlatTreeRowView = memo(
             )
                 return false;
             if ((prev.dragOverPath === path) !== (next.dragOverPath === path))
+                return false;
+            if (
+                (prev.contextMenuFolderPath === path) !==
+                (next.contextMenuFolderPath === path)
+            )
                 return false;
             if (
                 (prev.draggingFolderPath === path) !==
@@ -1642,6 +1669,11 @@ export function FileTree() {
         }
         return map;
     }, [displayRows]);
+
+    const contextMenuFolderPath =
+        contextMenu?.payload.kind === "folder"
+            ? contextMenu.payload.path
+            : null;
 
     // Compute which folders should appear as sticky overlay headers
     const stickyFolders = useMemo(() => {
@@ -4119,6 +4151,9 @@ export function FileTree() {
                                             selectedEntryPaths={
                                                 visibleSelectedEntryPaths
                                             }
+                                            contextMenuFolderPath={
+                                                contextMenuFolderPath
+                                            }
                                             draggingNoteIds={draggingNoteIds}
                                             draggingFolderPath={
                                                 draggingFolderPath
@@ -4242,6 +4277,9 @@ export function FileTree() {
                                             }
                                             selectedEntryPaths={
                                                 visibleSelectedEntryPaths
+                                            }
+                                            contextMenuFolderPath={
+                                                contextMenuFolderPath
                                             }
                                             draggingNoteIds={draggingNoteIds}
                                             draggingFolderPath={
