@@ -1605,6 +1605,23 @@ export function Editor({
                                 return true;
                             },
                         },
+                        {
+                            key: "Mod-b",
+                            run: (view) => {
+                                const transform = getSelectionTransform(
+                                    view.state,
+                                    "bold",
+                                );
+                                if (!transform) return false;
+                                view.dispatch({
+                                    changes: transform.changes,
+                                    selection: transform.selection,
+                                    scrollIntoView: true,
+                                    userEvent: transform.userEvent,
+                                });
+                                return true;
+                            },
+                        },
                         ...defaultKeymap,
                         ...historyKeymap,
                         ...searchKeymap,
