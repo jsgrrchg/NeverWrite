@@ -134,6 +134,63 @@ describe("FileTabView", () => {
         expect(screen.getByText("102.5%")).toBeInTheDocument();
     });
 
+    it("anchors image wheel zoom to the pointer by adjusting scroll offsets", () => {
+        setEditorTabs([
+            {
+                id: "image-tab",
+                kind: "file",
+                relativePath: "assets/photo.webp",
+                title: "photo.webp",
+                path: "/vault/assets/photo.webp",
+                mimeType: "image/webp",
+                viewer: "image",
+                content: "",
+            },
+        ]);
+
+        const { container } = renderComponent(<FileTabView />);
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
+        Object.defineProperty(scrollSurface!, "scrollTop", {
+            configurable: true,
+            writable: true,
+            value: 300,
+        });
+        Object.defineProperty(scrollSurface!, "scrollLeft", {
+            configurable: true,
+            writable: true,
+            value: 40,
+        });
+        scrollSurface!.getBoundingClientRect = () =>
+            ({
+                left: 0,
+                top: 0,
+                right: 900,
+                bottom: 700,
+                width: 900,
+                height: 700,
+                x: 0,
+                y: 0,
+                toJSON: () => ({}),
+            }) as DOMRect;
+
+        fireEvent.keyDown(window, { key: "Meta" });
+        fireEvent.wheel(scrollSurface!, {
+            clientX: 180,
+            clientY: 200,
+            deltaY: -100,
+        });
+        fireEvent.keyUp(window, { key: "Meta" });
+
+        expect(scrollSurface!.scrollTop).toBeCloseTo(425);
+        expect(scrollSurface!.scrollLeft).toBeCloseTo(95);
+        expect(screen.getByText("125%")).toBeInTheDocument();
+    });
+
     it("renders text files in an editable editor without preview", async () => {
         vi.useFakeTimers();
         setVaultEntries([]);

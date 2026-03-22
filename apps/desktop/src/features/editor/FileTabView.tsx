@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useRef,
     useState,
     type ReactNode,
@@ -23,6 +24,10 @@ const IMG_MIN_ZOOM = 0.1;
 const IMG_MAX_ZOOM = 10;
 const IMG_PINCH_SENSITIVITY = 0.0025;
 const IMAGE_TOUCH_ACTION = "pan-x pan-y pinch-zoom";
+
+function clampScrollOffset(offset: number) {
+    return Number.isFinite(offset) ? Math.max(0, offset) : 0;
+}
 
 export function FileTabView() {
     const tab = useEditorStore((state) => {
@@ -102,6 +107,12 @@ type ImageMode = "fit" | "zoom";
 function ImageFileViewer({ tab }: { tab: FileTab }) {
     const containerRef = useRef<HTMLDivElement>(null);
     const zoomRef = useRef(1);
+    const pendingZoomAnchorRef = useRef<{
+        pointerOffsetX: number;
+        pointerOffsetY: number;
+        previousZoom: number;
+        nextZoom: number;
+    } | null>(null);
     const wheelZoomModifierRef = useWheelZoomModifier();
 
     const [mode, setMode] = useState<ImageMode>("fit");
@@ -133,6 +144,14 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                     prev * (1 - event.deltaY * IMG_PINCH_SENSITIVITY),
                 ),
             );
+
+            const containerRect = container.getBoundingClientRect();
+            pendingZoomAnchorRef.current = {
+                pointerOffsetX: event.clientX - containerRect.left,
+                pointerOffsetY: event.clientY - containerRect.top,
+                previousZoom: prev,
+                nextZoom: next,
+            };
             zoomRef.current = next;
             setZoom(next);
             setMode("zoom");
@@ -141,6 +160,29 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
         container.addEventListener("wheel", handleWheel, { passive: false });
         return () => container.removeEventListener("wheel", handleWheel);
     }, [wheelZoomModifierRef]);
+
+    useLayoutEffect(() => {
+        if (mode !== "zoom") return;
+
+        const container = containerRef.current;
+        const pendingAnchor = pendingZoomAnchorRef.current;
+        if (!container || !pendingAnchor) return;
+
+        const { pointerOffsetX, pointerOffsetY, previousZoom, nextZoom } =
+            pendingAnchor;
+        const scaleRatio = nextZoom / previousZoom;
+
+        container.scrollLeft = clampScrollOffset(
+            (container.scrollLeft + pointerOffsetX) * scaleRatio -
+                pointerOffsetX,
+        );
+        container.scrollTop = clampScrollOffset(
+            (container.scrollTop + pointerOffsetY) * scaleRatio -
+                pointerOffsetY,
+        );
+
+        pendingZoomAnchorRef.current = null;
+    }, [mode, zoom]);
 
     const isFit = mode === "fit";
     const zoomPercent = formatZoomPercentage(zoom);
