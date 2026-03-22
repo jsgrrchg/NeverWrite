@@ -129,6 +129,8 @@ pub struct VaultNoteChangeDto {
     pub kind: String,
     pub note: Option<NoteDto>,
     pub note_id: Option<String>,
+    pub entry: Option<VaultEntryDto>,
+    pub relative_path: Option<String>,
     pub graph_revision: u64,
 }
 
