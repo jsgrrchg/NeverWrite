@@ -579,13 +579,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 tab,
                 phase,
                 coords,
-                vaultPath,
             );
             if (detail) {
                 emitFileTreeNoteDrag(detail);
             }
         },
-        [vaultPath],
+        [],
     );
 
     const applyDragPreviewPosition = useCallback(() => {
@@ -665,7 +664,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         clientX: coords.clientX,
                         clientY: coords.clientY,
                     },
-                    vaultPath,
                 ) !== null;
             if (!canAttachAsFile) {
                 return true;
