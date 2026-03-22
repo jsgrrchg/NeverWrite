@@ -56,6 +56,10 @@ const PDF_DOCUMENT_OPTIONS = {
     verbosity: pdfjsLib.VerbosityLevel.ERRORS,
 };
 
+function clampScrollOffset(offset: number) {
+    return Number.isFinite(offset) ? Math.max(0, offset) : 0;
+}
+
 function clampZoom(zoom: number, direction: "in" | "out"): number {
     if (direction === "out") {
         for (let i = ZOOM_STEPS.length - 1; i >= 0; i--) {
@@ -203,7 +207,7 @@ function clampContinuousWindow(
         0,
         midpoint - Math.floor(CONTINUOUS_MAX_RENDERED_PAGES / 2),
     );
-    let nextEnd = Math.min(
+    const nextEnd = Math.min(
         layouts.length,
         nextStart + CONTINUOUS_MAX_RENDERED_PAGES,
     );
@@ -242,6 +246,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const pendingProgrammaticPageRef = useRef<number | null>(null);
     const pinchZoomRef = useRef(tab.zoom);
     const pinchTimerRef = useRef(0);
+    const pendingWheelZoomRef = useRef<number | null>(null);
     const wheelZoomModifierRef = useWheelZoomModifier();
 
     const [pdfFilter, setPdfFilter] = useState<PdfFilter>("none");
@@ -369,7 +374,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }, [tab.path, tab.viewMode, tab.zoom, retryCount]);
 
     useEffect(() => {
-        setPageMetrics(null);
+        queueMicrotask(() => setPageMetrics(null));
     }, [retryCount, tab.path]);
 
     useEffect(() => {
@@ -601,11 +606,24 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     useEffect(() => {
         pinchZoomRef.current = tab.zoom;
+        if (pendingWheelZoomRef.current === null) {
+            return;
+        }
+
+        if (Math.abs(tab.zoom - pendingWheelZoomRef.current) > 0.0001) {
+            return;
+        }
+
+        const content = contentRef.current;
+        if (content) {
+            content.style.transform = "";
+            content.style.transformOrigin = "";
+        }
+        pendingWheelZoomRef.current = null;
     }, [tab.zoom]);
 
     useEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
+        if (!scrollContainer) return;
 
         function handleWheel(event: WheelEvent) {
             if (!isWheelZoomGesture(event, wheelZoomModifierRef)) return;
@@ -621,30 +639,60 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             );
             pinchZoomRef.current = next;
 
+            const containerRect = scrollContainer.getBoundingClientRect();
+            const pointerOffsetX = event.clientX - containerRect.left;
+            const pointerOffsetY = event.clientY - containerRect.top;
+            const visualScaleRatio = next / tab.zoom;
+            const scrollScaleRatio = next / prev;
+            const nextScrollLeft = clampScrollOffset(
+                (scrollContainer.scrollLeft + pointerOffsetX) *
+                    scrollScaleRatio -
+                    pointerOffsetX,
+            );
+            const nextScrollTop = clampScrollOffset(
+                (scrollContainer.scrollTop + pointerOffsetY) *
+                    scrollScaleRatio -
+                    pointerOffsetY,
+            );
+
             // Instant visual feedback via CSS transform
             const content = contentRef.current;
             if (content) {
-                content.style.transformOrigin = "center top";
-                content.style.transform = `scale(${next / tab.zoom})`;
+                content.style.transformOrigin = "0 0";
+                content.style.transform = `scale(${visualScaleRatio})`;
             }
+
+            scrollContainer.scrollLeft = nextScrollLeft;
+            scrollContainer.scrollTop = nextScrollTop;
 
             // Debounce the actual re-render
             window.clearTimeout(pinchTimerRef.current);
+            pendingWheelZoomRef.current = next;
             pinchTimerRef.current = window.setTimeout(() => {
-                const content = contentRef.current;
-                if (content) {
-                    content.style.transform = "";
-                }
                 updatePdfZoom(tab.id, persistWheelZoom(next));
             }, PINCH_COMMIT_DELAY);
         }
 
-        container.addEventListener("wheel", handleWheel, { passive: false });
+        scrollContainer.addEventListener("wheel", handleWheel, {
+            passive: false,
+        });
         return () => {
-            container.removeEventListener("wheel", handleWheel);
+            scrollContainer.removeEventListener("wheel", handleWheel);
             window.clearTimeout(pinchTimerRef.current);
+            pendingWheelZoomRef.current = null;
+            const content = contentRef.current;
+            if (content) {
+                content.style.transform = "";
+                content.style.transformOrigin = "";
+            }
         };
-    }, [tab.id, tab.zoom, updatePdfZoom, wheelZoomModifierRef]);
+    }, [
+        scrollContainer,
+        tab.id,
+        tab.zoom,
+        updatePdfZoom,
+        wheelZoomModifierRef,
+    ]);
 
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {

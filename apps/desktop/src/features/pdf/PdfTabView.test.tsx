@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
 import { PdfTabView } from "./PdfTabView";
 import {
     createDeferred,
@@ -71,6 +72,7 @@ function createMockPage(renderTask = createResolvedRenderTask()) {
 describe("PdfTabView", () => {
     beforeEach(() => {
         getDocumentMock.mockReset();
+        vi.useRealTimers();
     });
 
     it("shows an error state when page rendering fails", async () => {
@@ -180,7 +182,7 @@ describe("PdfTabView", () => {
             value: 14000,
         });
 
-        fireEvent.scroll(scrollSurface);
+        fireEvent.scroll(scrollSurface!);
 
         await waitFor(() => {
             expect(
@@ -225,6 +227,134 @@ describe("PdfTabView", () => {
             expect(textLayer).toHaveAttribute("data-selectable", "true");
             expect(textLayer?.querySelector("span")).toBeInTheDocument();
         });
+    });
+
+    it("handles pinch-style wheel zoom on first load before toolbar zoom is used", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/tmp/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(container.querySelector("canvas")).toBeInTheDocument();
+            expect(screen.getByText("100%")).toBeInTheDocument();
+        });
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
+        fireEvent.wheel(scrollSurface!, {
+            ctrlKey: true,
+            deltaY: -100,
+        });
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 200));
+        });
+
+        await waitFor(() => {
+            expect(screen.getByText("125%")).toBeInTheDocument();
+        });
+    });
+
+    it("anchors wheel zoom to the pointer instead of drifting the viewport", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/tmp/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(container.querySelector("canvas")).toBeInTheDocument();
+        });
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+        const content =
+            scrollSurface?.firstElementChild as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+        expect(content).toBeTruthy();
+
+        Object.defineProperty(scrollSurface!, "scrollTop", {
+            configurable: true,
+            writable: true,
+            value: 300,
+        });
+        Object.defineProperty(scrollSurface!, "scrollLeft", {
+            configurable: true,
+            writable: true,
+            value: 40,
+        });
+        scrollSurface!.getBoundingClientRect = () =>
+            ({
+                left: 0,
+                top: 0,
+                right: 900,
+                bottom: 700,
+                width: 900,
+                height: 700,
+                x: 0,
+                y: 0,
+                toJSON: () => ({}),
+            }) as DOMRect;
+
+        fireEvent.wheel(scrollSurface!, {
+            ctrlKey: true,
+            clientX: 180,
+            clientY: 200,
+            deltaY: -100,
+        });
+
+        expect(scrollSurface!.scrollTop).toBe(425);
+        expect(scrollSurface!.scrollLeft).toBe(95);
+        expect(content.style.transformOrigin).toBe("0 0");
+        expect(content.style.transform).toBe("scale(1.25)");
     });
 
     it("exposes native pinch-zoom touch action on the PDF surface", async () => {
