@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import {
     normalizeEditorFontFamily,
@@ -62,7 +61,6 @@ import {
     rejectAllEdits as actionLogRejectAll,
     rejectEditsInRanges,
     setTrackedFilesForWorkCycle,
-    type PrecomputedTrackedFilePatches,
     type RestoreAction,
 } from "./actionLogModel";
 import type { LastRejectUndo, TrackedFile } from "../diff/actionLogTypes";
@@ -95,14 +93,6 @@ import {
 
 const AI_PREFS_KEY = "vaultai.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "vaultai.ai.runtime-catalog";
-
-function shouldUseRustLineDiffs() {
-    return (
-        import.meta.env.MODE !== "test" ||
-        (globalThis as Record<string, unknown>)
-            .__VAULTAI_FORCE_RUST_LINE_DIFFS__ === true
-    );
-}
 
 interface AiPreferences {
     modelId?: string;
@@ -1232,17 +1222,6 @@ function diffCanBeTracked(diff: AIFileDiff) {
     return diff.is_text !== false && diff.reversible !== false;
 }
 
-function buildComputeLineDiffInput(diff: AIFileDiff) {
-    if (!diffCanBeTracked(diff)) {
-        return null;
-    }
-
-    return {
-        oldText: diff.kind === "add" ? "" : (diff.old_text ?? ""),
-        newText: diff.kind === "delete" ? "" : (diff.new_text ?? ""),
-    };
-}
-
 function summarizeTrackedFileForDebug(file: TrackedFile | null | undefined) {
     if (!file) {
         return null;
@@ -1290,64 +1269,10 @@ function summarizeRelevantTrackedFilesForDebug(
     return relevant.map((file) => summarizeTrackedFileForDebug(file));
 }
 
-async function precomputeTrackedFilePatches(
-    diffs: AIFileDiff[],
-): Promise<Array<PrecomputedTrackedFilePatches | undefined> | undefined> {
-    const indexedInputs = diffs
-        .map((diff, index) => ({
-            index,
-            input: buildComputeLineDiffInput(diff),
-        }))
-        .filter(
-            (
-                entry,
-            ): entry is {
-                index: number;
-                input: { oldText: string; newText: string };
-            } => entry.input !== null,
-        );
-
-    if (indexedInputs.length === 0) {
-        return undefined;
-    }
-
-    try {
-        const patches = await invoke<PrecomputedTrackedFilePatches[]>(
-            "compute_tracked_file_patches",
-            {
-                inputs: indexedInputs.map((entry) => entry.input),
-            },
-        );
-
-        if (patches.length !== indexedInputs.length) {
-            throw new Error(
-                `Expected ${indexedInputs.length} tracked file patches, received ${patches.length}.`,
-            );
-        }
-
-        const precomputed = new Array<
-            PrecomputedTrackedFilePatches | undefined
-        >(diffs.length).fill(undefined);
-
-        indexedInputs.forEach((entry, index) => {
-            precomputed[entry.index] = patches[index];
-        });
-
-        return precomputed;
-    } catch (error) {
-        console.warn(
-            "Failed to precompute tracked file patches via Tauri Rust; falling back to the local Rust/WASM action log engine.",
-            error,
-        );
-        return undefined;
-    }
-}
-
 function consolidateActionLogDiffs(
     session: AIChatSession,
     diffs: AIFileDiff[],
     workCycleId: string | null | undefined,
-    precomputedPatches?: Array<PrecomputedTrackedFilePatches | undefined>,
     timestamp = Date.now(),
 ): AIChatSession {
     if (!workCycleId || diffs.length === 0) return session;
@@ -1357,12 +1282,7 @@ function consolidateActionLogDiffs(
         currentFiles,
         diffs,
     );
-    const nextFiles = consolidateTrackedFiles(
-        currentFiles,
-        diffs,
-        timestamp,
-        precomputedPatches,
-    );
+    const nextFiles = consolidateTrackedFiles(currentFiles, diffs, timestamp);
     const relevantAfter = summarizeRelevantTrackedFilesForDebug(
         nextFiles,
         diffs,
@@ -1453,6 +1373,8 @@ function replaceTrackedFilesInActionLogState(
 ) {
     let nextActionLog = {
         ...actionLog,
+        trackedFilesByIdentityKey: {},
+        trackedFileIdsByWorkCycleId: {},
         trackedFilesByWorkCycleId: {},
     };
     if (Object.keys(files).length > 0) {
@@ -1513,28 +1435,6 @@ function removeTrackedFileFromActionLog(
 
     delete files[matchingKey];
     return replaceTrackedFilesInActionLog(session, files);
-}
-
-function queueActionLogWork(
-    sessionId: string,
-    task: () => void | Promise<void>,
-) {
-    const previous = _actionLogWorkQueues.get(sessionId) ?? Promise.resolve();
-    const next = previous
-        .catch(() => undefined)
-        .then(task)
-        .finally(() => {
-            if (_actionLogWorkQueues.get(sessionId) === next) {
-                _actionLogWorkQueues.delete(sessionId);
-            }
-        });
-
-    _actionLogWorkQueues.set(sessionId, next);
-    return next;
-}
-
-async function waitForPendingActionLogWork(sessionId: string) {
-    await (_actionLogWorkQueues.get(sessionId) ?? Promise.resolve());
 }
 
 function setActionLogUndo(
@@ -2095,7 +1995,6 @@ function hasPersistedHistoryContent(history: PersistedSessionHistory) {
 const STALE_STREAMING_MS = 120_000;
 const _staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _queueDrainLocks = new Set<string>();
-const _actionLogWorkQueues = new Map<string, Promise<void>>();
 
 function scheduleStaleStreamingCheck(sessionId: string) {
     clearStaleStreamingCheck(sessionId);
@@ -2443,43 +2342,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return session;
     }
 
-    function queueActionLogDiffConsolidation(
-        sessionId: string,
-        diffs: AIFileDiff[],
-        workCycleId: string,
-        timestamp: number,
-    ) {
-        // Tool and permission events must be applied in arrival order, even
-        // though their Rust diff precomputation runs asynchronously.
-        queueActionLogWork(sessionId, async () => {
-            const precomputedPatches =
-                await precomputeTrackedFilePatches(diffs);
-
-            set((state) => {
-                const session = state.sessionsById[sessionId];
-                if (!session) return state;
-
-                const consolidated = consolidateActionLogDiffs(
-                    ensureActionLog(session),
-                    diffs,
-                    workCycleId,
-                    precomputedPatches,
-                    timestamp,
-                );
-                const nextSession = isSessionBusy(session)
-                    ? consolidated
-                    : finalizeActionLogForWorkCycle(consolidated, workCycleId);
-
-                return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [sessionId]: nextSession,
-                    },
-                };
-            });
-        });
-    }
-
     async function ensureRuntimeVisibleAfterOnboarding(runtimeId: string) {
         const state = get();
         const activeRuntimeId = state.activeSessionId
@@ -2585,10 +2447,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     optimisticMessageId: userMessageId,
                 });
             }
-
-            await waitForPendingActionLogWork(activeSessionId);
-            session = get().sessionsById[activeSessionId] ?? session;
-            if (!session) return;
 
             set((state) => {
                 const targetSession = state.sessionsById[activeSessionId];
@@ -3506,7 +3364,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             scheduleStaleStreamingCheck(payload.session_id);
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
-            let scheduleRustConsolidation = false;
 
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -3539,9 +3396,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     (message) => message.id === messageId,
                 );
 
-                // Consolidate diffs into ActionLog — always synchronously
-                // first (JS-based) so inline-diff decorations update
-                // immediately. Rust refinement runs after if available.
+                // Consolidate diffs into ActionLog synchronously from the
+                // accumulated tracked-file state. Delayed precomputed patches
+                // are not allowed to rewrite the domain state.
                 let consolidated = nextSession;
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
@@ -3549,7 +3406,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         consolidated,
                         payload.diffs ?? [],
                         workCycleId,
-                        undefined,
                         eventTimestamp,
                     );
                     if (!isSessionBusy(nextSession)) {
@@ -3557,9 +3413,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             consolidated,
                             workCycleId,
                         );
-                    }
-                    if (shouldUseRustLineDiffs()) {
-                        scheduleRustConsolidation = true;
                     }
                 }
 
@@ -3589,15 +3442,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
-
-            if (scheduleRustConsolidation && workCycleId) {
-                queueActionLogDiffConsolidation(
-                    payload.session_id,
-                    payload.diffs ?? [],
-                    workCycleId,
-                    eventTimestamp,
-                );
-            }
         },
 
         applyStatusEvent: (payload) => {
@@ -3706,7 +3550,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         applyPermissionRequest: (payload) => {
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
-            let scheduleRustConsolidation = false;
 
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -3720,18 +3563,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     Boolean(workCycleId);
                 let sessionWithBuffer = nextSession;
                 if (hasDiffs) {
-                    if (shouldUseRustLineDiffs()) {
-                        scheduleRustConsolidation = true;
-                    } else {
-                        sessionWithBuffer = ensureActionLog(sessionWithBuffer);
-                        sessionWithBuffer = consolidateActionLogDiffs(
-                            sessionWithBuffer,
-                            payload.diffs,
-                            workCycleId,
-                            undefined,
-                            eventTimestamp,
-                        );
-                    }
+                    sessionWithBuffer = ensureActionLog(sessionWithBuffer);
+                    sessionWithBuffer = consolidateActionLogDiffs(
+                        sessionWithBuffer,
+                        payload.diffs,
+                        workCycleId,
+                        eventTimestamp,
+                    );
                 }
 
                 const messageId = `permission:${payload.request_id}`;
@@ -3782,15 +3620,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
-
-            if (scheduleRustConsolidation && workCycleId) {
-                queueActionLogDiffConsolidation(
-                    payload.session_id,
-                    payload.diffs,
-                    workCycleId,
-                    eventTimestamp,
-                );
-            }
         },
 
         applyUserInputRequest: (payload) =>
@@ -5735,18 +5564,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const sessionIds = Object.keys(get().sessionsById);
 
             for (const sessionId of sessionIds) {
-                if (_actionLogWorkQueues.has(sessionId)) {
-                    queueActionLogWork(sessionId, () => {
-                        applyUserEditToTrackedFileInSession(
-                            sessionId,
-                            fileId,
-                            userEdits,
-                            newFullText,
-                        );
-                    });
-                    continue;
-                }
-
                 applyUserEditToTrackedFileInSession(
                     sessionId,
                     fileId,
@@ -6338,7 +6155,6 @@ export function resetChatStore() {
     }
     const prefs = getNormalizedAiPreferences();
     _queueDrainLocks.clear();
-    _actionLogWorkQueues.clear();
     useChatStore.setState({
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
