@@ -480,6 +480,10 @@ export function useTabDragReorder({
             const strip = tabStripRef.current;
             if (!strip) return;
 
+            // Prevent browser text-selection gesture from starting on mousedown.
+            // Without this, dragging a tab selects text underneath the pointer.
+            event.preventDefault();
+
             const node = event.currentTarget;
 
             const tabWidths: Record<string, number> = {};
@@ -540,7 +544,6 @@ export function useTabDragReorder({
                 }
                 setDraggingTabId(tabId);
                 document.body.classList.add("dragging-tab");
-                window.getSelection()?.removeAllRanges();
                 onDragStart?.(tabId, {
                     clientX: event.clientX,
                     clientY: event.clientY,
