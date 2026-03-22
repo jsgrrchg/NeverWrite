@@ -152,7 +152,9 @@ export function ContextMenu<T>({
                         onMouseEnter={(event) => {
                             if (entry.disabled) return;
                             event.currentTarget.style.backgroundColor =
-                                "var(--bg-tertiary)";
+                                entry.danger
+                                    ? "color-mix(in srgb, #ef4444 10%, var(--bg-secondary))"
+                                    : "var(--bg-tertiary)";
                         }}
                         onMouseLeave={(event) => {
                             event.currentTarget.style.backgroundColor =

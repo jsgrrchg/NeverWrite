@@ -123,6 +123,17 @@ function CommandPaletteDialog() {
                                         i === selectedIndex
                                             ? "#fff"
                                             : "var(--text-primary)",
+                                    transition: "background-color 80ms ease",
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (i !== selectedIndex)
+                                        e.currentTarget.style.backgroundColor =
+                                            "var(--bg-tertiary)";
+                                }}
+                                onMouseLeave={(e) => {
+                                    if (i !== selectedIndex)
+                                        e.currentTarget.style.backgroundColor =
+                                            "transparent";
                                 }}
                             >
                                 <span>

@@ -345,6 +345,76 @@ body.dragging-tab * {
     background-color: inherit;
 }
 
+/* ── UnifiedBar hover feedback ─────────────────────────────── */
+
+.ub-chrome-btn {
+    transition:
+        background-color 100ms ease,
+        color 100ms ease,
+        border-color 100ms ease,
+        opacity 100ms ease,
+        box-shadow 100ms ease;
+}
+
+.ub-chrome-btn:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 80%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+    opacity: 1 !important;
+}
+
+.ub-chrome-btn:active:not(:disabled) {
+    background-color: var(--bg-tertiary) !important;
+}
+
+.ub-chrome-btn[data-active="true"]:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--accent) 16%,
+        var(--bg-primary)
+    ) !important;
+}
+
+.ub-nav-btn {
+    transition:
+        background-color 100ms ease,
+        opacity 100ms ease,
+        color 100ms ease;
+}
+
+.ub-nav-btn:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 80%,
+        transparent
+    ) !important;
+    opacity: 1 !important;
+}
+
+.ub-nav-btn:active:not(:disabled) {
+    background-color: var(--bg-tertiary) !important;
+}
+
+.review-action-btn:hover:not(:disabled) {
+    filter: brightness(1.1);
+}
+.review-action-btn:active:not(:disabled) {
+    filter: brightness(0.95);
+}
+
+.ub-tab:not([data-active="true"]):hover {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-primary) 62%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+    border-color: color-mix(in srgb, var(--border) 66%, transparent) !important;
+}
+
 .settings-range-slider {
     appearance: none;
     -webkit-appearance: none;

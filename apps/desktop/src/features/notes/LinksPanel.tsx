@@ -120,7 +120,7 @@ function NoteItem({
             onClick={onClick}
             onAuxClick={onAuxClick}
             onContextMenu={onContextMenu}
-            className="w-full text-left px-3 py-1.5 flex items-start gap-2 rounded-sm hover:bg-[var(--bg-tertiary)]"
+            className="w-full text-left px-3 py-1.5 flex items-start gap-2 rounded-sm hover:bg-(--bg-tertiary) transition-colors duration-80 cursor-pointer"
             style={{ color: "var(--text-primary)" }}
         >
             <div className="mt-0.5">
@@ -218,7 +218,7 @@ function BacklinksContextMenu({
                 action();
                 onClose();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs rounded hover:bg-[var(--bg-tertiary)]"
+            className="w-full text-left px-3 py-1.5 text-xs rounded hover:bg-(--bg-tertiary)"
             style={{
                 color: "var(--text-primary)",
                 background: "transparent",
@@ -319,7 +319,7 @@ function OutgoingLinksContextMenu({
                 action();
                 onClose();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs rounded hover:bg-[var(--bg-tertiary)]"
+            className="w-full text-left px-3 py-1.5 text-xs rounded hover:bg-(--bg-tertiary)"
             style={{
                 color: "var(--text-primary)",
                 background: "transparent",
