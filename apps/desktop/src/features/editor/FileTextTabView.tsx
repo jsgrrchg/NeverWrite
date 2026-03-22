@@ -66,6 +66,18 @@ export function FileTextTabView() {
     const tab = useEditorStore((state) => {
         return getActiveFileTab(state);
     });
+    const hasPendingForceReload = useEditorStore((state) => {
+        const relativePath = tab?.relativePath;
+        return relativePath
+            ? state._pendingForceFileReloads.has(relativePath)
+            : false;
+    });
+    const hasExternalConflict = useEditorStore((state) => {
+        const relativePath = tab?.relativePath;
+        return relativePath
+            ? state.fileExternalConflicts.has(relativePath)
+            : false;
+    });
     const isDark = useThemeStore((s) => s.isDark);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
@@ -262,6 +274,7 @@ export function FileTextTabView() {
                 );
                 const store = useEditorStore.getState();
                 store.updateTabTitle(targetTab.id, detail.file_name);
+                store.clearFileExternalConflict(targetTab.relativePath);
             } catch (error) {
                 console.error("Error saving vault file:", error);
             }
@@ -408,6 +421,23 @@ export function FileTextTabView() {
         }
 
         const currentContent = view.state.doc.toString();
+        const lastSaved =
+            lastSavedContentByPathRef.current.get(tab.relativePath) ?? null;
+        const hasLocalUnsavedChanges =
+            lastSaved !== null && currentContent !== lastSaved;
+
+        if (hasLocalUnsavedChanges && !hasPendingForceReload) {
+            useEditorStore
+                .getState()
+                .markFileExternalConflict(tab.relativePath);
+            return;
+        }
+
+        if (hasPendingForceReload) {
+            useEditorStore.getState().clearForceFileReload(tab.relativePath);
+        }
+        useEditorStore.getState().clearFileExternalConflict(tab.relativePath);
+
         if (currentContent !== tab.content) {
             applyingExternalUpdateRef.current = true;
             view.dispatch({
@@ -418,8 +448,12 @@ export function FileTextTabView() {
                 },
             });
             applyingExternalUpdateRef.current = false;
+            lastSavedContentByPathRef.current.set(
+                tab.relativePath,
+                tab.content,
+            );
         }
-    }, [saveFile, tab]);
+    }, [hasPendingForceReload, tab]);
 
     useEffect(() => {
         if (!tab) {
@@ -570,6 +604,33 @@ export function FileTextTabView() {
         "--editor-content-width": `${editorContentWidth}px`,
     } as CSSProperties;
 
+    const reloadFileFromDisk = useCallback(async () => {
+        if (!tab) return;
+
+        try {
+            const detail = await vaultInvoke<SavedVaultFileDetail>(
+                "read_vault_file",
+                {
+                    relativePath: tab.relativePath,
+                },
+            );
+            useEditorStore.getState().forceReloadFileContent(tab.relativePath, {
+                title: detail.file_name,
+                content: detail.content,
+            });
+            useEditorStore
+                .getState()
+                .clearFileExternalConflict(tab.relativePath);
+        } catch (error) {
+            console.error("Error reloading vault file:", error);
+        }
+    }, [tab]);
+
+    const keepLocalFileVersion = useCallback(() => {
+        if (!tab) return;
+        useEditorStore.getState().clearFileExternalConflict(tab.relativePath);
+    }, [tab]);
+
     if (!tab) {
         return (
             <div
@@ -586,6 +647,51 @@ export function FileTextTabView() {
             className="editor-shell h-full overflow-hidden flex flex-col"
             style={editorShellStyle}
         >
+            {hasExternalConflict && (
+                <div
+                    className="flex items-center justify-between gap-3 px-4 py-2"
+                    style={{
+                        borderBottom:
+                            "1px solid color-mix(in srgb, #f59e0b 35%, var(--border))",
+                        background:
+                            "color-mix(in srgb, #f59e0b 12%, var(--bg-secondary))",
+                    }}
+                >
+                    <div
+                        className="min-w-0 text-[12px]"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        This file changed on disk while you still have unsaved
+                        edits.
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => void reloadFileFromDisk()}
+                            className="rounded-md px-2.5 py-1 text-[11px]"
+                            style={{
+                                border: "1px solid color-mix(in srgb, #f59e0b 45%, var(--border))",
+                                backgroundColor: "var(--bg-primary)",
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Reload from Disk
+                        </button>
+                        <button
+                            type="button"
+                            onClick={keepLocalFileVersion}
+                            className="rounded-md px-2.5 py-1 text-[11px]"
+                            style={{
+                                border: "1px solid transparent",
+                                backgroundColor: "transparent",
+                                color: "var(--text-secondary)",
+                            }}
+                        >
+                            Keep Local
+                        </button>
+                    </div>
+                </div>
+            )}
             <div
                 className="flex items-center justify-between gap-2 px-3 py-2"
                 style={{

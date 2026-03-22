@@ -70,6 +70,8 @@ export interface VaultNoteChange {
     kind: "upsert" | "delete";
     note: NoteDto | null;
     note_id: string | null;
+    entry: VaultEntryDto | null;
+    relative_path: string | null;
     graph_revision: number;
 }
 

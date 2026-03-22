@@ -798,6 +798,11 @@ interface ReloadedNoteDetail {
     title: string;
 }
 
+interface ReloadedFileDetail {
+    content: string;
+    title: string;
+}
+
 interface EditorStore {
     tabs: Tab[];
     activeTabId: string | null;
@@ -808,6 +813,9 @@ interface EditorStore {
     pendingSelectionReveal: PendingSelectionReveal | null;
     currentSelection: EditorSelectionContext | null;
     _pendingForceReloads: Set<string>;
+    _pendingForceFileReloads: Set<string>;
+    noteExternalConflicts: Set<string>;
+    fileExternalConflicts: Set<string>;
     openNote: (noteId: string, title: string, content: string) => void;
     openPdf: (entryId: string, title: string, path: string) => void;
     openFile: (
@@ -845,11 +853,24 @@ interface EditorStore {
     setCurrentSelection: (selection: EditorSelectionContext) => void;
     clearCurrentSelection: () => void;
     reloadNoteContent: (noteId: string, detail: ReloadedNoteDetail) => void;
+    reloadFileContent: (
+        relativePath: string,
+        detail: ReloadedFileDetail,
+    ) => void;
     forceReloadNoteContent: (
         noteId: string,
         detail: ReloadedNoteDetail,
     ) => void;
+    forceReloadFileContent: (
+        relativePath: string,
+        detail: ReloadedFileDetail,
+    ) => void;
     clearForceReload: (noteId: string) => void;
+    clearForceFileReload: (relativePath: string) => void;
+    markNoteExternalConflict: (noteId: string) => void;
+    clearNoteExternalConflict: (noteId: string) => void;
+    markFileExternalConflict: (relativePath: string) => void;
+    clearFileExternalConflict: (relativePath: string) => void;
     handleNoteDeleted: (noteId: string) => void;
     handleNoteRenamed: (
         oldNoteId: string,
@@ -868,6 +889,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     pendingSelectionReveal: null,
     currentSelection: null,
     _pendingForceReloads: new Set<string>(),
+    _pendingForceFileReloads: new Set<string>(),
+    noteExternalConflicts: new Set<string>(),
+    fileExternalConflicts: new Set<string>(),
 
     openNote: (noteId, title, content) => {
         set((state) => {
@@ -1520,6 +1544,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 
+    reloadFileContent: (relativePath, detail) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) => {
+                if (!isFileTab(t) || t.relativePath !== relativePath) return t;
+                if (t.content === detail.content && t.title === detail.title) {
+                    return t;
+                }
+                return { ...t, content: detail.content, title: detail.title };
+            }),
+        }));
+    },
+
     forceReloadNoteContent: (noteId, detail) => {
         set((state) => {
             const next = new Set(state._pendingForceReloads);
@@ -1544,12 +1580,83 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
+    forceReloadFileContent: (relativePath, detail) => {
+        set((state) => {
+            const next = new Set(state._pendingForceFileReloads);
+            next.add(relativePath);
+            return {
+                _pendingForceFileReloads: next,
+                tabs: state.tabs.map((t) => {
+                    if (!isFileTab(t) || t.relativePath !== relativePath) {
+                        return t;
+                    }
+                    if (
+                        t.content === detail.content &&
+                        t.title === detail.title
+                    ) {
+                        return t;
+                    }
+                    return {
+                        ...t,
+                        content: detail.content,
+                        title: detail.title,
+                    };
+                }),
+            };
+        });
+    },
+
     clearForceReload: (noteId) => {
         set((state) => {
             if (!state._pendingForceReloads.has(noteId)) return state;
             const next = new Set(state._pendingForceReloads);
             next.delete(noteId);
             return { _pendingForceReloads: next };
+        });
+    },
+
+    clearForceFileReload: (relativePath) => {
+        set((state) => {
+            if (!state._pendingForceFileReloads.has(relativePath)) return state;
+            const next = new Set(state._pendingForceFileReloads);
+            next.delete(relativePath);
+            return { _pendingForceFileReloads: next };
+        });
+    },
+
+    markNoteExternalConflict: (noteId) => {
+        set((state) => {
+            if (state.noteExternalConflicts.has(noteId)) return state;
+            const next = new Set(state.noteExternalConflicts);
+            next.add(noteId);
+            return { noteExternalConflicts: next };
+        });
+    },
+
+    clearNoteExternalConflict: (noteId) => {
+        set((state) => {
+            if (!state.noteExternalConflicts.has(noteId)) return state;
+            const next = new Set(state.noteExternalConflicts);
+            next.delete(noteId);
+            return { noteExternalConflicts: next };
+        });
+    },
+
+    markFileExternalConflict: (relativePath) => {
+        set((state) => {
+            if (state.fileExternalConflicts.has(relativePath)) return state;
+            const next = new Set(state.fileExternalConflicts);
+            next.add(relativePath);
+            return { fileExternalConflicts: next };
+        });
+    },
+
+    clearFileExternalConflict: (relativePath) => {
+        set((state) => {
+            if (!state.fileExternalConflicts.has(relativePath)) return state;
+            const next = new Set(state.fileExternalConflicts);
+            next.delete(relativePath);
+            return { fileExternalConflicts: next };
         });
     },
 

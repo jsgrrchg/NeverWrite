@@ -81,6 +81,17 @@ import {
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 
+function isTextLikeMimeType(mimeType: string | null | undefined) {
+    if (!mimeType) return false;
+    return (
+        mimeType.startsWith("text/") ||
+        mimeType === "application/json" ||
+        mimeType === "application/yaml" ||
+        mimeType === "application/toml" ||
+        mimeType === "application/xml"
+    );
+}
+
 function SidebarPanel({ view }: { view: SidebarView }) {
     return (
         <div className="h-full flex flex-col overflow-hidden">
@@ -981,6 +992,10 @@ export default function App() {
         Map<string, ReturnType<typeof setTimeout>>
     >(new Map());
     const noteReloadVersionRef = useRef<Map<string, number>>(new Map());
+    const pendingFileReloadsRef = useRef<
+        Map<string, ReturnType<typeof setTimeout>>
+    >(new Map());
+    const fileReloadVersionRef = useRef<Map<string, number>>(new Map());
 
     const openSearchPanel = useCallback(() => {
         useLayoutStore.getState().setSidebarView("search");
@@ -1381,6 +1396,8 @@ export default function App() {
         let unlisten: (() => void) | undefined;
         const pendingNoteReloads = pendingNoteReloadsRef.current;
         const noteReloadVersions = noteReloadVersionRef.current;
+        const pendingFileReloads = pendingFileReloadsRef.current;
+        const fileReloadVersions = fileReloadVersionRef.current;
 
         void listen<VaultNoteChange>("vault://note-changed", (event) => {
             // Only process changes for the current vault
@@ -1439,6 +1456,58 @@ export default function App() {
 
                     pendingNoteReloads.set(noteId, timer);
                 }
+            } else if (
+                change.kind === "upsert" &&
+                change.entry?.kind === "file" &&
+                change.relative_path &&
+                isTextLikeMimeType(change.entry.mime_type)
+            ) {
+                const relativePath = change.relative_path;
+                const openTab = useEditorStore
+                    .getState()
+                    .tabs.find(
+                        (t) =>
+                            isFileTab(t) &&
+                            t.viewer === "text" &&
+                            t.relativePath === relativePath,
+                    );
+                if (openTab) {
+                    const previousTimer =
+                        pendingFileReloads.get(relativePath) ?? null;
+                    if (previousTimer) {
+                        clearTimeout(previousTimer);
+                    }
+
+                    const nextVersion =
+                        (fileReloadVersions.get(relativePath) ?? 0) + 1;
+                    fileReloadVersions.set(relativePath, nextVersion);
+
+                    const timer = setTimeout(() => {
+                        pendingFileReloads.delete(relativePath);
+
+                        void vaultInvoke<{
+                            file_name: string;
+                            content: string;
+                        }>("read_vault_file", {
+                            relativePath,
+                        }).then((detail) => {
+                            if (
+                                fileReloadVersions.get(relativePath) !==
+                                nextVersion
+                            ) {
+                                return;
+                            }
+                            useEditorStore
+                                .getState()
+                                .reloadFileContent(relativePath, {
+                                    title: detail.file_name,
+                                    content: detail.content,
+                                });
+                        });
+                    }, 180);
+
+                    pendingFileReloads.set(relativePath, timer);
+                }
             } else if (change.kind === "delete") {
                 invalidateLivePreviewNoteCache(change.note_id);
             }
@@ -1452,6 +1521,11 @@ export default function App() {
             }
             pendingNoteReloads.clear();
             noteReloadVersions.clear();
+            for (const timer of pendingFileReloads.values()) {
+                clearTimeout(timer);
+            }
+            pendingFileReloads.clear();
+            fileReloadVersions.clear();
             if (unlisten) {
                 void unlisten();
             }

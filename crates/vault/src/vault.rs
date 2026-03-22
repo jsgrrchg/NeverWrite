@@ -477,6 +477,21 @@ pub(crate) fn is_pdf_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
+pub(crate) fn is_supported_text_path(path: &Path) -> bool {
+    let Some(mime_type) = guess_mime_type(path) else {
+        return false;
+    };
+
+    mime_type.starts_with("text/")
+        || matches!(
+            mime_type.as_str(),
+            "application/json"
+                | "application/yaml"
+                | "application/toml"
+                | "application/xml"
+        )
+}
+
 fn entry_kind(path: &Path) -> &'static str {
     if path.is_dir() {
         "folder"

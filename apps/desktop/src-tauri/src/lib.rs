@@ -1156,6 +1156,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     kind: "upsert".to_string(),
                     note: None,
                     note_id: None,
+                    entry: None,
+                    relative_path: Some(vault.path_to_relative_path(path)),
                     graph_revision: 0,
                 })
             }
@@ -1168,6 +1170,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     kind: "delete".to_string(),
                     note: None,
                     note_id: None,
+                    entry: None,
+                    relative_path: Some(vault.path_to_relative_path(path)),
                     graph_revision: 0,
                 })
             }
@@ -1210,6 +1214,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     kind: "upsert".to_string(),
                     note: None,
                     note_id: None,
+                    entry: None,
+                    relative_path: Some(vault.path_to_relative_path(to)),
                     graph_revision: 0,
                 })
             }
@@ -1231,6 +1237,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                             kind: "upsert".to_string(),
                             note: Some(dto),
                             note_id: Some(note_id),
+                            entry: None,
+                            relative_path: Some(vault.path_to_relative_path(&path)),
                             graph_revision: 0,
                         })
                     }
@@ -1243,6 +1251,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                             kind: "delete".to_string(),
                             note: None,
                             note_id: Some(note_id),
+                            entry: None,
+                            relative_path: Some(vault.path_to_relative_path(&path)),
                             graph_revision: 0,
                         })
                     }
@@ -1258,6 +1268,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                     kind: "delete".to_string(),
                     note: None,
                     note_id: Some(note_id),
+                    entry: None,
+                    relative_path: Some(vault.path_to_relative_path(&path)),
                     graph_revision: 0,
                 })
             }
@@ -1280,6 +1292,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                             kind: "upsert".to_string(),
                             note: Some(dto),
                             note_id: Some(note_id),
+                            entry: None,
+                            relative_path: Some(vault.path_to_relative_path(&to)),
                             graph_revision: 0,
                         })
                     }
@@ -1288,20 +1302,45 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                         kind: "delete".to_string(),
                         note: None,
                         note_id: Some(old_id),
+                        entry: None,
+                        relative_path: Some(vault.path_to_relative_path(&from)),
                         graph_revision: 0,
                     }),
                 }
             }
-            VaultEvent::FileCreated(_)
-            | VaultEvent::FileModified(_)
-            | VaultEvent::FileDeleted(_)
-            | VaultEvent::FileRenamed { .. } => Some(VaultNoteChangeDto {
+            VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
+                let entry = vault.read_vault_entry_from_path(&path).ok();
+                Some(VaultNoteChangeDto {
+                    vault_path: vault_path.to_string(),
+                    kind: "upsert".to_string(),
+                    note: None,
+                    note_id: None,
+                    entry,
+                    relative_path: Some(vault.path_to_relative_path(&path)),
+                    graph_revision: 0,
+                })
+            }
+            VaultEvent::FileDeleted(path) => Some(VaultNoteChangeDto {
                 vault_path: vault_path.to_string(),
-                kind: "upsert".to_string(),
+                kind: "delete".to_string(),
                 note: None,
                 note_id: None,
+                entry: None,
+                relative_path: Some(vault.path_to_relative_path(&path)),
                 graph_revision: 0,
             }),
+            VaultEvent::FileRenamed { to, .. } => {
+                let entry = vault.read_vault_entry_from_path(&to).ok();
+                Some(VaultNoteChangeDto {
+                    vault_path: vault_path.to_string(),
+                    kind: "upsert".to_string(),
+                    note: None,
+                    note_id: None,
+                    entry,
+                    relative_path: Some(vault.path_to_relative_path(&to)),
+                    graph_revision: 0,
+                })
+            }
         };
 
         if search_changed {
@@ -2056,6 +2095,7 @@ fn save_note(
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
     let path = vault.id_to_path(&note_id);
+    state.write_tracker.track_content(path.clone(), &content);
 
     vault
         .save_note(&note_id, &content)

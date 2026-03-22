@@ -276,6 +276,9 @@ export function Editor({
     );
     const updateTabContent = useEditorStore((s) => s.updateTabContent);
     const updateTabTitle = useEditorStore((s) => s.updateTabTitle);
+    const clearNoteExternalConflict = useEditorStore(
+        (s) => s.clearNoteExternalConflict,
+    );
     const registerCommand = useCommandStore((s) => s.register);
     const unregisterCommand = useCommandStore((s) => s.unregister);
     const isDark = useThemeStore((s) => s.isDark);
@@ -337,6 +340,10 @@ export function Editor({
               sessionsById,
           ).match
         : null;
+    const hasExternalConflict = useEditorStore((state) => {
+        const noteId = activeTabInfo?.noteId;
+        return noteId ? state.noteExternalConflicts.has(noteId) : false;
+    });
 
     const getCurrentBody = useCallback(() => {
         return (
@@ -437,6 +444,7 @@ export function Editor({
                     );
                     setEditableTitle(detail.title);
                 }
+                clearNoteExternalConflict(tab.noteId);
                 touchContent();
             } catch (e) {
                 console.error("Error al guardar nota:", e);
@@ -449,8 +457,36 @@ export function Editor({
             touchContent,
             updateNoteMetadata,
             updateTabTitle,
+            clearNoteExternalConflict,
         ],
     );
+
+    const reloadNoteFromDisk = useCallback(async () => {
+        const tab = activeTabRef.current;
+        if (!tab) return;
+
+        try {
+            const detail = await vaultInvoke<{
+                title: string;
+                content: string;
+            }>("read_note", {
+                noteId: tab.noteId,
+            });
+            useEditorStore.getState().forceReloadNoteContent(tab.noteId, {
+                title: detail.title,
+                content: detail.content,
+            });
+            clearNoteExternalConflict(tab.noteId);
+        } catch (error) {
+            console.error("Error reloading note from disk:", error);
+        }
+    }, [clearNoteExternalConflict]);
+
+    const keepLocalNoteVersion = useCallback(() => {
+        const tab = activeTabRef.current;
+        if (!tab) return;
+        clearNoteExternalConflict(tab.noteId);
+    }, [clearNoteExternalConflict]);
 
     const scheduleSave = useCallback(
         (tabId: string, doc: Text | string) => {
@@ -2293,11 +2329,13 @@ export function Editor({
             );
 
             if (hasLocalUnsavedChanges && !isForced) {
+                useEditorStore.getState().markNoteExternalConflict(tab.noteId);
                 return;
             }
             if (isForced) {
                 useEditorStore.getState().clearForceReload(tab.noteId);
             }
+            useEditorStore.getState().clearNoteExternalConflict(tab.noteId);
 
             if (activeTabRef.current?.id === tabId) {
                 setActiveFrontmatter(nextFrontmatter);
@@ -2638,6 +2676,51 @@ export function Editor({
             className="editor-shell h-full overflow-hidden flex flex-col"
             style={editorShellStyle}
         >
+            {activeTabInfo && hasExternalConflict && (
+                <div
+                    className="flex items-center justify-between gap-3 px-4 py-2"
+                    style={{
+                        borderBottom:
+                            "1px solid color-mix(in srgb, #f59e0b 35%, var(--border))",
+                        background:
+                            "color-mix(in srgb, #f59e0b 12%, var(--bg-secondary))",
+                    }}
+                >
+                    <div
+                        className="min-w-0 text-[12px]"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        This note changed on disk while you still have unsaved
+                        edits.
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => void reloadNoteFromDisk()}
+                            className="rounded-md px-2.5 py-1 text-[11px]"
+                            style={{
+                                border: "1px solid color-mix(in srgb, #f59e0b 45%, var(--border))",
+                                backgroundColor: "var(--bg-primary)",
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Reload from Disk
+                        </button>
+                        <button
+                            type="button"
+                            onClick={keepLocalNoteVersion}
+                            className="rounded-md px-2.5 py-1 text-[11px]"
+                            style={{
+                                border: "1px solid transparent",
+                                backgroundColor: "transparent",
+                                color: "var(--text-secondary)",
+                            }}
+                        >
+                            Keep Local
+                        </button>
+                    </div>
+                </div>
+            )}
             <div className="min-h-0 flex-1 relative">
                 <div className="flex h-full min-w-0">
                     <div className="min-w-0 flex-1 relative">

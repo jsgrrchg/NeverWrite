@@ -10,7 +10,9 @@ use notify::{
 };
 
 use crate::error::VaultError;
-use crate::vault::{is_markdown_path, is_pdf_path, is_supported_image_path, path_is_ignored};
+use crate::vault::{
+    is_markdown_path, is_pdf_path, is_supported_image_path, is_supported_text_path, path_is_ignored,
+};
 
 /// Rastrea archivos escritos por la app para distinguirlos de cambios externos.
 #[derive(Debug, Clone)]
@@ -141,13 +143,16 @@ pub fn start_watcher(
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         let Ok(event) = res else { return };
 
-        // Solo nos interesan notas, PDFs e imágenes soportadas.
+        // Solo nos interesan notas, PDFs, imágenes soportadas y archivos de texto editables.
         let paths: Vec<&PathBuf> = event
             .paths
             .iter()
             .filter(|path| !path_is_ignored(&watch_root, path))
             .filter(|path| {
-                is_markdown_path(path) || is_pdf_path(path) || is_supported_image_path(path)
+                is_markdown_path(path)
+                    || is_pdf_path(path)
+                    || is_supported_image_path(path)
+                    || is_supported_text_path(path)
             })
             .collect();
 
