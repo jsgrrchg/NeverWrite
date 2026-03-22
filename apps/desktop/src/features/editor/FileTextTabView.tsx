@@ -107,19 +107,13 @@ export function FileTextTabView() {
 
             if (event.key === "+" || event.key === "=") {
                 event.preventDefault();
-                setSetting(
-                    "editorFontSize",
-                    Math.min(24, editorFontSize + 1),
-                );
+                setSetting("editorFontSize", Math.min(24, editorFontSize + 1));
                 return;
             }
 
             if (event.key === "-" || event.key === "_") {
                 event.preventDefault();
-                setSetting(
-                    "editorFontSize",
-                    Math.max(10, editorFontSize - 1),
-                );
+                setSetting("editorFontSize", Math.max(10, editorFontSize - 1));
             }
         };
 
