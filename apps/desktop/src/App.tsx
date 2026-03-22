@@ -896,21 +896,21 @@ function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
         s.tabs.some((tab) => isGraphTab(tab)),
     );
     const isGraphActive = view === "graph";
-    const keepAliveRef = useRef<number | null>(
-        isGraphActive ? Date.now() + GRAPH_KEEP_ALIVE_MS : null,
-    );
+    const keepAliveRef = useRef<number | null>(null);
     const wasGraphActiveRef = useRef(isGraphActive);
     const [, forceRender] = useState(0);
 
-    // Update keep-alive timestamp when graph tab state changes
-    const wasGraphActive = wasGraphActiveRef.current;
-    wasGraphActiveRef.current = isGraphActive;
+    // Update keep-alive timestamp when graph tab state changes (in effect to avoid impure render)
+    useEffect(() => {
+        const wasGraphActive = wasGraphActiveRef.current;
+        wasGraphActiveRef.current = isGraphActive;
 
-    if (!hasGraphTab) {
-        keepAliveRef.current = null;
-    } else if (isGraphActive || wasGraphActive) {
-        keepAliveRef.current = Date.now() + GRAPH_KEEP_ALIVE_MS;
-    }
+        if (!hasGraphTab) {
+            keepAliveRef.current = null;
+        } else if (isGraphActive || wasGraphActive) {
+            keepAliveRef.current = Date.now() + GRAPH_KEEP_ALIVE_MS;
+        }
+    }, [hasGraphTab, isGraphActive]);
 
     // Timer to expire the keep-alive and trigger unmount
     useEffect(() => {
