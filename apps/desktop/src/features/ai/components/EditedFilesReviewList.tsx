@@ -227,7 +227,7 @@ function FullRow({
                             onClick={() =>
                                 void openAiEditedFileByAbsolutePath(file.path)
                             }
-                            className="shrink-0 rounded-md p-1"
+                            className="review-action-btn shrink-0 rounded-md p-1"
                             style={getNeutralButtonStyle()}
                         >
                             <svg
@@ -250,7 +250,7 @@ function FullRow({
                         type="button"
                         title="Keep"
                         onClick={onKeep}
-                        className="shrink-0 rounded-md p-1"
+                        className="review-action-btn shrink-0 rounded-md p-1"
                         style={getAccentButtonStyle()}
                     >
                         <svg
@@ -271,7 +271,7 @@ function FullRow({
                             type="button"
                             title="Reject"
                             onClick={onReject}
-                            className="shrink-0 rounded-md p-1"
+                            className="review-action-btn shrink-0 rounded-md p-1"
                             style={getDangerButtonStyle()}
                         >
                             <svg
@@ -409,7 +409,7 @@ function CompactRow({
                         void openAiEditedFileByAbsolutePath(file.path);
                     }}
                     disabled={!canOpen}
-                    className="shrink-0 rounded-md p-1"
+                    className="review-action-btn shrink-0 rounded-md p-1"
                     style={{
                         ...getAccentButtonStyle(
                             canOpen ? tone.accent : "var(--text-secondary)",
@@ -438,7 +438,7 @@ function CompactRow({
                     type="button"
                     title={expanded ? "Hide Diff" : "Review Diff"}
                     onClick={() => setExpanded((value) => !value)}
-                    className="shrink-0 rounded-md p-1"
+                    className="review-action-btn shrink-0 rounded-md p-1"
                     style={getNeutralButtonStyle()}
                 >
                     <svg
@@ -460,7 +460,7 @@ function CompactRow({
                     type="button"
                     title="Keep"
                     onClick={onKeep}
-                    className="shrink-0 rounded-md p-1"
+                    className="review-action-btn shrink-0 rounded-md p-1"
                     style={getAccentButtonStyle()}
                 >
                     <svg
@@ -482,7 +482,7 @@ function CompactRow({
                         type="button"
                         title="Reject"
                         onClick={onReject}
-                        className="shrink-0 rounded-md p-1"
+                        className="review-action-btn shrink-0 rounded-md p-1"
                         style={getDangerButtonStyle()}
                     >
                         <svg
