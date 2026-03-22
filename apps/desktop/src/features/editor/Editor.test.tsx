@@ -209,6 +209,52 @@ describe("Editor", () => {
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
     });
 
+    it("offers a quick action to enable spellcheck from the editor context menu", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "spellcheck_suggest") {
+                return {
+                    language: "en-US",
+                    word: "hello",
+                    correct: true,
+                    suggestions: [],
+                };
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "hello world",
+            },
+        ]);
+
+        useSettingsStore.getState().setSetting("editorSpellcheck", false);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        vi.spyOn(view, "posAtCoords").mockReturnValue(1);
+
+        await act(async () => {
+            fireEvent.contextMenu(view.dom, {
+                clientX: 24,
+                clientY: 32,
+            });
+            await flushPromises();
+        });
+
+        await act(async () => {
+            fireEvent.click(await screen.findByText("Enable Spellcheck"));
+            await flushPromises();
+        });
+
+        expect(useSettingsStore.getState().editorSpellcheck).toBe(true);
+    });
+
     it("shows line numbers when live preview is disabled", async () => {
         setEditorTabs([
             {

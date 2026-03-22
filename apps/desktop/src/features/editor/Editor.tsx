@@ -2646,16 +2646,16 @@ export function Editor({
                 .setSetting("spellcheckSecondaryLanguage", language);
             refreshEditorSpellcheck();
         },
-        spellcheckAction: editorSpellcheck
-            ? {
-                  label: "Disable Spellcheck",
-                  action: () => {
-                      useSettingsStore
-                          .getState()
-                          .setSetting("editorSpellcheck", false);
-                  },
-              }
-            : null,
+        spellcheckAction: {
+            label: editorSpellcheck
+                ? "Disable Spellcheck"
+                : "Enable Spellcheck",
+            action: () => {
+                useSettingsStore
+                    .getState()
+                    .setSetting("editorSpellcheck", !editorSpellcheck);
+            },
+        },
         trailingEntries: [
             {
                 label: "Undo",
