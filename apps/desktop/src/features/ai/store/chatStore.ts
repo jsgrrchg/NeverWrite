@@ -1371,7 +1371,7 @@ function replaceTrackedFilesInActionLogState(
     workCycleId: string,
     files: Record<string, TrackedFile>,
 ) {
-    let nextActionLog = {
+    let nextActionLog: ReturnType<typeof emptyActionLogState> = {
         ...actionLog,
         trackedFilesByIdentityKey: {},
         trackedFileIdsByWorkCycleId: {},
