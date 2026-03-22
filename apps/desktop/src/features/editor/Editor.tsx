@@ -161,9 +161,16 @@ type TabScrollPosition = {
     top: number;
     left: number;
 };
+type RecentSavedSnapshot = {
+    content: string;
+    savedAt: number;
+};
 interface EditorProps {
     emptyStateMessage?: string;
 }
+
+const LOCAL_SAVE_ECHO_WINDOW_MS = 5_000;
+const MAX_RECENT_SAVED_SNAPSHOTS = 8;
 
 function isRecoverableCoordinateLookupError(error: unknown) {
     return (
@@ -201,6 +208,9 @@ export function Editor({
     const prevTabIdRef = useRef<string | null>(null);
     const prevNoteIdRef = useRef<string | null>(null);
     const lastSavedContentByTabId = useRef<Map<string, string>>(new Map());
+    const recentSavedSnapshotsByTabId = useRef<
+        Map<string, RecentSavedSnapshot[]>
+    >(new Map());
     // Frontmatter: stores the raw ---...--- block per note so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
     const [activeFrontmatter, setActiveFrontmatter] = useState<string | null>(
@@ -362,6 +372,38 @@ export function Editor({
     const markTabSaved = useCallback(
         (tabId: string, serializedContent: string) => {
             lastSavedContentByTabId.current.set(tabId, serializedContent);
+            const now = Date.now();
+            const nextSnapshots = (
+                recentSavedSnapshotsByTabId.current.get(tabId) ?? []
+            )
+                .filter(
+                    (snapshot) =>
+                        now - snapshot.savedAt <= LOCAL_SAVE_ECHO_WINDOW_MS &&
+                        snapshot.content !== serializedContent,
+                )
+                .concat({
+                    content: serializedContent,
+                    savedAt: now,
+                })
+                .slice(-MAX_RECENT_SAVED_SNAPSHOTS);
+            recentSavedSnapshotsByTabId.current.set(tabId, nextSnapshots);
+        },
+        [],
+    );
+
+    const wasRecentlySavedLocally = useCallback(
+        (tabId: string, serializedContent: string) => {
+            const now = Date.now();
+            const nextSnapshots = (
+                recentSavedSnapshotsByTabId.current.get(tabId) ?? []
+            ).filter(
+                (snapshot) =>
+                    now - snapshot.savedAt <= LOCAL_SAVE_ECHO_WINDOW_MS,
+            );
+            recentSavedSnapshotsByTabId.current.set(tabId, nextSnapshots);
+            return nextSnapshots.some(
+                (snapshot) => snapshot.content === serializedContent,
+            );
         },
         [],
     );
@@ -2319,7 +2361,12 @@ export function Editor({
                 lastSavedContentByTabId.current.get(tab.noteId) ?? null;
             const hasLocalUnsavedChanges =
                 lastSaved !== null && currentSerialized !== lastSaved;
-            const incoming = stripFrontmatter(tab.noteId, tab.content);
+            const incomingSerialized = tab.content;
+            const isEchoOfRecentLocalSave = wasRecentlySavedLocally(
+                tab.noteId,
+                incomingSerialized,
+            );
+            const incoming = stripFrontmatter(tab.noteId, incomingSerialized);
             const nextFrontmatter =
                 frontmatterByTabId.current.get(tab.noteId) ?? null;
             const nextTitle = deriveDisplayedTitle(
@@ -2327,8 +2374,25 @@ export function Editor({
                 incoming,
                 tab.title,
             );
+            const incomingMatchesCurrentDoc =
+                incomingSerialized === currentSerialized;
+
+            if (!isForced && incomingMatchesCurrentDoc) {
+                useEditorStore.getState().clearNoteExternalConflict(tab.noteId);
+                if (activeTabRef.current?.id === tabId) {
+                    setActiveFrontmatter(nextFrontmatter);
+                    setEditableTitle(nextTitle);
+                }
+                return;
+            }
 
             if (hasLocalUnsavedChanges && !isForced) {
+                if (isEchoOfRecentLocalSave) {
+                    useEditorStore
+                        .getState()
+                        .clearNoteExternalConflict(tab.noteId);
+                    return;
+                }
                 useEditorStore.getState().markNoteExternalConflict(tab.noteId);
                 return;
             }
@@ -2372,7 +2436,12 @@ export function Editor({
             isInternalRef.current = false;
         });
         return unsub;
-    }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
+    }, [
+        markTabSaved,
+        serializePersistedContent,
+        stripFrontmatter,
+        wasRecentlySavedLocally,
+    ]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
