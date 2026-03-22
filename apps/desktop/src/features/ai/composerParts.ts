@@ -135,7 +135,7 @@ export function appendMentionParts(
 export function appendSelectionMentionPart(
     parts: AIComposerPart[],
     selection: {
-        noteId: string;
+        noteId: string | null;
         label: string;
         path: string;
         selectedText: string;

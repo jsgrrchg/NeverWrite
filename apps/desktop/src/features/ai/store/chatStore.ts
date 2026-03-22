@@ -6061,8 +6061,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!currentSelection || !currentSelection.text.trim()) return;
 
             const notes = useVaultStore.getState().notes;
-            const note = notes.find((n) => n.id === currentSelection.noteId);
-            if (!note) return;
+            const note = currentSelection.noteId
+                ? (notes.find((n) => n.id === currentSelection.noteId) ?? null)
+                : null;
+            const selectionPath = currentSelection.path ?? note?.path ?? null;
+            if (!selectionPath) return;
 
             const state = get();
             const { tabs, activeTabId } = useChatTabsStore.getState();
@@ -6079,20 +6082,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const isDuplicate = currentParts.some(
                 (p) =>
                     p.type === "selection_mention" &&
-                    p.noteId === note.id &&
+                    p.path === selectionPath &&
                     p.startLine === startLine &&
                     p.endLine === endLine,
             );
             if (isDuplicate) return;
 
             const nextParts = appendSelectionMentionPart(currentParts, {
-                noteId: note.id,
+                noteId: currentSelection.noteId,
                 label: buildSelectionLabel(
                     currentSelection.text,
                     startLine,
                     endLine,
                 ),
-                path: note.path,
+                path: selectionPath,
                 selectedText: currentSelection.text,
                 startLine,
                 endLine,

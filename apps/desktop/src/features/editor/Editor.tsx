@@ -706,6 +706,7 @@ export function Editor({
         ).number;
         useEditorStore.getState().setCurrentSelection({
             noteId: activeTabRef.current!.noteId,
+            path: null,
             text: view.state.sliceDoc(selection.from, selection.to),
             from: selection.from,
             to: selection.to,

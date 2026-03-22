@@ -193,6 +193,34 @@ export function FileTextTabView() {
         });
     }, []);
 
+    const syncCurrentSelection = useCallback((view: EditorView) => {
+        const selection = view.state.selection.main;
+        if (selection.empty) {
+            useEditorStore.getState().clearCurrentSelection();
+            return;
+        }
+
+        const currentTab = tabRef.current;
+        if (!currentTab) {
+            useEditorStore.getState().clearCurrentSelection();
+            return;
+        }
+
+        const startLine = view.state.doc.lineAt(selection.from).number;
+        const endLine = view.state.doc.lineAt(
+            Math.max(selection.from, selection.to - 1),
+        ).number;
+        useEditorStore.getState().setCurrentSelection({
+            noteId: null,
+            path: currentTab.path,
+            text: view.state.sliceDoc(selection.from, selection.to),
+            from: selection.from,
+            to: selection.to,
+            startLine,
+            endLine,
+        });
+    }, []);
+
     const saveFile = useCallback(
         async (
             targetTab: NonNullable<ReturnType<typeof getActiveFileTab>>,
@@ -283,9 +311,28 @@ export function FileTextTabView() {
                     lineNumbers(),
                     search({ top: true }),
                     searchTheme,
-                    keymap.of(searchKeymap),
+                    keymap.of([
+                        ...searchKeymap,
+                        {
+                            key: "Mod-l",
+                            run: (view) => {
+                                if (view.state.selection.main.empty) {
+                                    return false;
+                                }
+                                syncCurrentSelection(view);
+                                useChatStore
+                                    .getState()
+                                    .attachSelectionFromEditor();
+                                return true;
+                            },
+                        },
+                    ]),
                     mergeViewCompartment.of([]),
                     EditorView.updateListener.of((update) => {
+                        if (update.selectionSet) {
+                            syncCurrentSelection(update.view);
+                        }
+
                         if (
                             !update.docChanged ||
                             applyingExternalUpdateRef.current
@@ -474,6 +521,7 @@ export function FileTextTabView() {
 
     useEffect(() => {
         queueMicrotask(() => setEditorContextMenu(null));
+        useEditorStore.getState().clearCurrentSelection();
     }, [tab?.id]);
 
     useEffect(() => {
@@ -506,6 +554,7 @@ export function FileTextTabView() {
             contextMenuCleanupRef.current?.();
             contextMenuCleanupRef.current = null;
             loadRequestRef.current += 1;
+            useEditorStore.getState().clearCurrentSelection();
             viewRef.current?.destroy();
             viewRef.current = null;
             setEditorContextMenu(null);

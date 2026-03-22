@@ -261,7 +261,9 @@ function createSelectionMentionNode(
 ) {
     const element = document.createElement("span");
     element.dataset.kind = "selection_mention";
-    element.dataset.noteId = part.noteId;
+    if (part.noteId) {
+        element.dataset.noteId = part.noteId;
+    }
     element.dataset.label = part.label;
     element.dataset.path = part.path;
     element.dataset.selectedText = part.selectedText;
@@ -362,7 +364,6 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
 
     if (
         node.dataset.kind === "selection_mention" &&
-        node.dataset.noteId &&
         node.dataset.label &&
         node.dataset.path &&
         node.dataset.selectedText &&
@@ -372,7 +373,7 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
         parts.push({
             id: crypto.randomUUID(),
             type: "selection_mention",
-            noteId: node.dataset.noteId,
+            noteId: node.dataset.noteId ?? null,
             label: node.dataset.label,
             path: node.dataset.path,
             selectedText: node.dataset.selectedText,

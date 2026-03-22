@@ -5689,6 +5689,7 @@ describe("chatStore", () => {
         useEditorStore.setState({
             currentSelection: {
                 noteId: "notes/demo",
+                path: null,
                 text: "hello world",
                 from: 10,
                 to: 21,
@@ -5735,6 +5736,7 @@ describe("chatStore", () => {
         useEditorStore.setState({
             currentSelection: {
                 noteId: "notes/demo",
+                path: null,
                 text: "single line",
                 from: 0,
                 to: 11,
@@ -5789,6 +5791,7 @@ describe("chatStore", () => {
         useEditorStore.setState({
             currentSelection: {
                 noteId: "notes/demo",
+                path: null,
                 text: "hello",
                 from: 0,
                 to: 5,
@@ -5809,5 +5812,38 @@ describe("chatStore", () => {
         expect(
             parts.filter((p) => p.type === "selection_mention"),
         ).toHaveLength(1);
+    });
+
+    it("attachSelectionFromEditor inserts a file-backed selection_mention", async () => {
+        useEditorStore.setState({
+            currentSelection: {
+                noteId: null,
+                path: "/vault/src/config.toml",
+                text: 'name = "VaultAI"',
+                from: 0,
+                to: 16,
+                startLine: 1,
+                endLine: 1,
+            },
+        });
+
+        await useChatStore.getState().initialize();
+        useChatStore.getState().attachSelectionFromEditor();
+
+        const activeSessionId = getActiveSessionId();
+        const parts =
+            useChatStore.getState().composerPartsBySessionId[activeSessionId] ??
+            [];
+        const selectionPart = parts.find((p) => p.type === "selection_mention");
+
+        expect(selectionPart).toMatchObject({
+            type: "selection_mention",
+            noteId: null,
+            path: "/vault/src/config.toml",
+            label: '(1)  name = "VaultAI"',
+            selectedText: 'name = "VaultAI"',
+            startLine: 1,
+            endLine: 1,
+        });
     });
 });
