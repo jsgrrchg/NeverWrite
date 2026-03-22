@@ -1249,6 +1249,193 @@ describe("Editor", () => {
         vi.useRealTimers();
     });
 
+    it("shows an external conflict banner for real on-disk changes while local edits are unsaved", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Original body",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: " local",
+                },
+            });
+        });
+
+        await act(async () => {
+            useEditorStore.getState().reloadNoteContent("notes/current", {
+                title: "Current",
+                content: "External body",
+            });
+            await flushPromises();
+        });
+
+        expect(
+            screen.getByText(
+                /This note changed on disk while you still have unsaved edits\./i,
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it("does not treat local tab-content sync as an external conflict while typing", async () => {
+        vi.useFakeTimers();
+
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "save_note") {
+                return new Promise(() => {});
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Original",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: " local",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await flushPromises();
+        });
+
+        expect(
+            screen.queryByText(
+                /This note changed on disk while you still have unsaved edits\./i,
+            ),
+        ).toBeNull();
+
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    it("ignores a recent local save echo while newer edits remain unsaved", async () => {
+        vi.useFakeTimers();
+
+        let saveCallCount = 0;
+        mockInvoke().mockImplementation(async (command, args) => {
+            if (command === "save_note") {
+                saveCallCount += 1;
+                const content = (args as { content: string }).content;
+
+                if (saveCallCount === 1) {
+                    return {
+                        id: "notes/current",
+                        path: "/vault/notes/current.md",
+                        title: "Current",
+                        content,
+                    };
+                }
+
+                return new Promise(() => {});
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Original",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: "A",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await flushPromises();
+        });
+
+        const saveCall = mockInvoke().mock.calls.find(
+            ([command]) => command === "save_note",
+        );
+        expect(saveCall).toEqual([
+            "save_note",
+            expect.objectContaining({
+                noteId: "notes/current",
+                content: "OriginalA",
+            }),
+        ]);
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: "B",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await Promise.resolve();
+        });
+
+        expect(view.state.doc.toString()).toBe("OriginalAB");
+        const tab = useEditorStore.getState().tabs[0];
+        expect(tab && "content" in tab ? tab.content : undefined).toBe(
+            "OriginalAB",
+        );
+
+        await act(async () => {
+            useEditorStore.getState().reloadNoteContent("notes/current", {
+                title: "Current",
+                content: "OriginalA",
+            });
+            await flushPromises();
+        });
+
+        expect(
+            screen.queryByText(
+                /This note changed on disk while you still have unsaved edits\./i,
+            ),
+        ).toBeNull();
+
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
     it("does not save a clean tab when switching notes", async () => {
         setEditorTabs(
             [
