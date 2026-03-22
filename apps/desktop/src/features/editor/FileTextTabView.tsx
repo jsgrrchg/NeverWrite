@@ -383,6 +383,7 @@ export function FileTextTabView() {
         isDark,
         lineWrapping,
         scheduleSave,
+        syncCurrentSelection,
         tab,
         trackedFileMatch?.trackedFile.diffBase,
     ]);

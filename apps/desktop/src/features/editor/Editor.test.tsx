@@ -431,6 +431,49 @@ describe("Editor", () => {
         coordsSpy.mockRestore();
     });
 
+    it("does not crash when CodeMirror throws during selection coordinate lookup", async () => {
+        const warnSpy = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => undefined);
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
+            throw new Error("No tile at position 0");
+        });
+
+        await act(async () => {
+            view.focus();
+            view.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 5,
+                },
+            });
+            await flushPromises();
+        });
+
+        expect(
+            screen.queryByRole("button", { name: "Heading 1" }),
+        ).not.toBeInTheDocument();
+        expect(warnSpy).toHaveBeenCalledWith(
+            "Ignoring transient CodeMirror coordinate lookup failure in coordsAtPos.",
+            expect.any(Error),
+        );
+
+        warnSpy.mockRestore();
+    });
+
     it("registers structural editor commands and executes them from the command palette store", async () => {
         setEditorTabs([
             {
@@ -1013,6 +1056,46 @@ describe("Editor", () => {
 
         expect((selectionLayer as HTMLElement).style.opacity).toBe("0");
         coordsSpy.mockRestore();
+    });
+
+    it("does not crash when CodeMirror throws during context-menu coordinate lookup", async () => {
+        const warnSpy = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => undefined);
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "hello world",
+            },
+        ]);
+
+        useSettingsStore.getState().setSetting("editorSpellcheck", true);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        vi.spyOn(view, "posAtCoords").mockImplementation(() => {
+            throw new Error("Cannot destructure property 'tile' from null");
+        });
+
+        await act(async () => {
+            fireEvent.contextMenu(view.dom, {
+                clientX: 24,
+                clientY: 32,
+            });
+            await flushPromises();
+        });
+
+        expect(screen.getByText("Disable Spellcheck")).toBeInTheDocument();
+        expect(warnSpy).toHaveBeenCalledWith(
+            "Ignoring transient CodeMirror coordinate lookup failure in posAtCoords.",
+            expect.any(Error),
+        );
+
+        warnSpy.mockRestore();
     });
 
     it("saves the previous tab immediately when switching tabs with pending autosave", async () => {

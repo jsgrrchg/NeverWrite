@@ -165,6 +165,14 @@ interface EditorProps {
     emptyStateMessage?: string;
 }
 
+function isRecoverableCoordinateLookupError(error: unknown) {
+    return (
+        error instanceof Error &&
+        (error.message.includes("No tile at position") ||
+            error.message.includes("Cannot destructure property 'tile'"))
+    );
+}
+
 export function Editor({
     emptyStateMessage = "Open a note from the left panel",
 }: EditorProps) {
@@ -215,6 +223,7 @@ export function Editor({
     const [isDraggingVault, setIsDraggingVault] = useState(false);
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
     const spellcheckRequestIdRef = useRef(0);
+    const didLogCoordinateLookupErrorRef = useRef(false);
     const [, setEditorView] = useState<EditorView | null>(null);
 
     const attachScrollHeader = useCallback((view: EditorView) => {
@@ -664,67 +673,116 @@ export function Editor({
         [],
     );
 
-    const updateSelectionToolbar = useCallback((view: EditorView | null) => {
-        const hasActiveSelection =
-            view &&
-            activeTabRef.current &&
-            view.hasFocus &&
-            view.state.selection.ranges.length === 1 &&
-            !view.state.selection.main.empty;
-
-        if (!hasActiveSelection) {
-            // Only update if there was a previous selection
-            if (useEditorStore.getState().currentSelection !== null) {
-                useEditorStore.getState().clearCurrentSelection();
+    const handleRecoverableCoordinateLookupError = useCallback(
+        (error: unknown, source: string) => {
+            if (!isRecoverableCoordinateLookupError(error)) {
+                throw error;
             }
-            clearEditorDomSelection(view);
-            syncSelectionLayerVisibility(view);
-            setSelectionToolbar((prev) => (prev === null ? prev : null));
-            return;
-        }
-
-        const selection = view.state.selection.main;
-        const selectionStart = view.coordsAtPos(selection.from, 1);
-        const selectionEnd = view.coordsAtPos(
-            Math.max(selection.from, selection.to - 1),
-            -1,
-        );
-        if (!selectionStart || !selectionEnd) {
-            if (useEditorStore.getState().currentSelection !== null) {
-                useEditorStore.getState().clearCurrentSelection();
+            if (!didLogCoordinateLookupErrorRef.current) {
+                didLogCoordinateLookupErrorRef.current = true;
+                console.warn(
+                    `Ignoring transient CodeMirror coordinate lookup failure in ${source}.`,
+                    error,
+                );
             }
-            clearEditorDomSelection(view);
+            return null;
+        },
+        [],
+    );
+
+    const safeCoordsAtPos = useCallback(
+        (view: EditorView, pos: number, side?: 1 | -1) => {
+            try {
+                return view.coordsAtPos(pos, side);
+            } catch (error) {
+                return handleRecoverableCoordinateLookupError(
+                    error,
+                    "coordsAtPos",
+                );
+            }
+        },
+        [handleRecoverableCoordinateLookupError],
+    );
+
+    const safePosAtCoords = useCallback(
+        (view: EditorView, coords: { x: number; y: number }) => {
+            try {
+                return view.posAtCoords(coords);
+            } catch (error) {
+                return handleRecoverableCoordinateLookupError(
+                    error,
+                    "posAtCoords",
+                );
+            }
+        },
+        [handleRecoverableCoordinateLookupError],
+    );
+
+    const updateSelectionToolbar = useCallback(
+        (view: EditorView | null) => {
+            const hasActiveSelection =
+                view &&
+                activeTabRef.current &&
+                view.hasFocus &&
+                view.state.selection.ranges.length === 1 &&
+                !view.state.selection.main.empty;
+
+            if (!hasActiveSelection) {
+                // Only update if there was a previous selection
+                if (useEditorStore.getState().currentSelection !== null) {
+                    useEditorStore.getState().clearCurrentSelection();
+                }
+                clearEditorDomSelection(view);
+                syncSelectionLayerVisibility(view);
+                setSelectionToolbar((prev) => (prev === null ? prev : null));
+                return;
+            }
+
+            const selection = view.state.selection.main;
+            const selectionStart = safeCoordsAtPos(view, selection.from, 1);
+            const selectionEnd = safeCoordsAtPos(
+                view,
+                Math.max(selection.from, selection.to - 1),
+                -1,
+            );
+            if (!selectionStart || !selectionEnd) {
+                if (useEditorStore.getState().currentSelection !== null) {
+                    useEditorStore.getState().clearCurrentSelection();
+                }
+                clearEditorDomSelection(view);
+                syncSelectionLayerVisibility(view);
+                setSelectionToolbar((prev) => (prev === null ? prev : null));
+                return;
+            }
+
             syncSelectionLayerVisibility(view);
-            setSelectionToolbar((prev) => (prev === null ? prev : null));
-            return;
-        }
+            const startLine = view.state.doc.lineAt(selection.from).number;
+            const endLine = view.state.doc.lineAt(
+                Math.max(selection.from, selection.to - 1),
+            ).number;
+            useEditorStore.getState().setCurrentSelection({
+                noteId: activeTabRef.current!.noteId,
+                path: null,
+                text: view.state.sliceDoc(selection.from, selection.to),
+                from: selection.from,
+                to: selection.to,
+                startLine,
+                endLine,
+            });
+            const sameLine = startLine === endLine;
 
-        syncSelectionLayerVisibility(view);
-        const startLine = view.state.doc.lineAt(selection.from).number;
-        const endLine = view.state.doc.lineAt(
-            Math.max(selection.from, selection.to - 1),
-        ).number;
-        useEditorStore.getState().setCurrentSelection({
-            noteId: activeTabRef.current!.noteId,
-            path: null,
-            text: view.state.sliceDoc(selection.from, selection.to),
-            from: selection.from,
-            to: selection.to,
-            startLine,
-            endLine,
-        });
-        const sameLine = startLine === endLine;
-
-        setSelectionToolbar({
-            x: sameLine
-                ? (selectionStart.left + selectionEnd.right) / 2
-                : (selectionStart.left + selectionStart.right) / 2,
-            top: selectionStart.top,
-            bottom: Math.max(selectionStart.bottom, selectionEnd.bottom),
-            selectionFrom: selection.from,
-            selectionTo: selection.to,
-        });
-    }, []);
+            setSelectionToolbar({
+                x: sameLine
+                    ? (selectionStart.left + selectionEnd.right) / 2
+                    : (selectionStart.left + selectionStart.right) / 2,
+                top: selectionStart.top,
+                bottom: Math.max(selectionStart.bottom, selectionEnd.bottom),
+                selectionFrom: selection.from,
+                selectionTo: selection.to,
+            });
+        },
+        [safeCoordsAtPos],
+    );
 
     const handleSelectionToolbarAction = useCallback(
         (action: SelectionToolbarAction) => {
@@ -815,74 +873,79 @@ export function Editor({
         setSelectionToolbar(null);
     }, []);
 
-    const updateWikilinkSuggester = useCallback((view: EditorView | null) => {
-        if (!view || !activeTabRef.current || !view.hasFocus) {
-            wikilinkSuggestionRequestIdRef.current += 1;
-            wikilinkSuggesterArmedRef.current = false;
-            setWikilinkSuggester((prev) => (prev === null ? prev : null));
-            return;
-        }
+    const updateWikilinkSuggester = useCallback(
+        (view: EditorView | null) => {
+            if (!view || !activeTabRef.current || !view.hasFocus) {
+                wikilinkSuggestionRequestIdRef.current += 1;
+                wikilinkSuggesterArmedRef.current = false;
+                setWikilinkSuggester((prev) => (prev === null ? prev : null));
+                return;
+            }
 
-        const context = getWikilinkContext(view.state);
-        if (!context) {
-            wikilinkSuggestionRequestIdRef.current += 1;
-            wikilinkSuggesterArmedRef.current = false;
-            setWikilinkSuggester((prev) => (prev === null ? prev : null));
-            return;
-        }
+            const context = getWikilinkContext(view.state);
+            if (!context) {
+                wikilinkSuggestionRequestIdRef.current += 1;
+                wikilinkSuggesterArmedRef.current = false;
+                setWikilinkSuggester((prev) => (prev === null ? prev : null));
+                return;
+            }
 
-        if (!wikilinkSuggesterArmedRef.current) {
-            wikilinkSuggestionRequestIdRef.current += 1;
-            setWikilinkSuggester((prev) => (prev === null ? prev : null));
-            return;
-        }
+            if (!wikilinkSuggesterArmedRef.current) {
+                wikilinkSuggestionRequestIdRef.current += 1;
+                setWikilinkSuggester((prev) => (prev === null ? prev : null));
+                return;
+            }
 
-        const caret = view.coordsAtPos(view.state.selection.main.head);
-        if (!caret) {
-            wikilinkSuggestionRequestIdRef.current += 1;
-            setWikilinkSuggester(null);
-            return;
-        }
+            const caret = safeCoordsAtPos(view, view.state.selection.main.head);
+            if (!caret) {
+                wikilinkSuggestionRequestIdRef.current += 1;
+                setWikilinkSuggester(null);
+                return;
+            }
 
-        const requestId = ++wikilinkSuggestionRequestIdRef.current;
-        const activeNoteId = activeTabRef.current.noteId;
-        const { left, top } = caret;
+            const requestId = ++wikilinkSuggestionRequestIdRef.current;
+            const activeNoteId = activeTabRef.current.noteId;
+            const { left, top } = caret;
 
-        void getWikilinkSuggestions(activeNoteId, context.query)
-            .then((items) => {
-                if (requestId !== wikilinkSuggestionRequestIdRef.current)
-                    return;
-                setWikilinkSuggester((previous) => ({
-                    x: left,
-                    y: top,
-                    query: context.query,
-                    selectedIndex: previous
-                        ? Math.min(
-                              previous.selectedIndex,
-                              Math.max(items.length - 1, 0),
-                          )
-                        : 0,
-                    items,
-                    wholeFrom: context.wholeFrom,
-                    wholeTo: context.wholeTo,
-                }));
-            })
-            .catch((error) => {
-                if (requestId !== wikilinkSuggestionRequestIdRef.current)
-                    return;
-                console.error("Error loading wikilink suggestions:", error);
-                setWikilinkSuggester((previous) => ({
-                    x: left,
-                    y: top,
-                    query: context.query,
-                    selectedIndex: 0,
-                    items:
-                        previous?.query === context.query ? previous.items : [],
-                    wholeFrom: context.wholeFrom,
-                    wholeTo: context.wholeTo,
-                }));
-            });
-    }, []);
+            void getWikilinkSuggestions(activeNoteId, context.query)
+                .then((items) => {
+                    if (requestId !== wikilinkSuggestionRequestIdRef.current)
+                        return;
+                    setWikilinkSuggester((previous) => ({
+                        x: left,
+                        y: top,
+                        query: context.query,
+                        selectedIndex: previous
+                            ? Math.min(
+                                  previous.selectedIndex,
+                                  Math.max(items.length - 1, 0),
+                              )
+                            : 0,
+                        items,
+                        wholeFrom: context.wholeFrom,
+                        wholeTo: context.wholeTo,
+                    }));
+                })
+                .catch((error) => {
+                    if (requestId !== wikilinkSuggestionRequestIdRef.current)
+                        return;
+                    console.error("Error loading wikilink suggestions:", error);
+                    setWikilinkSuggester((previous) => ({
+                        x: left,
+                        y: top,
+                        query: context.query,
+                        selectedIndex: 0,
+                        items:
+                            previous?.query === context.query
+                                ? previous.items
+                                : [],
+                        wholeFrom: context.wholeFrom,
+                        wholeTo: context.wholeTo,
+                    }));
+                });
+        },
+        [safeCoordsAtPos],
+    );
 
     const moveWikilinkSuggesterSelection = useCallback((direction: 1 | -1) => {
         const suggester = wikilinkSuggesterRef.current;
@@ -1212,7 +1275,7 @@ export function Editor({
                 return false;
             }
 
-            const pos = view.posAtCoords({
+            const pos = safePosAtCoords(view, {
                 x: event.clientX,
                 y: event.clientY,
             });
@@ -1311,6 +1374,7 @@ export function Editor({
         [
             getSecondaryLanguageCandidates,
             loadSpellcheckSuggestions,
+            safePosAtCoords,
             spellcheckSecondaryLanguage,
         ],
     );

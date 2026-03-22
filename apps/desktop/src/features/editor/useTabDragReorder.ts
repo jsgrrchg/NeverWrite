@@ -114,6 +114,8 @@ export function useTabDragReorder({
     const suppressClickRef = useRef<string | null>(null);
     const detachActiveRef = useRef(false);
     const detachCleanupRef = useRef<(() => void) | null>(null);
+    const detachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const latestScreenCoordsRef = useRef({ screenX: 0, screenY: 0 });
     const handlePointerUpRef = useRef<
         (
             pointerId?: number,
@@ -349,6 +351,10 @@ export function useTabDragReorder({
 
             stopEdgeScroll();
             detachCleanupRef.current?.();
+            if (detachTimerRef.current !== null) {
+                clearTimeout(detachTimerRef.current);
+                detachTimerRef.current = null;
+            }
             document.body.classList.remove("dragging-tab");
             setDetachPreviewActive(false);
 
@@ -576,9 +582,10 @@ export function useTabDragReorder({
 
             // Pointer wants to detach — arm hysteresis
             if (wantsDetach && onDetachStart) {
-                if (session.detachArmedAt === null) {
-                    session.detachArmedAt = window.performance.now();
-                }
+                latestScreenCoordsRef.current = {
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                };
 
                 setDetachPreviewActive(true);
                 stopEdgeScroll();
@@ -586,50 +593,92 @@ export function useTabDragReorder({
                     computeDragOffset(event.clientX) - domShiftRef.current,
                 );
 
-                if (
-                    window.performance.now() - session.detachArmedAt <
-                    TAB_DETACH_HYSTERESIS_MS
-                ) {
-                    return;
-                }
+                // Enter ghost mode once the hysteresis threshold is met.
+                // This helper is shared between the pointermove fast-path
+                // and the setTimeout fallback (for when WebKit stops
+                // delivering events outside the window).
+                const enterGhostMode = (s: TabDragSession) => {
+                    if (detachActiveRef.current) return;
+                    detachActiveRef.current = true;
 
-                // Hysteresis passed — enter ghost mode (keep pointer capture)
-                detachActiveRef.current = true;
+                    if (detachTimerRef.current !== null) {
+                        clearTimeout(detachTimerRef.current);
+                        detachTimerRef.current = null;
+                    }
 
-                // Install document-level pointerup as fallback (WebKit may not
-                // deliver pointerup to captured elements outside the window).
-                const onDocPointerUp = (e: PointerEvent) => {
-                    if (e.pointerId !== session.pointerId) return;
-                    cleanup();
-                    handlePointerUpRef.current(e.pointerId, {
-                        clientX: e.clientX,
-                        clientY: e.clientY,
-                        screenX: e.screenX,
-                        screenY: e.screenY,
+                    // Install document-level pointerup as fallback
+                    // (WebKit may not deliver pointerup to captured
+                    // elements outside the window).
+                    const onDocPointerUp = (e: PointerEvent) => {
+                        if (e.pointerId !== s.pointerId) return;
+                        cleanup();
+                        handlePointerUpRef.current(e.pointerId, {
+                            clientX: e.clientX,
+                            clientY: e.clientY,
+                            screenX: e.screenX,
+                            screenY: e.screenY,
+                        });
+                    };
+                    const cleanup = () => {
+                        document.removeEventListener(
+                            "pointerup",
+                            onDocPointerUp,
+                        );
+                        detachCleanupRef.current = null;
+                    };
+                    detachCleanupRef.current = cleanup;
+                    document.addEventListener("pointerup", onDocPointerUp);
+
+                    void onDetachStart(s.tabId, {
+                        ...latestScreenCoordsRef.current,
                     });
                 };
-                const cleanup = () => {
-                    document.removeEventListener("pointerup", onDocPointerUp);
-                    detachCleanupRef.current = null;
-                };
-                detachCleanupRef.current = cleanup;
-                document.addEventListener("pointerup", onDocPointerUp);
 
-                void onDetachStart(tabId, {
-                    screenX: event.screenX,
-                    screenY: event.screenY,
-                });
+                if (session.detachArmedAt === null) {
+                    session.detachArmedAt = window.performance.now();
+
+                    // Fallback timer: fires even if no more pointermove
+                    // events arrive (e.g. pointer outside window on macOS).
+                    detachTimerRef.current = setTimeout(() => {
+                        detachTimerRef.current = null;
+                        const s = sessionRef.current;
+                        if (!s || !s.dragging) return;
+                        if (s.detachArmedAt === null) return;
+                        enterGhostMode(s);
+                    }, TAB_DETACH_HYSTERESIS_MS);
+                } else if (
+                    window.performance.now() - session.detachArmedAt >=
+                    TAB_DETACH_HYSTERESIS_MS
+                ) {
+                    // Fast-path: pointermove arrived after threshold elapsed.
+                    enterGhostMode(session);
+                }
+
                 return;
             }
 
-            // Pointer returned to window while ghost was active — cancel ghost
+            // Pointer returned to window while ghost was active
             if (!wantsDetach && detachActiveRef.current) {
+                // Button was already released outside the window (missed
+                // pointerup — common on macOS/WebKit). Complete the detach
+                // using the last known screen coordinates.
+                if (event.buttons === 0) {
+                    const tid = session.tabId;
+                    const coords = { ...latestScreenCoordsRef.current };
+                    finishDrag(event.pointerId, {
+                        commit: false,
+                        suppressClick: true,
+                    });
+                    void onDetachEnd?.(tid, coords);
+                    return;
+                }
+
+                // Still holding — cancel ghost and resume normal drag.
                 detachActiveRef.current = false;
                 detachCleanupRef.current?.();
                 onDetachCancel?.();
                 setDetachPreviewActive(false);
                 session.detachArmedAt = null;
-                // Resume normal drag
                 syncDraggedTab(event.clientX);
                 updateEdgeScroll(event.clientX);
                 return;
@@ -637,6 +686,10 @@ export function useTabDragReorder({
 
             if (session.detachArmedAt !== null) {
                 session.detachArmedAt = null;
+                if (detachTimerRef.current !== null) {
+                    clearTimeout(detachTimerRef.current);
+                    detachTimerRef.current = null;
+                }
             }
             if (detachPreviewActive) {
                 setDetachPreviewActive(false);
