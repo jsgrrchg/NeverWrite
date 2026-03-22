@@ -279,6 +279,33 @@ describe("Editor", () => {
         );
     });
 
+    it("does not underline markdown headings in source mode", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "# Heading\nBody",
+            },
+        ]);
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+
+        renderComponent(<Editor />);
+
+        const headingLine = document.querySelector(".cm-line") as HTMLElement;
+        expect(headingLine).not.toBeNull();
+        expect(headingLine.textContent).toContain("Heading");
+
+        const headingTarget = headingLine.querySelector(
+            ".cm-source-heading",
+        ) as HTMLElement | null;
+
+        expect(headingTarget).not.toBeNull();
+        expect(
+            window.getComputedStyle(headingTarget as Element).textDecoration,
+        ).not.toContain("underline");
+    });
+
     it("activates merge view only in source mode", async () => {
         setEditorTabs([
             {

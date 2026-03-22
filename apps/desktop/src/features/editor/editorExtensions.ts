@@ -1,6 +1,13 @@
-import { EditorView, lineNumbers } from "@codemirror/view";
-import { Compartment } from "@codemirror/state";
 import {
+    Decoration,
+    EditorView,
+    type ViewUpdate,
+    ViewPlugin,
+    lineNumbers,
+} from "@codemirror/view";
+import { Compartment, RangeSetBuilder } from "@codemirror/state";
+import {
+    syntaxTree,
     syntaxHighlighting,
     defaultHighlightStyle,
 } from "@codemirror/language";
@@ -91,6 +98,10 @@ export const baseTheme = EditorView.theme({
         textAlign: "right",
         lineHeight: "var(--text-input-line-height)",
     },
+    '&[data-live-preview="false"] .cm-source-heading, &[data-live-preview="false"] .cm-source-heading *':
+        {
+            textDecoration: "none",
+        },
     ".cm-cursor": {
         borderLeftColor: "var(--text-primary)",
         borderLeftWidth: "2px",
@@ -137,11 +148,57 @@ export const spellcheckCompartment = new Compartment();
 export const spellcheckDecorationsCompartment = new Compartment();
 // Compartment for grammar check decorations
 export const grammarDecorationsCompartment = new Compartment();
+
+const sourceHeadingDecoration = Decoration.mark({
+    class: "cm-source-heading",
+});
+
+function buildSourceHeadingDecorations(view: EditorView) {
+    const builder = new RangeSetBuilder<Decoration>();
+
+    syntaxTree(view.state).iterate({
+        from: 0,
+        to: view.state.doc.length,
+        enter(node) {
+            if (
+                node.name.startsWith("ATXHeading") ||
+                node.name.startsWith("SetextHeading")
+            ) {
+                builder.add(node.from, node.to, sourceHeadingDecoration);
+            }
+        },
+    });
+
+    return builder.finish();
+}
+
+const sourceHeadingDecorationExtension = ViewPlugin.fromClass(
+    class {
+        decorations;
+
+        constructor(view: EditorView) {
+            this.decorations = buildSourceHeadingDecorations(view);
+        }
+
+        update(update: ViewUpdate) {
+            if (update.docChanged || update.viewportChanged) {
+                this.decorations = buildSourceHeadingDecorations(update.view);
+            }
+        }
+    },
+    {
+        decorations: (plugin) => plugin.decorations,
+    },
+);
+
 export function getSyntaxExtension(isDark: boolean) {
     // Only switch syntax highlighting colors, not the full editor theme
-    return isDark
-        ? syntaxHighlighting(oneDarkHighlightStyle)
-        : syntaxHighlighting(defaultHighlightStyle);
+    return [
+        syntaxHighlighting(
+            isDark ? oneDarkHighlightStyle : defaultHighlightStyle,
+        ),
+        sourceHeadingDecorationExtension,
+    ];
 }
 
 export function getLivePreviewExtension(
