@@ -5,7 +5,11 @@ import { deriveDisplayedTitle } from "./noteTitleHelpers";
 describe("deriveDisplayedTitle", () => {
     it("uses the leading H1 when there is no frontmatter title", () => {
         expect(
-            deriveDisplayedTitle(null, "# Live Preview\n\nBody copy", "Fallback"),
+            deriveDisplayedTitle(
+                null,
+                "# Live Preview\n\nBody copy",
+                "Fallback",
+            ),
         ).toBe("Live Preview");
     });
 
