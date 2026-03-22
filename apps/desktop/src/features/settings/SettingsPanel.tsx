@@ -490,6 +490,13 @@ const THEME_ORDER: ThemeName[] = [
     "solarized",
     "tokyoNight",
     "gruvbox",
+    "ayu",
+    "nightOwl",
+    "vesper",
+    "rosePine",
+    "kanagawa",
+    "everforest",
+    "synthwave84",
 ];
 
 function ThemePicker({
@@ -708,9 +715,6 @@ function AppearanceSettings() {
 
     return (
         <div>
-            <SectionLabel>Theme</SectionLabel>
-            <ThemePicker value={themeName} onChange={setThemeName} />
-
             <SectionLabel>Mode</SectionLabel>
             <Row
                 label="System theme"
@@ -727,6 +731,9 @@ function AppearanceSettings() {
                     />
                 }
             />
+
+            <SectionLabel>Theme</SectionLabel>
+            <ThemePicker value={themeName} onChange={setThemeName} />
 
             <SectionLabel>Navigation</SectionLabel>
             <Row
