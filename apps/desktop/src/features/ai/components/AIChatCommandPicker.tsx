@@ -44,7 +44,14 @@ export function AIChatCommandPicker({
         if (!element) return;
 
         const rect = element.getBoundingClientRect();
-        setPosition(getViewportSafeMenuPosition(x, y - rect.height - 8, rect.width, rect.height));
+        setPosition(
+            getViewportSafeMenuPosition(
+                x,
+                y - rect.height - 8,
+                rect.width,
+                rect.height,
+            ),
+        );
     }, [open, x, y, items.length]);
 
     useEffect(() => {
@@ -101,7 +108,9 @@ export function AIChatCommandPicker({
                     color: "var(--text-secondary)",
                 }}
             >
-                {query.trim() ? `Commands matching "${query.trim()}"` : "Commands"}
+                {query.trim()
+                    ? `Commands matching "${query.trim()}"`
+                    : "Commands"}
             </div>
             <div
                 style={{
@@ -141,6 +150,7 @@ export function AIChatCommandPicker({
                                     padding: "10px 12px",
                                     textAlign: "left",
                                     cursor: "pointer",
+                                    transition: "background-color 80ms ease",
                                 }}
                             >
                                 <div

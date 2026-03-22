@@ -121,7 +121,9 @@ export function AIChatHeader({
               ? sessionsById[activeSessionId]
               : null) ?? null;
     const showTabs = tabs.length > 1;
-    const headerTitle = currentSession ? getSessionTitle(currentSession) : "New chat";
+    const headerTitle = currentSession
+        ? getSessionTitle(currentSession)
+        : "New chat";
 
     useEffect(() => {
         const node = headerRef.current;
@@ -185,7 +187,11 @@ export function AIChatHeader({
                     sessionsById={sessionsById}
                     runtimes={runtimes}
                     density={
-                        isTight ? "tight" : isCompact ? "compact" : "comfortable"
+                        isTight
+                            ? "tight"
+                            : isCompact
+                              ? "compact"
+                              : "comfortable"
                     }
                     onSelectTab={onSelectTab}
                     onCloseTab={onCloseTab}
@@ -235,6 +241,22 @@ export function AIChatHeader({
                                     ? "var(--bg-tertiary)"
                                     : "transparent",
                                 border: "1px solid var(--border)",
+                                transition:
+                                    "background-color 100ms ease, color 100ms ease",
+                            }}
+                            onMouseEnter={(e) => {
+                                if (sessionMenuOpen) return;
+                                e.currentTarget.style.backgroundColor =
+                                    "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                                e.currentTarget.style.color =
+                                    "var(--text-primary)";
+                            }}
+                            onMouseLeave={(e) => {
+                                if (sessionMenuOpen) return;
+                                e.currentTarget.style.backgroundColor =
+                                    "transparent";
+                                e.currentTarget.style.color =
+                                    "var(--text-secondary)";
                             }}
                             title="Recent chats"
                         >
@@ -309,10 +331,12 @@ export function AIChatHeader({
                                                     color: "#ef4444",
                                                     background: "none",
                                                     border: "none",
+                                                    transition:
+                                                        "background-color 80ms ease",
                                                 }}
                                                 onMouseEnter={(e) => {
                                                     e.currentTarget.style.backgroundColor =
-                                                        "var(--bg-tertiary)";
+                                                        "color-mix(in srgb, #ef4444 10%, var(--bg-secondary))";
                                                 }}
                                                 onMouseLeave={(e) => {
                                                     e.currentTarget.style.backgroundColor =
@@ -342,6 +366,21 @@ export function AIChatHeader({
                                 ? "color-mix(in srgb, var(--accent) 14%, transparent)"
                                 : "transparent",
                             border: "none",
+                            transition:
+                                "background-color 100ms ease, color 100ms ease",
+                        }}
+                        onMouseEnter={(e) => {
+                            if (panelExpanded) return;
+                            e.currentTarget.style.backgroundColor =
+                                "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                            e.currentTarget.style.color = "var(--text-primary)";
+                        }}
+                        onMouseLeave={(e) => {
+                            if (panelExpanded) return;
+                            e.currentTarget.style.backgroundColor =
+                                "transparent";
+                            e.currentTarget.style.color =
+                                "var(--text-secondary)";
                         }}
                         title={
                             panelExpanded
@@ -388,6 +427,19 @@ export function AIChatHeader({
                             color: "var(--text-secondary)",
                             backgroundColor: "transparent",
                             border: "none",
+                            transition:
+                                "background-color 100ms ease, color 100ms ease",
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                                "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                            e.currentTarget.style.color = "var(--text-primary)";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                                "transparent";
+                            e.currentTarget.style.color =
+                                "var(--text-secondary)";
                         }}
                         title="New chat"
                     >
@@ -424,6 +476,8 @@ export function AIChatHeader({
                                         color: "var(--text-primary)",
                                         backgroundColor: "transparent",
                                         border: "none",
+                                        transition:
+                                            "background-color 80ms ease",
                                     }}
                                     onMouseEnter={(e) => {
                                         e.currentTarget.style.backgroundColor =

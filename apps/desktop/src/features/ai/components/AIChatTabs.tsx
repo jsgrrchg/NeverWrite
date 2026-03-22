@@ -128,6 +128,19 @@ export function AIChatTabs({
                                 ? "var(--text-primary)"
                                 : "var(--text-secondary)",
                         }}
+                        onMouseEnter={(e) => {
+                            if (isActive) return;
+                            e.currentTarget.style.backgroundColor =
+                                "color-mix(in srgb, var(--bg-tertiary) 60%, var(--bg-secondary))";
+                            e.currentTarget.style.color = "var(--text-primary)";
+                        }}
+                        onMouseLeave={(e) => {
+                            if (isActive) return;
+                            e.currentTarget.style.backgroundColor =
+                                "var(--bg-secondary)";
+                            e.currentTarget.style.color =
+                                "var(--text-secondary)";
+                        }}
                     >
                         <button
                             role="tab"
