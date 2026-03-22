@@ -35,6 +35,13 @@ const VALID_THEME_NAMES = new Set<ThemeName>([
     "solarized",
     "tokyoNight",
     "gruvbox",
+    "ayu",
+    "nightOwl",
+    "vesper",
+    "rosePine",
+    "kanagawa",
+    "everforest",
+    "synthwave84",
 ]);
 
 function normalizeThemeMode(value: unknown): ThemeMode {
