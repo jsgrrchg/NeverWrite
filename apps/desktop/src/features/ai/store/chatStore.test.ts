@@ -3587,7 +3587,19 @@ describe("chatStore", () => {
             }
 
             if (command === "ai_restore_text_file") {
-                return undefined;
+                return {
+                    vault_path: "/vault",
+                    kind: "upsert",
+                    note: null,
+                    note_id: null,
+                    entry: null,
+                    relative_path: "src/watcher.rs",
+                    origin: "agent",
+                    op_id: "agent-merged-1",
+                    revision: 3,
+                    content_hash: "hash-merged-line",
+                    graph_revision: 1,
+                };
             }
 
             if (
@@ -3882,7 +3894,19 @@ describe("chatStore", () => {
             }
 
             if (command === "ai_restore_text_file") {
-                return undefined;
+                return {
+                    vault_path: "/vault",
+                    kind: "upsert",
+                    note: null,
+                    note_id: null,
+                    entry: null,
+                    relative_path: "src/watcher.rs",
+                    origin: "agent",
+                    op_id: "agent-merged-1",
+                    revision: 3,
+                    content_hash: "hash-merged-line",
+                    graph_revision: 1,
+                };
             }
 
             if (
@@ -4110,7 +4134,19 @@ describe("chatStore", () => {
             }
 
             if (command === "ai_restore_text_file") {
-                return undefined;
+                return {
+                    vault_path: "/vault",
+                    kind: "upsert",
+                    note: null,
+                    note_id: null,
+                    entry: null,
+                    relative_path: "src/watcher.rs",
+                    origin: "agent",
+                    op_id: "agent-merged-1",
+                    revision: 3,
+                    content_hash: "hash-merged-line",
+                    graph_revision: 1,
+                };
             }
 
             if (
@@ -4140,6 +4176,14 @@ describe("chatStore", () => {
         expect(
             editorState._pendingForceReloads.has("/vault/src/watcher.rs"),
         ).toBe(true);
+        expect(
+            editorState._noteReloadMetadata["/vault/src/watcher.rs"],
+        ).toMatchObject({
+            origin: "agent",
+            opId: "agent-merged-1",
+            revision: 3,
+            contentHash: "hash-merged-line",
+        });
     });
 
     it("reloads an open markdown note when rejecting a deleted hunk from an absolute path", async () => {
@@ -4206,7 +4250,25 @@ describe("chatStore", () => {
             }
 
             if (command === "ai_restore_text_file") {
-                return undefined;
+                return {
+                    vault_path: "/vault",
+                    kind: "upsert",
+                    note: {
+                        id: "notes/current",
+                        path: "/vault/notes/current.md",
+                        title: "Current",
+                        modified_at: 0,
+                        created_at: 0,
+                    },
+                    note_id: "notes/current",
+                    entry: null,
+                    relative_path: "notes/current.md",
+                    origin: "agent",
+                    op_id: "agent-hunk-1",
+                    revision: 4,
+                    content_hash: "hash-alpha-beta-gamma",
+                    graph_revision: 1,
+                };
             }
 
             if (
@@ -4238,6 +4300,12 @@ describe("chatStore", () => {
         expect(editorState._pendingForceReloads.has("notes/current")).toBe(
             true,
         );
+        expect(editorState._noteReloadMetadata["notes/current"]).toMatchObject({
+            origin: "agent",
+            opId: "agent-hunk-1",
+            revision: 4,
+            contentHash: "hash-alpha-beta-gamma",
+        });
     });
 
     it("keeps hunk review disabled while the tracked file is pending and finalizes it on message completion", async () => {

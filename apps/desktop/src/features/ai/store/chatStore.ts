@@ -35,7 +35,10 @@ import {
     isNoteTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
-import { useVaultStore } from "../../../app/store/vaultStore";
+import {
+    useVaultStore,
+    type VaultNoteChange,
+} from "../../../app/store/vaultStore";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     appendSelectionMentionPart,
@@ -1587,17 +1590,18 @@ async function executeRestoreAction(
 ) {
     const action = computeRestoreAction(tracked, liveText);
     if (action.kind === "skip") {
-        return action;
+        return { action, change: null as VaultNoteChange | null };
     }
 
+    let change: VaultNoteChange | null = null;
     if (action.kind === "delete") {
-        await aiRestoreTextFile({
+        change = await aiRestoreTextFile({
             vaultPath,
             path: tracked.path,
             content: null,
         });
     } else {
-        await aiRestoreTextFile({
+        change = await aiRestoreTextFile({
             vaultPath,
             path:
                 tracked.originPath !== tracked.path
@@ -1610,14 +1614,18 @@ async function executeRestoreAction(
         });
     }
 
-    return action;
+    return { action, change };
 }
 
 /**
  * After a reject/undo writes content to disk, force-reload the open editor tab
  * so CodeMirror reflects the new content immediately.
  */
-function reloadOpenEditorContent(path: string, content: string) {
+function reloadOpenEditorContent(
+    path: string,
+    content: string,
+    change?: VaultNoteChange | null,
+) {
     const noteId =
         resolveMarkdownNoteId(path) ??
         stripMarkdownExtension(normalizeTrackedPath(path));
@@ -1629,6 +1637,10 @@ function reloadOpenEditorContent(path: string, content: string) {
         useEditorStore.getState().forceReloadNoteContent(noteId, {
             content,
             title: (openTab as { title?: string }).title ?? noteId,
+            origin: change?.origin ?? "agent",
+            opId: change?.op_id ?? null,
+            revision: change?.revision ?? 0,
+            contentHash: change?.content_hash ?? null,
         });
     }
 }
@@ -1637,7 +1649,11 @@ function reloadOpenEditorContent(path: string, content: string) {
  * After rejecting a tracked file, reload the editor (or close the tab if the
  * file was deleted).
  */
-function reloadEditorAfterRestore(tracked: TrackedFile, action: RestoreAction) {
+function reloadEditorAfterRestore(
+    tracked: TrackedFile,
+    action: RestoreAction,
+    change?: VaultNoteChange | null,
+) {
     const restoredPath =
         action.kind === "write" && tracked.originPath !== tracked.path
             ? tracked.originPath
@@ -1654,7 +1670,7 @@ function reloadEditorAfterRestore(tracked: TrackedFile, action: RestoreAction) {
             useEditorStore.getState().handleNoteDeleted(noteId);
         }
     } else {
-        reloadOpenEditorContent(restoredPath, action.content);
+        reloadOpenEditorContent(restoredPath, action.content, change);
     }
 }
 
@@ -4971,12 +4987,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 const liveText = await readTrackedFileLiveText(tracked);
-                const restoreAction = await executeRestoreAction(
-                    vaultPath,
-                    tracked,
-                    liveText,
-                );
-                reloadEditorAfterRestore(tracked, restoreAction);
+                const { action: restoreAction, change } =
+                    await executeRestoreAction(vaultPath, tracked, liveText);
+                reloadEditorAfterRestore(tracked, restoreAction, change);
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
@@ -5069,7 +5082,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
-                await aiRestoreTextFile({
+                const change = await aiRestoreTextFile({
                     vaultPath,
                     path: tracked.path,
                     previousPath:
@@ -5078,7 +5091,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             : null,
                     content: mergedText,
                 });
-                reloadOpenEditorContent(tracked.path, mergedText);
+                reloadOpenEditorContent(tracked.path, mergedText, change);
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
@@ -5158,12 +5171,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }
 
                     const liveText = await readTrackedFileLiveText(tracked);
-                    const restoreAction = await executeRestoreAction(
-                        vaultPath,
-                        tracked,
-                        liveText,
-                    );
-                    reloadEditorAfterRestore(tracked, restoreAction);
+                    const { action: restoreAction, change } =
+                        await executeRestoreAction(
+                            vaultPath,
+                            tracked,
+                            liveText,
+                        );
+                    reloadEditorAfterRestore(tracked, restoreAction, change);
 
                     removedIdentityKeys.add(identityKey);
                     if (restoreAction.kind !== "skip") {
@@ -5358,7 +5372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 hunkUndoSnapshot = { identityKey, snapshot: tracked };
 
                 if (vaultPath) {
-                    await aiRestoreTextFile({
+                    const change = await aiRestoreTextFile({
                         vaultPath,
                         path: tracked.path,
                         previousPath:
@@ -5370,6 +5384,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     reloadOpenEditorContent(
                         tracked.path,
                         updatedFile.currentText,
+                        change,
                     );
                 }
             }
@@ -5463,13 +5478,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         snapshot.status.existingFileContent === null
                     ) {
                         // File was created by agent — re-create it
-                        await aiRestoreTextFile({
+                        const change = await aiRestoreTextFile({
                             vaultPath,
                             path: snapshot.path,
                             content: snapshot.currentText,
                         });
+                        reloadOpenEditorContent(
+                            snapshot.path,
+                            snapshot.currentText,
+                            change,
+                        );
                     } else {
-                        await aiRestoreTextFile({
+                        const change = await aiRestoreTextFile({
                             vaultPath,
                             path: snapshot.path,
                             previousPath:
@@ -5478,11 +5498,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                     : null,
                             content: snapshot.currentText,
                         });
+                        reloadOpenEditorContent(
+                            snapshot.path,
+                            snapshot.currentText,
+                            change,
+                        );
                     }
-                    reloadOpenEditorContent(
-                        snapshot.path,
-                        snapshot.currentText,
-                    );
                     restoredSnapshots[identityKey] = snapshot;
                 } catch (error) {
                     caughtError = error;
