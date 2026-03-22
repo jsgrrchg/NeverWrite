@@ -133,6 +133,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
         if (!container) return;
 
         function handleWheel(event: WheelEvent) {
+            if (!container) return;
             if (!isWheelZoomGesture(event, wheelZoomModifierRef)) return;
             event.preventDefault();
 

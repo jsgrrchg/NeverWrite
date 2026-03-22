@@ -1616,7 +1616,7 @@ function touchesLineIndentation(update: ViewUpdate): boolean {
 function touchesListPresentationTransition(update: ViewUpdate): boolean {
     let touched = false;
 
-    update.changes.iterChangedRanges((fromA, _toA, fromB, _toB) => {
+    update.changes.iterChangedRanges((fromA, _toA, fromB) => {
         if (touched) return;
 
         const oldLine = update.startState.doc.lineAt(fromA);
