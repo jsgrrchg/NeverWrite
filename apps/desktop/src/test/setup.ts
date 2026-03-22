@@ -112,9 +112,8 @@ vi.mock("@xterm/xterm", () => ({
             };
         }
 
-        attachCustomKeyEventHandler(
-            _listener: (event: KeyboardEvent) => boolean,
-        ) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        attachCustomKeyEventHandler(_: (event: KeyboardEvent) => boolean) {
             // No-op in tests; keyboard interception is exercised through UI state.
         }
 

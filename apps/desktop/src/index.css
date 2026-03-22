@@ -335,12 +335,8 @@ body.dragging-tab * {
         box-shadow 120ms ease;
 }
 
-.file-tree-row:hover[data-drag-over="false"] {
-    background-color: color-mix(
-        in srgb,
-        var(--bg-secondary) 82%,
-        var(--accent) 8%
-    );
+.file-tree-row:hover {
+    background-color: var(--bg-tertiary);
 }
 
 .file-tree-row:hover[data-selected="true"],
