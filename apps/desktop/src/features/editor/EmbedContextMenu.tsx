@@ -10,6 +10,7 @@ import { useEditorStore } from "../../app/store/editorStore";
 export interface EmbedContextMenuState {
     x: number;
     y: number;
+    payload: void;
     /** Wikilink target, e.g. "/assets/doc.pdf" or "/images/photo.png" */
     target: string;
     kind: "pdf" | "image";

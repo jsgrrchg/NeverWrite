@@ -1180,6 +1180,7 @@ export function Editor({
                 setEmbedContextMenu({
                     x: event.clientX,
                     y: event.clientY,
+                    payload: undefined,
                     target: embedEl.dataset.embedTarget,
                     kind: embedEl.dataset.embedKind as "pdf" | "image",
                 });

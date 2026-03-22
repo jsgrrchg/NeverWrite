@@ -3755,6 +3755,8 @@ export function FileTree() {
         handleDelete,
         handleDeleteFolder,
         handleDuplicateNote,
+        handleEntryRenameStart,
+        handleFolderRenameStart,
         handleAddFileToChat,
         handleAddPdfToChat,
         handleMoveEntryToTrash,
