@@ -65,6 +65,13 @@ export interface VaultOpenState {
     error: string | null;
 }
 
+export type VaultChangeOrigin =
+    | "user"
+    | "agent"
+    | "external"
+    | "system"
+    | "unknown";
+
 export interface VaultNoteChange {
     vault_path: string;
     kind: "upsert" | "delete";
@@ -72,6 +79,10 @@ export interface VaultNoteChange {
     note_id: string | null;
     entry: VaultEntryDto | null;
     relative_path: string | null;
+    origin: VaultChangeOrigin;
+    op_id: string | null;
+    revision: number;
+    content_hash: string | null;
     graph_revision: number;
 }
 
