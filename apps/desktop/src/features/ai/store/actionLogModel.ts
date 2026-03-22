@@ -5,6 +5,10 @@
  * all functions are pure and testable in isolation.
  */
 
+import {
+    TRACKED_FILE_CANONICAL_FIELDS,
+    TRACKED_FILE_DERIVED_FIELDS,
+} from "../diff/actionLogTypes";
 import type {
     ActionLogState,
     AgentTextSpan,
@@ -16,6 +20,9 @@ import type {
     TextEdit,
     TextRangePatch,
     TrackedFile,
+    TrackedFileCanonicalField,
+    TrackedFileDerivedField,
+    TrackedFileDomainInvariantId,
     TrackedFileStatus,
 } from "../diff/actionLogTypes";
 import type { AIFileDiff, AIFileDiffHunk, AIFileDiffHunkLine } from "../types";
@@ -97,20 +104,49 @@ export function shiftEditsAfter(
     });
 }
 
-export interface PrecomputedTrackedFilePatches {
-    linePatch: LinePatch;
-    textRangePatch?: TextRangePatch;
-}
-
 const syncedTrackedFileCache = new WeakMap<TrackedFile, TrackedFile>();
 const syncedTrackedFilesCache = new WeakMap<
     Record<string, TrackedFile>,
     Record<string, TrackedFile>
 >();
-const syncedSessionTrackedFilesCache = new WeakMap<
+const normalizedActionLogStorageCache = new WeakMap<
     ActionLogState,
-    Record<string, TrackedFile>
+    {
+        trackedFilesByIdentityKey: Record<string, TrackedFile>;
+        trackedFileIdsByWorkCycleId: Record<string, string[]>;
+        trackedFilesByWorkCycleId: Record<string, Record<string, TrackedFile>>;
+    }
 >();
+
+const TRACKED_FILE_DOMAIN_INVARIANTS: readonly TrackedFileDomainInvariantId[] =
+    [
+        "empty_diff_has_no_pending_ranges",
+        "empty_diff_has_no_pending_line_patch",
+        "pending_ranges_cover_visible_diff",
+        "pending_ranges_rebuild_diff_base",
+        "line_patch_matches_ranges",
+    ];
+
+export interface TrackedFileDomainContract {
+    canonicalFields: readonly TrackedFileCanonicalField[];
+    derivedFields: readonly TrackedFileDerivedField[];
+    invariants: readonly TrackedFileDomainInvariantId[];
+}
+
+export interface TrackedFileDomainViolation {
+    id: TrackedFileDomainInvariantId;
+    message: string;
+}
+
+const TRACKED_FILE_DOMAIN_CONTRACT: TrackedFileDomainContract = {
+    canonicalFields: TRACKED_FILE_CANONICAL_FIELDS,
+    derivedFields: TRACKED_FILE_DERIVED_FIELDS,
+    invariants: TRACKED_FILE_DOMAIN_INVARIANTS,
+};
+
+export function getTrackedFileDomainContract(): TrackedFileDomainContract {
+    return TRACKED_FILE_DOMAIN_CONTRACT;
+}
 
 function spansEqual(a: AgentTextSpan[], b: AgentTextSpan[]): boolean {
     if (a.length !== b.length) return false;
@@ -138,11 +174,276 @@ function linePatchesEqual(a: LinePatch, b: LinePatch): boolean {
     });
 }
 
+function uniqueTrackedFileIds(
+    ids: string[],
+    files: Record<string, TrackedFile>,
+): string[] {
+    const seen = new Set<string>();
+    const next: string[] = [];
+
+    for (const id of ids) {
+        if (!(id in files) || seen.has(id)) {
+            continue;
+        }
+        seen.add(id);
+        next.push(id);
+    }
+
+    return next;
+}
+
+function getLegacyTrackedFilesByWorkCycleId(
+    state: ActionLogState,
+): Record<string, Record<string, TrackedFile>> {
+    return state.trackedFilesByWorkCycleId ?? {};
+}
+
+function buildTrackedFilesByWorkCycleId(
+    trackedFilesByIdentityKey: Record<string, TrackedFile>,
+    trackedFileIdsByWorkCycleId: Record<string, string[]>,
+): Record<string, Record<string, TrackedFile>> {
+    const trackedFilesByWorkCycleId: Record<
+        string,
+        Record<string, TrackedFile>
+    > = {};
+
+    for (const [workCycleId, ids] of Object.entries(
+        trackedFileIdsByWorkCycleId,
+    )) {
+        const uniqueIds = uniqueTrackedFileIds(ids, trackedFilesByIdentityKey);
+        if (uniqueIds.length === 0) {
+            continue;
+        }
+
+        const trackedFiles: Record<string, TrackedFile> = {};
+        for (const identityKey of uniqueIds) {
+            trackedFiles[identityKey] = trackedFilesByIdentityKey[identityKey]!;
+        }
+        trackedFilesByWorkCycleId[workCycleId] = trackedFiles;
+    }
+
+    return trackedFilesByWorkCycleId;
+}
+
+function normalizeActionLogStorage(state: ActionLogState): {
+    trackedFilesByIdentityKey: Record<string, TrackedFile>;
+    trackedFileIdsByWorkCycleId: Record<string, string[]>;
+    trackedFilesByWorkCycleId: Record<string, Record<string, TrackedFile>>;
+} {
+    const cached = normalizedActionLogStorageCache.get(state);
+    if (cached) {
+        return cached;
+    }
+
+    const trackedFilesByIdentityKey = state.trackedFilesByIdentityKey
+        ? syncTrackedFiles(state.trackedFilesByIdentityKey)
+        : {};
+    const trackedFileIdsByWorkCycleId: Record<string, string[]> = {};
+
+    for (const [workCycleId, ids] of Object.entries(
+        state.trackedFileIdsByWorkCycleId ?? {},
+    )) {
+        trackedFileIdsByWorkCycleId[workCycleId] = [...ids];
+    }
+
+    for (const [workCycleId, legacyFiles] of Object.entries(
+        getLegacyTrackedFilesByWorkCycleId(state),
+    )) {
+        const syncedLegacyFiles = syncTrackedFiles(legacyFiles);
+        const cycleIds = trackedFileIdsByWorkCycleId[workCycleId] ?? [];
+
+        for (const [identityKey, file] of Object.entries(syncedLegacyFiles)) {
+            const current = trackedFilesByIdentityKey[identityKey];
+            if (!current || shouldPreferTrackedFile(file, current)) {
+                trackedFilesByIdentityKey[identityKey] = file;
+            }
+            cycleIds.push(identityKey);
+        }
+
+        trackedFileIdsByWorkCycleId[workCycleId] = cycleIds;
+    }
+
+    for (const [workCycleId, ids] of Object.entries(
+        trackedFileIdsByWorkCycleId,
+    )) {
+        const uniqueIds = uniqueTrackedFileIds(ids, trackedFilesByIdentityKey);
+        if (uniqueIds.length === 0) {
+            delete trackedFileIdsByWorkCycleId[workCycleId];
+            continue;
+        }
+        trackedFileIdsByWorkCycleId[workCycleId] = uniqueIds;
+    }
+
+    const result = {
+        trackedFilesByIdentityKey,
+        trackedFileIdsByWorkCycleId,
+        trackedFilesByWorkCycleId: buildTrackedFilesByWorkCycleId(
+            trackedFilesByIdentityKey,
+            trackedFileIdsByWorkCycleId,
+        ),
+    };
+
+    normalizedActionLogStorageCache.set(state, result);
+    return result;
+}
+
+function getTrackedFileCanonicalRanges(file: TrackedFile): TextRangePatch {
+    return (
+        file.unreviewedRanges ??
+        (file.diffBase === file.currentText
+            ? emptyTextRangePatch()
+            : buildTextRangePatchFromTexts(file.diffBase, file.currentText))
+    );
+}
+
+function getTrackedFileVisiblePatch(file: TrackedFile): LinePatch {
+    if (file.diffBase === file.currentText) {
+        return emptyPatch();
+    }
+
+    return buildPatchFromTexts(file.diffBase, file.currentText);
+}
+
+function getTrackedFileVisibleRanges(
+    file: TrackedFile,
+    visiblePatch = getTrackedFileVisiblePatch(file),
+): TextRangePatch {
+    if (file.diffBase === file.currentText) {
+        return emptyTextRangePatch();
+    }
+
+    return buildTextRangePatchFromTexts(
+        file.diffBase,
+        file.currentText,
+        visiblePatch,
+    );
+}
+
+function trackedFileRangesRebuildDiffBase(
+    file: TrackedFile,
+    ranges = getTrackedFileCanonicalRanges(file),
+): boolean {
+    return (
+        rebuildDiffBaseFromPendingSpans(
+            file.diffBase,
+            file.currentText,
+            ranges.spans,
+        ) === file.diffBase
+    );
+}
+
+export function validateTrackedFileDomain(
+    file: TrackedFile,
+): TrackedFileDomainViolation[] {
+    const violations: TrackedFileDomainViolation[] = [];
+    const canonicalRanges = getTrackedFileCanonicalRanges(file);
+    const visiblePatch = getTrackedFileVisiblePatch(file);
+    const derivedPatch = deriveLinePatchFromTextRanges(
+        file.diffBase,
+        file.currentText,
+        canonicalRanges.spans,
+    );
+
+    if (
+        file.diffBase === file.currentText &&
+        canonicalRanges.spans.length > 0
+    ) {
+        violations.push({
+            id: "empty_diff_has_no_pending_ranges",
+            message:
+                "TrackedFile has no visible diff, but still carries pending text ranges.",
+        });
+    }
+
+    if (
+        file.diffBase === file.currentText &&
+        !patchIsEmpty(file.unreviewedEdits)
+    ) {
+        violations.push({
+            id: "empty_diff_has_no_pending_line_patch",
+            message:
+                "TrackedFile has no visible diff, but still carries pending line hunks.",
+        });
+    }
+
+    if (!linePatchesEqual(derivedPatch, visiblePatch)) {
+        violations.push({
+            id: "pending_ranges_cover_visible_diff",
+            message:
+                "TrackedFile pending ranges no longer match the visible diff between diffBase and currentText.",
+        });
+    }
+
+    if (!trackedFileRangesRebuildDiffBase(file, canonicalRanges)) {
+        violations.push({
+            id: "pending_ranges_rebuild_diff_base",
+            message:
+                "TrackedFile pending ranges no longer reconstruct the canonical diffBase from currentText.",
+        });
+    }
+
+    if (!linePatchesEqual(file.unreviewedEdits, derivedPatch)) {
+        violations.push({
+            id: "line_patch_matches_ranges",
+            message:
+                "TrackedFile line hunks are out of sync with the canonical pending ranges.",
+        });
+    }
+
+    return violations;
+}
+
+function repairTrackedFileDomain(file: TrackedFile): TrackedFile {
+    const visiblePatch = getTrackedFileVisiblePatch(file);
+    const canonicalRanges = getTrackedFileCanonicalRanges(file);
+    const rangesPatch = deriveLinePatchFromTextRanges(
+        file.diffBase,
+        file.currentText,
+        canonicalRanges.spans,
+    );
+    const rangesStillCoverVisibleDiff = linePatchesEqual(
+        rangesPatch,
+        visiblePatch,
+    );
+    const rangesRebuildDiffBase = trackedFileRangesRebuildDiffBase(
+        file,
+        canonicalRanges,
+    );
+    const repairedRanges =
+        rangesStillCoverVisibleDiff && rangesRebuildDiffBase
+            ? canonicalRanges
+            : getTrackedFileVisibleRanges(file, visiblePatch);
+    const repairedLinePatch = deriveLinePatchFromTextRanges(
+        file.diffBase,
+        file.currentText,
+        repairedRanges.spans,
+    );
+    const rangesAlreadySynced =
+        file.unreviewedRanges &&
+        spansEqual(file.unreviewedRanges.spans, repairedRanges.spans);
+    const linePatchAlreadySynced = linePatchesEqual(
+        file.unreviewedEdits,
+        repairedLinePatch,
+    );
+
+    if (rangesAlreadySynced && linePatchAlreadySynced) {
+        return file;
+    }
+
+    return {
+        ...file,
+        unreviewedRanges: repairedRanges,
+        unreviewedEdits: repairedLinePatch,
+    };
+}
+
 function resolveTrackedFilePatches(
     diffBase: string,
     currentText: string,
-    precomputed?: PrecomputedTrackedFilePatches,
-): { unreviewedEdits: LinePatch; unreviewedRanges: TextRangePatch } {
+): {
+    unreviewedEdits: LinePatch;
+    unreviewedRanges: TextRangePatch;
+} {
     if (diffBase === currentText) {
         return {
             unreviewedEdits: emptyPatch(),
@@ -150,11 +451,12 @@ function resolveTrackedFilePatches(
         };
     }
 
-    const unreviewedEdits =
-        precomputed?.linePatch ?? buildPatchFromTexts(diffBase, currentText);
-    const unreviewedRanges =
-        precomputed?.textRangePatch ??
-        buildTextRangePatchFromTexts(diffBase, currentText, unreviewedEdits);
+    const unreviewedEdits = buildPatchFromTexts(diffBase, currentText);
+    const unreviewedRanges = buildTextRangePatchFromTexts(
+        diffBase,
+        currentText,
+        unreviewedEdits,
+    );
 
     return {
         unreviewedEdits,
@@ -243,7 +545,7 @@ export function syncDerivedLinePatch(file: TrackedFile): TrackedFile {
         return cached;
     }
 
-    const synced = syncDerivedLinePatchRust(file);
+    const synced = repairTrackedFileDomain(syncDerivedLinePatchRust(file));
     const result =
         file.unreviewedRanges &&
         synced.unreviewedRanges &&
@@ -335,7 +637,6 @@ function statusFromDiffKind(kind: AIFileDiff["kind"]): TrackedFileStatus {
 export function createTrackedFileFromDiff(
     diff: AIFileDiff,
     timestamp: number,
-    precomputed?: PrecomputedTrackedFilePatches,
 ): TrackedFile {
     const oldText = diff.old_text ?? "";
     const newText = diff.new_text ?? "";
@@ -349,7 +650,6 @@ export function createTrackedFileFromDiff(
     const { unreviewedEdits, unreviewedRanges } = resolveTrackedFilePatches(
         diffBase,
         currentText,
-        precomputed,
     );
 
     return {
@@ -388,7 +688,6 @@ export function updateTrackedFileWithDiff(
     file: TrackedFile,
     diff: AIFileDiff,
     timestamp: number,
-    precomputed?: PrecomputedTrackedFilePatches,
 ): TrackedFile {
     const newText = diff.new_text ?? "";
     const currentText = diff.kind === "delete" ? "" : newText;
@@ -397,7 +696,6 @@ export function updateTrackedFileWithDiff(
     const { unreviewedEdits, unreviewedRanges } = resolveTrackedFilePatches(
         file.diffBase,
         currentText,
-        precomputed,
     );
 
     // Update status if operation changed (e.g. update → delete)
@@ -462,16 +760,14 @@ export function consolidateTrackedFiles(
     files: Record<string, TrackedFile>,
     diffs: AIFileDiff[],
     timestamp: number,
-    precomputedPatches?: Array<PrecomputedTrackedFilePatches | undefined>,
 ): Record<string, TrackedFile> {
     const next = { ...files };
 
-    for (const [index, diff] of diffs.entries()) {
+    for (const diff of diffs) {
         if (diff.is_text === false || diff.reversible === false) {
             continue; // Skip unsupported files
         }
 
-        const precomputed = precomputedPatches?.[index];
         const existing = findTrackedFile(next, diff);
 
         if (existing) {
@@ -483,7 +779,6 @@ export function consolidateTrackedFiles(
                 existing,
                 diff,
                 timestamp,
-                precomputed,
             );
             // If changes revert to original, remove from tracking
             if (
@@ -495,11 +790,7 @@ export function consolidateTrackedFiles(
                 next[updated.identityKey] = updated;
             }
         } else {
-            const tracked = createTrackedFileFromDiff(
-                diff,
-                timestamp,
-                precomputed,
-            );
+            const tracked = createTrackedFileFromDiff(diff, timestamp);
             // Track if there are text changes, or if this is a move (path changed)
             if (
                 !patchIsEmpty(tracked.unreviewedEdits) ||
@@ -741,6 +1032,8 @@ export function unreviewedEditsToHunks(file: TrackedFile): AIFileDiffHunk[] {
 
 export function emptyActionLogState(): ActionLogState {
     return {
+        trackedFilesByIdentityKey: {},
+        trackedFileIdsByWorkCycleId: {},
         trackedFilesByWorkCycleId: {},
         lastRejectUndo: null,
     };
@@ -751,8 +1044,11 @@ export function getTrackedFilesForWorkCycle(
     workCycleId: string | null | undefined,
 ): Record<string, TrackedFile> {
     if (!workCycleId) return {};
-    const files = state.trackedFilesByWorkCycleId[workCycleId] ?? {};
-    return syncTrackedFiles(files);
+    return (
+        normalizeActionLogStorage(state).trackedFilesByWorkCycleId[
+            workCycleId
+        ] ?? {}
+    );
 }
 
 function shouldPreferTrackedFile(
@@ -780,24 +1076,7 @@ export function getTrackedFilesForSession(
         return {};
     }
 
-    const cached = syncedSessionTrackedFilesCache.get(state);
-    if (cached) {
-        return cached;
-    }
-
-    const merged: Record<string, TrackedFile> = {};
-    for (const workCycleId of Object.keys(state.trackedFilesByWorkCycleId)) {
-        const syncedFiles = getTrackedFilesForWorkCycle(state, workCycleId);
-        for (const [identityKey, file] of Object.entries(syncedFiles)) {
-            const current = merged[identityKey];
-            if (!current || shouldPreferTrackedFile(file, current)) {
-                merged[identityKey] = file;
-            }
-        }
-    }
-
-    syncedSessionTrackedFilesCache.set(state, merged);
-    return merged;
+    return normalizeActionLogStorage(state).trackedFilesByIdentityKey;
 }
 
 export function setTrackedFilesForWorkCycle(
@@ -805,11 +1084,43 @@ export function setTrackedFilesForWorkCycle(
     workCycleId: string,
     files: Record<string, TrackedFile>,
 ): ActionLogState {
-    const next = { ...state.trackedFilesByWorkCycleId };
-    if (Object.keys(files).length === 0) {
-        delete next[workCycleId];
+    const normalized = normalizeActionLogStorage(state);
+    const syncedFiles = syncTrackedFiles(files);
+    const trackedFileIdsByWorkCycleId = {
+        ...normalized.trackedFileIdsByWorkCycleId,
+    };
+
+    if (Object.keys(syncedFiles).length === 0) {
+        delete trackedFileIdsByWorkCycleId[workCycleId];
     } else {
-        next[workCycleId] = syncTrackedFiles(files);
+        trackedFileIdsByWorkCycleId[workCycleId] = Object.keys(syncedFiles);
     }
-    return { ...state, trackedFilesByWorkCycleId: next };
+
+    const candidateFiles = {
+        ...normalized.trackedFilesByIdentityKey,
+        ...syncedFiles,
+    };
+    const trackedFilesByIdentityKey: Record<string, TrackedFile> = {};
+    const referencedIds = new Set(
+        Object.values(trackedFileIdsByWorkCycleId).flat(),
+    );
+
+    for (const identityKey of referencedIds) {
+        const file = candidateFiles[identityKey];
+        if (file) {
+            trackedFilesByIdentityKey[identityKey] = file;
+        }
+    }
+
+    const trackedFilesByWorkCycleId = buildTrackedFilesByWorkCycleId(
+        trackedFilesByIdentityKey,
+        trackedFileIdsByWorkCycleId,
+    );
+
+    return {
+        ...state,
+        trackedFilesByIdentityKey,
+        trackedFileIdsByWorkCycleId,
+        trackedFilesByWorkCycleId,
+    };
 }

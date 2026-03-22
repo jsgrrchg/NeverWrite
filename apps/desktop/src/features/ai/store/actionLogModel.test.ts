@@ -11,11 +11,14 @@ import {
     consolidateTrackedFiles,
     createTrackedFileFromDiff,
     deriveLinePatchFromTextRanges,
+    emptyActionLogState,
     emptyPatch,
     finalizeTrackedFile,
     finalizeTrackedFiles,
+    getTrackedFilesForSession,
     getTrackedFilesForWorkCycle,
     getTrackedFileReviewState,
+    getTrackedFileDomainContract,
     keepAllEdits,
     keepEditsInRange,
     mapAgentSpanThroughTextEdits,
@@ -30,6 +33,8 @@ import {
     shouldShowInlineDiff,
     syncDerivedLinePatch,
     updateTrackedFileWithDiff,
+    validateTrackedFileDomain,
+    setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +53,10 @@ function makeDiff(overrides: Partial<AIFileDiff> = {}): AIFileDiff {
 
 function lines(text: string): string[] {
     return text.split("\n");
+}
+
+function getViolationIds(file: TrackedFile): string[] {
+    return validateTrackedFileDomain(file).map((violation) => violation.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +303,78 @@ describe("Patch primitives", () => {
         ]);
     });
 
+    it("syncDerivedLinePatch repairs stale canonical ranges from the visible diff", () => {
+        const diffBase = "aaa\nbbb\nccc\nddd";
+        const currentText = "aaa\nBBB\nccc\nDDD";
+        const staleFile: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase,
+            currentText,
+            unreviewedRanges: buildTextRangePatchFromTexts(
+                "aaa\nBBB\nccc\nddd",
+                currentText,
+            ),
+            unreviewedEdits: buildPatchFromTexts(
+                "aaa\nBBB\nccc\nddd",
+                currentText,
+            ),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const synced = syncDerivedLinePatch(staleFile);
+
+        expect(synced.unreviewedRanges).toEqual(
+            buildTextRangePatchFromTexts(diffBase, currentText),
+        );
+        expect(synced.unreviewedEdits).toEqual(
+            buildPatchFromTexts(diffBase, currentText),
+        );
+        expect(validateTrackedFileDomain(synced)).toEqual([]);
+    });
+
+    it("syncDerivedLinePatch repairs stale same-line ranges that still matched the visible hunk", () => {
+        const diffBase = "abc";
+        const currentText = "axc";
+        const staleFile: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase,
+            currentText,
+            unreviewedRanges: {
+                spans: [
+                    {
+                        baseFrom: 0,
+                        baseTo: 1,
+                        currentFrom: 0,
+                        currentTo: 1,
+                    },
+                ],
+            },
+            unreviewedEdits: buildPatchFromTexts(diffBase, currentText),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const synced = syncDerivedLinePatch(staleFile);
+
+        expect(synced.unreviewedRanges).toEqual(
+            buildTextRangePatchFromTexts(diffBase, currentText),
+        );
+        expect(validateTrackedFileDomain(synced)).toEqual([]);
+    });
+
     it("syncDerivedLinePatch preserves the same reference for an already synced file", () => {
         const file = syncDerivedLinePatch({
             identityKey: "test.md",
@@ -348,6 +429,196 @@ describe("Patch primitives", () => {
                 currentTo: 4,
             },
         ]);
+    });
+});
+
+describe("TrackedFile domain contract", () => {
+    it("declares canonical fields, derived fields and invariant ids explicitly", () => {
+        expect(getTrackedFileDomainContract()).toEqual({
+            canonicalFields: [
+                "identityKey",
+                "originPath",
+                "path",
+                "previousPath",
+                "status",
+                "reviewState",
+                "diffBase",
+                "currentText",
+                "unreviewedRanges",
+                "version",
+                "isText",
+                "updatedAt",
+                "conflictHash",
+            ],
+            derivedFields: ["unreviewedEdits"],
+            invariants: [
+                "empty_diff_has_no_pending_ranges",
+                "empty_diff_has_no_pending_line_patch",
+                "pending_ranges_cover_visible_diff",
+                "pending_ranges_rebuild_diff_base",
+                "line_patch_matches_ranges",
+            ],
+        });
+    });
+
+    it("accepts a tracked file created from a diff", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "aaa\nbbb\nccc\nddd",
+                new_text: "aaa\nBBB\nccc\nDDD",
+            }),
+            1000,
+        );
+
+        expect(validateTrackedFileDomain(file)).toEqual([]);
+    });
+
+    it("accepts a tracked file after a non-conflicting user edit rebases the base", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "aaa\nbbb\nccc\nddd",
+                new_text: "aaa\nBBB\nccc\nddd",
+            }),
+            1000,
+        );
+        const rebased = applyNonConflictingEdits(
+            file,
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        expect(validateTrackedFileDomain(rebased)).toEqual([]);
+    });
+
+    it("reports when pending ranges no longer cover the visible diff", () => {
+        const diffBase = "aaa\nbbb\nccc\nddd";
+        const currentText = "aaa\nBBB\nccc\nDDD";
+        const staleRanges = buildTextRangePatchFromTexts(
+            "aaa\nBBB\nccc\nddd",
+            currentText,
+        );
+        const staleFile: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase,
+            currentText,
+            unreviewedRanges: staleRanges,
+            unreviewedEdits: buildPatchFromTexts(
+                "aaa\nBBB\nccc\nddd",
+                currentText,
+            ),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(getViolationIds(staleFile)).toEqual([
+            "pending_ranges_cover_visible_diff",
+            "pending_ranges_rebuild_diff_base",
+        ]);
+    });
+
+    it("reports when derived line hunks drift away from canonical ranges", () => {
+        const diffBase = "aaa\nbbb\nccc\nddd";
+        const currentText = "aaa\nBBB\nccc\nDDD";
+        const canonicalRanges = buildTextRangePatchFromTexts(
+            diffBase,
+            currentText,
+        );
+        const staleDerivedOnlyLastHunk = buildPatchFromTexts(
+            "aaa\nBBB\nccc\nddd",
+            currentText,
+        );
+        const staleFile: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase,
+            currentText,
+            unreviewedRanges: canonicalRanges,
+            unreviewedEdits: staleDerivedOnlyLastHunk,
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(getViolationIds(staleFile)).toEqual([
+            "line_patch_matches_ranges",
+        ]);
+    });
+
+    it("reports when pending ranges keep the same hunk but no longer rebuild diffBase", () => {
+        const diffBase = "abc";
+        const currentText = "axc";
+        const staleFile: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase,
+            currentText,
+            unreviewedRanges: {
+                spans: [
+                    {
+                        baseFrom: 0,
+                        baseTo: 1,
+                        currentFrom: 0,
+                        currentTo: 1,
+                    },
+                ],
+            },
+            unreviewedEdits: buildPatchFromTexts(diffBase, currentText),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(getViolationIds(staleFile)).toEqual([
+            "pending_ranges_rebuild_diff_base",
+        ]);
+    });
+
+    it("reports empty diffs that still carry pending review state", () => {
+        const stalePending = buildPatchFromTexts("alpha", "alpHa");
+        const staleRanges = buildTextRangePatchFromTexts("alpha", "alpHa");
+        const file: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase: "same",
+            currentText: "same",
+            unreviewedRanges: staleRanges,
+            unreviewedEdits: stalePending,
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(getViolationIds(file)).toEqual(
+            expect.arrayContaining([
+                "empty_diff_has_no_pending_ranges",
+                "empty_diff_has_no_pending_line_patch",
+            ]),
+        );
     });
 });
 
@@ -416,22 +687,19 @@ describe("createTrackedFileFromDiff", () => {
         expect(file.previousPath).toBe("old/path.md");
     });
 
-    it("uses precomputed patches when provided", () => {
+    it("derives patches directly from diffBase/currentText", () => {
         const diff = makeDiff();
-        const linePatch = {
-            edits: [{ oldStart: 0, oldEnd: 3, newStart: 0, newEnd: 3 }],
-        };
-        const textRangePatch = {
-            spans: [{ baseFrom: 0, baseTo: 11, currentFrom: 0, currentTo: 11 }],
-        };
+        const file = createTrackedFileFromDiff(diff, 1000);
 
-        const file = createTrackedFileFromDiff(diff, 1000, {
-            linePatch,
-            textRangePatch,
-        });
-
-        expect(file.unreviewedEdits).toEqual(linePatch);
-        expect(file.unreviewedRanges).toEqual(textRangePatch);
+        expect(file.unreviewedEdits).toEqual(
+            buildPatchFromTexts(diff.old_text ?? "", diff.new_text ?? ""),
+        );
+        expect(file.unreviewedRanges).toEqual(
+            buildTextRangePatchFromTexts(
+                diff.old_text ?? "",
+                diff.new_text ?? "",
+            ),
+        );
     });
 });
 
@@ -519,31 +787,15 @@ describe("consolidateTrackedFiles", () => {
         expect(Object.keys(result)).toHaveLength(0);
     });
 
-    it("uses precomputed patches by diff index", () => {
+    it("derives tracked file patches independently for each diff", () => {
         const result = consolidateTrackedFiles(
             {},
             [makeDiff({ path: "a.md" }), makeDiff({ path: "b.md" })],
             1000,
-            [
-                {
-                    linePatch: {
-                        edits: [
-                            { oldStart: 0, oldEnd: 3, newStart: 0, newEnd: 3 },
-                        ],
-                    },
-                },
-                {
-                    linePatch: {
-                        edits: [
-                            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
-                        ],
-                    },
-                },
-            ],
         );
 
         expect(result["a.md"].unreviewedEdits.edits).toEqual([
-            { oldStart: 0, oldEnd: 3, newStart: 0, newEnd: 3 },
+            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
         ]);
         expect(result["b.md"].unreviewedEdits.edits).toEqual([
             { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
@@ -552,6 +804,15 @@ describe("consolidateTrackedFiles", () => {
 });
 
 describe("ActionLogState helpers", () => {
+    it("initializes normalized storage containers", () => {
+        expect(emptyActionLogState()).toEqual({
+            trackedFilesByIdentityKey: {},
+            trackedFileIdsByWorkCycleId: {},
+            trackedFilesByWorkCycleId: {},
+            lastRejectUndo: null,
+        });
+    });
+
     it("getTrackedFilesForWorkCycle lazily normalizes legacy tracked files", () => {
         const legacy: TrackedFile = {
             identityKey: "test.md",
@@ -588,6 +849,157 @@ describe("ActionLogState helpers", () => {
                 currentTo: 4,
             },
         ]);
+    });
+
+    it("stores tracked files primarily by session and indexes them by work cycle", () => {
+        const tracked = createTrackedFileFromDiff(
+            makeDiff({
+                path: "session.md",
+                old_text: "alpha",
+                new_text: "alpHa",
+            }),
+            1000,
+        );
+
+        const state = setTrackedFilesForWorkCycle(
+            emptyActionLogState(),
+            "cycle-1",
+            { [tracked.identityKey]: tracked },
+        );
+
+        expect(state.trackedFilesByIdentityKey).toMatchObject({
+            "session.md": expect.objectContaining({
+                identityKey: "session.md",
+                diffBase: "alpha",
+                currentText: "alpHa",
+            }),
+        });
+        expect(state.trackedFileIdsByWorkCycleId).toEqual({
+            "cycle-1": ["session.md"],
+        });
+        expect(getTrackedFilesForSession(state)).toMatchObject({
+            "session.md": expect.objectContaining({
+                identityKey: "session.md",
+            }),
+        });
+        expect(getTrackedFilesForWorkCycle(state, "cycle-1")).toMatchObject({
+            "session.md": expect.objectContaining({
+                identityKey: "session.md",
+            }),
+        });
+    });
+
+    it("prunes session storage when a work cycle stops referencing a tracked file", () => {
+        const fileA = createTrackedFileFromDiff(
+            makeDiff({
+                path: "a.md",
+                old_text: "alpha",
+                new_text: "alpHa",
+            }),
+            1000,
+        );
+        const fileB = createTrackedFileFromDiff(
+            makeDiff({
+                path: "b.md",
+                old_text: "beta",
+                new_text: "beTa",
+            }),
+            1001,
+        );
+
+        let state = setTrackedFilesForWorkCycle(
+            emptyActionLogState(),
+            "cycle-a",
+            { [fileA.identityKey]: fileA },
+        );
+        state = setTrackedFilesForWorkCycle(state, "cycle-b", {
+            [fileB.identityKey]: fileB,
+        });
+        state = setTrackedFilesForWorkCycle(state, "cycle-a", {});
+
+        expect(state.trackedFilesByIdentityKey).toMatchObject({
+            "b.md": expect.objectContaining({
+                identityKey: "b.md",
+            }),
+        });
+        expect(state.trackedFilesByIdentityKey).not.toHaveProperty("a.md");
+        expect(state.trackedFileIdsByWorkCycleId).toEqual({
+            "cycle-b": ["b.md"],
+        });
+        expect(getTrackedFilesForWorkCycle(state, "cycle-a")).toEqual({});
+        expect(getTrackedFilesForSession(state)).toMatchObject({
+            "b.md": expect.objectContaining({
+                identityKey: "b.md",
+            }),
+        });
+    });
+
+    it("returns normalized primary storage even when cycle metadata is missing", () => {
+        const tracked = createTrackedFileFromDiff(
+            makeDiff({
+                path: "direct.md",
+                old_text: "alpha",
+                new_text: "alpHa",
+            }),
+            1000,
+        );
+
+        expect(
+            getTrackedFilesForSession({
+                trackedFilesByIdentityKey: {
+                    [tracked.identityKey]: tracked,
+                },
+                lastRejectUndo: null,
+            }),
+        ).toMatchObject({
+            "direct.md": expect.objectContaining({
+                identityKey: "direct.md",
+            }),
+        });
+    });
+
+    it("repairs invalid stored tracked files while normalizing session storage", () => {
+        const diffBase = "aaa\nbbb\nccc\nddd";
+        const currentText = "aaa\nBBB\nccc\nDDD";
+        const staleTracked: TrackedFile = {
+            identityKey: "stale.md",
+            originPath: "stale.md",
+            path: "stale.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase,
+            currentText,
+            unreviewedRanges: buildTextRangePatchFromTexts(
+                "aaa\nBBB\nccc\nddd",
+                currentText,
+            ),
+            unreviewedEdits: buildPatchFromTexts(
+                "aaa\nBBB\nccc\nddd",
+                currentText,
+            ),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        const tracked = getTrackedFilesForSession({
+            trackedFilesByIdentityKey: {
+                [staleTracked.identityKey]: staleTracked,
+            },
+            trackedFileIdsByWorkCycleId: {
+                cycle: [staleTracked.identityKey],
+            },
+            lastRejectUndo: null,
+        });
+
+        expect(tracked["stale.md"]?.unreviewedRanges).toEqual(
+            buildTextRangePatchFromTexts(diffBase, currentText),
+        );
+        expect(tracked["stale.md"]?.unreviewedEdits).toEqual(
+            buildPatchFromTexts(diffBase, currentText),
+        );
+        expect(validateTrackedFileDomain(tracked["stale.md"]!)).toEqual([]);
     });
 });
 

@@ -5,6 +5,7 @@ import {
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
     emptyActionLogState,
+    getTrackedFilesForSession,
     getTrackedFilesForWorkCycle,
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
@@ -60,7 +61,9 @@ describe("startNewWorkCycle", () => {
 
         expect(nextSession.activeWorkCycleId).toBeTruthy();
         expect(nextSession.activeWorkCycleId).not.toBe(activeWorkCycleId);
-        expect(nextSession.visibleWorkCycleId).toBe(nextSession.activeWorkCycleId);
+        expect(nextSession.visibleWorkCycleId).toBe(
+            nextSession.activeWorkCycleId,
+        );
         expect(
             getTrackedFilesForWorkCycle(
                 nextSession.actionLog!,
@@ -70,7 +73,18 @@ describe("startNewWorkCycle", () => {
             [trackedFile.identityKey]: trackedFile,
         });
         expect(
-            getTrackedFilesForWorkCycle(nextSession.actionLog!, activeWorkCycleId),
+            getTrackedFilesForWorkCycle(
+                nextSession.actionLog!,
+                activeWorkCycleId,
+            ),
         ).toEqual({});
+        expect(nextSession.actionLog?.trackedFileIdsByWorkCycleId).toEqual({
+            [nextSession.activeWorkCycleId!]: [trackedFile.identityKey],
+        });
+        expect(getTrackedFilesForSession(nextSession.actionLog!)).toMatchObject(
+            {
+                [trackedFile.identityKey]: trackedFile,
+            },
+        );
     });
 });

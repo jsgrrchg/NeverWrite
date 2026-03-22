@@ -56,6 +56,8 @@ export function startNewWorkCycle(session: AIChatSession): AIChatSession {
         const accumulatedFiles = getTrackedFilesForSession(nextActionLog);
         nextActionLog = {
             ...nextActionLog,
+            trackedFilesByIdentityKey: {},
+            trackedFileIdsByWorkCycleId: {},
             trackedFilesByWorkCycleId: {},
         };
         if (Object.keys(accumulatedFiles).length > 0) {

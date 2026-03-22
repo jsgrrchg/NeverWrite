@@ -228,6 +228,200 @@ type MockTrackedFilePatch = {
     textRangePatch: ReturnType<typeof buildTextRangePatchFromTexts>;
 };
 
+type MockTrackedFilePatchInput = {
+    oldText: string;
+    newText: string;
+};
+
+function createMockTrackedFilePatch(
+    oldText: string,
+    newText: string,
+): MockTrackedFilePatch {
+    const linePatch = buildPatchFromTexts(oldText, newText);
+    return {
+        linePatch,
+        textRangePatch: buildTextRangePatchFromTexts(
+            oldText,
+            newText,
+            linePatch,
+        ),
+    };
+}
+
+function getMockTrackedFilePatchInputs(
+    args: unknown,
+): MockTrackedFilePatchInput[] {
+    if (
+        typeof args !== "object" ||
+        args === null ||
+        !("inputs" in args) ||
+        !Array.isArray((args as { inputs?: unknown }).inputs)
+    ) {
+        throw new Error("Expected tracked file patch inputs.");
+    }
+
+    return (args as { inputs: MockTrackedFilePatchInput[] }).inputs;
+}
+
+async function defaultInvokeImplementation(command: string, args?: unknown) {
+    if (command === "ai_list_runtimes") {
+        return runtimePayload;
+    }
+
+    if (command === "ai_create_session") {
+        return sessionPayload;
+    }
+
+    if (command === "ai_list_sessions") {
+        return [];
+    }
+
+    if (command === "ai_get_setup_status") {
+        return readySetupStatus;
+    }
+
+    if (command === "ai_update_setup") {
+        return readySetupStatus;
+    }
+
+    if (command === "ai_start_auth") {
+        return readySetupStatus;
+    }
+
+    if (command === "ai_load_session") {
+        return sessionPayload;
+    }
+
+    if (command === "ai_set_model") {
+        return {
+            ...sessionPayload,
+            model_id: "test-model",
+        };
+    }
+
+    if (command === "ai_set_config_option") {
+        const input =
+            typeof args === "object" && args !== null && "input" in args
+                ? (args.input as {
+                      option_id: string;
+                      value: string;
+                  })
+                : null;
+
+        if (input?.option_id === "model") {
+            return {
+                ...sessionPayload,
+                model_id: input.value,
+                config_options: [
+                    {
+                        ...acpConfigOptions[0],
+                        value: input.value,
+                    },
+                    {
+                        ...acpConfigOptions[1],
+                        value: "low",
+                        options: [
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                            { value: "xhigh", label: "Extra High" },
+                        ],
+                    },
+                ],
+            };
+        }
+
+        return {
+            ...sessionPayload,
+            config_options: acpConfigOptions.map((option) =>
+                option.id === input?.option_id
+                    ? { ...option, value: input.value }
+                    : option,
+            ),
+        };
+    }
+
+    if (command === "ai_send_message") {
+        throw new Error("Codex ACP is unavailable.");
+    }
+
+    if (command === "ai_cancel_turn") {
+        return {
+            ...sessionPayload,
+            status: "idle",
+        };
+    }
+
+    if (command === "ai_respond_user_input") {
+        return {
+            ...sessionPayload,
+            status: "streaming",
+        };
+    }
+
+    if (command === "ai_load_session_histories") {
+        return [];
+    }
+
+    return sessionPayload;
+}
+
+function mockRustTrackedFilePatches(
+    resolver: (
+        inputs: MockTrackedFilePatchInput[],
+        callIndex: number,
+    ) => MockTrackedFilePatch[] | Promise<MockTrackedFilePatch[]>,
+    options: {
+        allowSendMessage?: boolean;
+    } = {},
+) {
+    let callIndex = 0;
+    invokeMock.mockImplementation(async (command, args) => {
+        if (command === "compute_tracked_file_patches") {
+            return await resolver(
+                getMockTrackedFilePatchInputs(args),
+                callIndex++,
+            );
+        }
+
+        if (options.allowSendMessage && command === "ai_send_message") {
+            return { ...sessionPayload, status: "streaming" };
+        }
+
+        if (
+            command === "ai_save_session_history" ||
+            command === "ai_prune_session_histories"
+        ) {
+            return undefined;
+        }
+
+        return defaultInvokeImplementation(command, args);
+    });
+}
+
+async function drainRustTrackedFileWork(iterations = 8) {
+    for (let attempt = 0; attempt < iterations; attempt += 1) {
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+}
+
+function expectTrackedFileToMatchAccumulatedDiff(
+    file: TrackedFile,
+    diffBase: string,
+    currentText: string,
+) {
+    const linePatch = buildPatchFromTexts(diffBase, currentText);
+    expect(file).toMatchObject({
+        diffBase,
+        currentText,
+    });
+    expect(file.unreviewedEdits).toEqual(linePatch);
+    expect(file.unreviewedRanges).toEqual(
+        buildTextRangePatchFromTexts(diffBase, currentText, linePatch),
+    );
+}
+
 describe("chatStore", () => {
     beforeEach(() => {
         resetChatStore();
@@ -244,109 +438,7 @@ describe("chatStore", () => {
             tabNavigationIndex: -1,
             currentSelection: null,
         });
-
-        invokeMock.mockImplementation(async (command, args) => {
-            if (command === "ai_list_runtimes") {
-                return runtimePayload;
-            }
-
-            if (command === "ai_create_session") {
-                return sessionPayload;
-            }
-
-            if (command === "ai_list_sessions") {
-                return [];
-            }
-
-            if (command === "ai_get_setup_status") {
-                return readySetupStatus;
-            }
-
-            if (command === "ai_update_setup") {
-                return readySetupStatus;
-            }
-
-            if (command === "ai_start_auth") {
-                return readySetupStatus;
-            }
-
-            if (command === "ai_load_session") {
-                return sessionPayload;
-            }
-
-            if (command === "ai_set_model") {
-                return {
-                    ...sessionPayload,
-                    model_id: "test-model",
-                };
-            }
-
-            if (command === "ai_set_config_option") {
-                const input =
-                    typeof args === "object" && args !== null && "input" in args
-                        ? (args.input as {
-                              option_id: string;
-                              value: string;
-                          })
-                        : null;
-
-                if (input?.option_id === "model") {
-                    return {
-                        ...sessionPayload,
-                        model_id: input.value,
-                        config_options: [
-                            {
-                                ...acpConfigOptions[0],
-                                value: input.value,
-                            },
-                            {
-                                ...acpConfigOptions[1],
-                                value: "low",
-                                options: [
-                                    { value: "low", label: "Low" },
-                                    { value: "medium", label: "Medium" },
-                                    { value: "high", label: "High" },
-                                    { value: "xhigh", label: "Extra High" },
-                                ],
-                            },
-                        ],
-                    };
-                }
-
-                return {
-                    ...sessionPayload,
-                    config_options: acpConfigOptions.map((option) =>
-                        option.id === input?.option_id
-                            ? { ...option, value: input.value }
-                            : option,
-                    ),
-                };
-            }
-
-            if (command === "ai_send_message") {
-                throw new Error("Codex ACP is unavailable.");
-            }
-
-            if (command === "ai_cancel_turn") {
-                return {
-                    ...sessionPayload,
-                    status: "idle",
-                };
-            }
-
-            if (command === "ai_respond_user_input") {
-                return {
-                    ...sessionPayload,
-                    status: "streaming",
-                };
-            }
-
-            if (command === "ai_load_session_histories") {
-                return [];
-            }
-
-            return sessionPayload;
-        });
+        invokeMock.mockImplementation(defaultInvokeImplementation);
     });
 
     it("loads the default edit diff zoom when no preference is stored", () => {
@@ -2399,16 +2491,17 @@ describe("chatStore", () => {
         ).toBe(true);
     });
 
-    it("waits for pending Rust diff consolidation before starting a new work cycle", async () => {
+    it("starts a new work cycle without waiting for deprecated tracked-file precomputation", async () => {
         (
             globalThis as Record<string, unknown>
         ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
 
-        const pendingPatches = createDeferred<MockTrackedFilePatch[]>();
         invokeMock.mockImplementation(async (command) => {
             if (command === "compute_tracked_file_patches") {
-                return pendingPatches.promise;
+                throw new Error(
+                    "compute_tracked_file_patches should not be called from the ActionLog write path.",
+                );
             }
 
             if (command === "ai_send_message") {
@@ -2449,32 +2542,19 @@ describe("chatStore", () => {
                 .activeWorkCycleId;
 
         useChatStore.getState().setComposerParts(createTextParts("Next turn"));
-        const sendPromise = useChatStore.getState().sendMessage();
-        await Promise.resolve();
-        await Promise.resolve();
+        await useChatStore.getState().sendMessage();
 
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
         expect(
             invokeMock.mock.calls.some(
                 ([command]) => command === "ai_send_message",
             ),
-        ).toBe(false);
+        ).toBe(true);
         expect(
-            useChatStore.getState().sessionsById[activeSessionId]
-                ?.activeWorkCycleId,
-        ).toBe(firstWorkCycleId);
-
-        pendingPatches.resolve([
-            {
-                linePatch: buildPatchFromTexts("old line", "new line"),
-                textRangePatch: buildTextRangePatchFromTexts(
-                    "old line",
-                    "new line",
-                ),
-            },
-        ]);
-        await sendPromise;
-
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+            invokeMock.mock.calls.some(
+                ([command]) => command === "compute_tracked_file_patches",
+            ),
+        ).toBe(false);
         expect(session.activeWorkCycleId).toBeTruthy();
         expect(session.activeWorkCycleId).not.toBe(firstWorkCycleId);
         expect(session.visibleWorkCycleId).toBe(session.activeWorkCycleId);
@@ -2496,6 +2576,346 @@ describe("chatStore", () => {
             oldCycleTracked == null ||
                 Object.keys(oldCycleTracked).length === 0,
         ).toBe(true);
+    });
+
+    it("keeps accumulated hunks when Rust refinement reprocesses the same file in one cycle", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+        mockRustTrackedFilePatches((inputs) =>
+            inputs.map((input) =>
+                createMockTrackedFilePatch(input.oldText, input.newText),
+            ),
+        );
+
+        const activeSessionId = getActiveSessionId();
+        const baseText = "aaa\nbbb\nccc\nddd";
+        const midText = "aaa\nBBB\nccc\nddd";
+        const finalText = "aaa\nBBB\nccc\nDDD";
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-same-cycle-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: baseText,
+                    new_text: midText,
+                },
+            ],
+        });
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-same-cycle-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: midText,
+                    new_text: finalText,
+                },
+            ],
+        });
+
+        await drainRustTrackedFileWork();
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0].unreviewedEdits.edits).toHaveLength(2);
+        expectTrackedFileToMatchAccumulatedDiff(buffer[0], baseText, finalText);
+    });
+
+    it("keeps accumulated hunks across cycles when Rust refinement revisits the same file", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+        mockRustTrackedFilePatches(
+            (inputs) =>
+                inputs.map((input) =>
+                    createMockTrackedFilePatch(input.oldText, input.newText),
+                ),
+            { allowSendMessage: true },
+        );
+
+        const activeSessionId = getActiveSessionId();
+        const baseText = "aaa\nbbb\nccc\nddd";
+        const midText = "aaa\nBBB\nccc\nddd";
+        const finalText = "aaa\nBBB\nccc\nDDD";
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-cycle-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: baseText,
+                    new_text: midText,
+                },
+            ],
+        });
+        await drainRustTrackedFileWork();
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-cycle-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: midText,
+                    new_text: finalText,
+                },
+            ],
+        });
+
+        await drainRustTrackedFileWork();
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0].unreviewedEdits.edits).toHaveLength(2);
+        expectTrackedFileToMatchAccumulatedDiff(buffer[0], baseText, finalText);
+    });
+
+    it("keeps earlier hunks after a user edit and a later Rust-refined agent edit", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+        mockRustTrackedFilePatches(
+            (inputs) =>
+                inputs.map((input) =>
+                    createMockTrackedFilePatch(input.oldText, input.newText),
+                ),
+            { allowSendMessage: true },
+        );
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-user-edit-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+        await drainRustTrackedFileWork();
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-user-edit-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+
+        await drainRustTrackedFileWork();
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-cycle-b",
+        });
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0].reviewState).toBe("finalized");
+        expect(buffer[0].unreviewedEdits.edits).toHaveLength(2);
+        expectTrackedFileToMatchAccumulatedDiff(
+            buffer[0],
+            "aaXa\nbbb\nccc\nddd",
+            "aaXa\nBBB\nccc\nDDD",
+        );
+
+        const reviewItems = deriveReviewItems(
+            buffer,
+            new Set(["/notes/file.md"]),
+        );
+        expect(reviewItems).toHaveLength(1);
+        expect(reviewItems[0]).toMatchObject({
+            canReject: true,
+            canResolveHunks: true,
+        });
+    });
+
+    it("keeps accumulated hunks when a Rust-refined permission diff updates an already tracked file", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+        mockRustTrackedFilePatches((inputs) =>
+            inputs.map((input) =>
+                createMockTrackedFilePatch(input.oldText, input.newText),
+            ),
+        );
+
+        const activeSessionId = getActiveSessionId();
+        const baseText = "aaa\nbbb\nccc\nddd";
+        const midText = "aaa\nBBB\nccc\nddd";
+        const finalText = "aaa\nBBB\nccc\nDDD";
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-permission-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: baseText,
+                    new_text: midText,
+                },
+            ],
+        });
+        await drainRustTrackedFileWork();
+
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "permission-rust-accumulated",
+            tool_call_id: "tool-rust-permission-b",
+            title: "Edit file again",
+            target: "/notes/file.md",
+            options: [],
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: midText,
+                    new_text: finalText,
+                },
+            ],
+        });
+
+        await drainRustTrackedFileWork();
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0].unreviewedEdits.edits).toHaveLength(2);
+        expectTrackedFileToMatchAccumulatedDiff(buffer[0], baseText, finalText);
+    });
+
+    it("does not let a late Rust refinement collapse earlier hunks on an accumulated file", async () => {
+        (
+            globalThis as Record<string, unknown>
+        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        await useChatStore.getState().initialize();
+
+        const firstRefinement = createDeferred<MockTrackedFilePatch[]>();
+        mockRustTrackedFilePatches((inputs, callIndex) => {
+            if (callIndex === 0) {
+                return firstRefinement.promise;
+            }
+
+            return inputs.map((input) =>
+                createMockTrackedFilePatch(input.oldText, input.newText),
+            );
+        });
+
+        const activeSessionId = getActiveSessionId();
+        const baseText = "aaa\nbbb\nccc\nddd";
+        const midText = "aaa\nBBB\nccc\nddd";
+        const finalText = "aaa\nBBB\nccc\nDDD";
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-late-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: baseText,
+                    new_text: midText,
+                },
+            ],
+        });
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-rust-late-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: midText,
+                    new_text: finalText,
+                },
+            ],
+        });
+
+        const optimisticBuffer = getVisibleBuffer(activeSessionId);
+        expect(optimisticBuffer).toHaveLength(1);
+        expectTrackedFileToMatchAccumulatedDiff(
+            optimisticBuffer[0],
+            baseText,
+            finalText,
+        );
+
+        firstRefinement.resolve([
+            createMockTrackedFilePatch(baseText, midText),
+        ]);
+        await drainRustTrackedFileWork();
+
+        const buffer = getVisibleBuffer(activeSessionId);
+        expect(buffer).toHaveLength(1);
+        expect(buffer[0].unreviewedEdits.edits).toHaveLength(2);
+        expectTrackedFileToMatchAccumulatedDiff(buffer[0], baseText, finalText);
     });
 
     it("merges accumulated entries when the same file is edited across cycles", async () => {
@@ -2716,16 +3136,17 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
     });
 
-    it("replays user edits queued behind a pending Rust diff consolidation", async () => {
+    it("applies user edits immediately without deferred Rust replay", async () => {
         (
             globalThis as Record<string, unknown>
         ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
 
-        const pendingPatches = createDeferred<MockTrackedFilePatch[]>();
         invokeMock.mockImplementation(async (command) => {
             if (command === "compute_tracked_file_patches") {
-                return pendingPatches.promise;
+                throw new Error(
+                    "compute_tracked_file_patches should not be called from the ActionLog write path.",
+                );
             }
 
             if (
@@ -2771,27 +3192,13 @@ describe("chatStore", () => {
             "aaXa\nBBB\nccc",
         );
 
-        pendingPatches.resolve([
-            {
-                linePatch: buildPatchFromTexts(
-                    "aaa\nbbb\nccc",
-                    "aaa\nBBB\nccc",
-                ),
-                textRangePatch: buildTextRangePatchFromTexts(
-                    "aaa\nbbb\nccc",
-                    "aaa\nBBB\nccc",
-                ),
-            },
-        ]);
-        // Wait for Rust refinement + queued user-edit replay to complete
-        for (let attempt = 0; attempt < 10; attempt++) {
-            const buf = getVisibleBuffer(activeSessionId);
-            if (buf[0]?.diffBase === "aaXa\nbbb\nccc") break;
-            await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-
         const buffer = getVisibleBuffer(activeSessionId);
         expect(buffer).toHaveLength(1);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "compute_tracked_file_patches",
+            ),
+        ).toBe(false);
         expect(buffer[0]).toMatchObject({
             identityKey: "/notes/file.md",
             diffBase: "aaXa\nbbb\nccc",
