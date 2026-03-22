@@ -216,6 +216,43 @@ describe("DeveloperPanel", () => {
         expect(screen.getAllByRole("tab")).toHaveLength(2);
     });
 
+    it("restores persisted terminal scrollback on remount", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        localStorage.setItem(
+            "vaultai.devtools.terminal.tabs:/vault",
+            JSON.stringify({
+                version: 2,
+                tabs: [
+                    {
+                        id: "tab-1",
+                        title: null,
+                        cwd: "/vault",
+                        rawOutput: "previous output\nsecond line",
+                    },
+                ],
+                activeTabId: "tab-1",
+            }),
+        );
+
+        mockInvoke().mockResolvedValue({
+            sessionId: "devterm-1",
+            program: "/bin/zsh",
+            status: "running",
+            displayName: "zsh",
+            cwd: "/vault",
+            cols: 40,
+            rows: 8,
+            exitCode: null,
+            errorMessage: null,
+        });
+
+        renderComponent(<DeveloperPanel />);
+        await flushPromises();
+
+        expect(screen.getByText(/previous output/i)).toBeInTheDocument();
+        expect(screen.getByText(/second line/i)).toBeInTheDocument();
+    });
+
     it("supports context-menu actions for terminal tabs", async () => {
         let createCount = 0;
         mockInvoke().mockImplementation(async (command, payload) => {

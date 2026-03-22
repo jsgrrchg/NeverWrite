@@ -10,11 +10,7 @@ import {
     listenToAiAuthTerminalStarted,
 } from "../api";
 import type { AIAuthTerminalSessionSnapshot } from "../types";
-import {
-    createTerminalBufferState,
-    applyTerminalChunk,
-    renderTerminalBuffer,
-} from "../../devtools/terminal/terminalBuffer";
+import { appendTerminalRawOutput } from "../../devtools/terminal/terminalRawOutput";
 import { TerminalViewport } from "../../devtools/terminal/TerminalViewport";
 import {
     EMPTY_TERMINAL_SNAPSHOT,
@@ -58,14 +54,6 @@ function getErrorMessage(error: unknown) {
     return String(error);
 }
 
-function buildBufferStateFromOutput(output: string) {
-    const initialState = createTerminalBufferState();
-    if (!output) {
-        return initialState;
-    }
-    return applyTerminalChunk(initialState, output);
-}
-
 export function AIAuthTerminalModal({
     open,
     runtimeId,
@@ -79,15 +67,13 @@ export function AIAuthTerminalModal({
     const [snapshot, setSnapshot] = useState<AIAuthTerminalSessionSnapshot>(
         buildInitialSnapshot(runtimeId, runtimeName, vaultPath),
     );
-    const [output, setOutput] = useState("");
-    const [bufferState, setBufferState] = useState(createTerminalBufferState());
+    const [rawOutput, setRawOutput] = useState("");
     const [busy, setBusy] = useState(false);
 
     useEffect(() => {
         if (!open) return;
         setSnapshot(buildInitialSnapshot(runtimeId, runtimeName, vaultPath));
-        setOutput("");
-        setBufferState(createTerminalBufferState());
+        setRawOutput("");
         setBusy(false);
     }, [open, runtimeId, runtimeName, vaultPath]);
 
@@ -102,19 +88,16 @@ export function AIAuthTerminalModal({
                 await listenToAiAuthTerminalStarted((payload) => {
                     if (payload.sessionId !== sessionIdRef.current) return;
                     setSnapshot(payload);
-                    setOutput(payload.buffer);
-                    setBufferState(buildBufferStateFromOutput(payload.buffer));
+                    setRawOutput(payload.buffer);
                     setBusy(false);
                 }),
             );
             unsubs.push(
                 await listenToAiAuthTerminalOutput((payload) => {
                     if (payload.sessionId !== sessionIdRef.current) return;
-                    setBufferState((current) => {
-                        const next = applyTerminalChunk(current, payload.chunk);
-                        setOutput(renderTerminalBuffer(next));
-                        return next;
-                    });
+                    setRawOutput((current) =>
+                        appendTerminalRawOutput(current, payload.chunk),
+                    );
                 }),
             );
             unsubs.push(
@@ -140,8 +123,7 @@ export function AIAuthTerminalModal({
 
         const startSession = async () => {
             setBusy(true);
-            setOutput("");
-            setBufferState(createTerminalBufferState());
+            setRawOutput("");
             setSnapshot((current) => ({
                 ...current,
                 sessionId: "",
@@ -164,8 +146,7 @@ export function AIAuthTerminalModal({
                 }
                 sessionIdRef.current = nextSnapshot.sessionId;
                 setSnapshot(nextSnapshot);
-                setOutput(nextSnapshot.buffer);
-                setBufferState(buildBufferStateFromOutput(nextSnapshot.buffer));
+                setRawOutput(nextSnapshot.buffer);
                 setBusy(false);
             } catch (error) {
                 if (disposed) return;
@@ -213,8 +194,7 @@ export function AIAuthTerminalModal({
             await aiCloseAuthTerminalSession(sessionId).catch(() => undefined);
         }
 
-        setOutput("");
-        setBufferState(createTerminalBufferState());
+        setRawOutput("");
         setSnapshot(buildInitialSnapshot(runtimeId, runtimeName, vaultPath));
         setBusy(true);
 
@@ -226,8 +206,7 @@ export function AIAuthTerminalModal({
             });
             sessionIdRef.current = nextSnapshot.sessionId;
             setSnapshot(nextSnapshot);
-            setOutput(nextSnapshot.buffer);
-            setBufferState(buildBufferStateFromOutput(nextSnapshot.buffer));
+            setRawOutput(nextSnapshot.buffer);
             setBusy(false);
         } catch (error) {
             setSnapshot((current) => ({
@@ -243,8 +222,7 @@ export function AIAuthTerminalModal({
     const sessionView = useMemo<TerminalSessionView>(
         () => ({
             snapshot,
-            output,
-            bufferState,
+            rawOutput,
             busy,
             writeInput: async (input) => {
                 const sessionId = sessionIdRef.current;
@@ -263,11 +241,10 @@ export function AIAuthTerminalModal({
             },
             restart: handleRetry,
             clearViewport: () => {
-                setOutput("");
-                setBufferState(createTerminalBufferState());
+                setRawOutput("");
             },
         }),
-        [snapshot, output, bufferState, busy, handleRetry],
+        [snapshot, rawOutput, busy, handleRetry],
     );
 
     if (!open) return null;

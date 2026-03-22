@@ -1,5 +1,3 @@
-import type { TerminalBufferState } from "./terminalBuffer";
-
 export type TerminalSessionStatus =
     | "idle"
     | "starting"
@@ -42,8 +40,7 @@ export const DEV_TERMINAL_ERROR_EVENT = "devtools://terminal-error";
 
 export interface TerminalSessionView {
     snapshot: TerminalSessionSnapshot;
-    output: string;
-    bufferState: TerminalBufferState;
+    rawOutput: string;
     busy: boolean;
     writeInput: (input: string) => Promise<void>;
     resize: (cols: number, rows: number) => Promise<void>;

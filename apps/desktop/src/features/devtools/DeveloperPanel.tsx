@@ -119,8 +119,7 @@ export function DeveloperPanel() {
             activeTab
                 ? {
                       snapshot: activeTab.snapshot,
-                      output: activeTab.output,
-                      bufferState: activeTab.bufferState,
+                      rawOutput: activeTab.rawOutput,
                       busy: activeTab.busy,
                       writeInput,
                       resize,
@@ -138,7 +137,7 @@ export function DeveloperPanel() {
             <DeveloperPanelHeader
                 tabs={tabs}
                 activeTabId={workspace.activeTabId}
-                canClear={(activeTab?.output.length ?? 0) > 0}
+                canClear={(activeTab?.rawOutput.length ?? 0) > 0}
                 onClear={workspace.clearActiveTab}
                 onNewTab={() => void workspace.openTab()}
                 onSelectTab={workspace.selectTab}

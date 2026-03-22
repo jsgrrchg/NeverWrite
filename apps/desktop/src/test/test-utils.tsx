@@ -94,3 +94,13 @@ export function getClipboardMock() {
         }
     ).__clipboardMock;
 }
+
+export function getXtermMockInstances() {
+    return (
+        globalThis as typeof globalThis & {
+            __xtermMockInstances: Array<{
+                emitData: (data: string) => void;
+            }>;
+        }
+    ).__xtermMockInstances;
+}
