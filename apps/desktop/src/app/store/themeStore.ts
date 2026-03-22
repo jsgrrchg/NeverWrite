@@ -100,12 +100,24 @@ function getStorageKey(vaultPath: string | null): string {
     return vaultPath ? `${THEME_KEY_PREFIX}${vaultPath}` : THEME_KEY_FALLBACK;
 }
 
+function safeGetItem(key: string): string | null {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
 function migrateGlobalTheme(vaultPath: string) {
     const vaultKey = getStorageKey(vaultPath);
-    if (localStorage.getItem(vaultKey)) return; // already migrated
-    const global = parseStoredTheme(localStorage.getItem(THEME_KEY_FALLBACK));
+    if (safeGetItem(vaultKey)) return; // already migrated
+    const global = parseStoredTheme(safeGetItem(THEME_KEY_FALLBACK));
     if (!global) return;
-    localStorage.setItem(vaultKey, JSON.stringify(global));
+    try {
+        localStorage.setItem(vaultKey, JSON.stringify(global));
+    } catch {
+        // localStorage unavailable
+    }
 }
 
 function readInitialVaultPath(): string | null {
@@ -114,7 +126,7 @@ function readInitialVaultPath(): string | null {
             "vault",
         );
         if (urlVault) return decodeURIComponent(urlVault);
-        return localStorage.getItem(LAST_VAULT_KEY);
+        return safeGetItem(LAST_VAULT_KEY);
     } catch {
         return null;
     }
@@ -123,8 +135,7 @@ function readInitialVaultPath(): string | null {
 function loadTheme(vaultPath: string | null): ThemePreference {
     if (vaultPath) migrateGlobalTheme(vaultPath);
     return (
-        parseStoredTheme(localStorage.getItem(getStorageKey(vaultPath))) ??
-        DEFAULT_THEME
+        parseStoredTheme(safeGetItem(getStorageKey(vaultPath))) ?? DEFAULT_THEME
     );
 }
 

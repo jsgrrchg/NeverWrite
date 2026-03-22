@@ -47,7 +47,9 @@ describe("bootstrapDetachedWindow", () => {
             vaultPath: "/vaults/main",
         };
         const hydrateTabs = vi.fn();
-        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const errorSpy = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => {});
 
         await bootstrapDetachedWindow(payload, {
             openVault: vi.fn().mockRejectedValue(new Error("boom")),

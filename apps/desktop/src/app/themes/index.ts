@@ -71,6 +71,7 @@ const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
 };
 
 export function applyThemeColors(name: ThemeName, isDark: boolean) {
+    if (typeof document === "undefined") return;
     const palette = themes[name];
     const colors = isDark ? palette.dark : palette.light;
     const el = document.documentElement;
