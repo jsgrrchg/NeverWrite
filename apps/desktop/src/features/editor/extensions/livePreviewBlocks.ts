@@ -358,7 +358,6 @@ function setupEmbedDrag(element: HTMLElement, resolvedPath: string) {
 
     element.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
-        if ((e.target as HTMLElement).closest(".cm-image-size-toolbar")) return;
         e.preventDefault();
 
         const startX = e.clientX;
@@ -474,11 +473,13 @@ class ImageWidget extends WidgetType {
         if (this.isWikilink) {
             wrapper.dataset.embedTarget = this.alt;
             wrapper.dataset.embedKind = "image";
-            if (this.resolvedPath) setupEmbedDrag(wrapper, this.resolvedPath);
         }
 
         const content = document.createElement("div");
         content.className = "cm-inline-image-content";
+        if (this.isWikilink && this.resolvedPath) {
+            setupEmbedDrag(content, this.resolvedPath);
+        }
         if (this.href) {
             content.classList.add("cm-inline-image-link");
             content.dataset.href = this.href;

@@ -203,7 +203,7 @@ export const livePreviewTheme = EditorView.baseTheme({
         paddingBottom: `var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y})`,
     },
     ".cm-lp-task-line": {
-        cursor: "pointer",
+        cursor: "text",
     },
     ".cm-lp-list-continuation": {
         paddingLeft: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset, 0em) + var(--cm-lp-marker-width, ${DEFAULT_LIST_MARKER_WIDTH}) + var(--cm-lp-marker-gap, ${LIST_MARKER_GAP})) !important`,
@@ -292,7 +292,10 @@ export const livePreviewTheme = EditorView.baseTheme({
         opacity: 0,
         transition: "opacity 120ms ease, border-color 120ms ease",
     },
-    ".cm-lp-task-line:hover::before": {
+    ".cm-lp-task-line.cm-lp-task-toggle-hover": {
+        cursor: "pointer",
+    },
+    ".cm-lp-task-line.cm-lp-task-toggle-hover::before": {
         borderColor: "color-mix(in srgb, var(--accent) 42%, var(--border))",
         boxShadow:
             "0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent)",
