@@ -229,6 +229,67 @@ describe("PdfTabView", () => {
         });
     });
 
+    it("shows PDF context menu actions for copy and select all", async () => {
+        const user = userEvent.setup();
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/tmp/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        const getTextLayer = async () => {
+            await waitFor(() => {
+                expect(
+                    container.querySelector(".textLayer"),
+                ).toBeInTheDocument();
+            });
+            return container.querySelector(".textLayer") as HTMLDivElement;
+        };
+
+        fireEvent.contextMenu(await getTextLayer(), {
+            clientX: 24,
+            clientY: 36,
+        });
+
+        expect(
+            await screen.findByRole("button", { name: "Copy" }),
+        ).toBeDisabled();
+        expect(
+            screen.getByRole("button", { name: "Select All" }),
+        ).toBeEnabled();
+
+        await user.click(screen.getByRole("button", { name: "Select All" }));
+
+        expect(window.getSelection()?.toString()).toContain("PDF text");
+
+        fireEvent.contextMenu(await getTextLayer(), {
+            clientX: 24,
+            clientY: 36,
+        });
+
+        expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled();
+    });
+
     it("handles pinch-style wheel zoom on first load before toolbar zoom is used", async () => {
         const pdfDocument = {
             destroy: vi.fn(),
@@ -353,8 +414,8 @@ describe("PdfTabView", () => {
 
         expect(scrollSurface!.scrollTop).toBe(425);
         expect(scrollSurface!.scrollLeft).toBe(95);
-        expect(content.style.transformOrigin).toBe("0 0");
-        expect(content.style.transform).toBe("scale(1.25)");
+        expect(content!.style.transformOrigin).toBe("0 0");
+        expect(content!.style.transform).toBe("scale(1.25)");
     });
 
     it("exposes native pinch-zoom touch action on the PDF surface", async () => {

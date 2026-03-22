@@ -5,10 +5,16 @@ import {
     useRef,
     useState,
     type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
 } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 import {
     useEditorStore,
     isPdfTab,
@@ -58,6 +64,10 @@ const PDF_DOCUMENT_OPTIONS = {
 
 function clampScrollOffset(offset: number) {
     return Number.isFinite(offset) ? Math.max(0, offset) : 0;
+}
+
+function getSelectionText() {
+    return window.getSelection()?.toString() ?? "";
 }
 
 function clampZoom(zoom: number, direction: "in" | "out"): number {
@@ -248,6 +258,11 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const pinchTimerRef = useRef(0);
     const pendingWheelZoomRef = useRef<number | null>(null);
     const wheelZoomModifierRef = useWheelZoomModifier();
+    const [contextMenu, setContextMenu] = useState<ContextMenuState<{
+        pageNumber: number;
+        selectedText: string;
+        hasSelection: boolean;
+    }> | null>(null);
 
     const [pdfFilter, setPdfFilter] = useState<PdfFilter>("none");
     const [loadedPdf, setLoadedPdf] = useState<LoadedPdfState | null>(null);
@@ -596,6 +611,43 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         void openPath(tab.path);
     }, [tab.path]);
 
+    const selectAllTextForPage = useCallback((pageNumber: number) => {
+        const textLayer = containerRef.current?.querySelector<HTMLElement>(
+            `[data-page-number="${pageNumber}"] .textLayer`,
+        );
+        if (!textLayer) return;
+
+        const selection = window.getSelection();
+        if (!selection) return;
+
+        const range = document.createRange();
+        range.selectNodeContents(textLayer);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }, []);
+
+    const copySelectedText = useCallback(async (text: string) => {
+        if (!text) return;
+        await navigator.clipboard.writeText(text);
+    }, []);
+
+    const handlePdfContextMenu = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>, pageNumber: number) => {
+            event.preventDefault();
+            const selectedText = getSelectionText();
+            setContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                payload: {
+                    pageNumber,
+                    selectedText,
+                    hasSelection: selectedText.length > 0,
+                },
+            });
+        },
+        [],
+    );
+
     const activeFilter = PDF_FILTERS.find((f) => f.mode === pdfFilter)!;
     const cycleFilter = useCallback(() => {
         setPdfFilter((current) => {
@@ -626,6 +678,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (!scrollContainer) return;
 
         function handleWheel(event: WheelEvent) {
+            if (!scrollContainer) return;
             if (!isWheelZoomGesture(event, wheelZoomModifierRef)) return;
             event.preventDefault();
 
@@ -676,14 +729,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         scrollContainer.addEventListener("wheel", handleWheel, {
             passive: false,
         });
+        const capturedContent = contentRef.current;
         return () => {
             scrollContainer.removeEventListener("wheel", handleWheel);
             window.clearTimeout(pinchTimerRef.current);
             pendingWheelZoomRef.current = null;
-            const content = contentRef.current;
-            if (content) {
-                content.style.transform = "";
-                content.style.transformOrigin = "";
+            if (capturedContent) {
+                capturedContent.style.transform = "";
+                capturedContent.style.transformOrigin = "";
             }
         };
     }, [
@@ -799,6 +852,22 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }
 
     if (!pdf) return null;
+
+    const contextMenuEntries: ContextMenuEntry[] = contextMenu
+        ? [
+              {
+                  label: "Copy",
+                  action: () =>
+                      void copySelectedText(contextMenu.payload.selectedText),
+                  disabled: !contextMenu.payload.hasSelection,
+              },
+              {
+                  label: "Select All",
+                  action: () =>
+                      selectAllTextForPage(contextMenu.payload.pageNumber),
+              },
+          ]
+        : [];
 
     return (
         <div
@@ -969,6 +1038,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                                     pageNumber={layout.pageNumber}
                                     zoom={tab.zoom}
                                     onRenderError={setPdfError}
+                                    onContextMenu={handlePdfContextMenu}
                                     registerElement={registerPageElement}
                                     wrapperStyle={{
                                         position: "absolute",
@@ -994,10 +1064,18 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                             pageNumber={tab.page}
                             zoom={tab.zoom}
                             onRenderError={setPdfError}
+                            onContextMenu={handlePdfContextMenu}
                         />
                     </div>
                 )}
             </div>
+            {contextMenu ? (
+                <ContextMenu
+                    menu={contextMenu}
+                    entries={contextMenuEntries}
+                    onClose={() => setContextMenu(null)}
+                />
+            ) : null}
         </div>
     );
 }
@@ -1007,6 +1085,7 @@ function PdfPageCanvas({
     pageNumber,
     zoom,
     onRenderError,
+    onContextMenu,
     registerElement,
     wrapperStyle,
 }: {
@@ -1014,6 +1093,10 @@ function PdfPageCanvas({
     pageNumber: number;
     zoom: number;
     onRenderError: (message: string) => void;
+    onContextMenu?: (
+        event: ReactMouseEvent<HTMLDivElement>,
+        pageNumber: number,
+    ) => void;
     registerElement?: (
         pageNumber: number,
         element: HTMLDivElement | null,
@@ -1133,6 +1216,7 @@ function PdfPageCanvas({
             className="flex justify-center w-full"
             data-page-number={pageNumber}
             style={wrapperStyle}
+            onContextMenu={(event) => onContextMenu?.(event, pageNumber)}
         >
             <div ref={pageShellRef} className="pdf-page-shell">
                 <canvas
