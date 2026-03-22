@@ -3532,11 +3532,11 @@ describe("chatStore", () => {
         ]);
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.actionLog
-                ?.trackedFilesByWorkCycleId[visibleWorkCycleId],
+                ?.trackedFilesByWorkCycleId?.[visibleWorkCycleId],
         ).toBeUndefined();
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.actionLog
-                ?.trackedFilesByWorkCycleId[hiddenWorkCycleId],
+                ?.trackedFilesByWorkCycleId?.[hiddenWorkCycleId],
         ).toMatchObject({
             [hiddenEntry.identityKey]: expect.objectContaining({
                 path: hiddenEntry.path,
