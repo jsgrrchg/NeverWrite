@@ -167,6 +167,22 @@ body.dragging-tab * {
     }
 }
 
+.devtools-terminal-surface {
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    padding: 8px 12px;
+}
+
+.devtools-terminal-surface .xterm {
+    height: 100%;
+}
+
+.devtools-terminal-surface .xterm-viewport {
+    overflow-y: auto !important;
+    scrollbar-width: thin;
+}
+
 .pdf-page-shell {
     position: relative;
     display: inline-block;

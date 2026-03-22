@@ -2,6 +2,24 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, vi } from "vitest";
 
+type XtermMockInstance = {
+    write: (text: string) => void;
+    reset: () => void;
+    clear: () => void;
+    focus: () => void;
+    selectAll: () => void;
+    getSelection: () => string;
+    emitData: (data: string) => void;
+};
+
+const xtermMockInstances: XtermMockInstance[] = [];
+
+Object.defineProperty(globalThis, "__xtermMockInstances", {
+    value: xtermMockInstances,
+    writable: true,
+    configurable: true,
+});
+
 vi.mock("@tauri-apps/api/core", () => ({
     invoke: vi.fn(),
     convertFileSrc: vi.fn((path: string) => `asset://${path}`),
@@ -9,6 +27,198 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
     listen: vi.fn().mockResolvedValue(vi.fn()),
+}));
+
+vi.mock("@xterm/xterm", () => ({
+    Terminal: class MockTerminal {
+        cols = 80;
+        rows = 24;
+        element: HTMLDivElement | null = null;
+        screen: HTMLDivElement | null = null;
+        textarea: HTMLTextAreaElement | undefined;
+        options: Record<string, unknown>;
+        private selection = "";
+        private readonly dataListeners = new Set<(data: string) => void>();
+        private readonly selectionListeners = new Set<() => void>();
+
+        constructor(options: Record<string, unknown> = {}) {
+            this.options = { ...options };
+            xtermMockInstances.push(this);
+        }
+
+        loadAddon(addon: { activate?: (terminal: unknown) => void }) {
+            addon.activate?.(this);
+        }
+
+        open(container: HTMLElement) {
+            const node = document.createElement("div");
+            node.className = "xterm";
+            const screen = document.createElement("div");
+            screen.className = "xterm-screen";
+            const textarea = document.createElement("textarea");
+            textarea.setAttribute("aria-label", "Terminal input");
+            node.appendChild(screen);
+            node.appendChild(textarea);
+            container.appendChild(node);
+            this.element = node;
+            this.screen = screen;
+            this.textarea = textarea;
+        }
+
+        write(text: string) {
+            if (!this.screen) return;
+            this.screen.textContent = (this.screen.textContent ?? "") + text;
+        }
+
+        reset() {
+            if (this.screen) {
+                this.screen.textContent = "";
+            }
+            this.selection = "";
+        }
+
+        clear() {
+            this.reset();
+        }
+
+        focus() {
+            this.textarea?.dispatchEvent(new FocusEvent("focus"));
+        }
+
+        selectAll() {
+            this.selection = this.screen?.textContent ?? "";
+            this.selectionListeners.forEach((listener) => listener());
+        }
+
+        getSelection() {
+            return this.selection;
+        }
+
+        onData(listener: (data: string) => void) {
+            this.dataListeners.add(listener);
+            return {
+                dispose: () => {
+                    this.dataListeners.delete(listener);
+                },
+            };
+        }
+
+        onSelectionChange(listener: () => void) {
+            this.selectionListeners.add(listener);
+            return {
+                dispose: () => {
+                    this.selectionListeners.delete(listener);
+                },
+            };
+        }
+
+        attachCustomKeyEventHandler(
+            _listener: (event: KeyboardEvent) => boolean,
+        ) {
+            // No-op in tests; keyboard interception is exercised through UI state.
+        }
+
+        emitData(data: string) {
+            this.dataListeners.forEach((listener) => listener(data));
+        }
+
+        dispose() {
+            this.element?.remove();
+            this.element = null;
+            this.screen = null;
+            this.textarea = undefined;
+            this.dataListeners.clear();
+            this.selectionListeners.clear();
+            this.selection = "";
+            const index = xtermMockInstances.indexOf(this);
+            if (index >= 0) {
+                xtermMockInstances.splice(index, 1);
+            }
+        }
+    },
+}));
+
+vi.mock("@xterm/addon-fit", () => ({
+    FitAddon: class MockFitAddon {
+        private terminal: {
+            cols: number;
+            rows: number;
+        } | null = null;
+
+        activate(terminal: { cols: number; rows: number }) {
+            this.terminal = terminal;
+        }
+
+        fit() {
+            if (!this.terminal) return;
+            this.terminal.cols = 80;
+            this.terminal.rows = 24;
+        }
+
+        proposeDimensions() {
+            return { cols: 80, rows: 24 };
+        }
+
+        dispose() {}
+    },
+}));
+
+vi.mock("@xterm/addon-search", () => ({
+    SearchAddon: class MockSearchAddon {
+        private readonly listeners = new Set<
+            (event: { resultIndex: number; resultCount: number }) => void
+        >();
+
+        activate() {}
+
+        findNext(term: string) {
+            const resultCount = term ? 1 : 0;
+            this.listeners.forEach((listener) =>
+                listener({
+                    resultIndex: resultCount > 0 ? 0 : -1,
+                    resultCount,
+                }),
+            );
+            return resultCount > 0;
+        }
+
+        findPrevious(term: string) {
+            return this.findNext(term);
+        }
+
+        clearDecorations() {
+            this.listeners.forEach((listener) =>
+                listener({ resultIndex: -1, resultCount: 0 }),
+            );
+        }
+
+        clearActiveDecoration() {}
+
+        onDidChangeResults(
+            listener: (event: {
+                resultIndex: number;
+                resultCount: number;
+            }) => void,
+        ) {
+            this.listeners.add(listener);
+            return {
+                dispose: () => {
+                    this.listeners.delete(listener);
+                },
+            };
+        }
+
+        dispose() {
+            this.listeners.clear();
+        }
+    },
+}));
+
+vi.mock("@xterm/addon-web-links", () => ({
+    WebLinksAddon: class MockWebLinksAddon {
+        activate() {}
+        dispose() {}
+    },
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -230,6 +440,7 @@ Object.defineProperty(globalThis, "__clipboardMock", {
 beforeEach(async () => {
     localStorage.clear();
     sessionStorage.clear();
+    xtermMockInstances.length = 0;
     vi.clearAllMocks();
     vi.useRealTimers();
 

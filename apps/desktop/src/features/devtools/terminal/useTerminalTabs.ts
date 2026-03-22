@@ -3,11 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import {
-    applyTerminalChunk,
-    createTerminalBufferState,
-    renderTerminalBuffer,
-    type TerminalBufferState,
-} from "./terminalBuffer";
+    appendTerminalRawOutput,
+    normalizePersistedTerminalRawOutput,
+} from "./terminalRawOutput";
 import {
     DEV_TERMINAL_ERROR_EVENT,
     DEV_TERMINAL_EXITED_EVENT,
@@ -21,16 +19,17 @@ import {
 } from "./terminalTypes";
 
 const TERMINAL_TABS_STORAGE_KEY_PREFIX = "vaultai.devtools.terminal.tabs:";
-const TERMINAL_TABS_PERSIST_VERSION = 1;
+const TERMINAL_TABS_PERSIST_VERSION = 2;
 
 interface PersistedTerminalWorkspaceTab {
     id: string;
     title: string | null;
     cwd: string | null;
+    rawOutput: string;
 }
 
 interface PersistedTerminalWorkspace {
-    version: 1;
+    version: 1 | 2;
     tabs: PersistedTerminalWorkspaceTab[];
     activeTabId: string | null;
 }
@@ -60,15 +59,19 @@ function createTabId() {
 }
 
 function createWorkspaceTab(
-    options: Pick<PersistedTerminalWorkspaceTab, "id" | "cwd" | "title">,
+    options: Pick<
+        PersistedTerminalWorkspaceTab,
+        "id" | "cwd" | "title" | "rawOutput"
+    >,
 ): TerminalWorkspaceTab {
+    const rawOutput = normalizePersistedTerminalRawOutput(options.rawOutput);
+
     return {
         id: options.id,
         sessionId: null,
         customTitle: normalizeTitle(options.title),
         snapshot: createTabSnapshot(options.cwd),
-        bufferState: createTerminalBufferState(),
-        output: "",
+        rawOutput,
         busy: true,
     };
 }
@@ -87,6 +90,7 @@ function normalizeTabs(
             id: tab.id,
             title: normalizeTitle(tab.title),
             cwd: tab.cwd?.trim() ? tab.cwd : fallbackCwd,
+            rawOutput: normalizePersistedTerminalRawOutput(tab.rawOutput),
         });
     }
 
@@ -99,6 +103,7 @@ function normalizeTabs(
             id: createTabId(),
             title: null,
             cwd: fallbackCwd,
+            rawOutput: "",
         },
     ];
 }
@@ -123,6 +128,7 @@ function buildPersistedWorkspace(
             id: tab.id,
             title: tab.customTitle,
             cwd: tab.snapshot.cwd || null,
+            rawOutput: normalizePersistedTerminalRawOutput(tab.rawOutput),
         })),
         null,
     );
@@ -146,7 +152,7 @@ function normalizeParsedWorkspace(
         activeTabId?: unknown;
     };
 
-    if (candidate.version !== TERMINAL_TABS_PERSIST_VERSION) return null;
+    if (candidate.version !== 1 && candidate.version !== 2) return null;
     if (!Array.isArray(candidate.tabs)) return null;
 
     const tabs = normalizeTabs(
@@ -157,6 +163,7 @@ function normalizeParsedWorkspace(
                     id?: unknown;
                     title?: unknown;
                     cwd?: unknown;
+                    rawOutput?: unknown;
                 };
                 if (typeof current.id !== "string" || current.id.length === 0) {
                     return null;
@@ -169,6 +176,10 @@ function normalizeParsedWorkspace(
                             ? current.title
                             : null,
                     cwd: typeof current.cwd === "string" ? current.cwd : null,
+                    rawOutput:
+                        typeof current.rawOutput === "string"
+                            ? current.rawOutput
+                            : "",
                 };
             })
             .filter(
@@ -178,7 +189,7 @@ function normalizeParsedWorkspace(
     );
 
     return {
-        version: TERMINAL_TABS_PERSIST_VERSION,
+        version: candidate.version,
         tabs,
         activeTabId: resolveActiveTabId(
             tabs,
@@ -222,8 +233,7 @@ export interface TerminalWorkspaceTab {
     sessionId: string | null;
     customTitle: string | null;
     snapshot: TerminalSessionSnapshot;
-    bufferState: TerminalBufferState;
-    output: string;
+    rawOutput: string;
     busy: boolean;
 }
 
@@ -328,15 +338,13 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             const nextTabs = tabsRef.current.map((tab) => {
                 if (tab.id !== tabId) return tab;
                 attached = true;
-                const nextBuffer = bufferedRaw
-                    ? applyTerminalChunk(tab.bufferState, bufferedRaw)
-                    : tab.bufferState;
                 return {
                     ...tab,
                     sessionId: nextSnapshot.sessionId,
                     snapshot: nextSnapshot,
-                    bufferState: nextBuffer,
-                    output: renderTerminalBuffer(nextBuffer),
+                    rawOutput: bufferedRaw
+                        ? appendTerminalRawOutput(tab.rawOutput, bufferedRaw)
+                        : tab.rawOutput,
                     busy: false,
                 };
             });
@@ -419,6 +427,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                 id: tabId,
                 title: options?.title ?? null,
                 cwd: options?.cwd ?? vaultPath,
+                rawOutput: "",
             });
 
             const nextTabs = [...tabsRef.current, nextTab];
@@ -569,8 +578,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             updateTab(tabId, (current) => ({
                 ...current,
                 busy: true,
-                bufferState: createTerminalBufferState(),
-                output: "",
+                rawOutput: "",
                 snapshot: {
                     ...current.snapshot,
                     status: "starting",
@@ -626,8 +634,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
         (tabId: string) => {
             updateTab(tabId, (tab) => ({
                 ...tab,
-                bufferState: createTerminalBufferState(),
-                output: "",
+                rawOutput: "",
             }));
         },
         [updateTab],
@@ -702,14 +709,12 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                         if (matched) {
                             return current.map((tab) => {
                                 if (tab.sessionId !== sessionId) return tab;
-                                const nextBuffer = applyTerminalChunk(
-                                    tab.bufferState,
-                                    chunk,
-                                );
                                 return {
                                     ...tab,
-                                    bufferState: nextBuffer,
-                                    output: renderTerminalBuffer(nextBuffer),
+                                    rawOutput: appendTerminalRawOutput(
+                                        tab.rawOutput,
+                                        chunk,
+                                    ),
                                 };
                             });
                         }
@@ -718,7 +723,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                             pendingOutputRef.current.get(sessionId) ?? "";
                         pendingOutputRef.current.set(
                             sessionId,
-                            existing + chunk,
+                            appendTerminalRawOutput(existing, chunk),
                         );
                         return current;
                     });
@@ -845,14 +850,9 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             }
 
             if (cancelled) return;
-            lastPersistedJsonRef.current = JSON.stringify({
-                version: TERMINAL_TABS_PERSIST_VERSION,
-                tabs: workspace.tabs,
-                activeTabId: resolveActiveTabId(
-                    workspace.tabs,
-                    workspace.activeTabId,
-                ),
-            });
+            lastPersistedJsonRef.current = JSON.stringify(
+                buildPersistedWorkspace(restoredTabs, nextActiveTabId),
+            );
             persistenceReadyRef.current = true;
         };
 
