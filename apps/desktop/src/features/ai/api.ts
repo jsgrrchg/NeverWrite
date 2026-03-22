@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { VaultNoteChange } from "../../app/store/vaultStore";
 import type {
     AIAvailableCommandsPayload,
     AIAuthTerminalErrorPayload,
@@ -512,12 +513,14 @@ export async function aiRestoreTextFile(input: {
     previousPath?: string | null;
     content?: string | null;
 }) {
-    await invoke("ai_restore_text_file", {
-        vaultPath: input.vaultPath,
-        path: input.path,
-        previousPath: input.previousPath ?? null,
-        content: input.content ?? null,
-    });
+    return (
+        (await invoke<VaultNoteChange | null>("ai_restore_text_file", {
+            vaultPath: input.vaultPath,
+            path: input.path,
+            previousPath: input.previousPath ?? null,
+            content: input.content ?? null,
+        })) ?? null
+    );
 }
 
 export async function listenToAiSessionCreated(
