@@ -40,6 +40,8 @@ export function ChatInlinePill({
         verticalAlign: "baseline",
         overflow: "hidden",
         transform: `translateY(${metrics.offsetY}px)`,
+        opacity: clickable ? 0.85 : 1,
+        transition: clickable ? "opacity 80ms ease" : undefined,
     };
 
     const content = (
@@ -65,6 +67,12 @@ export function ChatInlinePill({
                 onContextMenu={onContextMenu}
                 style={style}
                 title={title ?? label}
+                onMouseEnter={(e) => {
+                    e.currentTarget.style.opacity = "1";
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.opacity = "0.85";
+                }}
             >
                 {content}
             </button>

@@ -42,7 +42,10 @@ function NoteIcon({ color = "var(--text-secondary)" }: { color?: string }) {
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
-            style={{ color, opacity: color === "var(--text-secondary)" ? 0.6 : 1 }}
+            style={{
+                color,
+                opacity: color === "var(--text-secondary)" ? 0.6 : 1,
+            }}
         >
             <path d="M8 1.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5L8 1.5z" />
             <path d="M8 1.5V5h3.5" />
@@ -85,9 +88,27 @@ function PlanIcon() {
             style={{ color: "var(--accent)" }}
         >
             <path d="M3 3.5h8M3 7h8M3 10.5h5" />
-            <circle cx="1.75" cy="3.5" r="0.75" fill="currentColor" stroke="none" />
-            <circle cx="1.75" cy="7" r="0.75" fill="currentColor" stroke="none" />
-            <circle cx="1.75" cy="10.5" r="0.75" fill="currentColor" stroke="none" />
+            <circle
+                cx="1.75"
+                cy="3.5"
+                r="0.75"
+                fill="currentColor"
+                stroke="none"
+            />
+            <circle
+                cx="1.75"
+                cy="7"
+                r="0.75"
+                fill="currentColor"
+                stroke="none"
+            />
+            <circle
+                cx="1.75"
+                cy="10.5"
+                r="0.75"
+                fill="currentColor"
+                stroke="none"
+            />
         </svg>
     );
 }
@@ -219,12 +240,13 @@ export function AIChatMentionPicker({
                                               ? "color-mix(in srgb, var(--accent) 12%, var(--bg-secondary))"
                                               : isNote
                                                 ? "color-mix(in srgb, #d97706 10%, var(--bg-secondary))"
-                                            : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
+                                                : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
                                         : "transparent",
                                     padding: "6px 10px",
                                     textAlign: "left",
                                     cursor: "pointer",
                                     minWidth: 0,
+                                    transition: "background-color 80ms ease",
                                 }}
                             >
                                 {isFetch ? (
@@ -244,7 +266,7 @@ export function AIChatMentionPicker({
                                               ? "var(--accent)"
                                               : isNote
                                                 ? "#d97706"
-                                            : "var(--text-primary)",
+                                                : "var(--text-primary)",
                                         fontSize: 13,
                                         fontWeight:
                                             isFetch || isPlan || isNote
@@ -261,9 +283,9 @@ export function AIChatMentionPicker({
                                         ? "fetch"
                                         : isPlan
                                           ? "/plan"
-                                        : item.kind === "note"
-                                          ? item.note.title
-                                          : item.name}
+                                          : item.kind === "note"
+                                            ? item.note.title
+                                            : item.name}
                                 </span>
                                 {(isFetch || isPlan) && (
                                     <span

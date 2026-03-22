@@ -58,6 +58,7 @@ export function AIChatSessionList({
                                 isActive || isHovered
                                     ? "var(--bg-tertiary)"
                                     : "transparent",
+                            transition: "background-color 80ms ease",
                         }}
                         onMouseEnter={() => setHoveredId(session.sessionId)}
                         onMouseLeave={() => setHoveredId(null)}

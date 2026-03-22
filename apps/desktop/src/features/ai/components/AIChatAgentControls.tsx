@@ -83,6 +83,18 @@ function DropdownField({
                     backgroundColor: "transparent",
                     border: "none",
                     opacity: isDisabled ? 0.45 : 1,
+                    transition: "background-color 100ms ease, color 100ms ease",
+                }}
+                onMouseEnter={(e) => {
+                    if (isDisabled) return;
+                    e.currentTarget.style.backgroundColor =
+                        "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                    e.currentTarget.style.color = "var(--text-primary)";
+                }}
+                onMouseLeave={(e) => {
+                    if (isDisabled) return;
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.color = "var(--text-secondary)";
                 }}
                 title={label}
                 disabled={isDisabled}
@@ -135,11 +147,12 @@ function DropdownField({
                                 backgroundColor: "transparent",
                                 border: "none",
                                 opacity: option.disabled ? 0.4 : 1,
+                                transition: "background-color 80ms ease",
                             }}
                             onMouseEnter={(event) => {
                                 if (!option.disabled) {
                                     event.currentTarget.style.backgroundColor =
-                                        "color-mix(in srgb, var(--text-primary) 8%, transparent)";
+                                        "var(--bg-tertiary)";
                                 }
                             }}
                             onMouseLeave={(event) => {
