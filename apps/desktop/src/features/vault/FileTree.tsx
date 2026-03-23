@@ -1970,17 +1970,6 @@ export function FileTree() {
                 if (!updated) continue;
 
                 movedIds.set(operation.fromId, updated.id);
-                useEditorStore.setState((s) => ({
-                    tabs: s.tabs.map((tab) =>
-                        isNoteTab(tab) && tab.noteId === operation.fromId
-                            ? {
-                                  ...tab,
-                                  noteId: updated.id,
-                                  title: updated.title,
-                              }
-                            : tab,
-                    ),
-                }));
             }
 
             applyMovedIds(movedIds);
@@ -3200,20 +3189,7 @@ export function FileTree() {
         renameGuardRef.current = true;
         try {
             setRenamingNoteId(null);
-            const updated = await renameNote(note.id, newName);
-            if (updated) {
-                useEditorStore.setState((s) => ({
-                    tabs: s.tabs.map((t) =>
-                        isNoteTab(t) && t.noteId === note.id
-                            ? {
-                                  ...t,
-                                  noteId: updated.id,
-                                  title: updated.title,
-                              }
-                            : t,
-                    ),
-                }));
-            }
+            await renameNote(note.id, newName);
         } finally {
             renameGuardRef.current = false;
         }
@@ -3396,7 +3372,7 @@ export function FileTree() {
                 ? `${parentPath}/${baseName} copy`
                 : `${baseName} copy`;
             let counter = 2;
-            while (notes.some((item) => item.id === `${copyPath}.md`)) {
+            while (notes.some((item) => item.id === copyPath)) {
                 copyPath = parentPath
                     ? `${parentPath}/${baseName} copy ${counter}`
                     : `${baseName} copy ${counter}`;
