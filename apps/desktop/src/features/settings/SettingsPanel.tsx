@@ -497,6 +497,8 @@ const THEME_ORDER: ThemeName[] = [
     "kanagawa",
     "everforest",
     "synthwave84",
+    "claude",
+    "codex",
 ];
 
 function ThemePicker({

@@ -17,6 +17,8 @@ import { rosePineTheme } from "./rosePine";
 import { kanagawaTheme } from "./kanagawa";
 import { everforestTheme } from "./everforest";
 import { synthwave84Theme } from "./synthwave84";
+import { claudeTheme } from "./claude";
+import { codexTheme } from "./codex";
 
 export interface ThemeColors {
     bgPrimary: string;
@@ -55,7 +57,9 @@ export type ThemeName =
     | "rosePine"
     | "kanagawa"
     | "everforest"
-    | "synthwave84";
+    | "synthwave84"
+    | "claude"
+    | "codex";
 
 export const themes: Record<ThemeName, ThemePalette> = {
     default: defaultTheme,
@@ -77,6 +81,8 @@ export const themes: Record<ThemeName, ThemePalette> = {
     kanagawa: kanagawaTheme,
     everforest: everforestTheme,
     synthwave84: synthwave84Theme,
+    claude: claudeTheme,
+    codex: codexTheme,
 };
 
 const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
