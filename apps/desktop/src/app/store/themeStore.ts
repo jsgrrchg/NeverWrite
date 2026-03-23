@@ -42,6 +42,8 @@ const VALID_THEME_NAMES = new Set<ThemeName>([
     "kanagawa",
     "everforest",
     "synthwave84",
+    "claude",
+    "codex",
 ]);
 
 function normalizeThemeMode(value: unknown): ThemeMode {
