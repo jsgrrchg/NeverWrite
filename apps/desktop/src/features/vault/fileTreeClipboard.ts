@@ -34,7 +34,11 @@ function folderPathExists(folderPath: string, takenPaths: Set<string>) {
 }
 
 export function writeFileTreeClipboard(payload: FileTreeClipboardPayload) {
-    localStorage.setItem(FILE_TREE_CLIPBOARD_KEY, JSON.stringify(payload));
+    try {
+        localStorage.setItem(FILE_TREE_CLIPBOARD_KEY, JSON.stringify(payload));
+    } catch {
+        console.warn("Failed to write file tree clipboard to localStorage");
+    }
 }
 
 export function readFileTreeClipboard(
@@ -102,7 +106,8 @@ export function buildCopiedNotePath(
     const directPath = joinPath(targetFolder, baseName);
     if (!takenNoteIds.has(directPath)) return directPath;
 
-    for (let attempt = 1; ; attempt += 1) {
+    const MAX_ATTEMPTS = 1000;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
         const candidate = joinPath(
             targetFolder,
             makeCopyName(baseName, attempt),
@@ -111,6 +116,7 @@ export function buildCopiedNotePath(
             return candidate;
         }
     }
+    return joinPath(targetFolder, `${baseName}-${Date.now()}`);
 }
 
 export function buildCopiedFolderPath(
@@ -122,7 +128,8 @@ export function buildCopiedFolderPath(
     const directPath = joinPath(targetFolder, baseName);
     if (!folderPathExists(directPath, takenPaths)) return directPath;
 
-    for (let attempt = 1; ; attempt += 1) {
+    const MAX_ATTEMPTS = 1000;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
         const candidate = joinPath(
             targetFolder,
             makeCopyName(baseName, attempt),
@@ -131,4 +138,5 @@ export function buildCopiedFolderPath(
             return candidate;
         }
     }
+    return joinPath(targetFolder, `${baseName}-${Date.now()}`);
 }
