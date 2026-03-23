@@ -422,6 +422,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const dragPreviewNodeRef = useRef<HTMLDivElement | null>(null);
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
+    const internalDragActiveRef = useRef(false);
 
     const handleMoveTabFileToTrash = useCallback(
         async (path: string, title: string) => {
@@ -575,11 +576,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             if (!coords) return;
 
-            const detail = buildTabFileDragDetail(
-                tab,
-                phase,
-                coords,
-            );
+            const detail = buildTabFileDragDetail(tab, phase, coords);
             if (detail) {
                 emitFileTreeNoteDrag(detail);
             }
@@ -657,14 +654,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             if (!tab) return true;
 
             const canAttachAsFile =
-                buildTabFileDragDetail(
-                    tab,
-                    "end",
-                    {
-                        clientX: coords.clientX,
-                        clientY: coords.clientY,
-                    },
-                ) !== null;
+                buildTabFileDragDetail(tab, "end", {
+                    clientX: coords.clientX,
+                    clientY: coords.clientY,
+                }) !== null;
             if (!canAttachAsFile) {
                 return true;
             }
@@ -679,6 +672,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         onDetachEnd: handleDetachEnd,
         onDetachCancel: handleDetachCancel,
         onDragStart: (tabId, coords) => {
+            internalDragActiveRef.current = true;
             updateTabDragPreview(tabId, coords.clientX, coords.clientY);
             emitTabDragDetail(tabId, "start", {
                 clientX: coords.clientX,
@@ -697,9 +691,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 clientX: coords.clientX,
                 clientY: coords.clientY,
             });
+            internalDragActiveRef.current = false;
             setDragPreviewTabId(null);
         },
         onDragCancel: (tabId) => {
+            internalDragActiveRef.current = false;
             emitTabDragDetail(tabId, "cancel");
             setDragPreviewTabId(null);
         },
@@ -1125,6 +1121,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             if (detail.phase === "cancel") {
                 setExternalFileDropActive(false);
+                return;
+            }
+
+            // Ignore events from internal tab reorder drags — the reorder
+            // commit handles positioning.  Without this guard the handler
+            // opens a duplicate tab at the drop position.
+            if (internalDragActiveRef.current) {
+                if (detail.phase === "end") {
+                    setExternalFileDropActive(false);
+                }
                 return;
             }
 

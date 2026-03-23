@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -65,6 +65,13 @@ export function AIChatTabs({
         sessionId: string;
         hasSession: boolean;
     }> | null>(null);
+    const tabListRef = useRef<HTMLDivElement>(null);
+    const handleWheel = useCallback((e: React.WheelEvent) => {
+        if (e.deltaY !== 0 && tabListRef.current) {
+            e.preventDefault();
+            tabListRef.current.scrollLeft += e.deltaY;
+        }
+    }, []);
 
     if (!tabs.length) {
         return (
@@ -79,8 +86,10 @@ export function AIChatTabs({
 
     return (
         <div
+            ref={tabListRef}
             role="tablist"
             aria-label="Chat tabs"
+            onWheel={handleWheel}
             className={`scrollbar-hidden flex min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden ${
                 isCompact ? "gap-0.5 px-0.5" : "gap-1 px-1"
             }`}
