@@ -74,7 +74,10 @@ function buildReviewControlEntries(
     const entries: ReviewControlEntry[] = [];
 
     for (const chunk of chunks) {
-        if (!chunk.canResolveInlineExactly || chunk.controlMode === "panel-only") {
+        if (
+            !chunk.canResolveInlineExactly ||
+            chunk.controlMode === "panel-only"
+        ) {
             entries.push({
                 kind: "panel-only",
                 controlId: `chunk:${chunk.id.key}`,
@@ -102,7 +105,10 @@ function buildReviewControlEntries(
                     label: "1 change",
                     chunkId: chunk.id,
                     hunkIds: [hunk.id],
-                    startLine: Math.min(hunk.visualStartLine, hunk.visualEndLine),
+                    startLine: Math.min(
+                        hunk.visualStartLine,
+                        hunk.visualEndLine,
+                    ),
                     endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
                     hunkId: hunk.id,
                 });
@@ -127,7 +133,10 @@ function buildReviewControlEntries(
     return entries.sort(compareControlEntries);
 }
 
-function compareControlEntries(left: ReviewControlEntry, right: ReviewControlEntry) {
+function compareControlEntries(
+    left: ReviewControlEntry,
+    right: ReviewControlEntry,
+) {
     if (left.startLine !== right.startLine) {
         return left.startLine - right.startLine;
     }
@@ -210,7 +219,10 @@ class ReviewControlWidget extends WidgetType {
                         view,
                     });
                 },
-                { scope: this.entry.hunkId ? "hunk" : "chunk", hunkId: this.entry.hunkId },
+                {
+                    scope: this.entry.hunkId ? "hunk" : "chunk",
+                    hunkId: this.entry.hunkId,
+                },
             ),
         );
         wrap.appendChild(
@@ -224,7 +236,10 @@ class ReviewControlWidget extends WidgetType {
                         view,
                     });
                 },
-                { scope: this.entry.hunkId ? "hunk" : "chunk", hunkId: this.entry.hunkId },
+                {
+                    scope: this.entry.hunkId ? "hunk" : "chunk",
+                    hunkId: this.entry.hunkId,
+                },
             ),
         );
 
@@ -378,6 +393,7 @@ function buildControlLineDecorations(
 }
 
 const reviewProjectionControlsTheme = EditorView.baseTheme({
+    /* ── Control widget anchor ─────────────────────────────── */
     ".cm-review-chunk-controls-anchor": {
         position: "relative",
         display: "block",
@@ -386,23 +402,25 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
         overflow: "visible",
         zIndex: "3",
     },
+
+    /* ── Floating controls bar (code-lens style) ───────────── */
     ".cm-review-chunk-controls": {
         position: "absolute",
-        top: "6px",
-        right: "10px",
+        top: "4px",
+        right: "12px",
         display: "inline-flex",
         alignItems: "center",
-        gap: "4px",
-        padding: "3px",
-        borderRadius: "8px",
-        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-        background: "color-mix(in srgb, var(--bg-secondary) 86%, transparent)",
-        backdropFilter: "blur(8px)",
-        boxShadow: "0 6px 16px rgb(0 0 0 / 0.12)",
+        gap: "2px",
+        padding: "2px 3px",
+        borderRadius: "6px",
+        border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+        background: "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
+        backdropFilter: "blur(12px)",
+        boxShadow: "0 1px 3px rgb(0 0 0 / 0.08), 0 4px 12px rgb(0 0 0 / 0.06)",
         opacity: "0",
         pointerEvents: "none",
-        transform: "translateY(-4px)",
-        transition: "opacity 140ms ease, transform 140ms ease",
+        transform: "translateY(-2px)",
+        transition: "opacity 120ms ease, transform 120ms ease",
         zIndex: "3",
     },
     ".cm-review-chunk-controls.is-hovered, .cm-review-chunk-controls:focus-within":
@@ -411,63 +429,84 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
             pointerEvents: "auto",
             transform: "translateY(0)",
         },
+
+    /* ── Chunk line decorations (gutter + background) ──────── */
     ".cm-review-chunk-line": {
         position: "relative",
+        backgroundColor:
+            "color-mix(in srgb, var(--diff-update) 6%, transparent)",
+        boxShadow: "inset 3px 0 0 0 var(--diff-update)",
     },
+    ".cm-review-chunk-line-start": {
+        borderTop:
+            "1px solid color-mix(in srgb, var(--diff-update) 18%, transparent)",
+    },
+    ".cm-review-chunk-line-end": {
+        borderBottom:
+            "1px solid color-mix(in srgb, var(--diff-update) 18%, transparent)",
+    },
+
+    /* ── Badge ─────────────────────────────────────────────── */
     ".cm-review-chunk-badge": {
-        fontSize: "11px",
+        fontSize: "10px",
         lineHeight: "1",
-        letterSpacing: "0.02em",
+        letterSpacing: "0.04em",
         textTransform: "uppercase",
+        fontWeight: "600",
         color: "var(--text-secondary)",
-        padding: "0 4px 0 2px",
+        padding: "0 6px 0 4px",
+        opacity: "0.8",
     },
+
+    /* ── Action buttons (compact, editor-native feel) ──────── */
     ".cm-review-action": {
         appearance: "none",
-        border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))",
-        background:
-            "color-mix(in srgb, var(--bg-primary) 78%, var(--bg-secondary))",
-        color: "var(--text-primary)",
-        borderRadius: "6px",
+        border: "1px solid transparent",
+        background: "transparent",
+        color: "var(--text-secondary)",
+        borderRadius: "4px",
         fontSize: "11px",
         lineHeight: "1",
-        padding: "6px 10px",
+        padding: "4px 8px",
         cursor: "pointer",
         fontWeight: "600",
+        fontFamily: "inherit",
         pointerEvents: "auto",
+        transition:
+            "background-color 100ms ease, color 100ms ease, border-color 100ms ease",
     },
     ".cm-review-action:hover": {
-        background: "color-mix(in srgb, var(--bg-tertiary) 88%, transparent)",
-    },
-    ".cm-review-action-reject": {
-        color: "var(--diff-remove)",
-        borderColor:
-            "color-mix(in srgb, var(--diff-remove) 30%, var(--border))",
-        background:
-            "color-mix(in srgb, var(--diff-remove) 10%, var(--bg-primary))",
+        background: "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)",
+        color: "var(--text-primary)",
     },
     ".cm-review-action-accept": {
         color: "var(--diff-add)",
-        borderColor: "color-mix(in srgb, var(--diff-add) 30%, var(--border))",
-        background:
-            "color-mix(in srgb, var(--diff-add) 10%, var(--bg-primary))",
-    },
-    ".cm-review-action-reject:hover": {
-        background:
-            "color-mix(in srgb, var(--diff-remove) 16%, var(--bg-primary))",
     },
     ".cm-review-action-accept:hover": {
         background:
-            "color-mix(in srgb, var(--diff-add) 16%, var(--bg-primary))",
+            "color-mix(in srgb, var(--diff-add) 14%, var(--bg-primary))",
+        borderColor: "color-mix(in srgb, var(--diff-add) 24%, transparent)",
     },
-    ".cm-review-chunk-ambiguous": {
-        fontSize: "11px",
-        color: "var(--text-secondary)",
-        padding: "6px 8px",
-        borderRadius: "6px",
+    ".cm-review-action-reject": {
+        color: "var(--diff-remove)",
+    },
+    ".cm-review-action-reject:hover": {
         background:
-            "color-mix(in srgb, var(--bg-primary) 78%, var(--bg-secondary))",
-        border: "1px solid color-mix(in srgb, var(--border) 74%, transparent)",
+            "color-mix(in srgb, var(--diff-remove) 14%, var(--bg-primary))",
+        borderColor: "color-mix(in srgb, var(--diff-remove) 24%, transparent)",
+    },
+
+    /* ── Ambiguous / panel-only note ───────────────────────── */
+    ".cm-review-chunk-ambiguous": {
+        fontSize: "10px",
+        fontWeight: "500",
+        color: "var(--text-secondary)",
+        padding: "4px 8px",
+        borderRadius: "4px",
+        background: "transparent",
+        border: "none",
+        opacity: "0.7",
+        fontStyle: "italic",
     },
 });
 
