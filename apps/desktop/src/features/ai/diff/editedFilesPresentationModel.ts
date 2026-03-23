@@ -1,6 +1,5 @@
 import type { TrackedFile } from "./actionLogTypes";
 import {
-    computeDecisionHunks,
     computeDiffLines,
     computeDiffStats,
     createDiffFromTrackedFile,
@@ -9,6 +8,10 @@ import {
 } from "./reviewDiff";
 import type { AIFileDiff } from "../types";
 import {
+    buildReviewProjection,
+    type ReviewProjection,
+} from "./reviewProjection";
+import {
     getFileOperation,
     getTrackedFileReviewState,
 } from "../store/actionLogModel";
@@ -16,6 +19,7 @@ import {
 export interface ReviewFileItem {
     file: TrackedFile;
     diff: AIFileDiff;
+    reviewProjection: ReviewProjection;
     lines: DiffLine[];
     stats: { additions: number; deletions: number; approximate: boolean };
     tone: { accent: string; badge: string | null };
@@ -72,6 +76,7 @@ export function getFileSummary(file: TrackedFile) {
 
 export function canResolveFileHunks(file: TrackedFile, diff?: AIFileDiff) {
     const candidateDiff = diff ?? createDiffFromTrackedFile(file);
+    const projection = buildReviewProjection(file);
     const op = getFileOperation(file);
     return (
         file.isText &&
@@ -79,7 +84,8 @@ export function canResolveFileHunks(file: TrackedFile, diff?: AIFileDiff) {
         getTrackedFileReviewState(file) === "finalized" &&
         op !== "add" &&
         op !== "delete" &&
-        computeDecisionHunks(candidateDiff).length > 0
+        candidateDiff.is_text !== false &&
+        projection.hunks.length > 0
     );
 }
 
@@ -92,11 +98,13 @@ export function deriveReviewItems(
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((file) => {
             const diff = createDiffFromTrackedFile(file);
+            const reviewProjection = buildReviewProjection(file);
             const canResolveHunks = canResolveFileHunks(file, diff);
             const stats = computeDiffStats([diff]);
             return {
                 file,
                 diff,
+                reviewProjection,
                 lines: computeDiffLines(diff),
                 stats: {
                     additions: stats.additions,

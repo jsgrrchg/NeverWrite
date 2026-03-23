@@ -7,6 +7,7 @@ import {
     getFileNameFromPath,
 } from "../diff/reviewDiff";
 import type { ReviewFileItem } from "../diff/editedFilesPresentationModel";
+import type { ReviewHunkId } from "../diff/reviewProjection";
 import {
     getAccentButtonStyle,
     getDangerButtonStyle,
@@ -24,7 +25,7 @@ function FullRowActions({
     onKeep,
     onReject,
     onResolveHunks,
-    onResolveHunk,
+    onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
     expanded: boolean;
@@ -32,13 +33,13 @@ function FullRowActions({
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
-    onResolveHunk?: (
+    onResolveReviewHunks?: (
         decision: "accepted" | "rejected",
-        hunkNewStart: number,
-        hunkNewEnd: number,
+        trackedVersion: number,
+        hunkIds: ReviewHunkId[],
     ) => void;
 }) {
-    const { file, canResolveHunks, diff } = item;
+    const { file, canResolveHunks, diff, reviewProjection } = item;
 
     return (
         <EditedFileDiffPreview
@@ -47,6 +48,7 @@ function FullRowActions({
             diffZoom={diffZoom}
             compactLineNumbers
             file={file}
+            reviewHunks={reviewProjection.hunks}
             onKeep={onKeep}
             onReject={onReject}
             onResolveHunks={
@@ -54,10 +56,14 @@ function FullRowActions({
                     ? (_, mergedText) => onResolveHunks(mergedText)
                     : undefined
             }
-            onResolveHunk={
-                canResolveHunks && onResolveHunk
-                    ? (_, decision, hunkNewStart, hunkNewEnd) =>
-                          onResolveHunk(decision, hunkNewStart, hunkNewEnd)
+            onResolveReviewHunks={
+                canResolveHunks && onResolveReviewHunks
+                    ? (_, decision, trackedVersion, hunkIds) =>
+                          onResolveReviewHunks(
+                              decision,
+                              trackedVersion,
+                              hunkIds,
+                          )
                     : undefined
             }
             testId={`edited-buffer-diff:${file.identityKey}`}
@@ -73,7 +79,7 @@ function FullRow({
     onKeep,
     onReject,
     onResolveHunks,
-    onResolveHunk,
+    onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
     expanded: boolean;
@@ -82,10 +88,10 @@ function FullRow({
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
-    onResolveHunk?: (
+    onResolveReviewHunks?: (
         decision: "accepted" | "rejected",
-        hunkNewStart: number,
-        hunkNewEnd: number,
+        trackedVersion: number,
+        hunkIds: ReviewHunkId[],
     ) => void;
 }) {
     const { file, tone, summary, canOpen, canReject, stats } = item;
@@ -301,7 +307,7 @@ function FullRow({
                     onKeep={onKeep}
                     onReject={onReject}
                     onResolveHunks={onResolveHunks}
-                    onResolveHunk={onResolveHunk}
+                    onResolveReviewHunks={onResolveReviewHunks}
                 />
             ) : null}
         </div>
@@ -318,22 +324,30 @@ function CompactRow({
     onKeep,
     onReject,
     onResolveHunks,
-    onResolveHunk,
+    onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
     diffZoom: number;
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
-    onResolveHunk?: (
+    onResolveReviewHunks?: (
         decision: "accepted" | "rejected",
-        hunkNewStart: number,
-        hunkNewEnd: number,
+        trackedVersion: number,
+        hunkIds: ReviewHunkId[],
     ) => void;
 }) {
     const [expanded, setExpanded] = useState(false);
-    const { file, tone, canOpen, canReject, canResolveHunks, diff, stats } =
-        item;
+    const {
+        file,
+        tone,
+        canOpen,
+        canReject,
+        canResolveHunks,
+        diff,
+        stats,
+        reviewProjection,
+    } = item;
 
     return (
         <div
@@ -506,6 +520,7 @@ function CompactRow({
                 expanded={expanded}
                 diffZoom={diffZoom}
                 file={file}
+                reviewHunks={reviewProjection.hunks}
                 onKeep={onKeep}
                 onReject={onReject}
                 onResolveHunks={
@@ -513,10 +528,14 @@ function CompactRow({
                         ? (_, mergedText) => onResolveHunks(mergedText)
                         : undefined
                 }
-                onResolveHunk={
-                    canResolveHunks && onResolveHunk
-                        ? (_, decision, hunkNewStart, hunkNewEnd) =>
-                              onResolveHunk(decision, hunkNewStart, hunkNewEnd)
+                onResolveReviewHunks={
+                    canResolveHunks && onResolveReviewHunks
+                        ? (_, decision, trackedVersion, hunkIds) =>
+                              onResolveReviewHunks(
+                                  decision,
+                                  trackedVersion,
+                                  hunkIds,
+                              )
                         : undefined
                 }
                 testId={`edited-buffer-diff:${file.identityKey}`}
@@ -538,7 +557,7 @@ export function EditedFilesReviewList({
     onKeepItem,
     onRejectItem,
     onResolveHunks,
-    onResolveHunk,
+    onResolveReviewHunks,
 }: {
     items: ReviewFileItem[];
     variant: "full" | "compact";
@@ -548,11 +567,11 @@ export function EditedFilesReviewList({
     onKeepItem?: (identityKey: string) => void;
     onRejectItem: (identityKey: string) => void;
     onResolveHunks?: (identityKey: string, mergedText: string) => void;
-    onResolveHunk?: (
+    onResolveReviewHunks?: (
         identityKey: string,
         decision: "accepted" | "rejected",
-        hunkNewStart: number,
-        hunkNewEnd: number,
+        trackedVersion: number,
+        hunkIds: ReviewHunkId[],
     ) => void;
 }) {
     if (variant === "compact") {
@@ -568,14 +587,14 @@ export function EditedFilesReviewList({
                         onResolveHunks={(mergedText) =>
                             onResolveHunks?.(item.file.identityKey, mergedText)
                         }
-                        onResolveHunk={
-                            onResolveHunk
-                                ? (decision, s, e) =>
-                                      onResolveHunk(
+                        onResolveReviewHunks={
+                            onResolveReviewHunks
+                                ? (decision, trackedVersion, hunkIds) =>
+                                      onResolveReviewHunks(
                                           item.file.identityKey,
                                           decision,
-                                          s,
-                                          e,
+                                          trackedVersion,
+                                          hunkIds,
                                       )
                                 : undefined
                         }
@@ -599,14 +618,14 @@ export function EditedFilesReviewList({
                     onResolveHunks={(mergedText) =>
                         onResolveHunks?.(item.file.identityKey, mergedText)
                     }
-                    onResolveHunk={
-                        onResolveHunk
-                            ? (decision, s, e) =>
-                                  onResolveHunk(
+                    onResolveReviewHunks={
+                        onResolveReviewHunks
+                            ? (decision, trackedVersion, hunkIds) =>
+                                  onResolveReviewHunks(
                                       item.file.identityKey,
                                       decision,
-                                      s,
-                                      e,
+                                      trackedVersion,
+                                      hunkIds,
                                   )
                             : undefined
                     }

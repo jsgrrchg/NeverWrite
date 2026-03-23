@@ -43,20 +43,27 @@ function createTrackedFile(
     path: string,
     diffBase: string,
     currentText: string,
+    overrides: Partial<TrackedFile> = {},
 ): TrackedFile {
     return {
-        identityKey: path,
-        originPath: path,
-        path,
-        previousPath: null,
-        status: { kind: "modified" },
+        identityKey: overrides.identityKey ?? path,
+        originPath: overrides.originPath ?? path,
+        path: overrides.path ?? path,
+        previousPath: overrides.previousPath ?? null,
+        status: overrides.status ?? { kind: "modified" },
         diffBase,
         currentText,
-        unreviewedRanges: buildTextRangePatchFromTexts(diffBase, currentText),
-        unreviewedEdits: buildPatchFromTexts(diffBase, currentText),
-        version: 1,
-        isText: true,
-        updatedAt: 1,
+        unreviewedRanges:
+            overrides.unreviewedRanges ??
+            buildTextRangePatchFromTexts(diffBase, currentText),
+        unreviewedEdits:
+            overrides.unreviewedEdits ??
+            buildPatchFromTexts(diffBase, currentText),
+        version: overrides.version ?? 1,
+        isText: overrides.isText ?? true,
+        updatedAt: overrides.updatedAt ?? 1,
+        reviewState: overrides.reviewState,
+        conflictHash: overrides.conflictHash ?? null,
     };
 }
 
@@ -184,12 +191,12 @@ describe("mergeViewSync", () => {
         destroy();
     });
 
-    it("routes Accept and Reject through resolveHunkEdits with ActionLog line ranges", () => {
+    it("routes Accept and Reject through resolveReviewHunks with ReviewHunk ids", () => {
         const originalState = useChatStore.getState();
-        const resolveHunkEdits = vi.fn();
+        const resolveReviewHunks = vi.fn();
         useChatStore.setState({
             ...originalState,
-            resolveHunkEdits,
+            resolveReviewHunks,
         });
 
         try {
@@ -204,10 +211,10 @@ describe("mergeViewSync", () => {
             });
 
             const acceptButton = view.dom.querySelector(
-                '[data-merge-decision="accept"]',
+                '[data-review-decision="accept"]',
             ) as HTMLButtonElement | null;
             const rejectButton = view.dom.querySelector(
-                '[data-merge-decision="reject"]',
+                '[data-review-decision="reject"]',
             ) as HTMLButtonElement | null;
 
             expect(acceptButton).not.toBeNull();
@@ -220,21 +227,21 @@ describe("mergeViewSync", () => {
                 fireEvent.mouseDown(rejectButton);
             }
 
-            expect(resolveHunkEdits).toHaveBeenNthCalledWith(
+            expect(resolveReviewHunks).toHaveBeenNthCalledWith(
                 1,
                 "session-1",
                 path,
                 "accepted",
-                2,
-                3,
+                1,
+                [{ trackedVersion: 1, key: "0:10:10:11:16" }],
             );
-            expect(resolveHunkEdits).toHaveBeenNthCalledWith(
+            expect(resolveReviewHunks).toHaveBeenNthCalledWith(
                 2,
                 "session-1",
                 path,
                 "rejected",
-                2,
-                3,
+                1,
+                [{ trackedVersion: 1, key: "0:10:10:11:16" }],
             );
 
             destroy();
@@ -243,12 +250,12 @@ describe("mergeViewSync", () => {
         }
     });
 
-    it("maps inline deletion chunks to the tracked file line edit range", () => {
+    it("routes inline deletion chunks through exact ReviewHunk ids", () => {
         const originalState = useChatStore.getState();
-        const resolveHunkEdits = vi.fn();
+        const resolveReviewHunks = vi.fn();
         useChatStore.setState({
             ...originalState,
-            resolveHunkEdits,
+            resolveReviewHunks,
         });
 
         try {
@@ -267,7 +274,7 @@ describe("mergeViewSync", () => {
             });
 
             const rejectButton = view.dom.querySelector(
-                '[data-merge-decision="reject"]',
+                '[data-review-decision="reject"]',
             ) as HTMLButtonElement | null;
 
             expect(rejectButton).not.toBeNull();
@@ -276,12 +283,12 @@ describe("mergeViewSync", () => {
                 fireEvent.mouseDown(rejectButton);
             }
 
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-1",
                 path,
                 "rejected",
-                0,
                 1,
+                [{ trackedVersion: 1, key: "0:6:11:6:6" }],
             );
 
             destroy();
@@ -290,12 +297,12 @@ describe("mergeViewSync", () => {
         }
     });
 
-    it("refreshes merge decisions when the tracked file changes without changing presentation flags", () => {
+    it("refreshes inline controls when the tracked file changes without changing presentation flags", () => {
         const originalState = useChatStore.getState();
-        const resolveHunkEdits = vi.fn();
+        const resolveReviewHunks = vi.fn();
         useChatStore.setState({
             ...originalState,
-            resolveHunkEdits,
+            resolveReviewHunks,
         });
 
         try {
@@ -324,7 +331,7 @@ describe("mergeViewSync", () => {
             });
 
             const acceptButton = view.dom.querySelector(
-                '[data-merge-decision="accept"]',
+                '[data-review-decision="accept"]',
             ) as HTMLButtonElement | null;
 
             expect(acceptButton).not.toBeNull();
@@ -333,17 +340,227 @@ describe("mergeViewSync", () => {
                 fireEvent.mouseDown(acceptButton);
             }
 
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-1",
                 path,
                 "accepted",
-                0,
-                1,
+                2,
+                [{ trackedVersion: 2, key: "0:0:5:0:5" }],
             );
 
             destroy();
         } finally {
             useChatStore.setState(originalState);
         }
+    });
+
+    it("reanchors inline controls when the projected chunks change without a structural signature change", () => {
+        const path = "notes/current.md";
+        const diffBase = "one\ntwo\nthree\nfour\nfive";
+        const firstDoc = "one\ntwo\nthree\nfour\nFIVE";
+        const secondDoc = "ONE\ntwo\nTHREE\nfour\nFIVE";
+
+        const { view, destroy } = mountView(firstDoc);
+        const firstFile = createTrackedFile(path, diffBase, firstDoc);
+        const secondFile = createTrackedFile(path, diffBase, secondDoc);
+        const firstSession = createSession("session-1", "wc-1", [firstFile]);
+        const secondSession = createSession("session-1", "wc-1", [secondFile]);
+
+        syncMergeViewForPaths(view, [path], {
+            [firstSession.sessionId]: firstSession,
+        });
+
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="accept"]'),
+        ).toHaveLength(1);
+
+        view.dispatch({
+            changes: {
+                from: 0,
+                to: view.state.doc.length,
+                insert: secondDoc,
+            },
+        });
+
+        syncMergeViewForPaths(view, [path], {
+            [secondSession.sessionId]: secondSession,
+        });
+
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="accept"]'),
+        ).toHaveLength(3);
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="0:0:3:0:3"]'),
+        ).not.toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="1:8:13:8:13"]'),
+        ).not.toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="2:19:23:19:23"]'),
+        ).not.toBeNull();
+
+        destroy();
+    });
+
+    it("keeps local exact actions for separable multi-hunk chunks and precise neighbors", () => {
+        const originalState = useChatStore.getState();
+        const resolveReviewHunks = vi.fn();
+        useChatStore.setState({
+            ...originalState,
+            resolveReviewHunks,
+        });
+
+        try {
+            const { view, destroy } = mountView(
+                "ONE\ntwo\nTHREE\nfour\nkeep\nkeep\nZOOM",
+            );
+            const path = "notes/current.md";
+            const session = createSession("session-1", "wc-1", [
+                createTrackedFile(
+                    path,
+                    "one\ntwo\nthree\nfour\nkeep\nkeep\nzoom",
+                    "ONE\ntwo\nTHREE\nfour\nkeep\nkeep\nZOOM",
+                ),
+            ]);
+
+            syncMergeViewForPaths(view, [path], {
+                [session.sessionId]: session,
+            });
+
+            expect(
+                view.dom.querySelectorAll('[data-review-decision="accept"]'),
+            ).toHaveLength(3);
+            expect(
+                view.dom.querySelectorAll('[data-review-decision="reject"]'),
+            ).toHaveLength(3);
+            expect(view.dom.textContent).not.toContain("Review in Changes");
+
+            const memberAcceptButton = view.dom.querySelector(
+                '[data-review-decision="accept"][data-review-hunk-key="0:0:3:0:3"]',
+            ) as HTMLButtonElement | null;
+
+            expect(memberAcceptButton).not.toBeNull();
+            if (memberAcceptButton) {
+                fireEvent.mouseDown(memberAcceptButton);
+            }
+
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
+                "session-1",
+                path,
+                "accepted",
+                1,
+                [{ trackedVersion: 1, key: "0:0:3:0:3" }],
+            );
+
+            destroy();
+        } finally {
+            useChatStore.setState(originalState);
+        }
+    });
+
+    it("degrades only the ambiguous chunk while keeping precise chunk actions", () => {
+        const originalState = useChatStore.getState();
+        const resolveReviewHunks = vi.fn();
+        useChatStore.setState({
+            ...originalState,
+            resolveReviewHunks,
+        });
+
+        const { view, destroy } = mountView("FOO bar BAZ\nkeep\nkeep\nZOOM");
+        const path = "notes/current.md";
+        const session = createSession("session-1", "wc-1", [
+            createTrackedFile(
+                path,
+                "foo bar baz\nkeep\nkeep\nzoom",
+                "FOO bar BAZ\nkeep\nkeep\nZOOM",
+                {
+                    unreviewedRanges: {
+                        spans: [
+                            {
+                                baseFrom: 0,
+                                baseTo: 3,
+                                currentFrom: 0,
+                                currentTo: 3,
+                            },
+                            {
+                                baseFrom: 8,
+                                baseTo: 11,
+                                currentFrom: 8,
+                                currentTo: 11,
+                            },
+                            {
+                                baseFrom: 22,
+                                baseTo: 26,
+                                currentFrom: 22,
+                                currentTo: 26,
+                            },
+                        ],
+                    },
+                    unreviewedEdits: buildPatchFromTexts(
+                        "foo bar baz\nkeep\nkeep\nzoom",
+                        "FOO bar BAZ\nkeep\nkeep\nZOOM",
+                    ),
+                },
+            ),
+        ]);
+
+        try {
+            syncMergeViewForPaths(view, [path], {
+                [session.sessionId]: session,
+            });
+
+            expect(view.dom.textContent).toContain("Review in Changes");
+            expect(
+                view.dom.querySelectorAll('[data-review-decision="accept"]'),
+            ).toHaveLength(1);
+            expect(
+                view.dom.querySelectorAll('[data-review-decision="reject"]'),
+            ).toHaveLength(1);
+
+            const acceptButton = view.dom.querySelector(
+                '[data-review-decision="accept"][data-review-decision-scope="chunk"]',
+            ) as HTMLButtonElement | null;
+
+            expect(acceptButton).not.toBeNull();
+            if (acceptButton) {
+                fireEvent.mouseDown(acceptButton);
+            }
+
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
+                "session-1",
+                path,
+                "accepted",
+                1,
+                [{ trackedVersion: 1, key: "2:22:26:22:26" }],
+            );
+
+            destroy();
+        } finally {
+            useChatStore.setState(originalState);
+        }
+    });
+
+    it("degrades conflicting chunks to the review panel instead of showing inline actions", () => {
+        const { view, destroy } = mountView("alpha\nbeta\ngamma");
+        const path = "notes/current.md";
+        const session = createSession("session-1", "wc-1", [
+            createTrackedFile(path, "alpha\nbeta", "alpha\nbeta\ngamma", {
+                conflictHash: "conflict-1",
+            }),
+        ]);
+
+        syncMergeViewForPaths(view, [path], {
+            [session.sessionId]: session,
+        });
+
+        expect(
+            view.dom.querySelector('[data-review-decision="accept"]'),
+        ).toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-decision="reject"]'),
+        ).toBeNull();
+        expect(view.dom.textContent).toContain("Review in Changes");
+
+        destroy();
     });
 });

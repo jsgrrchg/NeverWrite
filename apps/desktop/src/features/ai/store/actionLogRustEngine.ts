@@ -8,12 +8,14 @@ import {
     compute_word_diffs_for_hunk_json,
     derive_line_patch_from_text_ranges_json,
     keep_edits_in_range_json,
+    keep_exact_spans_json,
     map_agent_span_through_text_edits_json,
     map_text_position_through_edits_json,
     partition_spans_by_overlap_json,
     rebuild_diff_base_from_pending_spans_json,
     reject_all_edits_json,
     reject_edits_in_ranges_json,
+    reject_exact_spans_json,
     sync_derived_line_patch_json,
 } from "./wasm/vault_ai_diff";
 import wasmUrl from "./wasm/vault_ai_diff_bg.wasm?url";
@@ -34,12 +36,14 @@ import {
     computeWordDiffsForHunkFallback,
     deriveLinePatchFromTextRangesFallback,
     keepEditsInRangeFallback,
+    keepExactSpansFallback,
     mapAgentSpanThroughTextEditsFallback,
     mapTextPositionThroughEditsFallback,
     partitionSpansByOverlapFallback,
     rebuildDiffBaseFromPendingSpansFallback,
     rejectAllEditsFallback,
     rejectEditsInRangesFallback,
+    rejectExactSpansFallback,
     syncDerivedLinePatchFallback,
 } from "./actionLogJsFallback";
 
@@ -263,6 +267,22 @@ export function keepEditsInRangeRust(
     );
 }
 
+export function keepExactSpansRust(
+    file: TrackedFile,
+    spans: AgentTextSpan[],
+): TrackedFile {
+    return callWithFallback(
+        () =>
+            parseJson(
+                keep_exact_spans_json(
+                    JSON.stringify(file),
+                    JSON.stringify(spans),
+                ),
+            ),
+        () => keepExactSpansFallback(file, spans),
+    );
+}
+
 export function rejectAllEditsRust(file: TrackedFile): RejectEditsResult {
     return callWithFallback(
         () => parseJson(reject_all_edits_json(JSON.stringify(file))),
@@ -283,6 +303,22 @@ export function rejectEditsInRangesRust(
                 ),
             ),
         () => rejectEditsInRangesFallback(file, ranges),
+    );
+}
+
+export function rejectExactSpansRust(
+    file: TrackedFile,
+    spans: AgentTextSpan[],
+): RejectEditsResult {
+    return callWithFallback(
+        () =>
+            parseJson(
+                reject_exact_spans_json(
+                    JSON.stringify(file),
+                    JSON.stringify(spans),
+                ),
+            ),
+        () => rejectExactSpansFallback(file, spans),
     );
 }
 

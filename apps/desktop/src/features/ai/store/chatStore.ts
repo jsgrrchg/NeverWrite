@@ -60,13 +60,19 @@ import {
     getTrackedFilesForSession,
     hashTextContent,
     keepEditsInRange,
+    keepReviewHunks,
     patchIsEmpty,
     rejectAllEdits as actionLogRejectAll,
     rejectEditsInRanges,
+    rejectReviewHunks,
     setTrackedFilesForWorkCycle,
     type RestoreAction,
 } from "./actionLogModel";
 import type { LastRejectUndo, TrackedFile } from "../diff/actionLogTypes";
+import {
+    buildReviewProjection,
+    type ReviewHunkId,
+} from "../diff/reviewProjection";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
     buildSelectionLabel,
@@ -446,6 +452,13 @@ interface ChatStore {
         decision: "accepted" | "rejected",
         hunkNewStart: number,
         hunkNewEnd: number,
+    ) => Promise<void>;
+    resolveReviewHunks: (
+        sessionId: string,
+        identityKey: string,
+        decision: "accepted" | "rejected",
+        trackedVersion: number,
+        hunkIds: ReviewHunkId[],
     ) => Promise<void>;
     undoLastReject: (sessionId: string) => Promise<void>;
     notifyUserEditOnFile: (
@@ -5448,6 +5461,182 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 // Partial resolution — update TrackedFile in ActionLog
+                const files = {
+                    ...getAccumulatedTrackedFiles(currentSession),
+                };
+                files[identityKey] = updatedFile;
+
+                let updated: AIChatSession = replaceTrackedFilesInActionLog(
+                    currentSession,
+                    files,
+                );
+
+                if (hunkUndoSnapshot) {
+                    updated = setActionLogUndo(updated, {
+                        buffers: [],
+                        snapshots: {
+                            [hunkUndoSnapshot.identityKey]:
+                                hunkUndoSnapshot.snapshot,
+                        },
+                        timestamp: Date.now(),
+                    });
+                }
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [sessionId]: updated,
+                    },
+                };
+            });
+
+            const updatedSession = get().sessionsById[sessionId];
+            if (updatedSession) {
+                void persistSession(updatedSession);
+            }
+        },
+
+        resolveReviewHunks: async (
+            sessionId,
+            identityKey,
+            decision,
+            trackedVersion,
+            hunkIds,
+        ) => {
+            const { sessionsById } = get();
+            const session = sessionsById[sessionId];
+            if (!session?.actionLog) {
+                return;
+            }
+
+            const tracked = findTrackedFileInAccumulatedSession(
+                session,
+                identityKey,
+            );
+            if (!tracked) {
+                return;
+            }
+
+            const reviewState = getTrackedFileReviewState(tracked);
+            if (reviewState === "pending") {
+                return;
+            }
+
+            const projection = buildReviewProjection(tracked);
+            if (projection.trackedVersion !== trackedVersion) {
+                return;
+            }
+
+            const selectedReviewHunks = hunkIds
+                .map((id) =>
+                    projection.hunks.find(
+                        (hunk) =>
+                            hunk.id.trackedVersion === id.trackedVersion &&
+                            hunk.id.key === id.key,
+                    ),
+                )
+                .filter(
+                    (hunk): hunk is (typeof projection.hunks)[number] => !!hunk,
+                );
+
+            if (selectedReviewHunks.length === 0) {
+                return;
+            }
+
+            let updatedFile: TrackedFile;
+            let hunkUndoSnapshot: {
+                identityKey: string;
+                snapshot: TrackedFile;
+            } | null = null;
+
+            if (decision === "accepted") {
+                updatedFile = keepReviewHunks(tracked, selectedReviewHunks);
+            } else {
+                const vaultPath = useVaultStore.getState().vaultPath;
+                if (vaultPath) {
+                    const restoreCheck = await hasConflict(vaultPath, tracked);
+
+                    if (restoreCheck.conflict) {
+                        set((state) => {
+                            const currentSession =
+                                state.sessionsById[sessionId];
+                            if (!currentSession) return state;
+
+                            return {
+                                sessionsById: {
+                                    ...state.sessionsById,
+                                    [sessionId]: markTrackedConflict(
+                                        currentSession,
+                                        identityKey,
+                                        restoreCheck.currentHash,
+                                    ),
+                                },
+                            };
+                        });
+
+                        const updatedSession = get().sessionsById[sessionId];
+                        if (updatedSession) {
+                            void persistSession(updatedSession);
+                        }
+                        return;
+                    }
+                }
+
+                const { file } = rejectReviewHunks(
+                    tracked,
+                    selectedReviewHunks,
+                );
+                updatedFile = file;
+                hunkUndoSnapshot = { identityKey, snapshot: tracked };
+
+                if (vaultPath) {
+                    const change = await aiRestoreTextFile({
+                        vaultPath,
+                        path: tracked.path,
+                        previousPath:
+                            tracked.originPath !== tracked.path
+                                ? tracked.originPath
+                                : null,
+                        content: updatedFile.currentText,
+                    });
+                    reloadOpenEditorContent(
+                        tracked.path,
+                        updatedFile.currentText,
+                        change,
+                    );
+                }
+            }
+
+            set((state) => {
+                const currentSession = state.sessionsById[sessionId];
+                if (!currentSession?.actionLog) return state;
+
+                if (
+                    patchIsEmpty(updatedFile.unreviewedEdits) &&
+                    updatedFile.path === updatedFile.originPath
+                ) {
+                    let cleaned = removeTrackedFileFromActionLog(
+                        currentSession,
+                        identityKey,
+                    );
+                    if (hunkUndoSnapshot) {
+                        cleaned = setActionLogUndo(cleaned, {
+                            buffers: [],
+                            snapshots: {
+                                [hunkUndoSnapshot.identityKey]:
+                                    hunkUndoSnapshot.snapshot,
+                            },
+                            timestamp: Date.now(),
+                        });
+                    }
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [sessionId]: cleaned,
+                        },
+                    };
+                }
+
                 const files = {
                     ...getAccumulatedTrackedFiles(currentSession),
                 };

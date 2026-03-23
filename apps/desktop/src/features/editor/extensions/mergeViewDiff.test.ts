@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorView } from "@codemirror/view";
 import { fireEvent } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
     buildReplaceOriginalDocEffect,
     createMergeViewExtension,
@@ -29,11 +29,15 @@ function mountMergeView(
         sessionId: "session-1",
         statusKind: "modified",
         trackedVersion: 1,
+        controlsSignature: null,
         highlightChanges: true,
         allowInlineDiffs: true,
         enableControls: true,
+        showControlWidgets: true,
         syntaxHighlightDeletions: true,
         syntaxHighlightDeletionsMaxLength: 3000,
+        reviewHunks: [],
+        reviewChunks: [],
         onDecision() {},
         ...overrides,
     };
@@ -50,6 +54,62 @@ function mountMergeView(
             view.destroy();
             parent.remove();
         },
+    };
+}
+
+function makeReviewChunk(
+    overrides: Partial<
+        CreateMergeViewExtensionConfig["reviewChunks"][number]
+    > = {},
+): CreateMergeViewExtensionConfig["reviewChunks"][number] {
+    return {
+        id: { trackedVersion: 1, key: "chunk-1" },
+        identityKey: "note.md",
+        trackedVersion: 1,
+        startLine: 0,
+        endLine: 0,
+        hunkIds: [{ trackedVersion: 1, key: "hunk-1" }],
+        multiHunk: false,
+        hasConflict: false,
+        ambiguous: false,
+        controlMode: "chunk",
+        canResolveInlineExactly: true,
+        ...overrides,
+    };
+}
+
+function makeReviewHunk(
+    overrides: Partial<
+        CreateMergeViewExtensionConfig["reviewHunks"][number]
+    > = {},
+): CreateMergeViewExtensionConfig["reviewHunks"][number] {
+    return {
+        id: { trackedVersion: 1, key: "hunk-1" },
+        identityKey: "note.md",
+        trackedVersion: 1,
+        oldStartLine: 0,
+        oldEndLine: 1,
+        newStartLine: 0,
+        newEndLine: 1,
+        visualStartLine: 0,
+        visualEndLine: 1,
+        baseFrom: 0,
+        baseTo: 5,
+        currentFrom: 0,
+        currentTo: 5,
+        memberSpans: [
+            {
+                spanIndex: 0,
+                baseFrom: 0,
+                baseTo: 5,
+                currentFrom: 0,
+                currentTo: 5,
+            },
+        ],
+        chunkId: { trackedVersion: 1, key: "chunk-1" },
+        hasConflict: false,
+        ambiguous: false,
+        ...overrides,
     };
 }
 
@@ -98,16 +158,45 @@ describe("mergeViewDiff", () => {
         const { view, destroy } = mountMergeView({
             doc: "alpha\nbeta\nnew line\n",
             original: "alpha\nbeta\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    oldStartLine: 2,
+                    oldEndLine: 2,
+                    newStartLine: 2,
+                    newEndLine: 3,
+                    visualStartLine: 2,
+                    visualEndLine: 3,
+                    baseFrom: 11,
+                    baseTo: 11,
+                    currentFrom: 11,
+                    currentTo: 20,
+                    memberSpans: [
+                        {
+                            spanIndex: 0,
+                            baseFrom: 11,
+                            baseTo: 11,
+                            currentFrom: 11,
+                            currentTo: 20,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 2,
+                    endLine: 3,
+                }),
+            ],
         });
 
-        expect(view.dom.querySelectorAll("[data-merge-decision]")).toHaveLength(
-            2,
-        );
         expect(
-            view.dom.querySelector('[data-merge-decision="accept"]'),
+            view.dom.querySelectorAll("[data-review-decision]"),
+        ).toHaveLength(2);
+        expect(
+            view.dom.querySelector('[data-review-decision="accept"]'),
         ).not.toBeNull();
         expect(
-            view.dom.querySelector('[data-merge-decision="reject"]'),
+            view.dom.querySelector('[data-review-decision="reject"]'),
         ).not.toBeNull();
 
         destroy();
@@ -118,13 +207,15 @@ describe("mergeViewDiff", () => {
         const { view, destroy } = mountMergeView({
             doc: "alpha\n",
             original: "alpha\nbeta\n",
+            reviewHunks: [makeReviewHunk()],
+            reviewChunks: [makeReviewChunk()],
             onDecision(context) {
                 calls.push(context);
             },
         });
 
         const rejectButton = view.dom.querySelector(
-            '[data-merge-decision="reject"]',
+            '[data-review-decision="reject"]',
         ) as HTMLButtonElement | null;
 
         expect(rejectButton).not.toBeNull();
@@ -134,48 +225,215 @@ describe("mergeViewDiff", () => {
 
         expect(calls).toHaveLength(1);
         expect(calls[0]?.decision).toBe("rejected");
+        expect(calls[0]?.chunkId).toEqual({
+            trackedVersion: 1,
+            key: "chunk-1",
+        });
+        expect(calls[0]?.hunkIds).toEqual([
+            { trackedVersion: 1, key: "hunk-1" },
+        ]);
         expect(view.state.doc.toString()).toBe("alpha\n");
 
         destroy();
     });
 
-    it("resolves the chunk from the deleted widget container instead of the button DOM node", () => {
+    it("renders an ambiguous chunk without destructive inline actions", () => {
         const calls: MergeDecisionPayload[] = [];
         const { view, destroy } = mountMergeView({
             doc: "alpha\n",
             original: "alpha\nbeta\n",
+            reviewHunks: [makeReviewHunk({ ambiguous: true })],
+            reviewChunks: [
+                makeReviewChunk({
+                    ambiguous: true,
+                    controlMode: "panel-only",
+                    canResolveInlineExactly: false,
+                }),
+            ],
             onDecision(context) {
                 calls.push(context);
             },
         });
 
-        const rejectButton = view.dom.querySelector(
-            '[data-merge-decision="reject"]',
+        expect(
+            view.dom.querySelector('[data-review-decision="accept"]'),
+        ).toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-decision="reject"]'),
+        ).toBeNull();
+        expect(view.dom.textContent).toContain("Review in Changes");
+        expect(calls).toHaveLength(0);
+        destroy();
+    });
+
+    it("renders per-hunk inline actions for separable multi-hunk chunks", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "ONE\ntwo\nTHREE\nfour\n",
+            original: "one\ntwo\nthree\nfour\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    oldStartLine: 2,
+                    oldEndLine: 3,
+                    newStartLine: 2,
+                    newEndLine: 3,
+                    visualStartLine: 2,
+                    visualEndLine: 3,
+                    baseFrom: 8,
+                    baseTo: 13,
+                    currentFrom: 8,
+                    currentTo: 13,
+                    memberSpans: [
+                        {
+                            spanIndex: 1,
+                            baseFrom: 8,
+                            baseTo: 13,
+                            currentFrom: 8,
+                            currentTo: 13,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 0,
+                    endLine: 3,
+                    hunkIds: [
+                        { trackedVersion: 1, key: "hunk-1" },
+                        { trackedVersion: 1, key: "hunk-2" },
+                    ],
+                    multiHunk: true,
+                    controlMode: "hunk",
+                }),
+            ],
+        });
+
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="accept"]'),
+        ).toHaveLength(2);
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="reject"]'),
+        ).toHaveLength(2);
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="hunk-1"]'),
+        ).not.toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="hunk-2"]'),
+        ).not.toBeNull();
+        expect(view.dom.textContent).toContain("1 change");
+
+        destroy();
+    });
+
+    it("routes per-hunk actions through the external handler with an exact subset", () => {
+        const calls: MergeDecisionPayload[] = [];
+        const { view, destroy } = mountMergeView({
+            doc: "ONE\ntwo\nTHREE\nfour\n",
+            original: "one\ntwo\nthree\nfour\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    oldStartLine: 2,
+                    oldEndLine: 3,
+                    newStartLine: 2,
+                    newEndLine: 3,
+                    visualStartLine: 2,
+                    visualEndLine: 3,
+                    baseFrom: 8,
+                    baseTo: 13,
+                    currentFrom: 8,
+                    currentTo: 13,
+                    memberSpans: [
+                        {
+                            spanIndex: 1,
+                            baseFrom: 8,
+                            baseTo: 13,
+                            currentFrom: 8,
+                            currentTo: 13,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 0,
+                    endLine: 3,
+                    hunkIds: [
+                        { trackedVersion: 1, key: "hunk-1" },
+                        { trackedVersion: 1, key: "hunk-2" },
+                    ],
+                    multiHunk: true,
+                    controlMode: "hunk",
+                }),
+            ],
+            onDecision(context) {
+                calls.push(context);
+            },
+        });
+
+        const acceptButton = view.dom.querySelector(
+            '[data-review-decision="accept"][data-review-hunk-key="hunk-2"]',
         ) as HTMLButtonElement | null;
 
-        expect(rejectButton).not.toBeNull();
-
-        const originalPosAtDOM = view.posAtDOM.bind(view);
-        const posAtDOMSpy = vi
-            .spyOn(view, "posAtDOM")
-            .mockImplementation((node, offset) => {
-                if (
-                    node instanceof HTMLElement &&
-                    node.dataset.mergeDecision === "reject"
-                ) {
-                    return 999;
-                }
-                return originalPosAtDOM(node, offset);
-            });
-
-        if (rejectButton) {
-            fireEvent.mouseDown(rejectButton);
+        expect(acceptButton).not.toBeNull();
+        if (acceptButton) {
+            fireEvent.mouseDown(acceptButton);
         }
 
         expect(calls).toHaveLength(1);
-        expect(calls[0]?.decision).toBe("rejected");
+        expect(calls[0]?.decision).toBe("accepted");
+        expect(calls[0]?.chunkId).toEqual({
+            trackedVersion: 1,
+            key: "chunk-1",
+        });
+        expect(calls[0]?.hunkIds).toEqual([
+            { trackedVersion: 1, key: "hunk-2" },
+        ]);
 
-        posAtDOMSpy.mockRestore();
+        destroy();
+    });
+
+    it("renders a panel CTA instead of buttons when widgets are gated off", () => {
+        const calls: MergeDecisionPayload[] = [];
+        const { view, destroy } = mountMergeView({
+            doc: "alpha\nbeta changed\n",
+            original: "alpha\nbeta\n",
+            enableControls: false,
+            showControlWidgets: true,
+            reviewHunks: [makeReviewHunk()],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 1,
+                    endLine: 2,
+                }),
+            ],
+            onDecision(context) {
+                calls.push(context);
+            },
+        });
+
+        expect(view.dom.querySelector("[data-review-decision]")).toBeNull();
+        expect(view.dom.textContent).toContain("Review in Changes");
+        expect(calls).toHaveLength(0);
+
         destroy();
     });
 
@@ -185,9 +443,10 @@ describe("mergeViewDiff", () => {
             original: "alpha\nbeta\n",
             reviewState: "pending",
             enableControls: false,
+            showControlWidgets: false,
         });
 
-        expect(view.dom.querySelector("[data-merge-decision]")).toBeNull();
+        expect(view.dom.querySelector("[data-review-decision]")).toBeNull();
         expect(view.dom.getAttribute("data-merge-review-state")).toBe(
             "pending",
         );

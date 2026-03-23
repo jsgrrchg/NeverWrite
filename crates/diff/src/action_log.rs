@@ -236,6 +236,9 @@ fn span_part_to_line_range(
     }
 }
 
+// Derived presentation helper only.
+// This intentionally collapses line edits for display/stats, but exact review
+// resolution must continue to operate on canonical AgentTextSpan members.
 fn merge_overlapping_line_edits(edits: Vec<LineEdit>) -> Vec<LineEdit> {
     if edits.len() <= 1 {
         return edits;
@@ -450,6 +453,8 @@ fn edit_ends_before_line_range(edit: &LineEdit, range: LineRange) -> bool {
     edit.new_end <= range.start
 }
 
+// Legacy range-selection helper for line-based panel paths.
+// Exact inline / review-hunk resolution must not use this function.
 pub fn partition_spans_by_overlap(
     spans: &[AgentTextSpan],
     ranges: &[LineRange],
@@ -514,6 +519,32 @@ pub fn partition_spans_by_overlap(
     }
 
     (overlapping, non_overlapping)
+}
+
+fn partition_spans_by_exact(
+    spans: &[AgentTextSpan],
+    selected_spans: &[AgentTextSpan],
+) -> (Vec<AgentTextSpan>, Vec<AgentTextSpan>) {
+    if spans.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    if selected_spans.is_empty() {
+        return (Vec::new(), spans.to_vec());
+    }
+
+    let mut selected = Vec::new();
+    let mut remaining = Vec::new();
+
+    for span in spans.iter().cloned() {
+        if selected_spans.contains(&span) {
+            selected.push(span);
+        } else {
+            remaining.push(span);
+        }
+    }
+
+    (selected, remaining)
 }
 
 pub fn sync_derived_line_patch(file: &TrackedFile) -> TrackedFile {
@@ -627,6 +658,40 @@ pub fn keep_edits_in_range(file: &TrackedFile, start_line: u32, end_line: u32) -
     next
 }
 
+pub fn keep_exact_spans(file: &TrackedFile, selected_spans: &[AgentTextSpan]) -> TrackedFile {
+    let synced_file = sync_derived_line_patch(file);
+    let current_spans = synced_file
+        .unreviewed_ranges
+        .clone()
+        .unwrap_or_else(empty_text_range_patch)
+        .spans;
+    // Exact review resolution is span-based. Any derived LineEdit collapse is
+    // allowed to change presentation granularity, but not logical selection.
+    let (_, remaining_spans) = partition_spans_by_exact(&current_spans, selected_spans);
+    let new_diff_base = rebuild_diff_base_from_pending_spans(
+        &synced_file.diff_base,
+        &synced_file.current_text,
+        &remaining_spans,
+    );
+    let unreviewed_ranges = if remaining_spans.is_empty() {
+        empty_text_range_patch()
+    } else {
+        build_text_range_patch_from_texts(&new_diff_base, &synced_file.current_text, None)
+    };
+    let unreviewed_edits = derive_line_patch_from_text_ranges(
+        &new_diff_base,
+        &synced_file.current_text,
+        &unreviewed_ranges.spans,
+    );
+
+    let mut next = synced_file.clone();
+    next.diff_base = new_diff_base;
+    next.unreviewed_ranges = Some(unreviewed_ranges);
+    next.unreviewed_edits = unreviewed_edits;
+    next.version += 1;
+    next
+}
+
 fn clamped_lines_text(lines: &[String], start: u32, end: u32) -> String {
     let s = (start as usize).min(lines.len());
     let e = (end as usize).min(lines.len());
@@ -690,6 +755,75 @@ pub fn reject_edits_in_ranges(file: &TrackedFile, ranges: &[LineRange]) -> Rejec
         &synced_file.diff_base,
         &synced_file.current_text,
     );
+
+    let mut edits_to_restore = Vec::new();
+    for span in &rejected_spans {
+        let Some(edit) =
+            get_line_edit_for_span(&synced_file.diff_base, &synced_file.current_text, span)
+        else {
+            continue;
+        };
+
+        edits_to_restore.push(PerFileUndoEdit {
+            start_line: edit.new_start,
+            end_line: edit.new_end,
+            text: clamped_lines_text(&current_lines, edit.new_start, edit.new_end),
+        });
+    }
+
+    let new_current_text = rebuild_diff_base_from_pending_spans(
+        &synced_file.diff_base,
+        &synced_file.current_text,
+        &rejected_spans,
+    );
+    let unreviewed_ranges = if remaining_spans.is_empty() {
+        empty_text_range_patch()
+    } else {
+        build_text_range_patch_from_texts(&synced_file.diff_base, &new_current_text, None)
+    };
+    let unreviewed_edits = derive_line_patch_from_text_ranges(
+        &synced_file.diff_base,
+        &new_current_text,
+        &unreviewed_ranges.spans,
+    );
+
+    let undo_data = PerFileUndo {
+        path: synced_file.path.clone(),
+        edits_to_restore,
+        previous_status: synced_file.status.clone(),
+    };
+
+    let mut next = synced_file.clone();
+    next.current_text = new_current_text;
+    next.unreviewed_ranges = Some(unreviewed_ranges);
+    next.unreviewed_edits = unreviewed_edits;
+    next.version += 1;
+
+    RejectEditsResult {
+        file: next,
+        undo_data,
+    }
+}
+
+pub fn reject_exact_spans(
+    file: &TrackedFile,
+    selected_spans: &[AgentTextSpan],
+) -> RejectEditsResult {
+    let synced_file = sync_derived_line_patch(file);
+    let current_lines: Vec<String> = synced_file
+        .current_text
+        .split('\n')
+        .map(str::to_owned)
+        .collect();
+    let current_spans = synced_file
+        .unreviewed_ranges
+        .clone()
+        .unwrap_or_else(empty_text_range_patch)
+        .spans;
+    // Exact review resolution is span-based. Any derived LineEdit collapse is
+    // allowed to change presentation granularity, but not logical selection.
+    let (rejected_spans, remaining_spans) =
+        partition_spans_by_exact(&current_spans, selected_spans);
 
     let mut edits_to_restore = Vec::new();
     for span in &rejected_spans {
@@ -900,6 +1034,124 @@ mod tests {
 
         assert_eq!(rejected.file.current_text, "aaa\nbbb\nccc");
         assert!(rejected.file.unreviewed_edits.edits.is_empty());
+        assert_eq!(rejected.undo_data.edits_to_restore.len(), 1);
+    }
+
+    #[test]
+    fn keep_exact_spans_does_not_absorb_neighbor_on_same_visual_line() {
+        let file = TrackedFile {
+            identity_key: "test.md".to_string(),
+            origin_path: "test.md".to_string(),
+            path: "test.md".to_string(),
+            previous_path: None,
+            status: TrackedFileStatus::Modified,
+            review_state: Some(ReviewState::Pending),
+            diff_base: "foo bar baz".to_string(),
+            current_text: "FOO bar BAZ".to_string(),
+            unreviewed_ranges: Some(TextRangePatch {
+                spans: vec![
+                    AgentTextSpan {
+                        base_from: 0,
+                        base_to: 3,
+                        current_from: 0,
+                        current_to: 3,
+                    },
+                    AgentTextSpan {
+                        base_from: 8,
+                        base_to: 11,
+                        current_from: 8,
+                        current_to: 11,
+                    },
+                ],
+            }),
+            unreviewed_edits: empty_patch(),
+            version: 1,
+            is_text: true,
+            updated_at: 1,
+            conflict_hash: None,
+        };
+
+        let accepted = keep_exact_spans(
+            &file,
+            &[AgentTextSpan {
+                base_from: 0,
+                base_to: 3,
+                current_from: 0,
+                current_to: 3,
+            }],
+        );
+
+        assert_eq!(accepted.diff_base, "FOO bar baz");
+        assert_eq!(accepted.current_text, "FOO bar BAZ");
+        assert_eq!(
+            accepted.unreviewed_ranges,
+            Some(TextRangePatch {
+                spans: vec![AgentTextSpan {
+                    base_from: 8,
+                    base_to: 11,
+                    current_from: 8,
+                    current_to: 11,
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn reject_exact_spans_does_not_revert_unselected_neighbor_on_same_visual_line() {
+        let file = TrackedFile {
+            identity_key: "test.md".to_string(),
+            origin_path: "test.md".to_string(),
+            path: "test.md".to_string(),
+            previous_path: None,
+            status: TrackedFileStatus::Modified,
+            review_state: Some(ReviewState::Pending),
+            diff_base: "foo bar baz".to_string(),
+            current_text: "FOO bar BAZ".to_string(),
+            unreviewed_ranges: Some(TextRangePatch {
+                spans: vec![
+                    AgentTextSpan {
+                        base_from: 0,
+                        base_to: 3,
+                        current_from: 0,
+                        current_to: 3,
+                    },
+                    AgentTextSpan {
+                        base_from: 8,
+                        base_to: 11,
+                        current_from: 8,
+                        current_to: 11,
+                    },
+                ],
+            }),
+            unreviewed_edits: empty_patch(),
+            version: 1,
+            is_text: true,
+            updated_at: 1,
+            conflict_hash: None,
+        };
+
+        let rejected = reject_exact_spans(
+            &file,
+            &[AgentTextSpan {
+                base_from: 0,
+                base_to: 3,
+                current_from: 0,
+                current_to: 3,
+            }],
+        );
+
+        assert_eq!(rejected.file.current_text, "foo bar BAZ");
+        assert_eq!(
+            rejected.file.unreviewed_ranges,
+            Some(TextRangePatch {
+                spans: vec![AgentTextSpan {
+                    base_from: 8,
+                    base_to: 11,
+                    current_from: 8,
+                    current_to: 11,
+                }],
+            })
+        );
         assert_eq!(rejected.undo_data.edits_to_restore.len(), 1);
     }
 }

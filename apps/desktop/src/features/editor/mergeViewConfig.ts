@@ -1,4 +1,5 @@
 import type { ReviewState } from "../ai/diff/actionLogTypes";
+import type { ReviewProjectionInlineState } from "../ai/diff/reviewProjection";
 import type {
     ChangePresentationLevel,
     FileChangePresentation,
@@ -8,6 +9,7 @@ export interface MergePresentationFlags {
     highlightChanges: boolean;
     allowInlineDiffs: boolean;
     enableControls: boolean;
+    showControlWidgets: boolean;
     syntaxHighlightDeletions: boolean;
     syntaxHighlightDeletionsMaxLength: number;
 }
@@ -25,14 +27,23 @@ export interface MergeStructuralConfig {
 
 export function getMergePresentationFlags(
     presentation: FileChangePresentation,
+    projectionState: ReviewProjectionInlineState,
 ): MergePresentationFlags {
+    const showControlWidgets =
+        presentation.reviewState === "finalized" &&
+        projectionState.reviewProjectionReady &&
+        presentation.level !== "very-large";
+    const enableControls =
+        showControlWidgets &&
+        (presentation.level === "small" || presentation.level === "medium");
+
     return {
         highlightChanges: presentation.level !== "very-large",
         allowInlineDiffs:
-            presentation.level === "small" || presentation.level === "medium",
-        enableControls:
-            presentation.reviewState === "finalized" &&
-            presentation.level !== "very-large",
+            projectionState.reviewProjectionReady &&
+            (presentation.level === "small" || presentation.level === "medium"),
+        enableControls,
+        showControlWidgets,
         syntaxHighlightDeletions: presentation.level !== "very-large",
         syntaxHighlightDeletionsMaxLength:
             presentation.level === "very-large" ? 1200 : 3000,

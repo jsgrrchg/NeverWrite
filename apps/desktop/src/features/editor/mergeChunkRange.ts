@@ -3,6 +3,8 @@ import type { Chunk } from "@codemirror/merge";
 
 export type MergeChunkKind = "add" | "modify" | "delete";
 
+// Visual-only mapping for rails and presentation. Review decisions must come
+// from ReviewProjection, never from CodeMirror chunk coordinates.
 export interface ChunkLineRange {
     startLine: number;
     endLine: number;

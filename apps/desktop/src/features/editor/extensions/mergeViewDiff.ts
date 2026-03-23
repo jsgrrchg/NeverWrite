@@ -10,22 +10,24 @@ import {
     getOriginalDoc,
     originalDocChangeEffect,
     unifiedMergeView,
-    type Chunk,
     type Change,
 } from "@codemirror/merge";
 import { EditorView } from "@codemirror/view";
 import type { ReviewState } from "../../ai/diff/actionLogTypes";
+import type {
+    ReviewChunk,
+    ReviewChunkId,
+    ReviewHunk,
+    ReviewHunkId,
+} from "../../ai/diff/reviewProjection";
 import type { ChangePresentationLevel } from "../changePresentationModel";
-import {
-    mergeChunkSnapshotPlugin,
-    findMergeChunkAtPos,
-    readMergeChunkSnapshot,
-} from "../mergeChunks";
+import { createReviewProjectionControlsExtension } from "./reviewProjectionControls";
 import { mergeViewTheme } from "./mergeViewTheme";
 
 export interface MergeDecisionPayload {
     decision: "accepted" | "rejected";
-    chunk: Chunk;
+    chunkId: ReviewChunkId;
+    hunkIds: ReviewHunkId[];
     view: EditorView;
 }
 
@@ -35,14 +37,18 @@ export interface CreateMergeViewExtensionConfig {
     trackedVersion: number | null;
     sessionId: string | null;
     identityKey: string | null;
+    controlsSignature: string | null;
     reviewState: ReviewState;
     level: ChangePresentationLevel;
     statusKind: string | null;
     highlightChanges: boolean;
     allowInlineDiffs: boolean;
     enableControls: boolean;
+    showControlWidgets: boolean;
     syntaxHighlightDeletions: boolean;
     syntaxHighlightDeletionsMaxLength: number;
+    reviewHunks: ReviewHunk[];
+    reviewChunks: ReviewChunk[];
     onDecision: (payload: MergeDecisionPayload) => void;
 }
 
@@ -51,6 +57,9 @@ export const mergeViewCompartment = new Compartment();
 export const mergeSessionIdFacet = defineSingleFacet<string | null>(null);
 export const mergeIdentityKeyFacet = defineSingleFacet<string | null>(null);
 export const mergeTrackedVersionFacet = defineSingleFacet<number | null>(null);
+export const mergeControlsSignatureFacet = defineSingleFacet<string | null>(
+    null,
+);
 export const mergeReviewStateFacet =
     defineSingleFacet<ReviewState>("finalized");
 export const mergeLevelFacet =
@@ -63,10 +72,10 @@ export function createMergeViewExtension(
 ): Extension[] {
     return [
         mergeViewTheme,
-        mergeChunkSnapshotPlugin,
         mergeSessionIdFacet.of(config.sessionId),
         mergeIdentityKeyFacet.of(config.identityKey),
         mergeTrackedVersionFacet.of(config.trackedVersion),
+        mergeControlsSignatureFacet.of(config.controlsSignature),
         mergeReviewStateFacet.of(config.reviewState),
         mergeLevelFacet.of(config.level),
         mergeStatusKindFacet.of(config.statusKind),
@@ -76,6 +85,20 @@ export function createMergeViewExtension(
             "data-merge-review-state": config.reviewState,
             "data-merge-level": config.level,
         }),
+        ...(config.showControlWidgets
+            ? createReviewProjectionControlsExtension({
+                  allowDecisionActions: config.enableControls,
+                  hunks: config.reviewHunks,
+                  chunks: config.reviewChunks,
+                  onDecision: ({ decision, chunkId, hunkIds, view }) =>
+                      config.onDecision({
+                          decision,
+                          chunkId,
+                          hunkIds,
+                          view,
+                      }),
+              })
+            : []),
         unifiedMergeView({
             original: config.original,
             diffConfig: config.diffChanges
@@ -89,67 +112,9 @@ export function createMergeViewExtension(
             syntaxHighlightDeletions: config.syntaxHighlightDeletions,
             syntaxHighlightDeletionsMaxLength:
                 config.syntaxHighlightDeletionsMaxLength,
-            mergeControls: config.enableControls
-                ? (type) =>
-                      createDecisionButton(type, (event, button) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-
-                          const editorRoot = button.closest(".cm-editor");
-                          const view = editorRoot
-                              ? EditorView.findFromDOM(
-                                    editorRoot as HTMLElement,
-                                )
-                              : null;
-                          if (!view) {
-                              return;
-                          }
-
-                          const snapshot = findMergeChunkAtCurrentDom(
-                              view,
-                              button,
-                          );
-                          if (!snapshot) {
-                              return;
-                          }
-
-                          config.onDecision({
-                              decision:
-                                  type === "accept" ? "accepted" : "rejected",
-                              chunk: snapshot,
-                              view,
-                          });
-                      })
-                : false,
+            mergeControls: false,
         }),
     ];
-}
-
-function createDecisionButton(
-    type: "accept" | "reject",
-    onMouseDown: (event: MouseEvent, button: HTMLButtonElement) => void,
-) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `cm-merge-action cm-merge-action-${type}`;
-    button.dataset.mergeDecision = type;
-    button.textContent = type === "accept" ? "Accept" : "Reject";
-    button.onmousedown = (event) => onMouseDown(event, button);
-    return button;
-}
-
-function findMergeChunkAtCurrentDom(
-    view: EditorView,
-    target: HTMLElement,
-): Chunk | null {
-    const chunkDom = resolveMergeChunkDom(target);
-    const pos = view.posAtDOM(chunkDom);
-    const snapshot = readMergeChunkSnapshot(view.state);
-    return snapshot ? findMergeChunkAtPos(snapshot.chunks, pos) : null;
-}
-
-function resolveMergeChunkDom(target: HTMLElement) {
-    return (target.closest(".cm-deletedChunk") as HTMLElement | null) ?? target;
 }
 
 export function readMergeViewRuntimeState(state: EditorState | null) {
