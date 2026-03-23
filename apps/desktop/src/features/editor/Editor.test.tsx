@@ -1418,7 +1418,7 @@ describe("Editor", () => {
         vi.useFakeTimers();
         const randomUuidSpy = vi
             .spyOn(globalThis.crypto, "randomUUID")
-            .mockReturnValue("local-save-1");
+            .mockReturnValue("local-save-0000-0000-000000000001");
 
         let saveCallCount = 0;
         mockInvoke().mockImplementation(async (command, args) => {
@@ -1476,7 +1476,7 @@ describe("Editor", () => {
             expect.objectContaining({
                 noteId: "notes/current",
                 content: "OriginalA",
-                opId: "local-save-1",
+                opId: "local-save-0000-0000-000000000001",
             }),
         ]);
 
@@ -1506,7 +1506,7 @@ describe("Editor", () => {
                 title: "Current",
                 content: "OriginalA",
                 origin: "user",
-                opId: "local-save-1",
+                opId: "local-save-0000-0000-000000000001",
                 revision: 1,
             });
             await flushPromises();

@@ -317,7 +317,6 @@ export function Editor({
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
     const openVault = useVaultStore((s) => s.openVault);
-    const sessionsById = useChatStore((state) => state.sessionsById);
 
     // Only re-renders when the active tab identity changes, not on content updates
     const activeTabInfo = useEditorStore(
@@ -506,7 +505,9 @@ export function Editor({
             } catch (e) {
                 pendingLocalOpIdByTabId.current.delete(tab.noteId);
                 console.error("Error al guardar nota:", e);
+                return false;
             }
+            return true;
         },
         [
             markTabSaved,
@@ -2540,16 +2541,21 @@ export function Editor({
                         const content =
                             viewRef.current?.state.doc.toString() ??
                             tab.content;
-                        saveNow(tab, content);
-                        // Clean up saved EditorState for all notes in this tab's history
-                        for (const entry of tab.history ?? []) {
-                            if (entry.kind === "note") {
-                                tabStatesRef.current.delete(entry.noteId);
+                        void (async () => {
+                            const saved = await saveNow(tab, content);
+                            if (saved === false) return;
+                            // Clean up saved EditorState for all notes in this tab's history
+                            for (const entry of tab.history ?? []) {
+                                if (entry.kind === "note") {
+                                    tabStatesRef.current.delete(entry.noteId);
+                                }
                             }
-                        }
-                        tabStatesRef.current.delete(tab.noteId);
+                            tabStatesRef.current.delete(tab.noteId);
+                            closeTab(activeTabId);
+                        })();
+                    } else {
+                        closeTab(activeTabId);
                     }
-                    closeTab(activeTabId);
                 }
             }
 

@@ -1771,7 +1771,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             tabs: state.tabs.map((t) => {
                 if (!isNoteTab(t) || t.noteId !== oldNoteId) return t;
-                return { ...t, noteId: newNoteId, title: newTitle };
+                return {
+                    ...t,
+                    noteId: newNoteId,
+                    title: newTitle,
+                    history: t.history?.map((entry) =>
+                        entry.kind === "note" && entry.noteId === oldNoteId
+                            ? { ...entry, noteId: newNoteId }
+                            : entry
+                    ),
+                };
             }),
         }));
     },
@@ -1995,9 +2004,9 @@ useEditorStore.subscribe((state) => {
 
     if (_sessionTimer) clearTimeout(_sessionTimer);
     _sessionTimer = setTimeout(() => {
-        _lastSessionJson = json;
         try {
             localStorage.setItem(getSessionKey(vaultPath), json);
+            _lastSessionJson = json;
         } catch (error) {
             console.warn("Failed to persist editor session", error);
         }
