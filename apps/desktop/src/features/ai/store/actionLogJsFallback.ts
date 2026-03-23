@@ -263,7 +263,7 @@ function mergeOverlappingLineEdits(edits: LineEdit[]): LineEdit[] {
         return left.oldEnd - right.oldEnd;
     });
 
-    const merged: LineEdit[] = [sorted[0]];
+    const merged: LineEdit[] = [{ ...sorted[0] }];
     for (const edit of sorted.slice(1)) {
         const previous = merged[merged.length - 1];
         const overlapsOld = rangesOverlap(
@@ -324,11 +324,9 @@ function getLineEditForSpan(
     currentText: string,
     span: AgentTextSpan,
 ): LineEdit | null {
-    const patch = deriveLinePatchFromTextRangesFallback(
-        baseText,
-        currentText,
-        [span],
-    );
+    const patch = deriveLinePatchFromTextRangesFallback(baseText, currentText, [
+        span,
+    ]);
     return patch.edits[0] ?? null;
 }
 
@@ -464,8 +462,7 @@ export function buildPatchFromTextsFallback(
         } else if (
             newIndex > 0 &&
             (oldIndex === 0 ||
-                table[oldIndex][newIndex - 1] >=
-                    table[oldIndex - 1][newIndex])
+                table[oldIndex][newIndex - 1] >= table[oldIndex - 1][newIndex])
         ) {
             if (!currentEdit) {
                 currentEdit = {
@@ -614,8 +611,7 @@ function buildTokenDiffEdits(
         } else if (
             newIndex > 0 &&
             (oldIndex === 0 ||
-                table[oldIndex][newIndex - 1] >=
-                    table[oldIndex - 1][newIndex])
+                table[oldIndex][newIndex - 1] >= table[oldIndex - 1][newIndex])
         ) {
             if (!currentEdit) {
                 currentEdit = {
