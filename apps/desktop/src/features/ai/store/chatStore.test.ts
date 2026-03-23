@@ -10,6 +10,7 @@ import type {
     QueuedChatMessage,
 } from "../types";
 import { deriveReviewItems } from "../diff/editedFilesPresentationModel";
+import { buildReviewProjection } from "../diff/reviewProjection";
 import { selectVisibleTrackedFiles } from "./editedFilesBufferModel";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import {
@@ -28,6 +29,40 @@ const AI_PREFS_KEY = "vaultai.ai.preferences";
 
 function getVisibleBuffer(sessionId: string): TrackedFile[] {
     return selectVisibleTrackedFiles(useChatStore.getState(), sessionId);
+}
+
+function createSessionWithTrackedFiles(
+    sessionId: string,
+    files: TrackedFile[],
+    workCycleId = "wc-test",
+): AIChatSession {
+    let actionLog = emptyActionLogState();
+    if (files.length > 0) {
+        actionLog = setTrackedFilesForWorkCycle(
+            actionLog,
+            workCycleId,
+            Object.fromEntries(files.map((file) => [file.identityKey, file])),
+        );
+    }
+
+    return {
+        sessionId,
+        historySessionId: sessionId,
+        status: "idle",
+        activeWorkCycleId: workCycleId,
+        visibleWorkCycleId: workCycleId,
+        actionLog,
+        runtimeId: "test-runtime",
+        modelId: "test-model",
+        modeId: "default",
+        models: [],
+        modes: [],
+        configOptions: [],
+        messages: [],
+        attachments: [],
+        isPersistedSession: false,
+        resumeContextPending: false,
+    };
 }
 
 function createTrackedFile(
@@ -5058,6 +5093,20 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
 
         invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                if (path === "/vault/src/watcher.rs") {
+                    return hashTextContent("old line");
+                }
+                if (path === "/vault/src/parser.rs") {
+                    return hashTextContent("old parser");
+                }
+                return null;
+            }
+
             if (command === "ai_restore_text_file") {
                 const path =
                     typeof args === "object" && args !== null && "path" in args
@@ -6320,5 +6369,141 @@ describe("chatStore", () => {
             startLine: 1,
             endLine: 1,
         });
+    });
+
+    it("resolveReviewHunks ignores stale trackedVersion and leaves the tracked file untouched", async () => {
+        const file = createTrackedFile(
+            "notes/stale.md",
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+            {
+                reviewState: "finalized",
+            },
+        );
+        const session = createSessionWithTrackedFiles("session-stale", [file]);
+        const projection = buildReviewProjection(file);
+
+        useChatStore.setState({
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        });
+        const [trackedBefore] = getVisibleBuffer(session.sessionId);
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                session.sessionId,
+                file.identityKey,
+                "accepted",
+                file.version + 1,
+                [projection.hunks[0]!.id],
+            );
+
+        const [trackedAfter] = getVisibleBuffer(session.sessionId);
+        expect(trackedAfter).toEqual(trackedBefore);
+    });
+
+    it("keeps panel and inline review in sync for precise single-hunk accepts", async () => {
+        const file = createTrackedFile(
+            "notes/same-final.md",
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+            {
+                reviewState: "finalized",
+            },
+        );
+        const projection = buildReviewProjection(file);
+        const panelSession = createSessionWithTrackedFiles("session-panel", [
+            file,
+        ]);
+        const inlineSession = createSessionWithTrackedFiles("session-inline", [
+            file,
+        ]);
+
+        useChatStore.setState({
+            activeSessionId: panelSession.sessionId,
+            sessionsById: {
+                [panelSession.sessionId]: panelSession,
+                [inlineSession.sessionId]: inlineSession,
+            },
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                panelSession.sessionId,
+                file.identityKey,
+                "accepted",
+                projection.hunks[0]!.newStartLine,
+                projection.hunks[0]!.newEndLine,
+            );
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                inlineSession.sessionId,
+                file.identityKey,
+                "accepted",
+                file.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [panelTracked] = getVisibleBuffer(panelSession.sessionId);
+        const [inlineTracked] = getVisibleBuffer(inlineSession.sessionId);
+
+        expect(panelTracked).toEqual(inlineTracked);
+    });
+
+    it("keeps panel and inline review in sync for precise single-hunk rejects", async () => {
+        const file = createTrackedFile(
+            "notes/same-final-reject.md",
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+            {
+                reviewState: "finalized",
+            },
+        );
+        const projection = buildReviewProjection(file);
+        const panelSession = createSessionWithTrackedFiles(
+            "session-panel-reject",
+            [file],
+        );
+        const inlineSession = createSessionWithTrackedFiles(
+            "session-inline-reject",
+            [file],
+        );
+
+        useChatStore.setState({
+            activeSessionId: panelSession.sessionId,
+            sessionsById: {
+                [panelSession.sessionId]: panelSession,
+                [inlineSession.sessionId]: inlineSession,
+            },
+        });
+
+        await useChatStore
+            .getState()
+            .resolveHunkEdits(
+                panelSession.sessionId,
+                file.identityKey,
+                "rejected",
+                projection.hunks[0]!.newStartLine,
+                projection.hunks[0]!.newEndLine,
+            );
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                inlineSession.sessionId,
+                file.identityKey,
+                "rejected",
+                file.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [panelTracked] = getVisibleBuffer(panelSession.sessionId);
+        const [inlineTracked] = getVisibleBuffer(inlineSession.sessionId);
+
+        expect(panelTracked).toEqual(inlineTracked);
     });
 });

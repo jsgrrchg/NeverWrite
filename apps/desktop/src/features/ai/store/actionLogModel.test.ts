@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AIFileDiff } from "../types";
 import type { TextEdit, TrackedFile } from "../diff/actionLogTypes";
+import { buildReviewProjection } from "../diff/reviewProjection";
 import {
     applyNonConflictingEdits,
     applyRejectUndo,
@@ -21,6 +22,8 @@ import {
     getTrackedFileDomainContract,
     keepAllEdits,
     keepEditsInRange,
+    keepExactSpans,
+    keepReviewHunks,
     mapAgentSpanThroughTextEdits,
     mapTextPositionThroughEdits,
     patchContainsLine,
@@ -30,6 +33,8 @@ import {
     rebuildDiffBaseFromPendingSpans,
     rejectAllEdits,
     rejectEditsInRanges,
+    rejectExactSpans,
+    rejectReviewHunks,
     shouldShowInlineDiff,
     syncDerivedLinePatch,
     updateTrackedFileWithDiff,
@@ -1439,6 +1444,197 @@ describe("Reject operations", () => {
     });
 });
 
+describe("Exact review resolution", () => {
+    function createInlineNeighborFile(): TrackedFile {
+        return {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase: "foo bar baz",
+            currentText: "FOO bar BAZ",
+            unreviewedRanges: {
+                spans: [
+                    {
+                        baseFrom: 0,
+                        baseTo: 3,
+                        currentFrom: 0,
+                        currentTo: 3,
+                    },
+                    {
+                        baseFrom: 8,
+                        baseTo: 11,
+                        currentFrom: 8,
+                        currentTo: 11,
+                    },
+                ],
+            },
+            unreviewedEdits: emptyPatch(),
+            version: 7,
+            isText: true,
+            updatedAt: 1000,
+            conflictHash: null,
+        };
+    }
+
+    it("keepExactSpans accepts a selected hunk without absorbing a same-line neighbor", () => {
+        const file = createInlineNeighborFile();
+
+        const accepted = keepExactSpans(file, [
+            file.unreviewedRanges!.spans[0]!,
+        ]);
+
+        expect(accepted.diffBase).toBe("FOO bar baz");
+        expect(accepted.currentText).toBe("FOO bar BAZ");
+        expect(accepted.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+    });
+
+    it("rejectExactSpans reverts only the selected span and keeps the same-line neighbor", () => {
+        const file = createInlineNeighborFile();
+
+        const { file: rejected, undoData } = rejectExactSpans(file, [
+            file.unreviewedRanges!.spans[0]!,
+        ]);
+
+        expect(rejected.currentText).toBe("foo bar BAZ");
+        expect(rejected.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+        expect(undoData.editsToRestore).toHaveLength(1);
+    });
+
+    it("keepReviewHunks resolves exact member spans even when hunks share a visual chunk", () => {
+        const file = createInlineNeighborFile();
+        const projection = buildReviewProjection(file);
+
+        expect(projection.chunks).toHaveLength(1);
+        expect(projection.chunks[0]!.hunkIds).toHaveLength(2);
+
+        const accepted = keepReviewHunks(file, [projection.hunks[0]!]);
+
+        expect(accepted.diffBase).toBe("FOO bar baz");
+        expect(accepted.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+    });
+
+    it("rejectReviewHunks resolves exact member spans independently inside one visual chunk", () => {
+        const file = createInlineNeighborFile();
+        const projection = buildReviewProjection(file);
+
+        const { file: rejected } = rejectReviewHunks(file, [
+            projection.hunks[0]!,
+        ]);
+
+        expect(rejected.currentText).toBe("foo bar BAZ");
+        expect(rejected.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+    });
+
+    it("keeps heavily edited agent files stable hunk by hunk inside one visual chunk", () => {
+        const file: TrackedFile = {
+            identityKey: "large-review.md",
+            originPath: "large-review.md",
+            path: "large-review.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            reviewState: "finalized",
+            diffBase: [
+                "zero",
+                "one",
+                "two",
+                "three",
+                "four",
+                "five",
+                "six",
+                "seven",
+                "eight",
+                "nine",
+            ].join("\n"),
+            currentText: [
+                "ZERO",
+                "one",
+                "TWO",
+                "three",
+                "FOUR",
+                "five",
+                "SIX",
+                "seven",
+                "EIGHT",
+                "nine",
+            ].join("\n"),
+            unreviewedRanges: buildTextRangePatchFromTexts(
+                [
+                    "zero",
+                    "one",
+                    "two",
+                    "three",
+                    "four",
+                    "five",
+                    "six",
+                    "seven",
+                    "eight",
+                    "nine",
+                ].join("\n"),
+                [
+                    "ZERO",
+                    "one",
+                    "TWO",
+                    "three",
+                    "FOUR",
+                    "five",
+                    "SIX",
+                    "seven",
+                    "EIGHT",
+                    "nine",
+                ].join("\n"),
+            ),
+            unreviewedEdits: emptyPatch(),
+            version: 11,
+            isText: true,
+            updatedAt: 1000,
+            conflictHash: null,
+        };
+        const projection = buildReviewProjection(file);
+
+        expect(projection.hunks).toHaveLength(5);
+        expect(projection.chunks).toHaveLength(1);
+        expect(projection.chunks[0]!.hunkIds).toHaveLength(5);
+
+        const accepted = keepReviewHunks(file, [projection.hunks[2]!]);
+
+        expect(accepted.diffBase.split("\n")[4]).toBe("FOUR");
+        expect(accepted.currentText.split("\n")[4]).toBe("FOUR");
+        expect(accepted.unreviewedRanges?.spans).toHaveLength(4);
+        expect(buildReviewProjection(accepted).hunks).toHaveLength(4);
+    });
+});
+
 // ---------------------------------------------------------------------------
 // Undo
 // ---------------------------------------------------------------------------
@@ -1464,13 +1660,16 @@ describe("Undo", () => {
 // ---------------------------------------------------------------------------
 
 describe("computeRestoreAction", () => {
-    it("returns delete for agent-created file with no previous content", () => {
+    it("returns skip for agent-created file with no previous content when live text is unknown", () => {
         const file = createTrackedFileFromDiff(
             makeDiff({ kind: "add", old_text: null, new_text: "new" }),
             1000,
         );
         const action = computeRestoreAction(file);
-        expect(action).toEqual({ kind: "delete" });
+        expect(action).toEqual({
+            kind: "skip",
+            reason: "user_owns_content",
+        });
     });
 
     it("returns delete for agent-created file when live text still matches", () => {

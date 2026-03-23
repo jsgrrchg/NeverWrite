@@ -15,6 +15,8 @@ export function derive_line_patch_from_text_ranges_json(base_text: string, curre
 
 export function keep_edits_in_range_json(file_json: string, start_line: number, end_line: number): string;
 
+export function keep_exact_spans_json(file_json: string, spans_json: string): string;
+
 export function map_agent_span_through_text_edits_json(span_json: string, edits_json: string): string;
 
 export function map_text_position_through_edits_json(position: number, edits_json: string, assoc: number): number;
@@ -26,6 +28,8 @@ export function rebuild_diff_base_from_pending_spans_json(original_diff_base: st
 export function reject_all_edits_json(file_json: string): string;
 
 export function reject_edits_in_ranges_json(file_json: string, ranges_json: string): string;
+
+export function reject_exact_spans_json(file_json: string, spans_json: string): string;
 
 export function sync_derived_line_patch_json(file_json: string): string;
 
@@ -40,12 +44,14 @@ export interface InitOutput {
     readonly compute_word_diffs_for_hunk_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly derive_line_patch_from_text_ranges_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly keep_edits_in_range_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly keep_exact_spans_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly map_agent_span_through_text_edits_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly map_text_position_through_edits_json: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly partition_spans_by_overlap_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly rebuild_diff_base_from_pending_spans_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly reject_all_edits_json: (a: number, b: number) => [number, number, number, number];
     readonly reject_edits_in_ranges_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly reject_exact_spans_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly sync_derived_line_patch_json: (a: number, b: number) => [number, number, number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

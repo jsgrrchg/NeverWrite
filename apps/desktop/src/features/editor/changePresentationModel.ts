@@ -27,6 +27,7 @@ export interface ChangeRailMarker {
     key: string;
     startLine: number;
     endLine: number;
+    // Visual anchor for the rail marker only. Never use as review identity.
     anchorLine: number;
     kind: ChangeRailMarkerKind;
     reviewState: ReviewState;

@@ -474,7 +474,7 @@ describe("EditedFilesBufferPanel", () => {
     });
 
     it("resolves mixed per-hunk decisions via immediate mode", async () => {
-        const resolveHunkEdits = vi.fn(async () => {});
+        const resolveReviewHunks = vi.fn(async () => {});
         const session = createSession("session-hunk-resolve", [
             createTrackedFile("/vault/src/mixed.ts", {
                 diffBase: "a\nold1\nc\nd\nold2\nf",
@@ -493,7 +493,7 @@ describe("EditedFilesBufferPanel", () => {
             resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
-            resolveHunkEdits,
+            resolveReviewHunks,
         }));
 
         renderComponent(<EditedFilesBufferPanel />);
@@ -502,30 +502,40 @@ describe("EditedFilesBufferPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
 
         await waitFor(() =>
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-hunk-resolve",
                 "/vault/src/mixed.ts",
                 "accepted",
-                expect.any(Number),
-                expect.any(Number),
+                1,
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        trackedVersion: 1,
+                        key: expect.any(String),
+                    }),
+                ]),
             ),
         );
 
         fireEvent.click(screen.getByRole("button", { name: "Reject hunk 2" }));
 
         await waitFor(() =>
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-hunk-resolve",
                 "/vault/src/mixed.ts",
                 "rejected",
-                expect.any(Number),
-                expect.any(Number),
+                1,
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        trackedVersion: 1,
+                        key: expect.any(String),
+                    }),
+                ]),
             ),
         );
     });
 
     it("renders nearby changes in one visual block but resolves them independently", async () => {
-        const resolveHunkEdits = vi.fn(async () => {});
+        const resolveReviewHunks = vi.fn(async () => {});
         const session = createSession("session-nearby-hunks", [
             createTrackedFile("/vault/src/nearby.ts", {
                 diffBase: "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl",
@@ -544,7 +554,7 @@ describe("EditedFilesBufferPanel", () => {
             resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
-            resolveHunkEdits,
+            resolveReviewHunks,
         }));
 
         renderComponent(<EditedFilesBufferPanel />);
@@ -561,18 +571,23 @@ describe("EditedFilesBufferPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
 
         await waitFor(() =>
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-nearby-hunks",
                 "/vault/src/nearby.ts",
                 "accepted",
-                expect.any(Number),
-                expect.any(Number),
+                1,
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        trackedVersion: 1,
+                        key: expect.any(String),
+                    }),
+                ]),
             ),
         );
     });
 
     it("treats accepted decision hunks via immediate resolve", async () => {
-        const resolveHunkEdits = vi.fn(async () => {});
+        const resolveReviewHunks = vi.fn(async () => {});
         const session = createSession("session-hunk-keep", [
             createTrackedFile("/vault/src/keep.ts", {
                 diffBase: "a\nold1\nc\nd\nold2\nf",
@@ -591,7 +606,7 @@ describe("EditedFilesBufferPanel", () => {
             resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
-            resolveHunkEdits,
+            resolveReviewHunks,
         }));
 
         renderComponent(<EditedFilesBufferPanel />);
@@ -600,18 +615,23 @@ describe("EditedFilesBufferPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
 
         await waitFor(() =>
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-hunk-keep",
                 "/vault/src/keep.ts",
                 "accepted",
-                expect.any(Number),
-                expect.any(Number),
+                1,
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        trackedVersion: 1,
+                        key: expect.any(String),
+                    }),
+                ]),
             ),
         );
     });
 
     it("treats rejected decision hunks via immediate resolve", async () => {
-        const resolveHunkEdits = vi.fn(async () => {});
+        const resolveReviewHunks = vi.fn(async () => {});
         const session = createSession("session-hunk-reject", [
             createTrackedFile("/vault/src/reject.ts", {
                 diffBase: "a\nold1\nc\nd\nold2\nf",
@@ -630,7 +650,7 @@ describe("EditedFilesBufferPanel", () => {
             resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
-            resolveHunkEdits,
+            resolveReviewHunks,
         }));
 
         renderComponent(<EditedFilesBufferPanel />);
@@ -639,12 +659,17 @@ describe("EditedFilesBufferPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Reject hunk 1" }));
 
         await waitFor(() =>
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 "session-hunk-reject",
                 "/vault/src/reject.ts",
                 "rejected",
-                expect.any(Number),
-                expect.any(Number),
+                1,
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        trackedVersion: 1,
+                        key: expect.any(String),
+                    }),
+                ]),
             ),
         );
     });

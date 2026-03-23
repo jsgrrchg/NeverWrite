@@ -1,8 +1,13 @@
 import type { EditorView } from "@codemirror/view";
 import { Change } from "@codemirror/merge";
 import { useChatStore } from "../ai/store/chatStore";
-import type { LineEdit } from "../ai/diff/actionLogTypes";
 import type { AgentTextSpan } from "../ai/diff/actionLogTypes";
+import {
+    buildReviewProjection,
+    summarizeReviewProjectionInlineState,
+    type ReviewProjection,
+    type ReviewProjectionInlineState,
+} from "../ai/diff/reviewProjection";
 import type { AIChatSession } from "../ai/types";
 import { deriveFileChangePresentation } from "./changePresentationModel";
 import {
@@ -12,6 +17,7 @@ import {
 import {
     buildReplaceOriginalDocEffect,
     createMergeViewExtension,
+    mergeControlsSignatureFacet,
     mergeEnabledFacet,
     mergeIdentityKeyFacet,
     mergeLevelFacet,
@@ -22,7 +28,6 @@ import {
     mergeViewCompartment,
     setLastDispatchedDiffBase,
 } from "./extensions/mergeViewDiff";
-import { getChunkLineRangeInDocB } from "./mergeChunkRange";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 
 export function syncMergeViewForPaths(
@@ -47,6 +52,9 @@ export function syncMergeViewForPaths(
         statusKind: view.state.facet(mergeStatusKindFacet),
         mode: options.mode,
     });
+    const currentControlsSignature = view.state.facet(
+        mergeControlsSignatureFacet,
+    );
 
     if (candidatePaths.length === 0) {
         reconfigureMergeView(view, currentSignature, {
@@ -82,6 +90,8 @@ export function syncMergeViewForPaths(
 
     const { trackedFile, sessionId } = match;
     const presentation = deriveFileChangePresentation(trackedFile);
+    const reviewProjection = buildReviewProjectionSafely(trackedFile);
+    const nextControlsSignature = buildMergeControlsSignature(reviewProjection);
     const nextSignature = buildMergeStructuralSignature({
         shouldShowMerge: true,
         sessionId,
@@ -93,8 +103,14 @@ export function syncMergeViewForPaths(
         mode: options.mode,
     });
 
-    if (currentSignature !== nextSignature) {
-        const flags = getMergePresentationFlags(presentation);
+    if (
+        currentSignature !== nextSignature ||
+        currentControlsSignature !== nextControlsSignature
+    ) {
+        const projectionState = reviewProjection
+            ? summarizeReviewProjectionInlineState(reviewProjection)
+            : EMPTY_INLINE_STATE;
+        const flags = getMergePresentationFlags(presentation, projectionState);
         // CodeMirror normalizes \r\n → \n, so raw string lengths can exceed
         // the internal document length. Use normalized lengths for clamping.
         const normalizedOriginalLength = countNormalizedLength(
@@ -117,17 +133,25 @@ export function syncMergeViewForPaths(
                         trackedVersion: trackedFile.version,
                         sessionId,
                         identityKey: trackedFile.identityKey,
+                        controlsSignature: nextControlsSignature,
                         reviewState: presentation.reviewState,
                         level: presentation.level,
                         statusKind: trackedFile.status.kind,
                         highlightChanges: flags.highlightChanges,
                         allowInlineDiffs: flags.allowInlineDiffs,
                         enableControls: flags.enableControls,
+                        showControlWidgets: flags.showControlWidgets,
                         syntaxHighlightDeletions:
                             flags.syntaxHighlightDeletions,
                         syntaxHighlightDeletionsMaxLength:
                             flags.syntaxHighlightDeletionsMaxLength,
-                        onDecision: ({ chunk, decision, view: mergeView }) => {
+                        reviewHunks: reviewProjection?.hunks ?? [],
+                        reviewChunks: reviewProjection?.chunks ?? [],
+                        onDecision: ({
+                            decision,
+                            hunkIds,
+                            view: mergeView,
+                        }) => {
                             const liveSessionId =
                                 mergeView.state.facet(mergeSessionIdFacet);
                             const liveIdentityKey = mergeView.state.facet(
@@ -137,20 +161,14 @@ export function syncMergeViewForPaths(
                                 return;
                             }
 
-                            const range = resolveChunkDecisionRange(
-                                chunk,
-                                mergeView.state.doc,
-                                trackedFile.unreviewedEdits.edits,
-                            );
-
                             void useChatStore
                                 .getState()
-                                .resolveHunkEdits(
+                                .resolveReviewHunks(
                                     liveSessionId,
                                     liveIdentityKey,
                                     decision,
-                                    range.startLine,
-                                    range.endLine,
+                                    trackedFile.version,
+                                    hunkIds,
                                 );
                         },
                     }),
@@ -217,87 +235,44 @@ function countNormalizedLength(text: string) {
     return len;
 }
 
-function resolveChunkDecisionRange(
-    chunk: Parameters<typeof getChunkLineRangeInDocB>[0],
-    doc: Parameters<typeof getChunkLineRangeInDocB>[1],
-    edits: readonly LineEdit[],
-) {
-    const range = getChunkLineRangeInDocB(chunk, doc);
-    const matchingEdit = findDecisionEditForAnchor(range.anchorLine, edits);
-    if (!matchingEdit) {
-        return range;
-    }
-
-    return {
-        startLine: matchingEdit.newStart,
-        endLine: matchingEdit.newEnd,
-        anchorLine: matchingEdit.newStart,
-    };
-}
-
-function findDecisionEditForAnchor(
-    anchorLine: number,
-    edits: readonly LineEdit[],
-): LineEdit | null {
-    const matches = edits.filter((edit) => editMatchesAnchor(anchorLine, edit));
-    if (matches.length === 0) {
-        if (edits.length === 1) {
-            return edits[0] ?? null;
-        }
-
-        const nearest = findNearestDecisionEdit(anchorLine, edits);
-        if (nearest) {
-            return nearest.edit;
-        }
-
+function buildMergeControlsSignature(
+    reviewProjection: ReviewProjection | null,
+): string | null {
+    if (!reviewProjection) {
         return null;
     }
 
-    matches.sort((left, right) => {
-        const leftSpan = Math.max(left.newEnd - left.newStart, 0);
-        const rightSpan = Math.max(right.newEnd - right.newStart, 0);
-        return leftSpan - rightSpan || left.newStart - right.newStart;
+    return JSON.stringify({
+        chunks: reviewProjection.chunks.map((chunk) => [
+            chunk.id.key,
+            chunk.startLine,
+            chunk.endLine,
+            chunk.controlMode,
+            chunk.canResolveInlineExactly,
+            chunk.hunkIds.map((id) => id.key),
+        ]),
+        hunks: reviewProjection.hunks.map((hunk) => [
+            hunk.id.key,
+            hunk.chunkId.key,
+            hunk.visualStartLine,
+            hunk.visualEndLine,
+        ]),
     });
-    return matches[0] ?? null;
 }
 
-function findNearestDecisionEdit(
-    anchorLine: number,
-    edits: readonly LineEdit[],
-) {
-    let best: {
-        edit: LineEdit;
-        distance: number;
-        span: number;
-    } | null = null;
+const EMPTY_INLINE_STATE: ReviewProjectionInlineState = {
+    reviewProjectionReady: false,
+    hasAmbiguousChunks: false,
+    hasConflicts: false,
+    hasMultiHunkChunks: false,
+};
 
-    for (const edit of edits) {
-        const span = Math.max(edit.newEnd - edit.newStart, 0);
-        const distance =
-            edit.newStart === edit.newEnd
-                ? Math.abs(edit.newStart - anchorLine)
-                : anchorLine < edit.newStart
-                  ? edit.newStart - anchorLine
-                  : anchorLine >= edit.newEnd
-                    ? anchorLine - (edit.newEnd - 1)
-                    : 0;
-
-        if (
-            !best ||
-            distance < best.distance ||
-            (distance === best.distance && span < best.span)
-        ) {
-            best = { edit, distance, span };
-        }
+function buildReviewProjectionSafely(
+    trackedFile: Parameters<typeof buildReviewProjection>[0],
+): ReviewProjection | null {
+    try {
+        return buildReviewProjection(trackedFile);
+    } catch {
+        return null;
     }
-
-    return best;
-}
-
-function editMatchesAnchor(anchorLine: number, edit: LineEdit) {
-    if (edit.newStart === edit.newEnd) {
-        return edit.newStart === anchorLine;
-    }
-
-    return anchorLine >= edit.newStart && anchorLine < edit.newEnd;
 }

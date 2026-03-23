@@ -204,7 +204,9 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const keepAllEditedFiles = useChatStore(
         (state) => state.keepAllEditedFiles,
     );
-    const resolveHunkEdits = useChatStore((state) => state.resolveHunkEdits);
+    const resolveReviewHunks = useChatStore(
+        (state) => state.resolveReviewHunks,
+    );
     const hasActionLog = useChatStore((state) => {
         const session = state.sessionsById[tab.sessionId];
         return !!session?.actionLog;
@@ -447,15 +449,20 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                 mergedText,
                             )
                         }
-                        onResolveHunk={
+                        onResolveReviewHunks={
                             hasActionLog
-                                ? (identityKey, decision, s, e) =>
-                                      void resolveHunkEdits(
+                                ? (
+                                      identityKey,
+                                      decision,
+                                      trackedVersion,
+                                      hunkIds,
+                                  ) =>
+                                      void resolveReviewHunks(
                                           tab.sessionId,
                                           identityKey,
                                           decision,
-                                          s,
-                                          e,
+                                          trackedVersion,
+                                          hunkIds,
                                       )
                                 : undefined
                         }

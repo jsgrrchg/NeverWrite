@@ -25,6 +25,7 @@ import type {
     TrackedFileDomainInvariantId,
     TrackedFileStatus,
 } from "../diff/actionLogTypes";
+import type { ReviewHunk } from "../diff/reviewProjection";
 import type { AIFileDiff, AIFileDiffHunk, AIFileDiffHunkLine } from "../types";
 import {
     applyNonConflictingEditsRust,
@@ -34,12 +35,14 @@ import {
     computeWordDiffsForHunkRust,
     deriveLinePatchFromTextRangesRust,
     keepEditsInRangeRust,
+    keepExactSpansRust,
     mapAgentSpanThroughTextEditsRust,
     mapTextPositionThroughEditsRust,
     partitionSpansByOverlapRust,
     rebuildDiffBaseFromPendingSpansRust,
     rejectAllEditsRust,
     rejectEditsInRangesRust,
+    rejectExactSpansRust,
     syncDerivedLinePatchRust,
 } from "./actionLogRustEngine";
 import {
@@ -159,6 +162,26 @@ function spansEqual(a: AgentTextSpan[], b: AgentTextSpan[]): boolean {
             span.currentTo === other.currentTo
         );
     });
+}
+
+function spanEquals(left: AgentTextSpan, right: AgentTextSpan): boolean {
+    return (
+        left.baseFrom === right.baseFrom &&
+        left.baseTo === right.baseTo &&
+        left.currentFrom === right.currentFrom &&
+        left.currentTo === right.currentTo
+    );
+}
+
+function dedupeSpans(spans: AgentTextSpan[]): AgentTextSpan[] {
+    const next: AgentTextSpan[] = [];
+    for (const span of spans) {
+        if (next.some((candidate) => spanEquals(candidate, span))) {
+            continue;
+        }
+        next.push(span);
+    }
+    return next;
 }
 
 function linePatchesEqual(a: LinePatch, b: LinePatch): boolean {
@@ -924,6 +947,67 @@ export function keepEditsInRange(
     return keepEditsInRangeRust(file, startLine, endLine);
 }
 
+export function keepExactSpans(
+    file: TrackedFile,
+    spans: AgentTextSpan[],
+): TrackedFile {
+    if (spans.length === 0) {
+        return syncDerivedLinePatch(file);
+    }
+
+    // Exact review resolution is canonical-span based. This path must stay
+    // independent from overlap-based line-range selection.
+    return keepExactSpansRust(file, spans);
+}
+
+function collectExactSpansFromReviewHunks(
+    file: TrackedFile,
+    reviewHunks: ReviewHunk[],
+): AgentTextSpan[] {
+    const syncedFile = syncDerivedLinePatch(file);
+    const currentSpans = syncedFile.unreviewedRanges?.spans ?? [];
+    const selectedSpans = dedupeSpans(
+        reviewHunks.flatMap((hunk) =>
+            hunk.memberSpans.map((span) => ({
+                baseFrom: span.baseFrom,
+                baseTo: span.baseTo,
+                currentFrom: span.currentFrom,
+                currentTo: span.currentTo,
+            })),
+        ),
+    );
+
+    if (
+        reviewHunks.some((hunk) => hunk.trackedVersion !== syncedFile.version)
+    ) {
+        throw new Error(
+            `Review hunk version mismatch for ${syncedFile.identityKey}: expected ${syncedFile.version}.`,
+        );
+    }
+
+    const missingSpan = selectedSpans.find(
+        (selected) =>
+            !currentSpans.some((current) => spanEquals(current, selected)),
+    );
+    if (missingSpan) {
+        throw new Error(
+            `Review hunk span is stale for ${syncedFile.identityKey}. Recompute the review projection before resolving.`,
+        );
+    }
+
+    return selectedSpans;
+}
+
+export function keepReviewHunks(
+    file: TrackedFile,
+    reviewHunks: ReviewHunk[],
+): TrackedFile {
+    return keepExactSpans(
+        file,
+        collectExactSpansFromReviewHunks(file, reviewHunks),
+    );
+}
+
 /**
  * Reject all agent edits — revert file to diffBase.
  * Returns updated file + undo data.
@@ -955,6 +1039,36 @@ export function rejectEditsInRanges(
     }
 
     return rejectEditsInRangesRust(file, ranges);
+}
+
+export function rejectExactSpans(
+    file: TrackedFile,
+    spans: AgentTextSpan[],
+): { file: TrackedFile; undoData: PerFileUndo } {
+    if (spans.length === 0) {
+        return {
+            file: syncDerivedLinePatch(file),
+            undoData: {
+                path: file.path,
+                editsToRestore: [],
+                previousStatus: file.status,
+            },
+        };
+    }
+
+    // Exact review resolution is canonical-span based. This path must stay
+    // independent from overlap-based line-range selection.
+    return rejectExactSpansRust(file, spans);
+}
+
+export function rejectReviewHunks(
+    file: TrackedFile,
+    reviewHunks: ReviewHunk[],
+): { file: TrackedFile; undoData: PerFileUndo } {
+    return rejectExactSpans(
+        file,
+        collectExactSpansFromReviewHunks(file, reviewHunks),
+    );
 }
 
 // ---------------------------------------------------------------------------

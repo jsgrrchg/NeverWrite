@@ -88,7 +88,9 @@ export function EditedFilesBufferPanel({
     const keepAllEditedFiles = useChatStore(
         (state) => state.keepAllEditedFiles,
     );
-    const resolveHunkEdits = useChatStore((state) => state.resolveHunkEdits);
+    const resolveReviewHunks = useChatStore(
+        (state) => state.resolveReviewHunks,
+    );
     const hasActionLog = useChatStore((state) => {
         if (!activeSessionId) return false;
         const session = state.sessionsById[activeSessionId];
@@ -400,15 +402,20 @@ export function EditedFilesBufferPanel({
                                 mergedText,
                             )
                         }
-                        onResolveHunk={
+                        onResolveReviewHunks={
                             hasActionLog
-                                ? (identityKey, decision, s, e) =>
-                                      void resolveHunkEdits(
+                                ? (
+                                      identityKey,
+                                      decision,
+                                      trackedVersion,
+                                      hunkIds,
+                                  ) =>
+                                      void resolveReviewHunks(
                                           activeSessionId,
                                           identityKey,
                                           decision,
-                                          s,
-                                          e,
+                                          trackedVersion,
+                                          hunkIds,
                                       )
                                 : undefined
                         }

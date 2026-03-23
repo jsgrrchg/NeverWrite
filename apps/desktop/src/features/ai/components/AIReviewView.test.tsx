@@ -413,7 +413,7 @@ describe("AIReviewView", () => {
 
     it("resolves nearby changes independently inside one visual block", async () => {
         const sessionId = "sess-nearby";
-        const resolveHunkEdits = vi.fn(async () => {});
+        const resolveReviewHunks = vi.fn(async () => {});
         const file = makeTrackedFile({
             identityKey: "nearby-entry",
             path: "/vault/nearby.md",
@@ -433,7 +433,7 @@ describe("AIReviewView", () => {
             keepAllEditedFiles: vi.fn(),
             rejectAllEditedFiles: vi.fn(async () => {}),
             resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            resolveHunkEdits,
+            resolveReviewHunks,
         });
 
         renderComponent(<AIReviewView />);
@@ -441,12 +441,17 @@ describe("AIReviewView", () => {
         fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
 
         await waitFor(() =>
-            expect(resolveHunkEdits).toHaveBeenCalledWith(
+            expect(resolveReviewHunks).toHaveBeenCalledWith(
                 sessionId,
                 "nearby-entry",
                 "accepted",
-                expect.any(Number),
-                expect.any(Number),
+                1,
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        trackedVersion: 1,
+                        key: expect.any(String),
+                    }),
+                ]),
             ),
         );
     });
@@ -473,7 +478,7 @@ describe("AIReviewView", () => {
             keepAllEditedFiles: vi.fn(),
             rejectAllEditedFiles: vi.fn(async () => {}),
             resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            resolveHunkEdits: vi.fn(async () => {}),
+            resolveReviewHunks: vi.fn(async () => {}),
         });
 
         renderComponent(<AIReviewView />);
