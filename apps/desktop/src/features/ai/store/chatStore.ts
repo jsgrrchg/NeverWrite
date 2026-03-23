@@ -4958,6 +4958,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 identityKey,
             );
             if (!tracked || !tracked.isText) return;
+            if (getTrackedFileReviewState(tracked) === "pending") return;
 
             try {
                 const restoreCheck = await hasConflict(vaultPath, tracked);
@@ -4995,6 +4996,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const currentSession = state.sessionsById[sessionId];
                     if (!currentSession) return state;
 
+                    // Re-read fresh tracked for the undo snapshot so we
+                    // don't store a stale version if notifyUserEditOnFile
+                    // ran between capture and this set().
+                    const freshTracked =
+                        findTrackedFileInAccumulatedSession(
+                            currentSession,
+                            identityKey,
+                        ) ?? tracked;
+
                     const removed = removeTrackedFileFromActionLog(
                         currentSession,
                         identityKey,
@@ -5004,10 +5014,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             ? setActionLogUndo(removed, null)
                             : (() => {
                                   const { undoData } =
-                                      actionLogRejectAll(tracked);
+                                      actionLogRejectAll(freshTracked);
                                   return setActionLogUndo(removed, {
                                       buffers: [undoData],
-                                      snapshots: { [identityKey]: tracked },
+                                      snapshots: {
+                                          [identityKey]: freshTracked,
+                                      },
                                       timestamp: Date.now(),
                                   });
                               })();
@@ -5135,10 +5147,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const trackedFiles = getAccumulatedTrackedFiles(session);
 
-            // Collect undo data for all rejected files
-            const undoBuffers: import("../diff/actionLogTypes").PerFileUndo[] =
-                [];
-            const undoSnapshots: Record<string, TrackedFile> = {};
+            // Track which files need undo snapshots (fresh data is read
+            // inside set() to avoid stale references).
+            const undoIdentityKeys = new Set<string>();
             const removedIdentityKeys = new Set<string>();
             let caughtError: unknown = null;
 
@@ -5181,9 +5192,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                     removedIdentityKeys.add(identityKey);
                     if (restoreAction.kind !== "skip") {
-                        const { undoData } = actionLogRejectAll(tracked);
-                        undoBuffers.push(undoData);
-                        undoSnapshots[identityKey] = tracked;
+                        undoIdentityKeys.add(identityKey);
                     }
                 } catch (error) {
                     caughtError = error;
@@ -5201,9 +5210,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const current = getAccumulatedTrackedFiles(currentSession);
                 const remaining: Record<string, TrackedFile> = {};
                 for (const [key, file] of Object.entries(current)) {
-                    if (!undoSnapshots[key] && !removedIdentityKeys.has(key)) {
+                    if (
+                        !undoIdentityKeys.has(key) &&
+                        !removedIdentityKeys.has(key)
+                    ) {
                         remaining[key] = file;
                     }
+                }
+
+                // Build undo data from fresh tracked files so we don't
+                // store stale versions if notifyUserEditOnFile ran between
+                // capture and this set().
+                const freshSnapshots: Record<string, TrackedFile> = {};
+                const freshUndoBuffers: import("../diff/actionLogTypes").PerFileUndo[] =
+                    [];
+                for (const key of undoIdentityKeys) {
+                    const fresh = current[key];
+                    if (!fresh) continue;
+                    freshSnapshots[key] = fresh;
+                    const { undoData } = actionLogRejectAll(fresh);
+                    freshUndoBuffers.push(undoData);
                 }
 
                 let updated: AIChatSession = replaceTrackedFilesInActionLog(
@@ -5211,10 +5237,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     remaining,
                 );
 
-                if (undoBuffers.length > 0) {
+                if (freshUndoBuffers.length > 0) {
                     updated = setActionLogUndo(updated, {
-                        buffers: undoBuffers,
-                        snapshots: undoSnapshots,
+                        buffers: freshUndoBuffers,
+                        snapshots: freshSnapshots,
                         timestamp: Date.now(),
                     });
                 } else if (removedIdentityKeys.size > 0) {
@@ -5277,6 +5303,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let updated = session;
                 if (session.actionLog) {
                     updated = replaceTrackedFilesInActionLog(session, {});
+                    updated = setActionLogUndo(updated, null);
                 }
 
                 return {
@@ -5472,6 +5499,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
             // Restore each file on disk from its pre-reject snapshot
             for (const [identityKey, snapshot] of Object.entries(snapshots)) {
                 try {
+                    // Verify the disk hasn't changed since the reject
+                    const currentHash = await aiGetTextFileHash(
+                        vaultPath,
+                        snapshot.path,
+                    );
+                    if (
+                        snapshot.status.kind === "created" &&
+                        snapshot.status.existingFileContent === null
+                    ) {
+                        // Reject deleted this file. If it exists now, someone
+                        // created a new file at the same path — skip to avoid
+                        // overwriting.
+                        if (currentHash !== null) continue;
+                    } else {
+                        // Reject restored diffBase (or existingFileContent).
+                        // If the disk differs from what the reject wrote,
+                        // someone edited it — skip.
+                        const expectedContent =
+                            snapshot.status.kind === "created"
+                                ? (snapshot.status.existingFileContent ??
+                                  snapshot.diffBase)
+                                : snapshot.diffBase;
+                        const expectedHash = hashTextContent(expectedContent);
+                        if (currentHash !== expectedHash) continue;
+                    }
+
                     // Write the agent's currentText back (undo the rejection)
                     if (
                         snapshot.status.kind === "created" &&

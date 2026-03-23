@@ -753,6 +753,11 @@ function findTrackedFile(
         }
     }
 
+    // Fallback: search by current path for any diff type (handles move+update sequences)
+    for (const file of Object.values(files)) {
+        if (file.path === diff.path) return file;
+    }
+
     return null;
 }
 
@@ -849,7 +854,7 @@ export function computeRestoreAction(
                 // Agent created the file from nothing — delete it only if the
                 // live content still matches the agent-authored snapshot.
                 if (
-                    liveText === null ||
+                    liveText == null ||
                     (typeof liveText === "string" &&
                         liveText !== file.currentText)
                 ) {
