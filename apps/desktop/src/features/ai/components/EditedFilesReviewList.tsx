@@ -99,6 +99,8 @@ function FullRow({
 
     return (
         <div
+            data-review-file-key={file.identityKey}
+            data-review-tracked-version={item.reviewProjection.trackedVersion}
             className="overflow-hidden rounded-xl"
             style={{
                 border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",

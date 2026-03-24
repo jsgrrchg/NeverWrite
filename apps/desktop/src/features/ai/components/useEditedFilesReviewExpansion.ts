@@ -1,13 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReviewFileItem } from "../diff/editedFilesPresentationModel";
 
-export function useEditedFilesReviewExpansion(items: ReviewFileItem[]) {
+export function useEditedFilesReviewExpansion(
+    items: ReviewFileItem[],
+    options?: {
+        initialExpandedKeys?: Iterable<string> | null;
+    },
+) {
     const itemKeys = useMemo(
         () => items.map((item) => item.file.identityKey),
         [items],
     );
     const knownKeysRef = useRef(new Set(itemKeys));
-    const [expandedKeys, setExpandedKeys] = useState(() => new Set(itemKeys));
+    const [expandedKeys, setExpandedKeys] = useState(() => {
+        const initialExpandedKeys = options?.initialExpandedKeys;
+        if (!initialExpandedKeys) {
+            return new Set(itemKeys);
+        }
+
+        const itemKeySet = new Set(itemKeys);
+        const next = new Set<string>();
+        for (const key of initialExpandedKeys) {
+            if (itemKeySet.has(key)) {
+                next.add(key);
+            }
+        }
+        return next;
+    });
 
     useEffect(() => {
         setExpandedKeys((prev) => {
