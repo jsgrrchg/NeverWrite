@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     useEditorStore,
     isReviewTab,
@@ -30,6 +30,14 @@ import {
     selectVisibleTrackedFiles,
 } from "../store/editedFilesBufferModel";
 import { canOpenAiEditedFileEntry } from "../chatFileNavigation";
+import {
+    createPersistedReviewAnchor,
+    getReviewViewStorageKey,
+    persistReviewViewState,
+    readPersistedReviewViewState,
+    resolvePersistedReviewAnchor,
+    type PersistedReviewAnchor,
+} from "./reviewTabPersistence";
 
 /* ------------------------------------------------------------------ */
 /*  Empty state                                                        */
@@ -182,7 +190,7 @@ export function AIReviewView() {
         );
     }
 
-    return <ReviewContent tab={tab} />;
+    return <ReviewContent key={tab.id} tab={tab} />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -190,6 +198,7 @@ export function AIReviewView() {
 /* ------------------------------------------------------------------ */
 
 function ReviewContent({ tab }: { tab: ReviewTab }) {
+    const vaultPath = useVaultStore((state) => state.vaultPath);
     const visibleEntries = useChatStore((state) =>
         selectVisibleTrackedFiles(state, tab.sessionId),
     );
@@ -218,6 +227,15 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
     const entries = useVaultStore((state) => state.entries);
+    const [persistVersion, setPersistVersion] = useState(0);
+    const reviewStorageKey = useMemo(
+        () => getReviewViewStorageKey(vaultPath, tab.sessionId),
+        [tab.sessionId, vaultPath],
+    );
+    const persistedState = useMemo(
+        () => readPersistedReviewViewState(vaultPath, tab.sessionId),
+        [persistVersion, tab.sessionId, vaultPath],
+    );
 
     const openablePathSet = useMemo(
         () =>
@@ -233,12 +251,223 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         () => deriveReviewItems(visibleEntries, openablePathSet),
         [visibleEntries, openablePathSet],
     );
+    const initialAnchor = useMemo(
+        () =>
+            resolvePersistedReviewAnchor(persistedState?.anchor ?? null, items),
+        [items, persistedState?.anchor],
+    );
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = items.filter((item) => item.canReject).length;
-    const expansion = useEditedFilesReviewExpansion(items);
+    const expansion = useEditedFilesReviewExpansion(items, {
+        initialExpandedKeys: (() => {
+            if (!persistedState?.expandedIdentityKeys) {
+                return null;
+            }
+            const keys = new Set(persistedState.expandedIdentityKeys);
+            if (initialAnchor) {
+                keys.add(initialAnchor.identityKey);
+            }
+            return keys;
+        })(),
+    });
     const [wideMode, setWideMode] = useState(false);
+    const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+    const persistedAnchorRef = useRef<PersistedReviewAnchor | null>(
+        initialAnchor,
+    );
+    const reviewWriterIdRef = useRef(crypto.randomUUID());
+    const lastSeenPersistedUpdatedAtRef = useRef<number>(0);
+    const didRunPersistEffectRef = useRef(false);
+    const restoreAppliedRef = useRef(false);
+    const scrollPersistTimerRef = useRef<number | null>(null);
+    const pendingScrollTopRef = useRef<number | null>(null);
     const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
+
+    const persistViewState = useCallback(
+        (nextScrollTop?: number) => {
+            const persisted = persistReviewViewState(
+                vaultPath,
+                tab.sessionId,
+                {
+                    expandedIdentityKeys: expansion.expandedKeys,
+                    scrollTop:
+                        nextScrollTop ??
+                        scrollContainerRef.current?.scrollTop ??
+                        persistedState?.scrollTop ??
+                        0,
+                    anchor: persistedAnchorRef.current,
+                },
+                {
+                    baseUpdatedAt: lastSeenPersistedUpdatedAtRef.current,
+                    writerId: reviewWriterIdRef.current,
+                },
+            );
+            if (persisted) {
+                lastSeenPersistedUpdatedAtRef.current = persisted.updatedAt;
+            }
+        },
+        [
+            expansion.expandedKeys,
+            persistedState?.scrollTop,
+            tab.sessionId,
+            vaultPath,
+        ],
+    );
+
+    const flushScheduledScrollPersist = useCallback(() => {
+        if (scrollPersistTimerRef.current != null) {
+            window.clearTimeout(scrollPersistTimerRef.current);
+            scrollPersistTimerRef.current = null;
+        }
+        pendingScrollTopRef.current = null;
+    }, []);
+
+    const schedulePersistFromScroll = useCallback(
+        (scrollTop: number) => {
+            pendingScrollTopRef.current = scrollTop;
+            if (scrollPersistTimerRef.current != null) {
+                return;
+            }
+            scrollPersistTimerRef.current = window.setTimeout(() => {
+                scrollPersistTimerRef.current = null;
+                const nextScrollTop = pendingScrollTopRef.current;
+                pendingScrollTopRef.current = null;
+                persistViewState(nextScrollTop ?? scrollTop);
+            }, 120);
+        },
+        [persistViewState],
+    );
+
+    useEffect(() => {
+        if (persistedState?.updatedAt) {
+            lastSeenPersistedUpdatedAtRef.current = Math.max(
+                lastSeenPersistedUpdatedAtRef.current,
+                persistedState.updatedAt,
+            );
+        }
+    }, [persistedState?.updatedAt]);
+
+    useEffect(() => {
+        const onStorage = (event: StorageEvent) => {
+            if (event.key !== reviewStorageKey || !event.newValue) {
+                return;
+            }
+            try {
+                const parsed = JSON.parse(event.newValue) as {
+                    writerId?: string;
+                    updatedAt?: number;
+                };
+                if (parsed.writerId === reviewWriterIdRef.current) {
+                    return;
+                }
+                if (
+                    typeof parsed.updatedAt === "number" &&
+                    parsed.updatedAt > lastSeenPersistedUpdatedAtRef.current
+                ) {
+                    lastSeenPersistedUpdatedAtRef.current = parsed.updatedAt;
+                }
+            } catch {
+                // Ignore malformed storage payloads from other windows.
+            }
+            setPersistVersion((current) => current + 1);
+        };
+
+        window.addEventListener("storage", onStorage);
+        return () => {
+            window.removeEventListener("storage", onStorage);
+        };
+    }, [reviewStorageKey]);
+
+    useEffect(() => {
+        if (!didRunPersistEffectRef.current) {
+            didRunPersistEffectRef.current = true;
+            return;
+        }
+        persistViewState();
+    }, [persistViewState]);
+
+    useEffect(() => {
+        if (persistedAnchorRef.current == null && initialAnchor) {
+            persistedAnchorRef.current = initialAnchor;
+        }
+    }, [initialAnchor]);
+
+    useEffect(() => {
+        if (restoreAppliedRef.current || items.length === 0) {
+            return;
+        }
+
+        const container = scrollContainerRef.current;
+        if (!container) {
+            return;
+        }
+
+        restoreAppliedRef.current = true;
+        if (persistedState?.scrollTop) {
+            container.scrollTop = persistedState.scrollTop;
+        }
+
+        const anchor = resolvePersistedReviewAnchor(
+            persistedState?.anchor ?? null,
+            items,
+        );
+        if (!anchor) {
+            return;
+        }
+
+        const hunkTarget = Array.from(
+            container.querySelectorAll<HTMLElement>("[data-review-hunk-key]"),
+        ).find((element) => {
+            const reviewFileKey = element.dataset.reviewFileKey;
+            const trackedVersion = Number(
+                element.dataset.reviewTrackedVersion ?? "",
+            );
+            const reviewHunkKey = element.dataset.reviewHunkKey;
+            return (
+                reviewFileKey === anchor.identityKey &&
+                trackedVersion === anchor.trackedVersion &&
+                !!reviewHunkKey &&
+                anchor.hunkKeys.includes(reviewHunkKey)
+            );
+        });
+        if (hunkTarget) {
+            hunkTarget.scrollIntoView({ block: "center" });
+            return;
+        }
+
+        const fileTarget = Array.from(
+            container.querySelectorAll<HTMLElement>("[data-review-file-key]"),
+        ).find(
+            (element) => element.dataset.reviewFileKey === anchor.identityKey,
+        );
+        fileTarget?.scrollIntoView({ block: "center" });
+    }, [items, persistedState]);
+
+    useEffect(() => {
+        if (persistedState?.anchor == null || items.length === 0) {
+            return;
+        }
+
+        const anchor = resolvePersistedReviewAnchor(
+            persistedState.anchor,
+            items,
+        );
+        if (anchor) {
+            return;
+        }
+
+        persistedAnchorRef.current = null;
+        persistViewState();
+    }, [items, persistViewState, persistedState?.anchor]);
+
+    useEffect(
+        () => () => {
+            flushScheduledScrollPersist();
+            persistViewState();
+        },
+        [flushScheduledScrollPersist, persistViewState],
+    );
 
     if (items.length === 0) {
         return (
@@ -426,7 +655,14 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
             </div>
 
             {/* ---- Scrollable file list ---- */}
-            <div className="flex-1 overflow-auto px-6 py-4">
+            <div
+                ref={scrollContainerRef}
+                data-testid="ai-review-scroll-container"
+                className="flex-1 overflow-auto px-6 py-4"
+                onScroll={(event) =>
+                    schedulePersistFromScroll(event.currentTarget.scrollTop)
+                }
+            >
                 <div
                     className={`mx-auto flex w-full flex-col gap-2.5 ${wideMode ? "" : "max-w-3xl"}`}
                 >
@@ -456,14 +692,34 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                       decision,
                                       trackedVersion,
                                       hunkIds,
-                                  ) =>
+                                  ) => {
+                                      const trackedFile = items.find(
+                                          (item) =>
+                                              item.file.identityKey ===
+                                              identityKey,
+                                      )?.file;
+                                      persistedAnchorRef.current = trackedFile
+                                          ? createPersistedReviewAnchor(
+                                                trackedFile,
+                                                trackedVersion,
+                                                hunkIds,
+                                            )
+                                          : {
+                                                identityKey,
+                                                trackedVersion,
+                                                hunkKeys: hunkIds.map(
+                                                    (hunkId) => hunkId.key,
+                                                ),
+                                            };
+                                      persistViewState();
                                       void resolveReviewHunks(
                                           tab.sessionId,
                                           identityKey,
                                           decision,
                                           trackedVersion,
                                           hunkIds,
-                                      )
+                                      );
+                                  }
                                 : undefined
                         }
                     />

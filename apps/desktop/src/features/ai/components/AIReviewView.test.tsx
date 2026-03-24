@@ -7,11 +7,13 @@ import {
     setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import type { AIChatSession } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
 import { AIReviewView } from "./AIReviewView";
+import { readPersistedReviewViewState } from "./reviewTabPersistence";
 
 const DEFAULT_WORK_CYCLE = "default-wc";
 
@@ -328,6 +330,66 @@ describe("AIReviewView", () => {
         // Click again to expand
         fireEvent.click(screen.getByText("test.md"));
         expect(screen.getByText("Reject")).toBeInTheDocument();
+    });
+
+    it("restores persisted expansion and scroll anchor state when reopening the same review session", async () => {
+        const sessionId = "sess-review-persist";
+        const file = makeTrackedFile({
+            identityKey: "persist-1",
+            path: "/vault/notes/persist.md",
+            originPath: "/vault/notes/persist.md",
+            diffBase: "line a\nline b\nline c",
+            currentText: "line a\nline B\nline c",
+        });
+
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        vi.useFakeTimers();
+        try {
+            const firstRender = renderComponent(<AIReviewView />);
+
+            fireEvent.click(screen.getByRole("button", { name: "Collapse" }));
+            expect(
+                screen.queryByRole("button", { name: "Reject hunk 1" }),
+            ).not.toBeInTheDocument();
+
+            const scrollContainer = screen.getByTestId(
+                "ai-review-scroll-container",
+            );
+            Object.defineProperty(scrollContainer, "scrollTop", {
+                configurable: true,
+                writable: true,
+                value: 196,
+            });
+            fireEvent.scroll(scrollContainer);
+            vi.advanceTimersByTime(130);
+            expect(
+                readPersistedReviewViewState(
+                    useVaultStore.getState().vaultPath,
+                    sessionId,
+                ),
+            ).toMatchObject({
+                expandedIdentityKeys: [],
+                scrollTop: 196,
+            });
+
+            firstRender.unmount();
+            vi.useRealTimers();
+
+            renderComponent(<AIReviewView />);
+
+            expect(
+                screen.getByRole("button", { name: "Expand" }),
+            ).toBeInTheDocument();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it("renders persistent diff zoom controls in the review header", () => {

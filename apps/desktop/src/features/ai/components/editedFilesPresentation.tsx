@@ -974,11 +974,21 @@ export function EditedFileDiffPreview({
                                                 semanticHunkByIndex.get(
                                                     segment.decisionHunkIndex,
                                                 );
+                                            const reviewHunk =
+                                                reviewHunkByIndex.get(
+                                                    segment.decisionHunkIndex,
+                                                );
                                             const decision = semanticHunk
                                                 ? hunkDecisions.get(
                                                       semanticHunk.idKey,
                                                   )
                                                 : undefined;
+                                            const reviewTrackedVersion =
+                                                reviewHunk?.trackedVersion ??
+                                                file.version;
+                                            const reviewHunkKey =
+                                                reviewHunk?.id.key ??
+                                                semanticHunk?.idKey;
                                             const wrapperStyle =
                                                 decision === "accepted"
                                                     ? {
@@ -997,6 +1007,15 @@ export function EditedFileDiffPreview({
                                             return (
                                                 <div
                                                     key={segment.key}
+                                                    data-review-file-key={
+                                                        file.identityKey
+                                                    }
+                                                    data-review-hunk-key={
+                                                        reviewHunkKey
+                                                    }
+                                                    data-review-tracked-version={
+                                                        reviewTrackedVersion
+                                                    }
                                                     className="group"
                                                     style={{
                                                         position: "relative",
