@@ -23,6 +23,8 @@ import { NewTabView } from "./features/editor/NewTabView";
 import { SearchView } from "./features/search/SearchView";
 import { PdfTabView } from "./features/pdf/PdfTabView";
 import { MapsPanel } from "./features/maps/MapsPanel";
+import { BookmarksPanel } from "./features/bookmarks/BookmarksPanel";
+import { useBookmarkStore } from "./app/store/bookmarkStore";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
 import { SettingsPanel } from "./features/settings";
@@ -108,6 +110,8 @@ function SidebarPanel({ view }: { view: SidebarView }) {
                     <FileTree />
                 ) : view === "search" ? (
                     <SearchPanel autoFocus />
+                ) : view === "bookmarks" ? (
+                    <BookmarksPanel />
                 ) : view === "maps" ? (
                     <MapsPanel />
                 ) : (
@@ -1384,6 +1388,15 @@ export default function App() {
             cancelled = true;
         };
     }, [restoreChatWorkspace, vaultPath, windowMode]);
+
+    // Load bookmarks when vault changes
+    useEffect(() => {
+        if (vaultPath) {
+            useBookmarkStore.getState().loadForVault(vaultPath);
+        } else {
+            useBookmarkStore.getState().reset();
+        }
+    }, [vaultPath]);
 
     useEffect(() => {
         if (windowMode !== "main") return;

@@ -2,7 +2,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useEditorStore } from "../../app/store/editorStore";
 
-export type SidebarView = "files" | "search" | "tags" | "maps";
+export type SidebarView = "files" | "search" | "tags" | "bookmarks" | "maps";
 
 interface ActivityBarProps {
     active: SidebarView;
@@ -63,6 +63,24 @@ const items: { id: SidebarView; title: string; icon: React.ReactNode }[] = [
                 strokeLinejoin="round"
             >
                 <path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />
+            </svg>
+        ),
+    },
+    {
+        id: "bookmarks",
+        title: "Bookmarks",
+        icon: (
+            <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
             </svg>
         ),
     },

@@ -44,6 +44,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
+import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { perfMeasure, perfNow } from "../../app/utils/perfInstrumentation";
 
 // --- Sort ---
@@ -1478,6 +1479,7 @@ export function FileTree() {
     const openNote = useEditorStore((s) => s.openNote);
     const closeTab = useEditorStore((s) => s.closeTab);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
+    const bookmarkItems = useBookmarkStore((s) => s.items);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const fileTreeShowExtensions = useSettingsStore(
@@ -3640,6 +3642,26 @@ export function FileTree() {
                     },
                     { type: "separator" },
                     {
+                        label: bookmarkItems.some((i) => i.noteId === note.id)
+                            ? "Remove from Bookmarks"
+                            : "Add to Bookmarks",
+                        action: () => {
+                            const store = useBookmarkStore.getState();
+                            const existing = store.items.find(
+                                (i) => i.noteId === note.id,
+                            );
+                            if (existing) {
+                                store.removeBookmark(existing.id);
+                            } else {
+                                store.addBookmark({
+                                    kind: "note",
+                                    noteId: note.id,
+                                });
+                            }
+                        },
+                    },
+                    { type: "separator" },
+                    {
                         label: deleteLabel,
                         action: () => void handleDelete(deleteTargets),
                         danger: true,
@@ -3674,6 +3696,28 @@ export function FileTree() {
                         label: "Copy Path",
                         action: () =>
                             void navigator.clipboard.writeText(entry.path),
+                    },
+                    { type: "separator" },
+                    {
+                        label: bookmarkItems.some(
+                            (i) => i.entryPath === entry.relative_path,
+                        )
+                            ? "Remove from Bookmarks"
+                            : "Add to Bookmarks",
+                        action: () => {
+                            const store = useBookmarkStore.getState();
+                            const existing = store.items.find(
+                                (i) => i.entryPath === entry.relative_path,
+                            );
+                            if (existing) {
+                                store.removeBookmark(existing.id);
+                            } else {
+                                store.addBookmark({
+                                    kind: "pdf",
+                                    entryPath: entry.relative_path,
+                                });
+                            }
+                        },
                     },
                     { type: "separator" },
                     {
@@ -3721,6 +3765,28 @@ export function FileTree() {
                             void navigator.clipboard.writeText(
                                 entry.relative_path,
                             ),
+                    },
+                    { type: "separator" },
+                    {
+                        label: bookmarkItems.some(
+                            (i) => i.entryPath === entry.relative_path,
+                        )
+                            ? "Remove from Bookmarks"
+                            : "Add to Bookmarks",
+                        action: () => {
+                            const store = useBookmarkStore.getState();
+                            const existing = store.items.find(
+                                (i) => i.entryPath === entry.relative_path,
+                            );
+                            if (existing) {
+                                store.removeBookmark(existing.id);
+                            } else {
+                                store.addBookmark({
+                                    kind: "file",
+                                    entryPath: entry.relative_path,
+                                });
+                            }
+                        },
                     },
                     { type: "separator" },
                     {
@@ -3807,6 +3873,7 @@ export function FileTree() {
         openTreeNote,
         startCreating,
         treeClipboard,
+        bookmarkItems,
     ]);
 
     // Ref-backed stable callbacks so memo'd FlatTreeRowView stays fresh
