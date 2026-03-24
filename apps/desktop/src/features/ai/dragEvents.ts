@@ -23,6 +23,10 @@ export interface FileTreeNoteDragDetail {
     notes: AIChatNoteSummary[];
     files?: FileTreeDraggedFile[];
     folder?: { path: string; name: string };
+    origin?: {
+        kind: "unified-bar-tab";
+        tabId: string;
+    };
 }
 
 export function emitFileTreeNoteDrag(detail: FileTreeNoteDragDetail) {

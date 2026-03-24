@@ -578,7 +578,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             const detail = buildTabFileDragDetail(tab, phase, coords);
             if (detail) {
-                emitFileTreeNoteDrag(detail);
+                emitFileTreeNoteDrag({
+                    ...detail,
+                    origin: {
+                        kind: "unified-bar-tab",
+                        tabId,
+                    },
+                });
             }
         },
         [],
@@ -1120,6 +1126,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             }
 
             if (detail.phase === "cancel") {
+                setExternalFileDropActive(false);
+                return;
+            }
+
+            if (detail.origin?.kind === "unified-bar-tab") {
                 setExternalFileDropActive(false);
                 return;
             }
