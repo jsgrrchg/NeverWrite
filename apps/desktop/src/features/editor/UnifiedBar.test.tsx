@@ -228,4 +228,57 @@ describe("UnifiedBar tab strip drop", () => {
                 )?.title,
         ).toBe("Reference");
     });
+
+    it("ignores drag-drop events emitted by the tab strip itself", async () => {
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+            {
+                id: "tab-b",
+                kind: "note",
+                noteId: "notes/beta.md",
+                title: "Beta",
+                content: "beta",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        await act(async () => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "end",
+                        x: 240,
+                        y: 20,
+                        notes: [
+                            {
+                                id: "notes/alpha.md",
+                                title: "Alpha",
+                                path: "notes/alpha.md",
+                            },
+                        ],
+                        origin: {
+                            kind: "unified-bar-tab",
+                            tabId: "tab-a",
+                        },
+                    },
+                }),
+            );
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
+    });
 });
