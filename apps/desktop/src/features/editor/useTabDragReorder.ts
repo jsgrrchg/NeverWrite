@@ -7,7 +7,6 @@ import {
     useState,
     type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { Tab } from "../../app/store/editorStore";
 
 const TAB_REORDER_THRESHOLD = 6;
 const TAB_EDGE_SCROLL_ZONE = 40;
@@ -28,8 +27,12 @@ interface TabDragSession {
     detachArmedAt: number | null;
 }
 
-interface UseTabDragReorderOptions {
-    tabs: Tab[];
+interface DragTabLike {
+    id: string;
+}
+
+interface UseTabDragReorderOptions<TTab extends DragTabLike> {
+    tabs: TTab[];
     onCommitReorder: (fromIndex: number, toIndex: number) => void;
     onActivate?: (tabId: string) => void;
     liveReorder?: boolean;
@@ -90,7 +93,7 @@ function arraysEqual(left: string[], right: string[]) {
     );
 }
 
-export function useTabDragReorder({
+export function useTabDragReorder<TTab extends DragTabLike>({
     tabs,
     onCommitReorder,
     onActivate,
@@ -105,7 +108,7 @@ export function useTabDragReorder({
     onDragMove,
     onDragEnd,
     onDragCancel,
-}: UseTabDragReorderOptions) {
+}: UseTabDragReorderOptions<TTab>) {
     const tabStripRef = useRef<HTMLDivElement>(null);
     const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const sessionRef = useRef<TabDragSession | null>(null);
@@ -137,6 +140,9 @@ export function useTabDragReorder({
     const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
     const [dragOffsetX, setDragOffsetX] = useState(0);
     const [detachPreviewActive, setDetachPreviewActive] = useState(false);
+    const [projectedDropIndex, setProjectedDropIndex] = useState<number | null>(
+        null,
+    );
 
     const tabsById = useMemo(
         () => Object.fromEntries(tabs.map((tab) => [tab.id, tab])),
@@ -147,7 +153,7 @@ export function useTabDragReorder({
         : tabs.map((tab) => tab.id);
     const visualTabs = visualOrder
         .map((tabId) => tabsById[tabId])
-        .filter((tab): tab is Tab => Boolean(tab));
+        .filter((tab): tab is TTab => Boolean(tab));
 
     const stopEdgeScroll = useCallback(() => {
         edgeScrollDirectionRef.current = 0;
@@ -281,14 +287,20 @@ export function useTabDragReorder({
             strip.scrollLeft += direction * TAB_EDGE_SCROLL_STEP;
 
             if (strip.scrollLeft !== previousScroll) {
-                syncDraggedTab(latestPointerXRef.current);
+                if (liveReorder) {
+                    syncDraggedTab(latestPointerXRef.current);
+                } else {
+                    setProjectedDropIndex(
+                        computeDropIndex(latestPointerXRef.current),
+                    );
+                }
             }
 
             edgeScrollFrameRef.current = window.requestAnimationFrame(() => {
                 runEdgeScrollRef.current();
             });
         };
-    }, [stopEdgeScroll, syncDraggedTab]);
+    }, [computeDropIndex, liveReorder, stopEdgeScroll, syncDraggedTab]);
 
     const updateEdgeScroll = useCallback(
         (clientX: number) => {
@@ -383,6 +395,7 @@ export function useTabDragReorder({
             setPreviewOrder(null);
             setDraggingTabId(null);
             setDragOffsetX(0);
+            setProjectedDropIndex(null);
         },
         [computeDropIndex, liveReorder, onCommitReorder, stopEdgeScroll],
     );
@@ -541,6 +554,9 @@ export function useTabDragReorder({
                     const initialOrder = tabs.map((tab) => tab.id);
                     previewOrderRef.current = initialOrder;
                     setPreviewOrder(initialOrder);
+                }
+                if (!liveReorder) {
+                    setProjectedDropIndex(session.originalIndex);
                 }
                 setDraggingTabId(tabId);
                 document.body.classList.add("dragging-tab");
@@ -705,8 +721,10 @@ export function useTabDragReorder({
             }
 
             updateEdgeScroll(event.clientX);
+            setProjectedDropIndex(computeDropIndex(event.clientX));
         },
         [
+            computeDropIndex,
             computeDragOffset,
             detachPreviewActive,
             finishDrag,
@@ -812,6 +830,7 @@ export function useTabDragReorder({
         dragOffsetX,
         draggingTabId,
         detachPreviewActive,
+        projectedDropIndex,
         tabStripRef,
         visualTabs,
         registerTabNode,

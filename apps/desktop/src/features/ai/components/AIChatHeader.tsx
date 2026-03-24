@@ -18,6 +18,7 @@ interface AIChatHeaderProps {
     onNewChat: (runtimeId: string) => void;
     onSelectSession: (sessionId: string) => void;
     onSelectTab: (tabId: string) => void;
+    onReorderTabs: (fromIndex: number, toIndex: number) => void;
     onCloseTab: (tabId: string) => void;
     onExportSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
@@ -96,6 +97,7 @@ export function AIChatHeader({
     onNewChat,
     onSelectSession,
     onSelectTab,
+    onReorderTabs,
     onCloseTab,
     onExportSession,
     onDeleteSession,
@@ -194,6 +196,7 @@ export function AIChatHeader({
                               : "comfortable"
                     }
                     onSelectTab={onSelectTab}
+                    onReorderTabs={onReorderTabs}
                     onCloseTab={onCloseTab}
                     onExportSession={onExportSession}
                 />

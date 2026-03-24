@@ -1,4 +1,5 @@
 import {
+    Fragment,
     useCallback,
     useEffect,
     useLayoutEffect,
@@ -639,6 +640,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         dragOffsetX,
         draggingTabId,
         detachPreviewActive,
+        projectedDropIndex,
         tabStripRef,
         visualTabs,
         registerTabNode,
@@ -714,6 +716,15 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         },
         [consumeSuppressedClick, switchTab],
     );
+    const draggingOriginalIndex = draggingTabId
+        ? tabs.findIndex((tab) => tab.id === draggingTabId)
+        : -1;
+    const insertionIndicatorIndex =
+        draggingOriginalIndex === -1 || projectedDropIndex == null
+            ? null
+            : projectedDropIndex > draggingOriginalIndex
+              ? projectedDropIndex + 1
+              : projectedDropIndex;
 
     const handleTabPointerDownCapture = useCallback(
         (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
@@ -1393,6 +1404,20 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         }
                                     }}
                                 >
+                                    {insertionIndicatorIndex === 0 && (
+                                        <div
+                                            aria-hidden="true"
+                                            className="shrink-0 rounded-full"
+                                            style={{
+                                                width: 3,
+                                                height: 22,
+                                                backgroundColor:
+                                                    "var(--accent)",
+                                                boxShadow:
+                                                    "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                            }}
+                                        />
+                                    )}
                                     {visualTabs.map((tab, index) => {
                                         const isActive = tab.id === activeTabId;
                                         const isDragging =
@@ -1404,159 +1429,185 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                               : tab.title;
 
                                         return (
-                                            <div
-                                                key={tab.id}
-                                                data-tab-id={tab.id}
-                                                ref={(node) =>
-                                                    registerTabNode(
-                                                        tab.id,
-                                                        node,
-                                                    )
-                                                }
-                                                title={tabTooltip}
-                                                onPointerDownCapture={(event) =>
-                                                    handleTabPointerDownCapture(
-                                                        tab.id,
-                                                        event,
-                                                    )
-                                                }
-                                                onClick={() =>
-                                                    handleTabClick(tab.id)
-                                                }
-                                                onContextMenu={(event) => {
-                                                    event.preventDefault();
-                                                    setTabContextMenu({
-                                                        x: event.clientX,
-                                                        y: event.clientY,
-                                                        payload: {
-                                                            tabId: tab.id,
-                                                        },
-                                                    });
-                                                }}
-                                                onPointerDown={(event) =>
-                                                    handlePointerDown(
-                                                        tab.id,
-                                                        index,
-                                                        event,
-                                                    )
-                                                }
-                                                onPointerMove={(event) =>
-                                                    handlePointerMove(
-                                                        tab.id,
-                                                        event,
-                                                    )
-                                                }
-                                                onPointerUp={(event) =>
-                                                    handlePointerUp(
-                                                        event.pointerId,
-                                                        {
-                                                            clientX:
-                                                                event.clientX,
-                                                            clientY:
-                                                                event.clientY,
-                                                            screenX:
-                                                                event.screenX,
-                                                            screenY:
-                                                                event.screenY,
-                                                        },
-                                                    )
-                                                }
-                                                onPointerCancel={(event) =>
-                                                    handlePointerUp(
-                                                        event.pointerId,
-                                                        {
-                                                            clientX:
-                                                                event.clientX,
-                                                            clientY:
-                                                                event.clientY,
-                                                            screenX:
-                                                                event.screenX,
-                                                            screenY:
-                                                                event.screenY,
-                                                        },
-                                                    )
-                                                }
-                                                onLostPointerCapture={(event) =>
-                                                    handleLostPointerCapture(
-                                                        event.pointerId,
-                                                    )
-                                                }
-                                                className="group no-drag flex items-center gap-2 px-3 cursor-pointer ub-tab"
-                                                data-active={
-                                                    isActive || undefined
-                                                }
-                                                data-dragging={
-                                                    isDragging || undefined
-                                                }
-                                                style={{
-                                                    width: 160,
-                                                    height: 30,
-                                                    borderRadius: 9,
-                                                    flexShrink: 0,
-                                                    backgroundColor: isActive
-                                                        ? "var(--bg-primary)"
-                                                        : "color-mix(in srgb, var(--bg-primary) 44%, transparent)",
-                                                    color: isActive
-                                                        ? "var(--text-primary)"
-                                                        : "var(--text-secondary)",
-                                                    border: isActive
-                                                        ? "1px solid color-mix(in srgb, var(--accent) 12%, var(--border))"
-                                                        : "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
-                                                    opacity: isDragging ? 0 : 1,
-                                                    zIndex: isDragging ? 20 : 0,
-                                                    transform: isDragging
-                                                        ? `translateX(${dragOffsetX}px) scale(1.02)`
-                                                        : undefined,
-                                                    transition: isDragging
-                                                        ? "none"
-                                                        : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease",
-                                                    boxShadow: isDragging
-                                                        ? "0 10px 28px rgba(0, 0, 0, 0.2)"
-                                                        : isActive
-                                                          ? "0 10px 24px rgba(15, 23, 42, 0.08)"
-                                                          : "none",
-                                                    willChange: isDragging
-                                                        ? "transform"
-                                                        : undefined,
-                                                }}
-                                            >
-                                                {renderTabLeadingIcon(tab)}
-                                                <span className="flex-1 truncate text-[12.5px] font-medium">
-                                                    {fileTreeShowExtensions &&
-                                                    isNoteTab(tab)
-                                                        ? (tab.noteId
-                                                              .split("/")
-                                                              .pop() ??
-                                                              tab.title) + ".md"
-                                                        : tab.title}
-                                                </span>
-                                                <button
-                                                    onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        void handleCloseTab(
+                                            <Fragment key={tab.id}>
+                                                <div
+                                                    data-tab-id={tab.id}
+                                                    ref={(node) =>
+                                                        registerTabNode(
                                                             tab.id,
-                                                        );
+                                                            node,
+                                                        )
+                                                    }
+                                                    title={tabTooltip}
+                                                    onPointerDownCapture={(
+                                                        event,
+                                                    ) =>
+                                                        handleTabPointerDownCapture(
+                                                            tab.id,
+                                                            event,
+                                                        )
+                                                    }
+                                                    onClick={() =>
+                                                        handleTabClick(tab.id)
+                                                    }
+                                                    onContextMenu={(event) => {
+                                                        event.preventDefault();
+                                                        setTabContextMenu({
+                                                            x: event.clientX,
+                                                            y: event.clientY,
+                                                            payload: {
+                                                                tabId: tab.id,
+                                                            },
+                                                        });
                                                     }}
-                                                    className={`no-drag shrink-0 rounded w-4 h-4 flex items-center justify-center transition-all ${
-                                                        isActive
-                                                            ? "opacity-60 hover:opacity-100 hover:bg-gray-500/18 active:bg-gray-500/28"
-                                                            : "opacity-0 group-hover:opacity-55 hover:opacity-100! hover:bg-gray-500/18 active:bg-gray-500/28"
-                                                    }`}
+                                                    onPointerDown={(event) =>
+                                                        handlePointerDown(
+                                                            tab.id,
+                                                            index,
+                                                            event,
+                                                        )
+                                                    }
+                                                    onPointerMove={(event) =>
+                                                        handlePointerMove(
+                                                            tab.id,
+                                                            event,
+                                                        )
+                                                    }
+                                                    onPointerUp={(event) =>
+                                                        handlePointerUp(
+                                                            event.pointerId,
+                                                            {
+                                                                clientX:
+                                                                    event.clientX,
+                                                                clientY:
+                                                                    event.clientY,
+                                                                screenX:
+                                                                    event.screenX,
+                                                                screenY:
+                                                                    event.screenY,
+                                                            },
+                                                        )
+                                                    }
+                                                    onPointerCancel={(event) =>
+                                                        handlePointerUp(
+                                                            event.pointerId,
+                                                            {
+                                                                clientX:
+                                                                    event.clientX,
+                                                                clientY:
+                                                                    event.clientY,
+                                                                screenX:
+                                                                    event.screenX,
+                                                                screenY:
+                                                                    event.screenY,
+                                                            },
+                                                        )
+                                                    }
+                                                    onLostPointerCapture={(
+                                                        event,
+                                                    ) =>
+                                                        handleLostPointerCapture(
+                                                            event.pointerId,
+                                                        )
+                                                    }
+                                                    className="group no-drag flex items-center gap-2 px-3 cursor-pointer ub-tab"
+                                                    data-active={
+                                                        isActive || undefined
+                                                    }
+                                                    data-dragging={
+                                                        isDragging || undefined
+                                                    }
+                                                    style={{
+                                                        width: 160,
+                                                        height: 30,
+                                                        borderRadius: 9,
+                                                        flexShrink: 0,
+                                                        backgroundColor:
+                                                            isActive
+                                                                ? "var(--bg-primary)"
+                                                                : "color-mix(in srgb, var(--bg-primary) 44%, transparent)",
+                                                        color: isActive
+                                                            ? "var(--text-primary)"
+                                                            : "var(--text-secondary)",
+                                                        border: isActive
+                                                            ? "1px solid color-mix(in srgb, var(--accent) 12%, var(--border))"
+                                                            : "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
+                                                        opacity: isDragging
+                                                            ? 0
+                                                            : 1,
+                                                        zIndex: isDragging
+                                                            ? 20
+                                                            : 0,
+                                                        transform: isDragging
+                                                            ? `translateX(${dragOffsetX}px) scale(1.02)`
+                                                            : undefined,
+                                                        transition: isDragging
+                                                            ? "none"
+                                                            : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease",
+                                                        boxShadow: isDragging
+                                                            ? "0 10px 28px rgba(0, 0, 0, 0.2)"
+                                                            : isActive
+                                                              ? "0 10px 24px rgba(15, 23, 42, 0.08)"
+                                                              : "none",
+                                                        willChange: isDragging
+                                                            ? "transform"
+                                                            : undefined,
+                                                    }}
                                                 >
-                                                    <svg
-                                                        width="10"
-                                                        height="10"
-                                                        viewBox="0 0 16 16"
-                                                        fill="none"
-                                                        stroke="currentColor"
-                                                        strokeWidth="1.8"
-                                                        strokeLinecap="round"
-                                                        strokeLinejoin="round"
+                                                    {renderTabLeadingIcon(tab)}
+                                                    <span className="flex-1 truncate text-[12.5px] font-medium">
+                                                        {fileTreeShowExtensions &&
+                                                        isNoteTab(tab)
+                                                            ? (tab.noteId
+                                                                  .split("/")
+                                                                  .pop() ??
+                                                                  tab.title) +
+                                                              ".md"
+                                                            : tab.title}
+                                                    </span>
+                                                    <button
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            void handleCloseTab(
+                                                                tab.id,
+                                                            );
+                                                        }}
+                                                        className={`no-drag shrink-0 rounded w-4 h-4 flex items-center justify-center transition-all ${
+                                                            isActive
+                                                                ? "opacity-60 hover:opacity-100 hover:bg-gray-500/18 active:bg-gray-500/28"
+                                                                : "opacity-0 group-hover:opacity-55 hover:opacity-100! hover:bg-gray-500/18 active:bg-gray-500/28"
+                                                        }`}
                                                     >
-                                                        <path d="M4 4l8 8M4 12l8-8" />
-                                                    </svg>
-                                                </button>
-                                            </div>
+                                                        <svg
+                                                            width="10"
+                                                            height="10"
+                                                            viewBox="0 0 16 16"
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeWidth="1.8"
+                                                            strokeLinecap="round"
+                                                            strokeLinejoin="round"
+                                                        >
+                                                            <path d="M4 4l8 8M4 12l8-8" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                                {insertionIndicatorIndex ===
+                                                    index + 1 && (
+                                                    <div
+                                                        aria-hidden="true"
+                                                        className="shrink-0 rounded-full"
+                                                        style={{
+                                                            width: 3,
+                                                            height: 22,
+                                                            backgroundColor:
+                                                                "var(--accent)",
+                                                            boxShadow:
+                                                                "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                                        }}
+                                                    />
+                                                )}
+                                            </Fragment>
                                         );
                                     })}
 

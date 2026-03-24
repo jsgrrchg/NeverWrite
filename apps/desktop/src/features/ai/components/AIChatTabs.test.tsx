@@ -69,6 +69,7 @@ describe("AIChatTabs", () => {
                 }}
                 runtimes={runtimes}
                 onSelectTab={() => {}}
+                onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={() => {}}
             />,
@@ -98,6 +99,7 @@ describe("AIChatTabs", () => {
                 }}
                 runtimes={runtimes}
                 onSelectTab={onSelectTab}
+                onReorderTabs={() => {}}
                 onCloseTab={onCloseTab}
                 onExportSession={() => {}}
             />,
@@ -121,6 +123,7 @@ describe("AIChatTabs", () => {
                 runtimes={runtimes}
                 density="compact"
                 onSelectTab={() => {}}
+                onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={() => {}}
             />,
@@ -142,6 +145,7 @@ describe("AIChatTabs", () => {
                 }}
                 runtimes={runtimes}
                 onSelectTab={() => {}}
+                onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={onExportSession}
             />,
@@ -170,6 +174,7 @@ describe("AIChatTabs", () => {
                 sessionsById={{}}
                 runtimes={runtimes}
                 onSelectTab={() => {}}
+                onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={() => {}}
             />,
