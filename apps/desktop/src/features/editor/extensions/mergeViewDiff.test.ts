@@ -70,6 +70,7 @@ function makeReviewChunk(
         startLine: 0,
         endLine: 0,
         hunkIds: [{ trackedVersion: 1, key: "hunk-1" }],
+        overlapGroupIds: ["chunk-1::hunk-1"],
         multiHunk: false,
         hasConflict: false,
         ambiguous: false,
@@ -108,6 +109,8 @@ function makeReviewHunk(
             },
         ],
         chunkId: { trackedVersion: 1, key: "chunk-1" },
+        overlapGroupId: "chunk-1::hunk-1",
+        overlapGroupSize: 1,
         hasConflict: false,
         ambiguous: false,
         ...overrides,
@@ -238,17 +241,42 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
-    it("renders an ambiguous chunk without destructive inline actions", () => {
+    it("renders inline overlap actions for ambiguous chunks", () => {
         const calls: MergeDecisionPayload[] = [];
         const { view, destroy } = mountMergeView({
             doc: "alpha\n",
-            original: "alpha\nbeta\n",
-            reviewHunks: [makeReviewHunk({ ambiguous: true })],
+            original: "beta\nALPHA\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    ambiguous: true,
+                    overlapGroupId: "chunk-1::overlap-1",
+                    overlapGroupSize: 2,
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    baseFrom: 2,
+                    baseTo: 4,
+                    currentFrom: 2,
+                    currentTo: 4,
+                    ambiguous: true,
+                    overlapGroupId: "chunk-1::overlap-1",
+                    overlapGroupSize: 2,
+                }),
+            ],
             reviewChunks: [
                 makeReviewChunk({
                     ambiguous: true,
-                    controlMode: "panel-only",
-                    canResolveInlineExactly: false,
+                    multiHunk: true,
+                    controlMode: "inline-overlap",
+                    canResolveInlineExactly: true,
+                    hunkIds: [
+                        { trackedVersion: 1, key: "hunk-1" },
+                        { trackedVersion: 1, key: "hunk-2" },
+                    ],
+                    overlapGroupIds: ["chunk-1::overlap-1"],
                 }),
             ],
             onDecision(context) {
@@ -258,11 +286,11 @@ describe("mergeViewDiff", () => {
 
         expect(
             view.dom.querySelector('[data-review-decision="accept"]'),
-        ).toBeNull();
+        ).not.toBeNull();
         expect(
             view.dom.querySelector('[data-review-decision="reject"]'),
-        ).toBeNull();
-        expect(view.dom.textContent).toContain("Review in Changes");
+        ).not.toBeNull();
+        expect(view.dom.textContent).toContain("Overlapping");
         expect(calls).toHaveLength(0);
         destroy();
     });
@@ -698,16 +726,25 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
-    it("hides merge controls while review is pending", () => {
+    it("keeps merge controls visible while review is pending", () => {
         const { view, destroy } = mountMergeView({
             doc: "alpha\nbeta changed\n",
             original: "alpha\nbeta\n",
             reviewState: "pending",
-            enableControls: false,
-            showControlWidgets: false,
+            enableControls: true,
+            showControlWidgets: true,
+            reviewHunks: [makeReviewHunk()],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 1,
+                    endLine: 2,
+                }),
+            ],
         });
 
-        expect(view.dom.querySelector("[data-review-decision]")).toBeNull();
+        expect(
+            view.dom.querySelectorAll("[data-review-decision]"),
+        ).toHaveLength(2);
         expect(view.dom.getAttribute("data-merge-review-state")).toBe(
             "pending",
         );
@@ -715,7 +752,7 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
-    it("marks inline actions as stale while merge is transitioning", () => {
+    it("keeps inline action tooltip stable while merge is transitioning", () => {
         const { view, destroy } = mountMergeView({
             doc: "alpha\nbeta changed\n",
             original: "alpha\nbeta\n",
@@ -736,8 +773,8 @@ describe("mergeViewDiff", () => {
         expect(acceptButton).not.toBeNull();
         if (acceptButton) {
             fireEvent.mouseEnter(acceptButton);
-            expect(acceptButton.dataset.reviewStale).toBe("true");
-            expect(acceptButton.title).toBe("Outdated, refreshing…");
+            expect(acceptButton.dataset.reviewStale).toBeUndefined();
+            expect(acceptButton.title).toBe("Accept change");
         }
 
         destroy();

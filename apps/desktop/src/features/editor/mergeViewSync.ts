@@ -115,9 +115,11 @@ export function syncMergeViewForPaths(
     }
 
     const { trackedFile, sessionId } = match;
-    if (
-        !isEditorDocSyncedWithTrackedCurrentText(view, trackedFile.currentText)
-    ) {
+    const isDocSynced = isEditorDocSyncedWithTrackedCurrentText(
+        view,
+        trackedFile.currentText,
+    );
+    if (!isDocSynced) {
         setMergeTransitioning(view, true);
         scheduleMergeResyncRetry(view, retryContext);
         console.debug("[merge-inline] defer merge sync while editor is stale", {
@@ -127,18 +129,17 @@ export function syncMergeViewForPaths(
             editorLength: view.state.doc.length,
             trackedLength: countNormalizedLength(trackedFile.currentText),
         });
-        return;
+    } else {
+        clearMergeResyncRetry(view);
+        setMergeTransitioning(view, false);
     }
-
-    clearMergeResyncRetry(view);
-    setMergeTransitioning(view, false);
 
     const presentation = deriveFileChangePresentation(trackedFile);
     const reviewProjection = buildReviewProjectionSafely(trackedFile);
     const outOfRangeInfo =
         reviewProjection &&
         getOutOfRangeProjectionInfo(reviewProjection, view.state.doc.lines);
-    if (outOfRangeInfo) {
+    if (outOfRangeInfo && isDocSynced) {
         setMergeTransitioning(view, true);
         scheduleMergeResyncRetry(view, retryContext);
 
@@ -238,20 +239,6 @@ export function syncMergeViewForPaths(
                                 mergeTrackedVersionFacet,
                             );
                             if (!liveSessionId || !liveIdentityKey) {
-                                return;
-                            }
-                            if (
-                                mergeView.dom.dataset.mergeTransitioning ===
-                                "true"
-                            ) {
-                                return;
-                            }
-                            if (
-                                !isEditorDocSyncedWithTrackedCurrentText(
-                                    mergeView,
-                                    trackedFile.currentText,
-                                )
-                            ) {
                                 return;
                             }
                             if (

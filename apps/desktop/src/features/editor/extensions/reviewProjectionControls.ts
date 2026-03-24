@@ -47,6 +47,8 @@ type ReviewControlEntry =
           label: string;
           chunkId: ReviewChunkId;
           hunkIds: ReviewHunkId[];
+          overlapGroupId: string;
+          overlapGroupSize: number;
           startLine: number;
           endLine: number;
           hunkId?: ReviewHunkId;
@@ -180,6 +182,37 @@ function buildReviewControlEntries(
                     label: "1 change",
                     chunkId: chunk.id,
                     hunkIds: [hunk.id],
+                    overlapGroupId: hunk.overlapGroupId,
+                    overlapGroupSize: hunk.overlapGroupSize,
+                    startLine: Math.min(
+                        hunk.visualStartLine,
+                        hunk.visualEndLine,
+                    ),
+                    endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
+                    hunkId: hunk.id,
+                    denseSlot: 0,
+                    denseColumn: 0,
+                    denseCompact: false,
+                    denseGroupSize: 1,
+                });
+            }
+            continue;
+        }
+
+        if (chunk.controlMode === "inline-overlap") {
+            for (const hunkId of chunk.hunkIds) {
+                const hunk = hunkByIdKey.get(hunkId.key);
+                if (!hunk) {
+                    continue;
+                }
+                entries.push({
+                    kind: "decision",
+                    controlId: `hunk:${hunk.id.key}`,
+                    label: "1 change",
+                    chunkId: chunk.id,
+                    hunkIds: [hunk.id],
+                    overlapGroupId: hunk.overlapGroupId,
+                    overlapGroupSize: hunk.overlapGroupSize,
                     startLine: Math.min(
                         hunk.visualStartLine,
                         hunk.visualEndLine,
@@ -204,6 +237,8 @@ function buildReviewControlEntries(
                     : "1 change",
             chunkId: chunk.id,
             hunkIds: chunk.hunkIds,
+            overlapGroupId: chunk.overlapGroupIds[0] ?? chunk.id.key,
+            overlapGroupSize: chunk.hunkIds.length,
             startLine: chunk.startLine,
             endLine: chunk.endLine,
             denseSlot: 0,
@@ -266,7 +301,19 @@ class ReviewControlWidget extends WidgetType {
             other.entry.denseSlot === this.entry.denseSlot &&
             other.entry.denseColumn === this.entry.denseColumn &&
             other.entry.denseCompact === this.entry.denseCompact &&
-            other.entry.denseGroupSize === this.entry.denseGroupSize
+            other.entry.denseGroupSize === this.entry.denseGroupSize &&
+            ("overlapGroupId" in other.entry
+                ? other.entry.overlapGroupId
+                : null) ===
+                ("overlapGroupId" in this.entry
+                    ? this.entry.overlapGroupId
+                    : null) &&
+            ("overlapGroupSize" in other.entry
+                ? other.entry.overlapGroupSize
+                : null) ===
+                ("overlapGroupSize" in this.entry
+                    ? this.entry.overlapGroupSize
+                    : null)
         );
     }
 
@@ -311,6 +358,14 @@ class ReviewControlWidget extends WidgetType {
             return anchor;
         }
 
+        if (this.entry.overlapGroupSize > 1) {
+            wrap.dataset.reviewOverlap = "true";
+            const overlapNote = document.createElement("span");
+            overlapNote.className = "cm-review-chunk-overlap";
+            overlapNote.textContent = "Overlapping";
+            wrap.appendChild(overlapNote);
+        }
+
         wrap.appendChild(
             createDecisionButton(
                 "accept",
@@ -325,6 +380,7 @@ class ReviewControlWidget extends WidgetType {
                 {
                     scope: this.entry.hunkId ? "hunk" : "chunk",
                     hunkId: this.entry.hunkId,
+                    overlapGroupSize: this.entry.overlapGroupSize,
                 },
             ),
         );
@@ -342,6 +398,7 @@ class ReviewControlWidget extends WidgetType {
                 {
                     scope: this.entry.hunkId ? "hunk" : "chunk",
                     hunkId: this.entry.hunkId,
+                    overlapGroupSize: this.entry.overlapGroupSize,
                 },
             ),
         );
@@ -361,10 +418,18 @@ function createDecisionButton(
     options: {
         scope: "chunk" | "hunk";
         hunkId?: ReviewHunkId;
+        overlapGroupSize: number;
     },
 ) {
     const button = document.createElement("button");
-    const defaultTitle = type === "accept" ? "Accept change" : "Reject change";
+    const defaultTitle =
+        options.overlapGroupSize > 1
+            ? type === "accept"
+                ? `Accept overlapping group (${options.overlapGroupSize} changes)`
+                : `Reject overlapping group (${options.overlapGroupSize} changes)`
+            : type === "accept"
+              ? "Accept change"
+              : "Reject change";
     button.type = "button";
     button.className = `cm-review-action cm-review-action-${type}`;
     button.dataset.reviewDecision = type;
@@ -381,21 +446,6 @@ function createDecisionButton(
         event.preventDefault();
         event.stopPropagation();
         onClick();
-    };
-    button.onmouseenter = () => {
-        const editor = button.closest<HTMLElement>(".cm-editor");
-        if (editor?.dataset.mergeTransitioning === "true") {
-            button.dataset.reviewStale = "true";
-            button.title = "Outdated, refreshing…";
-            return;
-        }
-
-        delete button.dataset.reviewStale;
-        button.title = defaultTitle;
-    };
-    button.onmouseleave = () => {
-        delete button.dataset.reviewStale;
-        button.title = defaultTitle;
     };
     return button;
 }
@@ -660,16 +710,6 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
         background: "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)",
         color: "var(--text-primary)",
     },
-    ".cm-editor[data-merge-transitioning='true'] .cm-review-action": {
-        opacity: "0.58",
-        cursor: "not-allowed",
-        borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
-    },
-    ".cm-review-action[data-review-stale='true']": {
-        opacity: "0.58",
-        cursor: "not-allowed",
-        borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
-    },
     ".cm-review-action-accept": {
         color: "var(--diff-add)",
     },
@@ -686,6 +726,9 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
             "color-mix(in srgb, var(--diff-remove) 14%, var(--bg-primary))",
         borderColor: "color-mix(in srgb, var(--diff-remove) 24%, transparent)",
     },
+    '.cm-review-chunk-controls[data-review-overlap="true"]': {
+        borderColor: "color-mix(in srgb, var(--warning) 40%, var(--border))",
+    },
 
     /* ── Ambiguous / panel-only note ───────────────────────── */
     ".cm-review-chunk-ambiguous": {
@@ -698,6 +741,16 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
         border: "none",
         opacity: "0.7",
         fontStyle: "italic",
+    },
+    ".cm-review-chunk-overlap": {
+        fontSize: "10px",
+        fontWeight: "600",
+        color: "var(--warning)",
+        padding: "2px 6px",
+        borderRadius: "4px",
+        background:
+            "color-mix(in srgb, var(--warning) 14%, var(--bg-secondary))",
+        border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
     },
 });
 
