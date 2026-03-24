@@ -235,6 +235,7 @@ export function AIChatPanel() {
     );
     const openSessionTab = useChatTabsStore((state) => state.openSessionTab);
     const setActiveTab = useChatTabsStore((state) => state.setActiveTab);
+    const reorderTabs = useChatTabsStore((state) => state.reorderTabs);
     const closeTab = useChatTabsStore((state) => state.closeTab);
     const resetTabs = useChatTabsStore((state) => state.reset);
 
@@ -605,6 +606,9 @@ export function AIChatPanel() {
                 }}
                 onSelectTab={(tabId) => {
                     setActiveTab(tabId);
+                }}
+                onReorderTabs={(fromIndex, toIndex) => {
+                    reorderTabs(fromIndex, toIndex);
                 }}
                 onCloseTab={(tabId) => {
                     const closingTab =
