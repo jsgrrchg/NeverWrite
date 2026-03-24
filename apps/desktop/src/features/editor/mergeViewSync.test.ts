@@ -346,7 +346,7 @@ describe("mergeViewSync", () => {
         }
     });
 
-    it("blocks inline decisions while merge view is transitioning out of sync", () => {
+    it("keeps inline decisions active while merge view is transitioning out of sync", () => {
         vi.useFakeTimers();
         const originalState = useChatStore.getState();
         const resolveReviewHunks = vi.fn();
@@ -386,7 +386,7 @@ describe("mergeViewSync", () => {
             if (staleAccept) {
                 fireEvent.mouseDown(staleAccept);
             }
-            expect(resolveReviewHunks).not.toHaveBeenCalled();
+            expect(resolveReviewHunks).toHaveBeenCalledTimes(1);
 
             view.dispatch({
                 changes: {
@@ -409,13 +409,36 @@ describe("mergeViewSync", () => {
             if (freshAccept) {
                 fireEvent.mouseDown(freshAccept);
             }
-            expect(resolveReviewHunks).toHaveBeenCalledTimes(1);
+            expect(resolveReviewHunks).toHaveBeenCalledTimes(2);
 
             destroy();
         } finally {
             useChatStore.setState(originalState);
             vi.useRealTimers();
         }
+    });
+
+    it("renders merge controls even when the initial sync starts stale", () => {
+        const path = "notes/current.md";
+        const { view, destroy } = mountView("alpha\nbeta\n");
+        const session = createSession("session-1", "wc-1", [
+            createTrackedFile(path, "alpha\nbeta\n", "ALPHA\nbeta\n"),
+        ]);
+
+        syncMergeViewForPaths(view, [path], {
+            [session.sessionId]: session,
+        });
+
+        expect(readMergeViewRuntimeState(view.state)?.enabled).toBe(true);
+        expect(view.dom.dataset.mergeTransitioning).toBe("true");
+        expect(
+            view.dom.querySelector('[data-review-decision="accept"]'),
+        ).not.toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-decision="reject"]'),
+        ).not.toBeNull();
+
+        destroy();
     });
 
     it("refreshes inline controls when the tracked file changes without changing presentation flags", () => {

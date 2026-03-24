@@ -72,7 +72,7 @@ describe("mergeViewConfig", () => {
         });
     });
 
-    it("disables controls while review is pending", () => {
+    it("keeps controls available while review is pending", () => {
         const flags = getMergePresentationFlags(
             makePresentation({
                 level: "medium",
@@ -81,9 +81,23 @@ describe("mergeViewConfig", () => {
             makeProjectionState(),
         );
 
-        expect(flags.enableControls).toBe(false);
+        expect(flags.enableControls).toBe(true);
         expect(flags.allowInlineDiffs).toBe(true);
-        expect(flags.showControlWidgets).toBe(false);
+        expect(flags.showControlWidgets).toBe(true);
+    });
+
+    it("keeps controls available for very-large files", () => {
+        const flags = getMergePresentationFlags(
+            makePresentation({
+                level: "very-large",
+                reviewState: "pending",
+            }),
+            makeProjectionState(),
+        );
+
+        expect(flags.enableControls).toBe(true);
+        expect(flags.showControlWidgets).toBe(true);
+        expect(flags.allowInlineDiffs).toBe(false);
     });
 
     it("keeps chunk-level actions available even when some chunks are ambiguous or conflicting", () => {

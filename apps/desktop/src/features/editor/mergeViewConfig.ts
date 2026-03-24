@@ -29,12 +29,8 @@ export function getMergePresentationFlags(
     presentation: FileChangePresentation,
     projectionState: ReviewProjectionInlineState,
 ): MergePresentationFlags {
-    const showControlWidgets =
-        presentation.reviewState === "finalized" &&
-        projectionState.reviewProjectionReady &&
-        presentation.level !== "very-large";
-    const enableControls =
-        showControlWidgets && presentation.level !== "very-large";
+    const showControlWidgets = projectionState.reviewProjectionReady;
+    const enableControls = showControlWidgets;
 
     return {
         highlightChanges: presentation.level !== "very-large",
