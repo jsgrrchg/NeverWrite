@@ -172,6 +172,28 @@ describe("Patch primitives", () => {
         ]);
     });
 
+    it("buildTextRangePatchFromTexts splits disjoint inline same-line replacements", () => {
+        const patch = buildTextRangePatchFromTexts(
+            "foo bar baz",
+            "FOO bar BAZ",
+        );
+
+        expect(patch.spans).toEqual([
+            {
+                baseFrom: 0,
+                baseTo: 3,
+                currentFrom: 0,
+                currentTo: 3,
+            },
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+    });
+
     it("deriveLinePatchFromTextRanges keeps review hunks line-based", () => {
         const baseText = "first line\nalpha\nlast line";
         const currentText = "first line\nalpHa\nlast line";

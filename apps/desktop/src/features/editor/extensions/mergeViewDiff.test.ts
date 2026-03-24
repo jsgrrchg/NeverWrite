@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorView } from "@codemirror/view";
 import { fireEvent } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     buildReplaceOriginalDocEffect,
     createMergeViewExtension,
@@ -14,6 +14,7 @@ import {
     type CreateMergeViewExtensionConfig,
     type MergeDecisionPayload,
 } from "./mergeViewDiff";
+import { refreshReviewProjectionControlsGeometry } from "./reviewProjectionControls";
 
 function mountMergeView(
     overrides: Partial<CreateMergeViewExtensionConfig> & { doc: string },
@@ -411,6 +412,219 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
+    it("offsets nearby controls to avoid crowding in the same corner", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "ONE\ntwo\nTHREE\nfour\nFIVE\nsix\n",
+            original: "one\ntwo\nthree\nfour\nfive\nsix\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    chunkId: { trackedVersion: 1, key: "chunk-2" },
+                    oldStartLine: 2,
+                    oldEndLine: 3,
+                    newStartLine: 2,
+                    newEndLine: 3,
+                    visualStartLine: 2,
+                    visualEndLine: 3,
+                    baseFrom: 8,
+                    baseTo: 13,
+                    currentFrom: 8,
+                    currentTo: 13,
+                    memberSpans: [
+                        {
+                            spanIndex: 1,
+                            baseFrom: 8,
+                            baseTo: 13,
+                            currentFrom: 8,
+                            currentTo: 13,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    id: { trackedVersion: 1, key: "chunk-1" },
+                    startLine: 0,
+                    endLine: 1,
+                }),
+                makeReviewChunk({
+                    id: { trackedVersion: 1, key: "chunk-2" },
+                    startLine: 2,
+                    endLine: 3,
+                    hunkIds: [{ trackedVersion: 1, key: "hunk-2" }],
+                }),
+            ],
+        });
+
+        const controls = Array.from(
+            view.dom.querySelectorAll<HTMLElement>(".cm-review-chunk-controls"),
+        );
+        expect(controls).toHaveLength(2);
+        expect(controls[0]?.dataset.reviewDenseSlot).toBe("0");
+        expect(controls[1]?.dataset.reviewDenseSlot).toBe("1");
+        expect(controls[0]?.dataset.reviewDenseColumn).toBe("0");
+        expect(controls[1]?.dataset.reviewDenseColumn).toBe("0");
+        expect(
+            controls[1]?.style.getPropertyValue(
+                "--review-control-dense-offset",
+            ),
+        ).toBe("30px");
+
+        destroy();
+    });
+
+    it("keeps large dense groups close to the block with compact rows and columns", () => {
+        const reviewHunks = Array.from({ length: 5 }, (_, index) =>
+            makeReviewHunk({
+                id: { trackedVersion: 1, key: `hunk-${index + 1}` },
+                chunkId: { trackedVersion: 1, key: `chunk-${index + 1}` },
+                oldStartLine: index,
+                oldEndLine: index + 1,
+                newStartLine: index,
+                newEndLine: index + 1,
+                visualStartLine: index,
+                visualEndLine: index + 1,
+                baseFrom: index * 4,
+                baseTo: index * 4 + 3,
+                currentFrom: index * 4,
+                currentTo: index * 4 + 3,
+                memberSpans: [
+                    {
+                        spanIndex: index,
+                        baseFrom: index * 4,
+                        baseTo: index * 4 + 3,
+                        currentFrom: index * 4,
+                        currentTo: index * 4 + 3,
+                    },
+                ],
+            }),
+        );
+        const reviewChunks = Array.from({ length: 5 }, (_, index) =>
+            makeReviewChunk({
+                id: { trackedVersion: 1, key: `chunk-${index + 1}` },
+                startLine: index,
+                endLine: index + 1,
+                hunkIds: [{ trackedVersion: 1, key: `hunk-${index + 1}` }],
+            }),
+        );
+        const { view, destroy } = mountMergeView({
+            doc: "ONE\nTWO\nTHREE\nFOUR\nFIVE\nsix\n",
+            original: "one\ntwo\nthree\nfour\nfive\nsix\n",
+            reviewHunks,
+            reviewChunks,
+        });
+
+        const controls = Array.from(
+            view.dom.querySelectorAll<HTMLElement>(".cm-review-chunk-controls"),
+        );
+
+        expect(controls).toHaveLength(5);
+        controls.forEach((control) => {
+            expect(control.dataset.reviewDenseCompact).toBe("true");
+            expect(control.dataset.reviewDenseGroupSize).toBe("5");
+        });
+        expect(
+            controls.map((control) => control.dataset.reviewDenseSlot),
+        ).toEqual(["0", "1", "2", "0", "1"]);
+        expect(
+            controls.map((control) => control.dataset.reviewDenseColumn),
+        ).toEqual(["0", "0", "0", "1", "1"]);
+        expect(
+            controls[3]?.style.getPropertyValue(
+                "--review-control-dense-inline-offset",
+            ),
+        ).toBe("96px");
+        expect(
+            controls[4]?.style.getPropertyValue(
+                "--review-control-dense-offset",
+            ),
+        ).toBe("18px");
+
+        destroy();
+    });
+
+    it("remounts control widgets when geometry refresh is requested", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "alpha\nbeta changed\n",
+            original: "alpha\nbeta\n",
+            reviewHunks: [makeReviewHunk()],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 1,
+                    endLine: 2,
+                }),
+            ],
+        });
+
+        const firstControl = view.dom.querySelector<HTMLElement>(
+            ".cm-review-chunk-controls",
+        );
+        expect(firstControl).not.toBeNull();
+
+        refreshReviewProjectionControlsGeometry(view);
+
+        const refreshedControl = view.dom.querySelector<HTMLElement>(
+            ".cm-review-chunk-controls",
+        );
+        expect(refreshedControl).not.toBeNull();
+        expect(refreshedControl).not.toBe(firstControl);
+
+        destroy();
+    });
+
+    it("refreshes geometry after window focus when metrics drift", () => {
+        vi.useFakeTimers();
+        const { view, destroy } = mountMergeView({
+            doc: "alpha\nbeta changed\n",
+            original: "alpha\nbeta\n",
+            reviewHunks: [makeReviewHunk()],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 1,
+                    endLine: 2,
+                }),
+            ],
+        });
+
+        const firstControl = view.dom.querySelector<HTMLElement>(
+            ".cm-review-chunk-controls",
+        );
+        expect(firstControl).not.toBeNull();
+
+        const widthA = view.scrollDOM.clientWidth || 0;
+        const widthB = view.contentDOM.clientWidth || 0;
+        Object.defineProperty(view.scrollDOM, "clientWidth", {
+            configurable: true,
+            value: widthA + 120,
+        });
+        Object.defineProperty(view.contentDOM, "clientWidth", {
+            configurable: true,
+            value: widthB + 120,
+        });
+
+        window.dispatchEvent(new Event("focus"));
+        vi.runAllTimers();
+
+        const refreshedControl = view.dom.querySelector<HTMLElement>(
+            ".cm-review-chunk-controls",
+        );
+        expect(refreshedControl).not.toBeNull();
+        expect(refreshedControl).not.toBe(firstControl);
+
+        destroy();
+        vi.useRealTimers();
+    });
+
     it("renders a panel CTA instead of buttons when widgets are gated off", () => {
         const calls: MergeDecisionPayload[] = [];
         const { view, destroy } = mountMergeView({
@@ -437,6 +651,53 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
+    it("skips out-of-range controls instead of clamping them to the document end", () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const { view, destroy } = mountMergeView({
+            doc: "alpha\nbeta\n",
+            original: "alpha\nbeta\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-out-of-range" },
+                    chunkId: { trackedVersion: 1, key: "chunk-out-of-range" },
+                    oldStartLine: 20,
+                    oldEndLine: 21,
+                    newStartLine: 20,
+                    newEndLine: 21,
+                    visualStartLine: 20,
+                    visualEndLine: 21,
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    id: { trackedVersion: 1, key: "chunk-out-of-range" },
+                    startLine: 20,
+                    endLine: 21,
+                    hunkIds: [{ trackedVersion: 1, key: "hunk-out-of-range" }],
+                }),
+            ],
+        });
+
+        expect(
+            view.dom.querySelector(
+                '[data-review-control-id="chunk:chunk-out-of-range"]',
+            ),
+        ).toBeNull();
+        expect(view.dom.querySelector("[data-review-decision]")).toBeNull();
+        expect(warn).toHaveBeenCalledWith(
+            "[merge-inline] skipping out-of-range inline control",
+            expect.objectContaining({
+                controlId: "chunk:chunk-out-of-range",
+                trackedVersion: 1,
+                startLine: 20,
+                endLine: 21,
+            }),
+        );
+
+        warn.mockRestore();
+        destroy();
+    });
+
     it("hides merge controls while review is pending", () => {
         const { view, destroy } = mountMergeView({
             doc: "alpha\nbeta changed\n",
@@ -450,6 +711,34 @@ describe("mergeViewDiff", () => {
         expect(view.dom.getAttribute("data-merge-review-state")).toBe(
             "pending",
         );
+
+        destroy();
+    });
+
+    it("marks inline actions as stale while merge is transitioning", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "alpha\nbeta changed\n",
+            original: "alpha\nbeta\n",
+            reviewHunks: [makeReviewHunk()],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 1,
+                    endLine: 2,
+                }),
+            ],
+        });
+
+        view.dom.dataset.mergeTransitioning = "true";
+        const acceptButton = view.dom.querySelector(
+            '[data-review-decision="accept"]',
+        ) as HTMLButtonElement | null;
+
+        expect(acceptButton).not.toBeNull();
+        if (acceptButton) {
+            fireEvent.mouseEnter(acceptButton);
+            expect(acceptButton.dataset.reviewStale).toBe("true");
+            expect(acceptButton.title).toBe("Outdated, refreshing…");
+        }
 
         destroy();
     });

@@ -1,4 +1,9 @@
-import { StateField, RangeSetBuilder, type Extension } from "@codemirror/state";
+import {
+    StateEffect,
+    StateField,
+    RangeSetBuilder,
+    type Extension,
+} from "@codemirror/state";
 import {
     Decoration,
     EditorView,
@@ -27,6 +32,14 @@ export interface CreateReviewProjectionControlsConfig {
     onDecision: (payload: ReviewProjectionDecisionPayload) => void;
 }
 
+const DENSE_CONTROLS_LINE_GAP = 2;
+const DENSE_CONTROL_OFFSET_PX = 30;
+const DENSE_CONTROL_COMPACT_OFFSET_PX = 18;
+const DENSE_CONTROL_COMPACT_COLUMN_PX = 96;
+const MAX_DENSE_SLOT = 2;
+const DENSE_COMPACT_THRESHOLD = 3;
+const outOfRangeControlWarningKeys = new Set<string>();
+
 type ReviewControlEntry =
     | {
           kind: "decision";
@@ -37,6 +50,10 @@ type ReviewControlEntry =
           startLine: number;
           endLine: number;
           hunkId?: ReviewHunkId;
+          denseSlot: number;
+          denseColumn: number;
+          denseCompact: boolean;
+          denseGroupSize: number;
       }
     | {
           kind: "panel-only";
@@ -46,7 +63,55 @@ type ReviewControlEntry =
           hunkIds: ReviewHunkId[];
           startLine: number;
           endLine: number;
+          denseSlot: number;
+          denseColumn: number;
+          denseCompact: boolean;
+          denseGroupSize: number;
       };
+
+function assignDenseSlots(entries: ReviewControlEntry[]): ReviewControlEntry[] {
+    const sortedEntries = [...entries].sort(compareControlEntries);
+    const groups: ReviewControlEntry[][] = [];
+    let currentGroup: ReviewControlEntry[] = [];
+    let currentGroupEndLine = -1;
+
+    for (const entry of sortedEntries) {
+        const isDenseNeighbor =
+            currentGroup.length > 0 &&
+            entry.startLine <= currentGroupEndLine + DENSE_CONTROLS_LINE_GAP;
+
+        if (!isDenseNeighbor) {
+            if (currentGroup.length > 0) {
+                groups.push(currentGroup);
+            }
+            currentGroup = [entry];
+            currentGroupEndLine = entry.endLine;
+            continue;
+        }
+
+        currentGroup.push(entry);
+        currentGroupEndLine = Math.max(currentGroupEndLine, entry.endLine);
+    }
+
+    if (currentGroup.length > 0) {
+        groups.push(currentGroup);
+    }
+
+    return groups.flatMap((group) => {
+        const denseCompact = group.length > DENSE_COMPACT_THRESHOLD;
+        const rowCount = MAX_DENSE_SLOT + 1;
+
+        return group.map((entry, index) => ({
+            ...entry,
+            denseSlot: denseCompact
+                ? index % rowCount
+                : Math.min(index, MAX_DENSE_SLOT),
+            denseColumn: denseCompact ? Math.floor(index / rowCount) : 0,
+            denseCompact,
+            denseGroupSize: group.length,
+        }));
+    });
+}
 
 function buildReviewControlEntries(
     allowDecisionActions: boolean,
@@ -54,20 +119,26 @@ function buildReviewControlEntries(
     chunks: ReviewChunk[],
 ): ReviewControlEntry[] {
     if (!allowDecisionActions) {
-        return chunks
-            .map((chunk) => ({
-                kind: "panel-only" as const,
-                controlId: `chunk:${chunk.id.key}`,
-                label:
-                    chunk.hunkIds.length > 1
-                        ? `${chunk.hunkIds.length} changes`
-                        : "1 change",
-                chunkId: chunk.id,
-                hunkIds: chunk.hunkIds,
-                startLine: chunk.startLine,
-                endLine: chunk.endLine,
-            }))
-            .sort(compareControlEntries);
+        return assignDenseSlots(
+            chunks
+                .map((chunk) => ({
+                    kind: "panel-only" as const,
+                    controlId: `chunk:${chunk.id.key}`,
+                    label:
+                        chunk.hunkIds.length > 1
+                            ? `${chunk.hunkIds.length} changes`
+                            : "1 change",
+                    chunkId: chunk.id,
+                    hunkIds: chunk.hunkIds,
+                    startLine: chunk.startLine,
+                    endLine: chunk.endLine,
+                    denseSlot: 0,
+                    denseColumn: 0,
+                    denseCompact: false,
+                    denseGroupSize: 1,
+                }))
+                .sort(compareControlEntries),
+        );
     }
 
     const hunkByIdKey = new Map(hunks.map((hunk) => [hunk.id.key, hunk]));
@@ -89,6 +160,10 @@ function buildReviewControlEntries(
                 hunkIds: chunk.hunkIds,
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,
+                denseSlot: 0,
+                denseColumn: 0,
+                denseCompact: false,
+                denseGroupSize: 1,
             });
             continue;
         }
@@ -111,6 +186,10 @@ function buildReviewControlEntries(
                     ),
                     endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
                     hunkId: hunk.id,
+                    denseSlot: 0,
+                    denseColumn: 0,
+                    denseCompact: false,
+                    denseGroupSize: 1,
                 });
             }
             continue;
@@ -127,10 +206,14 @@ function buildReviewControlEntries(
             hunkIds: chunk.hunkIds,
             startLine: chunk.startLine,
             endLine: chunk.endLine,
+            denseSlot: 0,
+            denseColumn: 0,
+            denseCompact: false,
+            denseGroupSize: 1,
         });
     }
 
-    return entries.sort(compareControlEntries);
+    return assignDenseSlots(entries);
 }
 
 function compareControlEntries(
@@ -151,18 +234,22 @@ function compareControlEntries(
 class ReviewControlWidget extends WidgetType {
     private readonly entry: ReviewControlEntry;
     private readonly onDecision: CreateReviewProjectionControlsConfig["onDecision"];
+    private readonly geometryVersion: number;
 
     constructor(
         entry: ReviewControlEntry,
         onDecision: CreateReviewProjectionControlsConfig["onDecision"],
+        geometryVersion: number,
     ) {
         super();
         this.entry = entry;
         this.onDecision = onDecision;
+        this.geometryVersion = geometryVersion;
     }
 
     eq(other: ReviewControlWidget) {
         return (
+            other.geometryVersion === this.geometryVersion &&
             other.entry.controlId === this.entry.controlId &&
             other.entry.kind === this.entry.kind &&
             other.entry.label === this.entry.label &&
@@ -175,7 +262,11 @@ class ReviewControlWidget extends WidgetType {
                     id.key === this.entry.hunkIds[index]?.key &&
                     id.trackedVersion ===
                         this.entry.hunkIds[index]?.trackedVersion,
-            )
+            ) &&
+            other.entry.denseSlot === this.entry.denseSlot &&
+            other.entry.denseColumn === this.entry.denseColumn &&
+            other.entry.denseCompact === this.entry.denseCompact &&
+            other.entry.denseGroupSize === this.entry.denseGroupSize
         );
     }
 
@@ -193,6 +284,18 @@ class ReviewControlWidget extends WidgetType {
             this.entry.chunkId.trackedVersion,
         );
         wrap.dataset.reviewHunkCount = String(this.entry.hunkIds.length);
+        wrap.dataset.reviewDenseSlot = String(this.entry.denseSlot);
+        wrap.dataset.reviewDenseColumn = String(this.entry.denseColumn);
+        wrap.dataset.reviewDenseCompact = String(this.entry.denseCompact);
+        wrap.dataset.reviewDenseGroupSize = String(this.entry.denseGroupSize);
+        wrap.style.setProperty(
+            "--review-control-dense-offset",
+            `${this.entry.denseCompact ? this.entry.denseSlot * DENSE_CONTROL_COMPACT_OFFSET_PX : this.entry.denseSlot * DENSE_CONTROL_OFFSET_PX}px`,
+        );
+        wrap.style.setProperty(
+            "--review-control-dense-inline-offset",
+            `${this.entry.denseColumn * DENSE_CONTROL_COMPACT_COLUMN_PX}px`,
+        );
 
         const badge = document.createElement("span");
         badge.className = "cm-review-chunk-badge";
@@ -261,10 +364,12 @@ function createDecisionButton(
     },
 ) {
     const button = document.createElement("button");
+    const defaultTitle = type === "accept" ? "Accept change" : "Reject change";
     button.type = "button";
     button.className = `cm-review-action cm-review-action-${type}`;
     button.dataset.reviewDecision = type;
     button.dataset.reviewDecisionScope = options.scope;
+    button.title = defaultTitle;
     if (options.hunkId) {
         button.dataset.reviewHunkKey = options.hunkId.key;
         button.dataset.reviewHunkTrackedVersion = String(
@@ -277,19 +382,35 @@ function createDecisionButton(
         event.stopPropagation();
         onClick();
     };
+    button.onmouseenter = () => {
+        const editor = button.closest<HTMLElement>(".cm-editor");
+        if (editor?.dataset.mergeTransitioning === "true") {
+            button.dataset.reviewStale = "true";
+            button.title = "Outdated, refreshing…";
+            return;
+        }
+
+        delete button.dataset.reviewStale;
+        button.title = defaultTitle;
+    };
+    button.onmouseleave = () => {
+        delete button.dataset.reviewStale;
+        button.title = defaultTitle;
+    };
     return button;
 }
 
 function getControlWidgetPos(
     state: EditorView["state"],
     entry: ReviewControlEntry,
-) {
+): number | null {
     if (state.doc.lines === 0) {
         return 0;
     }
 
-    if (entry.startLine >= state.doc.lines) {
-        return state.doc.length;
+    if (isControlEntryOutOfRange(state, entry)) {
+        warnControlOutOfRange(entry, state.doc.lines);
+        return null;
     }
 
     return state.doc.line(entry.startLine + 1).from;
@@ -334,6 +455,7 @@ function buildControlsDecorations(
     hunks: ReviewHunk[],
     chunks: ReviewChunk[],
     onDecision: CreateReviewProjectionControlsConfig["onDecision"],
+    geometryVersion: number,
 ): DecorationSet {
     const builder = new RangeSetBuilder<Decoration>();
     const entries = buildReviewControlEntries(
@@ -344,11 +466,18 @@ function buildControlsDecorations(
 
     for (const entry of entries) {
         const pos = getControlWidgetPos(state, entry);
+        if (pos == null) {
+            continue;
+        }
         builder.add(
             pos,
             pos,
             Decoration.widget({
-                widget: new ReviewControlWidget(entry, onDecision),
+                widget: new ReviewControlWidget(
+                    entry,
+                    onDecision,
+                    geometryVersion,
+                ),
                 side: -1,
                 block: true,
             }),
@@ -372,6 +501,10 @@ function buildControlLineDecorations(
     );
 
     for (const entry of entries) {
+        if (isControlEntryOutOfRange(state, entry)) {
+            warnControlOutOfRange(entry, state.doc.lines);
+            continue;
+        }
         const lineNumbers = getControlLineNumbers(state, entry);
         lineNumbers.forEach((lineNumber, index) => {
             const line = state.doc.line(lineNumber);
@@ -392,6 +525,39 @@ function buildControlLineDecorations(
     return builder.finish();
 }
 
+function isControlEntryOutOfRange(
+    state: EditorView["state"],
+    entry: ReviewControlEntry,
+) {
+    return (
+        entry.startLine >= state.doc.lines || entry.endLine > state.doc.lines
+    );
+}
+
+function warnControlOutOfRange(entry: ReviewControlEntry, docLines: number) {
+    const warningKey = [
+        entry.controlId,
+        entry.chunkId.trackedVersion,
+        entry.startLine,
+        entry.endLine,
+        docLines,
+    ].join("|");
+    if (outOfRangeControlWarningKeys.has(warningKey)) {
+        return;
+    }
+
+    outOfRangeControlWarningKeys.add(warningKey);
+    console.warn("[merge-inline] skipping out-of-range inline control", {
+        controlId: entry.controlId,
+        chunkId: entry.chunkId.key,
+        trackedVersion: entry.chunkId.trackedVersion,
+        hunkKeys: entry.hunkIds.map((id) => id.key),
+        startLine: entry.startLine,
+        endLine: entry.endLine,
+        docLines,
+    });
+}
+
 const reviewProjectionControlsTheme = EditorView.baseTheme({
     /* ── Control widget anchor ─────────────────────────────── */
     ".cm-review-chunk-controls-anchor": {
@@ -406,8 +572,8 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
     /* ── Floating controls bar (code-lens style) ───────────── */
     ".cm-review-chunk-controls": {
         position: "absolute",
-        top: "4px",
-        right: "12px",
+        top: "calc(4px + var(--review-control-dense-offset, 0px))",
+        right: "calc(12px + var(--review-control-dense-inline-offset, 0px))",
         display: "inline-flex",
         alignItems: "center",
         gap: "2px",
@@ -429,6 +595,11 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
             pointerEvents: "auto",
             transform: "translateY(0)",
         },
+    '.cm-review-chunk-controls[data-review-dense-compact="true"]': {
+        gap: "1px",
+        padding: "1px 2px",
+        borderRadius: "5px",
+    },
 
     /* ── Chunk line decorations (gutter + background) ──────── */
     ".cm-review-chunk-line": {
@@ -457,6 +628,11 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
         padding: "0 6px 0 4px",
         opacity: "0.8",
     },
+    '.cm-review-chunk-controls[data-review-dense-compact="true"] .cm-review-chunk-badge':
+        {
+            fontSize: "9px",
+            padding: "0 4px 0 3px",
+        },
 
     /* ── Action buttons (compact, editor-native feel) ──────── */
     ".cm-review-action": {
@@ -475,9 +651,24 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
         transition:
             "background-color 100ms ease, color 100ms ease, border-color 100ms ease",
     },
+    '.cm-review-chunk-controls[data-review-dense-compact="true"] .cm-review-action':
+        {
+            fontSize: "10px",
+            padding: "3px 6px",
+        },
     ".cm-review-action:hover": {
         background: "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)",
         color: "var(--text-primary)",
+    },
+    ".cm-editor[data-merge-transitioning='true'] .cm-review-action": {
+        opacity: "0.58",
+        cursor: "not-allowed",
+        borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
+    },
+    ".cm-review-action[data-review-stale='true']": {
+        opacity: "0.58",
+        cursor: "not-allowed",
+        borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
     },
     ".cm-review-action-accept": {
         color: "var(--diff-add)",
@@ -594,9 +785,203 @@ const reviewProjectionControlsHoverPlugin = ViewPlugin.fromClass(
     },
 );
 
+const refreshReviewControlsGeometryEffect = StateEffect.define<null>();
+
+function readReviewControlsGeometryKey(view: EditorView) {
+    return JSON.stringify([
+        view.scrollDOM.clientWidth,
+        view.contentDOM.clientWidth,
+        Math.round(view.defaultLineHeight * 100) / 100,
+        Math.round(view.defaultCharacterWidth * 100) / 100,
+        window.devicePixelRatio || 1,
+    ]);
+}
+
+const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
+    class {
+        private readonly view: EditorView;
+        private resizeObserver: ResizeObserver | null = null;
+        private mutationObserver: MutationObserver | null = null;
+        private readonly fontSet: FontFaceSet | null =
+            typeof document !== "undefined" && "fonts" in document
+                ? (document.fonts as FontFaceSet)
+                : null;
+        private refreshScheduled = false;
+        private lastGeometryKey: string;
+        private readonly handleWindowResize = () => {
+            this.scheduleRefresh();
+        };
+        private readonly handleWindowFocus = () => {
+            this.scheduleRefresh();
+        };
+        private readonly handleVisibilityChange = () => {
+            if (document.visibilityState === "visible") {
+                this.scheduleRefresh();
+            }
+        };
+        private readonly handleViewportResize = () => {
+            this.scheduleRefresh();
+        };
+        private readonly handleFontEvent = () => {
+            this.scheduleRefresh();
+        };
+
+        constructor(view: EditorView) {
+            this.view = view;
+            this.lastGeometryKey = readReviewControlsGeometryKey(view);
+
+            if (typeof ResizeObserver !== "undefined") {
+                this.resizeObserver = new ResizeObserver(() => {
+                    this.scheduleRefresh();
+                });
+                this.resizeObserver.observe(view.dom);
+                this.resizeObserver.observe(view.scrollDOM);
+                this.resizeObserver.observe(view.contentDOM);
+            }
+
+            if (typeof MutationObserver !== "undefined") {
+                this.mutationObserver = new MutationObserver(() => {
+                    this.scheduleRefresh();
+                });
+                this.mutationObserver.observe(view.dom, {
+                    attributes: true,
+                    attributeFilter: ["class", "style"],
+                });
+                this.mutationObserver.observe(view.scrollDOM, {
+                    attributes: true,
+                    attributeFilter: ["class", "style"],
+                });
+                this.mutationObserver.observe(view.contentDOM, {
+                    attributes: true,
+                    attributeFilter: ["class", "style"],
+                });
+                this.mutationObserver.observe(document.documentElement, {
+                    attributes: true,
+                    attributeFilter: ["class", "style"],
+                });
+                if (document.body) {
+                    this.mutationObserver.observe(document.body, {
+                        attributes: true,
+                        attributeFilter: ["class", "style"],
+                    });
+                }
+            }
+
+            if (this.fontSet) {
+                this.fontSet.addEventListener(
+                    "loadingdone",
+                    this.handleFontEvent as EventListener,
+                );
+                this.fontSet.ready
+                    .then(() => {
+                        if (this.view.dom.isConnected) {
+                            this.scheduleRefresh();
+                        }
+                    })
+                    .catch(() => {
+                        // Ignore font API readiness errors and keep fallback
+                        // listeners (resize/viewport/focus) active.
+                    });
+            }
+
+            window.addEventListener("resize", this.handleWindowResize);
+            window.addEventListener("focus", this.handleWindowFocus);
+            document.addEventListener(
+                "visibilitychange",
+                this.handleVisibilityChange,
+            );
+            window.visualViewport?.addEventListener(
+                "resize",
+                this.handleViewportResize,
+            );
+        }
+
+        update(update: {
+            geometryChanged: boolean;
+            heightChanged: boolean;
+            viewportChanged: boolean;
+        }) {
+            if (
+                update.geometryChanged ||
+                update.heightChanged ||
+                update.viewportChanged
+            ) {
+                this.scheduleRefresh();
+            }
+        }
+
+        private scheduleRefresh() {
+            if (this.refreshScheduled) {
+                return;
+            }
+
+            this.refreshScheduled = true;
+            requestAnimationFrame(() => {
+                this.refreshScheduled = false;
+
+                if (!this.view.dom.isConnected) {
+                    return;
+                }
+
+                const nextGeometryKey = readReviewControlsGeometryKey(
+                    this.view,
+                );
+                if (nextGeometryKey === this.lastGeometryKey) {
+                    return;
+                }
+
+                this.lastGeometryKey = nextGeometryKey;
+                this.view.dispatch({
+                    effects: [refreshReviewControlsGeometryEffect.of(null)],
+                });
+            });
+        }
+
+        destroy() {
+            this.resizeObserver?.disconnect();
+            this.mutationObserver?.disconnect();
+            if (this.fontSet) {
+                this.fontSet.removeEventListener(
+                    "loadingdone",
+                    this.handleFontEvent as EventListener,
+                );
+            }
+            window.removeEventListener("resize", this.handleWindowResize);
+            window.removeEventListener("focus", this.handleWindowFocus);
+            document.removeEventListener(
+                "visibilitychange",
+                this.handleVisibilityChange,
+            );
+            window.visualViewport?.removeEventListener(
+                "resize",
+                this.handleViewportResize,
+            );
+        }
+    },
+);
+
+export function refreshReviewProjectionControlsGeometry(view: EditorView) {
+    view.dispatch({
+        effects: [refreshReviewControlsGeometryEffect.of(null)],
+    });
+}
+
 export function createReviewProjectionControlsExtension(
     config: CreateReviewProjectionControlsConfig,
 ): Extension[] {
+    const geometryField = StateField.define<number>({
+        create() {
+            return 0;
+        },
+        update(geometryVersion, transaction) {
+            return transaction.effects.some((effect) =>
+                effect.is(refreshReviewControlsGeometryEffect),
+            )
+                ? geometryVersion + 1
+                : geometryVersion;
+        },
+    });
+
     const lineField = StateField.define<DecorationSet>({
         create(state) {
             return buildControlLineDecorations(
@@ -625,6 +1010,7 @@ export function createReviewProjectionControlsExtension(
                 config.hunks,
                 config.chunks,
                 config.onDecision,
+                state.field(geometryField),
             );
         },
         update(_decorations, transaction) {
@@ -634,15 +1020,18 @@ export function createReviewProjectionControlsExtension(
                 config.hunks,
                 config.chunks,
                 config.onDecision,
+                transaction.state.field(geometryField),
             );
         },
         provide: (field) => EditorView.decorations.from(field),
     });
 
     return [
+        geometryField,
         lineField,
         controlsField,
         reviewProjectionControlsTheme,
         reviewProjectionControlsHoverPlugin,
+        reviewProjectionControlsGeometryPlugin,
     ];
 }

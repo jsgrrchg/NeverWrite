@@ -539,7 +539,184 @@ export function buildTextRangePatchFromTexts(
     newText: string,
     linePatch?: LinePatch,
 ): TextRangePatch {
-    return buildTextRangePatchFromTextsRust(oldText, newText, linePatch);
+    const effectiveLinePatch =
+        linePatch ?? buildPatchFromTexts(oldText, newText);
+    const patch = buildTextRangePatchFromTextsRust(
+        oldText,
+        newText,
+        effectiveLinePatch,
+    );
+    return refineDisjointInlineSpans(
+        oldText,
+        newText,
+        effectiveLinePatch,
+        patch,
+    );
+}
+
+function refineDisjointInlineSpans(
+    baseText: string,
+    currentText: string,
+    linePatch: LinePatch,
+    patch: TextRangePatch,
+): TextRangePatch {
+    if (patch.spans.length === 0 || linePatch.edits.length === 0) {
+        return patch;
+    }
+
+    const baseLineStarts = buildLineStartOffsets(baseText);
+    const currentLineStarts = buildLineStartOffsets(currentText);
+    const editWindows = linePatch.edits.map((edit) => ({
+        edit,
+        baseFrom: lineIndexToOffset(baseLineStarts, baseText, edit.oldStart),
+        baseTo: lineIndexToOffset(baseLineStarts, baseText, edit.oldEnd),
+        currentFrom: lineIndexToOffset(
+            currentLineStarts,
+            currentText,
+            edit.newStart,
+        ),
+        currentTo: lineIndexToOffset(
+            currentLineStarts,
+            currentText,
+            edit.newEnd,
+        ),
+    }));
+    const spanToEditIndex = patch.spans.map((span) =>
+        editWindows.findIndex(
+            (window) =>
+                span.baseFrom >= window.baseFrom &&
+                span.baseTo <= window.baseTo &&
+                span.currentFrom >= window.currentFrom &&
+                span.currentTo <= window.currentTo,
+        ),
+    );
+    const spansPerEdit = new Map<number, number>();
+    spanToEditIndex.forEach((editIndex) => {
+        if (editIndex < 0) return;
+        spansPerEdit.set(editIndex, (spansPerEdit.get(editIndex) ?? 0) + 1);
+    });
+
+    let changed = false;
+    const nextSpans: AgentTextSpan[] = [];
+
+    patch.spans.forEach((span, spanIndex) => {
+        const editIndex = spanToEditIndex[spanIndex] ?? -1;
+        if (editIndex < 0 || spansPerEdit.get(editIndex) !== 1) {
+            nextSpans.push(span);
+            return;
+        }
+
+        const splitSpans = splitSingleLineSpanByWordDiff(
+            baseText,
+            currentText,
+            editWindows[editIndex]!.edit,
+            span,
+        );
+        if (!splitSpans) {
+            nextSpans.push(span);
+            return;
+        }
+
+        changed = true;
+        nextSpans.push(...splitSpans);
+    });
+
+    return changed ? { spans: nextSpans } : patch;
+}
+
+function splitSingleLineSpanByWordDiff(
+    baseText: string,
+    currentText: string,
+    edit: LineEdit,
+    span: AgentTextSpan,
+): AgentTextSpan[] | null {
+    if (
+        edit.oldEnd - edit.oldStart !== 1 ||
+        edit.newEnd - edit.newStart !== 1
+    ) {
+        return null;
+    }
+
+    if (span.baseFrom === span.baseTo || span.currentFrom === span.currentTo) {
+        return null;
+    }
+
+    const wordDiffs = computeWordDiffsForHunk(baseText, currentText, edit, {
+        maxLines: 1,
+        maxChars: 4000,
+    });
+    if (!wordDiffs) {
+        return null;
+    }
+
+    const baseRanges = wordDiffs.baseRanges;
+    const bufferRanges = wordDiffs.bufferRanges;
+    if (baseRanges.length <= 1 || baseRanges.length !== bufferRanges.length) {
+        return null;
+    }
+
+    const candidates: AgentTextSpan[] = [];
+    for (let index = 0; index < baseRanges.length; index += 1) {
+        const baseRange = baseRanges[index]!;
+        const bufferRange = bufferRanges[index]!;
+        const candidate: AgentTextSpan = {
+            baseFrom: baseRange.baseFrom,
+            baseTo: baseRange.baseTo,
+            currentFrom: bufferRange.from,
+            currentTo: bufferRange.to,
+        };
+
+        const insideSpan =
+            candidate.baseFrom >= span.baseFrom &&
+            candidate.baseTo <= span.baseTo &&
+            candidate.currentFrom >= span.currentFrom &&
+            candidate.currentTo <= span.currentTo;
+        if (!insideSpan) {
+            return null;
+        }
+        if (
+            candidate.baseFrom === candidate.baseTo ||
+            candidate.currentFrom === candidate.currentTo
+        ) {
+            return null;
+        }
+
+        candidates.push(candidate);
+    }
+
+    candidates.sort(
+        (left, right) =>
+            left.currentFrom - right.currentFrom ||
+            left.currentTo - right.currentTo ||
+            left.baseFrom - right.baseFrom ||
+            left.baseTo - right.baseTo,
+    );
+
+    for (let index = 1; index < candidates.length; index += 1) {
+        const prev = candidates[index - 1]!;
+        const next = candidates[index]!;
+        if (prev.currentTo > next.currentFrom || prev.baseTo > next.baseFrom) {
+            return null;
+        }
+    }
+
+    return candidates.length > 1 ? candidates : null;
+}
+
+function buildLineStartOffsets(text: string): number[] {
+    const offsets = [0];
+    for (let index = 0; index < text.length; index += 1) {
+        if (text[index] === "\n") {
+            offsets.push(index + 1);
+        }
+    }
+    return offsets;
+}
+
+function lineIndexToOffset(lineStarts: number[], text: string, line: number) {
+    if (line <= 0) return 0;
+    if (line >= lineStarts.length) return text.length;
+    return lineStarts[line]!;
 }
 
 export function computeWordDiffsForHunk(

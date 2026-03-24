@@ -46,6 +46,27 @@ function createTrackedFile(
 }
 
 describe("reviewProjection", () => {
+    function buildSameLineDisjointFile(changeCount: number) {
+        const words = ["aa", "bb", "cc", "dd", "ee"].slice(0, changeCount);
+        const diffBase = words.join(" ");
+        const currentText = words.map((word) => word.toUpperCase()).join(" ");
+        let offset = 0;
+        const spans = words.map((word) => {
+            const span = {
+                baseFrom: offset,
+                baseTo: offset + word.length,
+                currentFrom: offset,
+                currentTo: offset + word.length,
+            };
+            offset += word.length + 1;
+            return span;
+        });
+
+        return createTrackedFile(diffBase, currentText, {
+            unreviewedRanges: { spans },
+        });
+    }
+
     it("builds a single ReviewHunk for an isolated canonical span", () => {
         const file = createTrackedFile(
             "alpha\nbeta\ngamma",
@@ -101,39 +122,78 @@ describe("reviewProjection", () => {
         expect(projection.chunks[0]!.canResolveInlineExactly).toBe(true);
     });
 
-    it("marks a chunk as ambiguous when multiple hunks share the same visual line", () => {
-        const file = createTrackedFile("foo bar baz", "FOO bar BAZ", {
-            unreviewedRanges: {
-                spans: [
-                    {
-                        baseFrom: 0,
-                        baseTo: 3,
-                        currentFrom: 0,
-                        currentTo: 3,
-                    },
-                    {
-                        baseFrom: 8,
-                        baseTo: 11,
-                        currentFrom: 8,
-                        currentTo: 11,
-                    },
-                ],
+    it("keeps chunking and hunk order stable even if canonical spans arrive out of order", () => {
+        const diffBase = "one\ntwo\nthree\nfour";
+        const currentText = "ONE\ntwo\nTHREE\nfour";
+        const orderedSpans = [
+            {
+                baseFrom: 0,
+                baseTo: 3,
+                currentFrom: 0,
+                currentTo: 3,
             },
+            {
+                baseFrom: 8,
+                baseTo: 13,
+                currentFrom: 8,
+                currentTo: 13,
+            },
+        ];
+        const orderedFile = createTrackedFile(diffBase, currentText, {
+            unreviewedRanges: { spans: orderedSpans },
+        });
+        const unorderedFile = createTrackedFile(diffBase, currentText, {
+            unreviewedRanges: { spans: [orderedSpans[1]!, orderedSpans[0]!] },
         });
 
-        const projection = buildReviewProjection(file);
-        const [chunk] = projection.chunks;
+        const orderedProjection = buildReviewProjection(orderedFile);
+        const unorderedProjection = buildReviewProjection(unorderedFile);
 
-        expect(projection.hunks).toHaveLength(2);
-        expect(chunk).toBeDefined();
-        expect(chunk!.ambiguous).toBe(true);
-        expect(chunk!.controlMode).toBe("panel-only");
-        expect(chunk!.canResolveInlineExactly).toBe(false);
-        expect(projection.hunks.every((hunk) => hunk.ambiguous)).toBe(true);
-        expect(getReviewHunksForChunk(projection, chunk!.id)).toEqual(
-            projection.hunks,
+        expect(unorderedProjection.hunks.map((hunk) => hunk.id.key)).toEqual(
+            orderedProjection.hunks.map((hunk) => hunk.id.key),
         );
+        expect(
+            unorderedProjection.hunks.map((hunk) => hunk.visualStartLine),
+        ).toEqual(orderedProjection.hunks.map((hunk) => hunk.visualStartLine));
+        expect(
+            unorderedProjection.chunks.map((chunk) => ({
+                startLine: chunk.startLine,
+                endLine: chunk.endLine,
+                hunkKeys: chunk.hunkIds.map((id) => id.key),
+            })),
+        ).toEqual(
+            orderedProjection.chunks.map((chunk) => ({
+                startLine: chunk.startLine,
+                endLine: chunk.endLine,
+                hunkKeys: chunk.hunkIds.map((id) => id.key),
+            })),
+        );
+        expect(
+            reviewProjectionMatchesSpans(unorderedFile, unorderedProjection),
+        ).toBe(true);
     });
+
+    it.each([2, 3, 4, 5])(
+        "keeps %i disjoint hunks on the same visual line inline-resolvable",
+        (changeCount) => {
+            const file = buildSameLineDisjointFile(changeCount);
+            const projection = buildReviewProjection(file);
+            const [chunk] = projection.chunks;
+
+            expect(projection.hunks).toHaveLength(changeCount);
+            expect(chunk).toBeDefined();
+            expect(chunk!.multiHunk).toBe(changeCount > 1);
+            expect(chunk!.ambiguous).toBe(false);
+            expect(chunk!.controlMode).toBe(changeCount > 1 ? "hunk" : "chunk");
+            expect(chunk!.canResolveInlineExactly).toBe(true);
+            expect(projection.hunks.every((hunk) => hunk.ambiguous)).toBe(
+                false,
+            );
+            expect(getReviewHunksForChunk(projection, chunk!.id)).toEqual(
+                projection.hunks,
+            );
+        },
+    );
 
     it("changes Review ids when trackedVersion changes", () => {
         const base = "alpha\nbeta\ngamma";
@@ -203,7 +263,7 @@ describe("reviewProjection", () => {
             summarizeReviewProjectionInlineState(buildReviewProjection(file)),
         ).toEqual({
             reviewProjectionReady: true,
-            hasAmbiguousChunks: true,
+            hasAmbiguousChunks: false,
             hasConflicts: true,
             hasMultiHunkChunks: true,
         });

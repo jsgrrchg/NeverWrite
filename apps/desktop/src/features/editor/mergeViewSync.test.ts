@@ -19,7 +19,7 @@ import {
     mergeViewCompartment,
     readMergeViewRuntimeState,
 } from "./extensions/mergeViewDiff";
-import { syncMergeViewForPaths } from "./mergeViewSync";
+import { isMergeDecisionStale, syncMergeViewForPaths } from "./mergeViewSync";
 
 function mountView(doc: string) {
     const parent = document.createElement("div");
@@ -102,6 +102,55 @@ function createSession(
 }
 
 describe("mergeViewSync", () => {
+    it("detects stale merge decisions when tracked versions drift", () => {
+        expect(
+            isMergeDecisionStale(2, { trackedVersion: 1, key: "chunk-1" }, [
+                { trackedVersion: 1, key: "hunk-1" },
+            ]),
+        ).toBe(true);
+        expect(
+            isMergeDecisionStale(2, { trackedVersion: 2, key: "chunk-1" }, [
+                { trackedVersion: 1, key: "hunk-1" },
+            ]),
+        ).toBe(true);
+        expect(
+            isMergeDecisionStale(2, { trackedVersion: 2, key: "chunk-1" }, [
+                { trackedVersion: 2, key: "hunk-1" },
+            ]),
+        ).toBe(false);
+    });
+
+    function buildSameLineDisjointScenario(changeCount: number) {
+        const words = ["aa", "bb", "cc", "dd", "ee"].slice(0, changeCount);
+        const diffBase = `${words.join(" ")}\nkeep\nkeep\nzoom`;
+        const currentText = `${words.map((word) => word.toUpperCase()).join(" ")}\nkeep\nkeep\nZOOM`;
+        let offset = 0;
+        const spans = words.map((word) => {
+            const span = {
+                baseFrom: offset,
+                baseTo: offset + word.length,
+                currentFrom: offset,
+                currentTo: offset + word.length,
+            };
+            offset += word.length + 1;
+            return span;
+        });
+        const zoomBaseFrom = diffBase.lastIndexOf("zoom");
+        const zoomCurrentFrom = currentText.lastIndexOf("ZOOM");
+        spans.push({
+            baseFrom: zoomBaseFrom,
+            baseTo: zoomBaseFrom + 4,
+            currentFrom: zoomCurrentFrom,
+            currentTo: zoomCurrentFrom + 4,
+        });
+
+        return {
+            diffBase,
+            currentText,
+            spans,
+        };
+    }
+
     it("activates merge with a tracked file", () => {
         const { view, destroy } = mountView("alpHa");
         const path = "notes/current.md";
@@ -233,7 +282,7 @@ describe("mergeViewSync", () => {
                 path,
                 "accepted",
                 1,
-                [{ trackedVersion: 1, key: "0:10:10:11:16" }],
+                [{ trackedVersion: 1, key: "10:10:11:16" }],
             );
             expect(resolveReviewHunks).toHaveBeenNthCalledWith(
                 2,
@@ -241,7 +290,7 @@ describe("mergeViewSync", () => {
                 path,
                 "rejected",
                 1,
-                [{ trackedVersion: 1, key: "0:10:10:11:16" }],
+                [{ trackedVersion: 1, key: "10:10:11:16" }],
             );
 
             destroy();
@@ -288,12 +337,84 @@ describe("mergeViewSync", () => {
                 path,
                 "rejected",
                 1,
-                [{ trackedVersion: 1, key: "0:6:11:6:6" }],
+                [{ trackedVersion: 1, key: "6:11:6:6" }],
             );
 
             destroy();
         } finally {
             useChatStore.setState(originalState);
+        }
+    });
+
+    it("blocks inline decisions while merge view is transitioning out of sync", () => {
+        vi.useFakeTimers();
+        const originalState = useChatStore.getState();
+        const resolveReviewHunks = vi.fn();
+        useChatStore.setState({
+            ...originalState,
+            resolveReviewHunks,
+        });
+
+        try {
+            const path = "notes/current.md";
+            const firstDoc = "FOO bar baz";
+            const secondDoc = "FOO bar BAZ";
+            const { view, destroy } = mountView(firstDoc);
+            const firstSession = createSession("session-1", "wc-1", [
+                createTrackedFile(path, "foo bar baz", firstDoc),
+            ]);
+            const secondSession = createSession("session-1", "wc-1", [
+                createTrackedFile(path, "foo bar baz", secondDoc, {
+                    version: 2,
+                }),
+            ]);
+
+            syncMergeViewForPaths(view, [path], {
+                [firstSession.sessionId]: firstSession,
+            });
+
+            syncMergeViewForPaths(view, [path], {
+                [secondSession.sessionId]: secondSession,
+            });
+
+            expect(view.dom.dataset.mergeTransitioning).toBe("true");
+
+            const staleAccept = view.dom.querySelector(
+                '[data-review-decision="accept"]',
+            ) as HTMLButtonElement | null;
+            expect(staleAccept).not.toBeNull();
+            if (staleAccept) {
+                fireEvent.mouseDown(staleAccept);
+            }
+            expect(resolveReviewHunks).not.toHaveBeenCalled();
+
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: secondDoc,
+                },
+            });
+
+            syncMergeViewForPaths(view, [path], {
+                [secondSession.sessionId]: secondSession,
+            });
+
+            expect(view.dom.dataset.mergeTransitioning).toBeUndefined();
+
+            const freshAccept = view.dom.querySelector(
+                '[data-review-decision="accept"]',
+            ) as HTMLButtonElement | null;
+            expect(freshAccept).not.toBeNull();
+            if (freshAccept) {
+                fireEvent.mouseDown(freshAccept);
+            }
+            expect(resolveReviewHunks).toHaveBeenCalledTimes(1);
+
+            destroy();
+        } finally {
+            useChatStore.setState(originalState);
+            vi.useRealTimers();
         }
     });
 
@@ -345,7 +466,7 @@ describe("mergeViewSync", () => {
                 path,
                 "accepted",
                 2,
-                [{ trackedVersion: 2, key: "0:0:5:0:5" }],
+                [{ trackedVersion: 2, key: "0:5:0:5" }],
             );
 
             destroy();
@@ -390,13 +511,61 @@ describe("mergeViewSync", () => {
             view.dom.querySelectorAll('[data-review-decision="accept"]'),
         ).toHaveLength(3);
         expect(
-            view.dom.querySelector('[data-review-hunk-key="0:0:3:0:3"]'),
+            view.dom.querySelector('[data-review-hunk-key="0:3:0:3"]'),
         ).not.toBeNull();
         expect(
-            view.dom.querySelector('[data-review-hunk-key="1:8:13:8:13"]'),
+            view.dom.querySelector('[data-review-hunk-key="8:13:8:13"]'),
         ).not.toBeNull();
         expect(
-            view.dom.querySelector('[data-review-hunk-key="2:19:23:19:23"]'),
+            view.dom.querySelector('[data-review-hunk-key="19:23:19:23"]'),
+        ).not.toBeNull();
+
+        destroy();
+    });
+
+    it("keeps inline hunk actions available after a second nearby edit on the same line", () => {
+        const path = "notes/current.md";
+        const diffBase = "foo bar baz";
+        const firstDoc = "FOO bar baz";
+        const secondDoc = "FOO bar BAZ";
+
+        const { view, destroy } = mountView(firstDoc);
+        const firstFile = createTrackedFile(path, diffBase, firstDoc);
+        const secondFile = createTrackedFile(path, diffBase, secondDoc, {
+            version: 2,
+        });
+        const firstSession = createSession("session-1", "wc-1", [firstFile]);
+        const secondSession = createSession("session-1", "wc-1", [secondFile]);
+
+        syncMergeViewForPaths(view, [path], {
+            [firstSession.sessionId]: firstSession,
+        });
+
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="accept"]'),
+        ).toHaveLength(1);
+
+        view.dispatch({
+            changes: {
+                from: 0,
+                to: view.state.doc.length,
+                insert: secondDoc,
+            },
+        });
+
+        syncMergeViewForPaths(view, [path], {
+            [secondSession.sessionId]: secondSession,
+        });
+
+        expect(view.dom.textContent).not.toContain("Review in Changes");
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="accept"]'),
+        ).toHaveLength(2);
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="0:3:0:3"]'),
+        ).not.toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="8:11:8:11"]'),
         ).not.toBeNull();
 
         destroy();
@@ -436,7 +605,7 @@ describe("mergeViewSync", () => {
             expect(view.dom.textContent).not.toContain("Review in Changes");
 
             const memberAcceptButton = view.dom.querySelector(
-                '[data-review-decision="accept"][data-review-hunk-key="0:0:3:0:3"]',
+                '[data-review-decision="accept"][data-review-hunk-key="0:3:0:3"]',
             ) as HTMLButtonElement | null;
 
             expect(memberAcceptButton).not.toBeNull();
@@ -449,7 +618,7 @@ describe("mergeViewSync", () => {
                 path,
                 "accepted",
                 1,
-                [{ trackedVersion: 1, key: "0:0:3:0:3" }],
+                [{ trackedVersion: 1, key: "0:3:0:3" }],
             );
 
             destroy();
@@ -458,87 +627,76 @@ describe("mergeViewSync", () => {
         }
     });
 
-    it("degrades only the ambiguous chunk while keeping precise chunk actions", () => {
-        const originalState = useChatStore.getState();
-        const resolveReviewHunks = vi.fn();
-        useChatStore.setState({
-            ...originalState,
-            resolveReviewHunks,
-        });
-
-        const { view, destroy } = mountView("FOO bar BAZ\nkeep\nkeep\nZOOM");
-        const path = "notes/current.md";
-        const session = createSession("session-1", "wc-1", [
-            createTrackedFile(
-                path,
-                "foo bar baz\nkeep\nkeep\nzoom",
-                "FOO bar BAZ\nkeep\nkeep\nZOOM",
-                {
-                    unreviewedRanges: {
-                        spans: [
-                            {
-                                baseFrom: 0,
-                                baseTo: 3,
-                                currentFrom: 0,
-                                currentTo: 3,
-                            },
-                            {
-                                baseFrom: 8,
-                                baseTo: 11,
-                                currentFrom: 8,
-                                currentTo: 11,
-                            },
-                            {
-                                baseFrom: 22,
-                                baseTo: 26,
-                                currentFrom: 22,
-                                currentTo: 26,
-                            },
-                        ],
-                    },
-                    unreviewedEdits: buildPatchFromTexts(
-                        "foo bar baz\nkeep\nkeep\nzoom",
-                        "FOO bar BAZ\nkeep\nkeep\nZOOM",
-                    ),
-                },
-            ),
-        ]);
-
-        try {
-            syncMergeViewForPaths(view, [path], {
-                [session.sessionId]: session,
+    it.each([3, 4, 5])(
+        "keeps %i same-line disjoint hunks inline while keeping precise neighbor actions",
+        (changeCount) => {
+            const originalState = useChatStore.getState();
+            const resolveReviewHunks = vi.fn();
+            useChatStore.setState({
+                ...originalState,
+                resolveReviewHunks,
             });
 
-            expect(view.dom.textContent).toContain("Review in Changes");
-            expect(
-                view.dom.querySelectorAll('[data-review-decision="accept"]'),
-            ).toHaveLength(1);
-            expect(
-                view.dom.querySelectorAll('[data-review-decision="reject"]'),
-            ).toHaveLength(1);
+            const scenario = buildSameLineDisjointScenario(changeCount);
+            const { view, destroy } = mountView(scenario.currentText);
+            const path = "notes/current.md";
+            const session = createSession("session-1", "wc-1", [
+                createTrackedFile(
+                    path,
+                    scenario.diffBase,
+                    scenario.currentText,
+                    {
+                        unreviewedRanges: {
+                            spans: scenario.spans,
+                        },
+                        unreviewedEdits: buildPatchFromTexts(
+                            scenario.diffBase,
+                            scenario.currentText,
+                        ),
+                    },
+                ),
+            ]);
 
-            const acceptButton = view.dom.querySelector(
-                '[data-review-decision="accept"][data-review-decision-scope="chunk"]',
-            ) as HTMLButtonElement | null;
+            try {
+                syncMergeViewForPaths(view, [path], {
+                    [session.sessionId]: session,
+                });
 
-            expect(acceptButton).not.toBeNull();
-            if (acceptButton) {
-                fireEvent.mouseDown(acceptButton);
+                expect(view.dom.textContent).not.toContain("Review in Changes");
+                expect(
+                    view.dom.querySelectorAll(
+                        '[data-review-decision="accept"]',
+                    ),
+                ).toHaveLength(changeCount + 1);
+                expect(
+                    view.dom.querySelectorAll(
+                        '[data-review-decision="reject"]',
+                    ),
+                ).toHaveLength(changeCount + 1);
+
+                const acceptButton = view.dom.querySelector(
+                    '[data-review-decision="accept"][data-review-hunk-key="0:2:0:2"]',
+                ) as HTMLButtonElement | null;
+
+                expect(acceptButton).not.toBeNull();
+                if (acceptButton) {
+                    fireEvent.mouseDown(acceptButton);
+                }
+
+                expect(resolveReviewHunks).toHaveBeenCalledWith(
+                    "session-1",
+                    path,
+                    "accepted",
+                    1,
+                    [{ trackedVersion: 1, key: "0:2:0:2" }],
+                );
+
+                destroy();
+            } finally {
+                useChatStore.setState(originalState);
             }
-
-            expect(resolveReviewHunks).toHaveBeenCalledWith(
-                "session-1",
-                path,
-                "accepted",
-                1,
-                [{ trackedVersion: 1, key: "2:22:26:22:26" }],
-            );
-
-            destroy();
-        } finally {
-            useChatStore.setState(originalState);
-        }
-    });
+        },
+    );
 
     it("degrades conflicting chunks to the review panel instead of showing inline actions", () => {
         const { view, destroy } = mountView("alpha\nbeta\ngamma");
@@ -560,6 +718,36 @@ describe("mergeViewSync", () => {
             view.dom.querySelector('[data-review-decision="reject"]'),
         ).toBeNull();
         expect(view.dom.textContent).toContain("Review in Changes");
+
+        destroy();
+    });
+
+    it("keeps exact inline actions available for large files", () => {
+        const path = "notes/current.md";
+        const diffBase = Array.from(
+            { length: 10 },
+            (_, index) => `line ${index}`,
+        ).join("\n");
+        const currentText = Array.from({ length: 10 }, (_, index) =>
+            index % 2 === 0 ? `LINE ${index}` : `line ${index}`,
+        ).join("\n");
+
+        const { view, destroy } = mountView(currentText);
+        const session = createSession("session-1", "wc-1", [
+            createTrackedFile(path, diffBase, currentText),
+        ]);
+
+        syncMergeViewForPaths(view, [path], {
+            [session.sessionId]: session,
+        });
+
+        expect(view.dom.textContent).not.toContain("Review in Changes");
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="accept"]').length,
+        ).toBeGreaterThan(0);
+        expect(
+            view.dom.querySelectorAll('[data-review-decision="reject"]').length,
+        ).toBeGreaterThan(0);
 
         destroy();
     });
