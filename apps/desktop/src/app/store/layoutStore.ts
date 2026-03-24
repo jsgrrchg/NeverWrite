@@ -38,7 +38,13 @@ function persistSidebarCollapsed(collapsed: boolean) {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
 }
 
-const SIDEBAR_VIEWS: SidebarView[] = ["files", "search", "tags", "maps"];
+const SIDEBAR_VIEWS: SidebarView[] = [
+    "files",
+    "search",
+    "tags",
+    "bookmarks",
+    "maps",
+];
 function readStoredSidebarView(): SidebarView {
     if (typeof window === "undefined") return "files";
     const raw = window.localStorage.getItem(SIDEBAR_VIEW_KEY);

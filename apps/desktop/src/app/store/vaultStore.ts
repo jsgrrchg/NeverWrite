@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
 import { getPathBaseName } from "../utils/path";
 import { useEditorStore } from "./editorStore";
+import { useBookmarkStore } from "./bookmarkStore";
 
 export interface NoteDto {
     id: string;
@@ -206,6 +207,7 @@ export async function removeVaultFromList(path: string) {
     localStorage.removeItem(`vaultai:theme:${path}`);
     localStorage.removeItem(`vaultai:settings:${path}`);
     localStorage.removeItem(`vaultai.chat.tabs:${path}`);
+    localStorage.removeItem(`vaultai:bookmarks:${path}`);
 
     // Delete vault index snapshot from disk
     try {
@@ -599,8 +601,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 tagsRevision: s.tagsRevision + 1,
             }));
             const editor = useEditorStore.getState();
+            const bookmarks = useBookmarkStore.getState();
             for (const noteId of deletedNoteIds) {
                 editor.handleNoteDeleted(noteId);
+                bookmarks.handleNoteDeleted(noteId);
             }
         } catch (e) {
             console.error("Error al eliminar carpeta:", e);
@@ -621,6 +625,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 tagsRevision: s.tagsRevision + 1,
             }));
             useEditorStore.getState().handleNoteDeleted(noteId);
+            useBookmarkStore.getState().handleNoteDeleted(noteId);
         } catch (e) {
             console.error("Error al eliminar nota:", e);
         }
@@ -654,6 +659,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             useEditorStore
                 .getState()
                 .handleNoteRenamed(noteId, updated.id, updated.title);
+            useBookmarkStore.getState().handleNoteRenamed(noteId, updated.id);
             return updated;
         } catch (e) {
             console.error("Error al renombrar nota:", e);
