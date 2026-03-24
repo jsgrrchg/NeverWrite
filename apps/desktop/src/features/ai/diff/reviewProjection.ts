@@ -115,6 +115,54 @@ export interface ReviewProjectionInvariantViolation {
 const projectionCache = new WeakMap<TrackedFile, ReviewProjection>();
 const DEFAULT_CHUNK_LINE_GAP = 1;
 
+function compareCanonicalSpans(
+    left: Pick<
+        AgentTextSpan,
+        "currentFrom" | "currentTo" | "baseFrom" | "baseTo"
+    >,
+    right: Pick<
+        AgentTextSpan,
+        "currentFrom" | "currentTo" | "baseFrom" | "baseTo"
+    >,
+): number {
+    return (
+        left.currentFrom - right.currentFrom ||
+        left.currentTo - right.currentTo ||
+        left.baseFrom - right.baseFrom ||
+        left.baseTo - right.baseTo
+    );
+}
+
+function compareReviewHunkSeeds(
+    left: Pick<
+        ReviewHunkSeed,
+        | "visualStartLine"
+        | "visualEndLine"
+        | "currentFrom"
+        | "currentTo"
+        | "baseFrom"
+        | "baseTo"
+        | "id"
+    >,
+    right: Pick<
+        ReviewHunkSeed,
+        | "visualStartLine"
+        | "visualEndLine"
+        | "currentFrom"
+        | "currentTo"
+        | "baseFrom"
+        | "baseTo"
+        | "id"
+    >,
+): number {
+    return (
+        left.visualStartLine - right.visualStartLine ||
+        left.visualEndLine - right.visualEndLine ||
+        compareCanonicalSpans(left, right) ||
+        left.id.key.localeCompare(right.id.key)
+    );
+}
+
 function buildLineStartOffsets(text: string): number[] {
     const offsets = [0];
     for (let index = 0; index < text.length; index += 1) {
@@ -222,17 +270,43 @@ function deriveSpanLineRange(
     };
 }
 
-function rangesOverlapOrTouch(
+function rangesStrictlyOverlap(
     leftStart: number,
     leftEnd: number,
     rightStart: number,
     rightEnd: number,
 ): boolean {
     if (leftStart === leftEnd && rightStart === rightEnd) {
-        return Math.abs(leftStart - rightStart) <= 1;
+        return leftStart === rightStart;
     }
 
-    return leftStart <= rightEnd && rightStart <= leftEnd;
+    return leftStart < rightEnd && rightStart < leftEnd;
+}
+
+function hunksOverlapCanonically(
+    left: Pick<
+        ReviewHunkSeed,
+        "baseFrom" | "baseTo" | "currentFrom" | "currentTo"
+    >,
+    right: Pick<
+        ReviewHunkSeed,
+        "baseFrom" | "baseTo" | "currentFrom" | "currentTo"
+    >,
+): boolean {
+    return (
+        rangesStrictlyOverlap(
+            left.baseFrom,
+            left.baseTo,
+            right.baseFrom,
+            right.baseTo,
+        ) ||
+        rangesStrictlyOverlap(
+            left.currentFrom,
+            left.currentTo,
+            right.currentFrom,
+            right.currentTo,
+        )
+    );
 }
 
 function buildReviewHunkId(
@@ -244,7 +318,7 @@ function buildReviewHunkId(
         key: memberSpans
             .map(
                 (span) =>
-                    `${span.spanIndex}:${span.baseFrom}:${span.baseTo}:${span.currentFrom}:${span.currentTo}`,
+                    `${span.baseFrom}:${span.baseTo}:${span.currentFrom}:${span.currentTo}`,
             )
             .join("|"),
     };
@@ -343,20 +417,7 @@ function buildReviewChunkSeeds(hunks: ReviewHunkSeed[]): ReviewChunkSeed[] {
             multiHunk &&
             currentHunks.some((hunk, index) =>
                 currentHunks.slice(index + 1).some((other) => {
-                    return (
-                        rangesOverlapOrTouch(
-                            hunk.oldStartLine,
-                            hunk.oldEndLine,
-                            other.oldStartLine,
-                            other.oldEndLine,
-                        ) ||
-                        rangesOverlapOrTouch(
-                            hunk.newStartLine,
-                            hunk.newEndLine,
-                            other.newStartLine,
-                            other.newEndLine,
-                        )
-                    );
+                    return hunksOverlapCanonically(hunk, other);
                 }),
             );
         const hasConflict = currentHunks.some((hunk) => hunk.hasConflict);
@@ -429,7 +490,9 @@ export function buildReviewProjection(file: TrackedFile): ReviewProjection {
         return cached;
     }
 
-    const hunkSeeds = buildReviewHunkSeeds(syncedFile);
+    const hunkSeeds = buildReviewHunkSeeds(syncedFile).sort(
+        compareReviewHunkSeeds,
+    );
     const chunkSeeds = buildReviewChunkSeeds(hunkSeeds);
     const chunkIdByHunkKey = new Map<string, ReviewChunkId>();
     const ambiguousChunkKeys = new Set<string>();
@@ -559,15 +622,19 @@ export function reviewProjectionMatchesSpans(
     file: TrackedFile,
     projection: ReviewProjection = buildReviewProjection(file),
 ): boolean {
-    const spans = syncDerivedLinePatch(file).unreviewedRanges?.spans ?? [];
-    const projectionSpans = projection.hunks.flatMap((hunk) =>
-        hunk.memberSpans.map((span) => ({
-            baseFrom: span.baseFrom,
-            baseTo: span.baseTo,
-            currentFrom: span.currentFrom,
-            currentTo: span.currentTo,
-        })),
-    );
+    const spans = [
+        ...(syncDerivedLinePatch(file).unreviewedRanges?.spans ?? []),
+    ].sort(compareCanonicalSpans);
+    const projectionSpans = projection.hunks
+        .flatMap((hunk) =>
+            hunk.memberSpans.map((span) => ({
+                baseFrom: span.baseFrom,
+                baseTo: span.baseTo,
+                currentFrom: span.currentFrom,
+                currentTo: span.currentTo,
+            })),
+        )
+        .sort(compareCanonicalSpans);
 
     if (projection.trackedVersion !== file.version) {
         return false;

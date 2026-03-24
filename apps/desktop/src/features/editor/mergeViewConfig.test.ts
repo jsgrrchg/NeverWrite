@@ -56,7 +56,7 @@ describe("mergeViewConfig", () => {
         });
     });
 
-    it("degrades large presentations to non-destructive inline widgets", () => {
+    it("keeps exact inline actions available for large presentations", () => {
         expect(
             getMergePresentationFlags(
                 makePresentation({ level: "large" }),
@@ -64,7 +64,7 @@ describe("mergeViewConfig", () => {
             ),
         ).toEqual({
             allowInlineDiffs: false,
-            enableControls: false,
+            enableControls: true,
             highlightChanges: true,
             showControlWidgets: true,
             syntaxHighlightDeletions: true,

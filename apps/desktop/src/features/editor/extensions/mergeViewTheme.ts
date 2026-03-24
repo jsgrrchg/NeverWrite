@@ -60,12 +60,6 @@ export const mergeViewTheme = EditorView.baseTheme({
         fontStyle: "italic",
     },
 
-    /* ── Pending state pulse animation ─────────────────────── */
-    "&[data-merge-enabled='true'][data-merge-review-state='pending'] .cm-changedLine, &[data-merge-enabled='true'][data-merge-review-state='pending'] .cm-insertedLine, &[data-merge-enabled='true'][data-merge-review-state='pending'] .cm-inlineChangedLine, &[data-merge-enabled='true'][data-merge-review-state='pending'] .cm-deletedChunk":
-        {
-            animation: "cm-merge-pulse 1.5s ease-in-out infinite",
-        },
-
     /* ── Chunk action buttons (inside deleted chunk) ───────── */
     "&[data-merge-enabled='true'] .cm-chunkButtons": {
         position: "absolute",
@@ -118,10 +112,5 @@ export const mergeViewTheme = EditorView.baseTheme({
         backgroundColor:
             "color-mix(in srgb, var(--diff-remove) 14%, var(--bg-primary))",
         borderColor: "color-mix(in srgb, var(--diff-remove) 24%, transparent)",
-    },
-
-    "@keyframes cm-merge-pulse": {
-        "0%, 100%": { opacity: "1" },
-        "50%": { opacity: "0.72" },
     },
 });

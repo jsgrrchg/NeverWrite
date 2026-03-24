@@ -34,8 +34,7 @@ export function getMergePresentationFlags(
         projectionState.reviewProjectionReady &&
         presentation.level !== "very-large";
     const enableControls =
-        showControlWidgets &&
-        (presentation.level === "small" || presentation.level === "medium");
+        showControlWidgets && presentation.level !== "very-large";
 
     return {
         highlightChanges: presentation.level !== "very-large",
