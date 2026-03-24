@@ -4,6 +4,9 @@ import {
     buildReviewChunks,
     buildReviewHunks,
     buildReviewProjection,
+    canResolveReviewChunkInlineExactly,
+    expandReviewHunksToOverlapClosure,
+    getReviewChunkControlMode,
     getReviewChunkById,
     getReviewHunkById,
     getReviewHunksForChunk,
@@ -194,6 +197,114 @@ describe("reviewProjection", () => {
             );
         },
     );
+
+    it("uses inline-overlap mode for ambiguous chunks and expands overlap closures", () => {
+        expect(
+            getReviewChunkControlMode({
+                ambiguous: true,
+                hasConflict: false,
+                multiHunk: true,
+            }),
+        ).toBe("inline-overlap");
+        expect(
+            canResolveReviewChunkInlineExactly({
+                ambiguous: true,
+                hasConflict: false,
+                multiHunk: true,
+            }),
+        ).toBe(true);
+
+        const chunkId = { trackedVersion: 1, key: "chunk-1" };
+        const overlapGroupId = "chunk-1::hunk-1|hunk-2";
+        const projection = {
+            trackedVersion: 1,
+            chunks: [
+                {
+                    id: chunkId,
+                    identityKey: "test.md",
+                    trackedVersion: 1,
+                    startLine: 0,
+                    endLine: 1,
+                    hunkIds: [
+                        { trackedVersion: 1, key: "hunk-1" },
+                        { trackedVersion: 1, key: "hunk-2" },
+                    ],
+                    overlapGroupIds: [overlapGroupId],
+                    multiHunk: true,
+                    hasConflict: false,
+                    ambiguous: true,
+                    controlMode: "inline-overlap" as const,
+                    canResolveInlineExactly: true,
+                },
+            ],
+            hunks: [
+                {
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    identityKey: "test.md",
+                    trackedVersion: 1,
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                    baseFrom: 0,
+                    baseTo: 3,
+                    currentFrom: 0,
+                    currentTo: 3,
+                    memberSpans: [
+                        {
+                            spanIndex: 0,
+                            baseFrom: 0,
+                            baseTo: 3,
+                            currentFrom: 0,
+                            currentTo: 3,
+                        },
+                    ],
+                    chunkId,
+                    overlapGroupId,
+                    overlapGroupSize: 2,
+                    hasConflict: false,
+                    ambiguous: true,
+                },
+                {
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    identityKey: "test.md",
+                    trackedVersion: 1,
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                    baseFrom: 2,
+                    baseTo: 5,
+                    currentFrom: 2,
+                    currentTo: 5,
+                    memberSpans: [
+                        {
+                            spanIndex: 1,
+                            baseFrom: 2,
+                            baseTo: 5,
+                            currentFrom: 2,
+                            currentTo: 5,
+                        },
+                    ],
+                    chunkId,
+                    overlapGroupId,
+                    overlapGroupSize: 2,
+                    hasConflict: false,
+                    ambiguous: true,
+                },
+            ],
+        };
+
+        const closure = expandReviewHunksToOverlapClosure(projection, [
+            projection.hunks[0]!,
+        ]);
+        expect(closure).toHaveLength(2);
+        expect(closure).toEqual(projection.hunks);
+    });
 
     it("changes Review ids when trackedVersion changes", () => {
         const base = "alpha\nbeta\ngamma";

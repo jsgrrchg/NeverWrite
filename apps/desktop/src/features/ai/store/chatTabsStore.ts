@@ -37,6 +37,7 @@ interface ChatTabsStore {
         historySessionId?: string | null,
         runtimeId?: string | null,
     ) => string;
+    reorderTabs: (fromIndex: number, toIndex: number) => void;
     removeTabsForSession: (sessionId: string) => void;
     pruneInvalidTabs: (validSessionIds: string[]) => void;
     hydrateForVault: (payload: PersistedChatWorkspace | null) => void;
@@ -422,6 +423,29 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         });
 
         return ensuredTabId;
+    },
+
+    reorderTabs: (fromIndex, toIndex) => {
+        set((state) => {
+            if (state.tabs.length < 2) return state;
+
+            const from = Math.max(
+                0,
+                Math.min(fromIndex, state.tabs.length - 1),
+            );
+            const to = Math.max(0, Math.min(toIndex, state.tabs.length - 1));
+            if (from === to) return state;
+
+            const tabs = [...state.tabs];
+            const [moved] = tabs.splice(from, 1);
+            if (!moved) return state;
+            tabs.splice(to, 0, moved);
+
+            return {
+                tabs,
+                activeTabId: resolveActiveTabId(tabs, state.activeTabId),
+            };
+        });
     },
 
     removeTabsForSession: (sessionId) => {

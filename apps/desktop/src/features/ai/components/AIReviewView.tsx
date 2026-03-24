@@ -234,6 +234,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     );
     const persistedState = useMemo(
         () => readPersistedReviewViewState(vaultPath, tab.sessionId),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- persistVersion invalidates cache on storage events
         [persistVersion, tab.sessionId, vaultPath],
     );
 

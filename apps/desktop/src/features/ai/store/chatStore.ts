@@ -71,6 +71,7 @@ import {
 import type { LastRejectUndo, TrackedFile } from "../diff/actionLogTypes";
 import {
     buildReviewProjection,
+    expandReviewHunksToOverlapClosure,
     type ReviewHunkId,
 } from "../diff/reviewProjection";
 import { useChatTabsStore } from "./chatTabsStore";
@@ -5354,11 +5355,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            const reviewState = getTrackedFileReviewState(tracked);
-            if (reviewState === "pending") {
-                return;
-            }
-
             let updatedFile: TrackedFile;
             let hunkUndoSnapshot: {
                 identityKey: string;
@@ -5517,11 +5513,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            const reviewState = getTrackedFileReviewState(tracked);
-            if (reviewState === "pending") {
-                return;
-            }
-
             const projection = buildReviewProjection(tracked);
             if (projection.trackedVersion !== trackedVersion) {
                 return;
@@ -5542,6 +5533,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (selectedReviewHunks.length === 0) {
                 return;
             }
+            const resolvedReviewHunks = expandReviewHunksToOverlapClosure(
+                projection,
+                selectedReviewHunks,
+            );
+            if (resolvedReviewHunks.length === 0) {
+                return;
+            }
 
             let updatedFile: TrackedFile;
             let hunkUndoSnapshot: {
@@ -5550,7 +5548,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             } | null = null;
 
             if (decision === "accepted") {
-                updatedFile = keepReviewHunks(tracked, selectedReviewHunks);
+                updatedFile = keepReviewHunks(tracked, resolvedReviewHunks);
             } else {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 if (vaultPath) {
@@ -5584,7 +5582,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 const { file } = rejectReviewHunks(
                     tracked,
-                    selectedReviewHunks,
+                    resolvedReviewHunks,
                 );
                 updatedFile = file;
                 hunkUndoSnapshot = { identityKey, snapshot: tracked };
