@@ -1020,6 +1020,9 @@ class CodeBlockHeaderWidget extends WidgetType {
     }
 }
 
+const codeBlockFenceHidden = Decoration.line({
+    class: "cm-code-block-fence-hidden",
+});
 const codeBlockLine = Decoration.line({ class: "cm-code-block-line" });
 const codeBlockLineFirst = Decoration.line({
     class: "cm-code-block-line cm-code-block-line-first",
@@ -1096,6 +1099,23 @@ function buildCodeBlockDecorations(state: EditorState): DecorationSet {
                         block: true,
                         side: -1,
                     }),
+                });
+            }
+
+            // Collapse the opening fence line (```lang) so it takes no space
+            decos.push({
+                from: openLine.from,
+                to: openLine.from,
+                deco: codeBlockFenceHidden,
+            });
+
+            // Collapse the closing fence line (```) so it takes no space
+            if (closeFrom >= 0) {
+                const closeLine = state.doc.lineAt(closeFrom);
+                decos.push({
+                    from: closeLine.from,
+                    to: closeLine.from,
+                    deco: codeBlockFenceHidden,
                 });
             }
 

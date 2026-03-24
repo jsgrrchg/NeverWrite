@@ -776,6 +776,14 @@ export const livePreviewTheme = EditorView.baseTheme({
         fontStyle: "italic",
         fontSize: "0.9em",
     },
+    ".cm-code-block-fence-hidden": {
+        height: "0",
+        padding: "0 !important",
+        margin: "0",
+        lineHeight: "0",
+        fontSize: "0",
+        overflow: "hidden",
+    },
     ".cm-code-block-header": {
         display: "flex",
         justifyContent: "space-between",
