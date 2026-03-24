@@ -10,6 +10,7 @@ import type {
     QueuedChatMessage,
 } from "../types";
 import { deriveReviewItems } from "../diff/editedFilesPresentationModel";
+import * as reviewProjectionModule from "../diff/reviewProjection";
 import { buildReviewProjection } from "../diff/reviewProjection";
 import { selectVisibleTrackedFiles } from "./editedFilesBufferModel";
 import type { TrackedFile } from "../diff/actionLogTypes";
@@ -4343,7 +4344,7 @@ describe("chatStore", () => {
         });
     });
 
-    it("keeps hunk review disabled while the tracked file is pending and finalizes it on message completion", async () => {
+    it("allows hunk review while the tracked file is pending", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
@@ -4380,6 +4381,14 @@ describe("chatStore", () => {
         expect(pendingEntry.reviewState).toBe("pending");
 
         invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(pendingEntry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
             if (
                 command === "ai_save_session_history" ||
                 command === "ai_prune_session_histories"
@@ -4400,22 +4409,20 @@ describe("chatStore", () => {
                 hunk.newEnd,
             );
 
-        const stillPending = getEditedBufferEntry(activeSessionId, workCycleId);
-        expect(stillPending.currentText).toBe("new line");
-        expect(stillPending.reviewState).toBe("pending");
-        expect(invokeMock).not.toHaveBeenCalledWith(
-            "ai_restore_text_file",
-            expect.anything(),
-        );
-
-        useChatStore.getState().applyMessageCompleted({
-            session_id: activeSessionId,
-            message_id: "assistant-1",
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/vault/src/watcher.rs",
+            previousPath: null,
+            content: "old line",
         });
-
-        expect(
-            getEditedBufferEntry(activeSessionId, workCycleId).reviewState,
-        ).toBe("finalized");
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_get_text_file_hash",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                path: "/vault/src/watcher.rs",
+            }),
+        );
     });
 
     it("rejects a hunk only when the on-disk hash still matches the applied snapshot", async () => {
@@ -6403,6 +6410,56 @@ describe("chatStore", () => {
 
         const [trackedAfter] = getVisibleBuffer(session.sessionId);
         expect(trackedAfter).toEqual(trackedBefore);
+    });
+
+    it("resolveReviewHunks resolves the expanded overlap closure returned by projection", async () => {
+        const file = createTrackedFile(
+            "notes/overlap-closure.md",
+            "one\ntwo\nthree\nfour",
+            "ONE\ntwo\nTHREE\nfour",
+            {
+                reviewState: "finalized",
+            },
+        );
+        const session = createSessionWithTrackedFiles("session-overlap", [
+            file,
+        ]);
+        const projection = buildReviewProjection(file);
+
+        expect(projection.hunks).toHaveLength(2);
+        const closureSpy = vi.spyOn(
+            reviewProjectionModule,
+            "expandReviewHunksToOverlapClosure",
+        );
+        closureSpy.mockImplementation((_projection, selectedHunks) => {
+            if (selectedHunks.length === 1) {
+                return projection.hunks;
+            }
+            return [...selectedHunks];
+        });
+        try {
+            useChatStore.setState({
+                activeSessionId: session.sessionId,
+                sessionsById: {
+                    [session.sessionId]: session,
+                },
+            });
+
+            await useChatStore
+                .getState()
+                .resolveReviewHunks(
+                    session.sessionId,
+                    file.identityKey,
+                    "accepted",
+                    file.version,
+                    [projection.hunks[0]!.id],
+                );
+
+            expect(closureSpy).toHaveBeenCalledTimes(1);
+            expect(getVisibleBuffer(session.sessionId)).toHaveLength(0);
+        } finally {
+            closureSpy.mockRestore();
+        }
     });
 
     it("keeps panel and inline review in sync for precise single-hunk accepts", async () => {

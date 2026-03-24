@@ -14,7 +14,11 @@ export interface ReviewChunkId {
     key: string;
 }
 
-export type ReviewChunkControlMode = "chunk" | "hunk" | "panel-only";
+export type ReviewChunkControlMode =
+    | "chunk"
+    | "hunk"
+    | "inline-overlap"
+    | "panel-only";
 
 export interface ReviewHunkMemberSpan {
     spanIndex: number;
@@ -40,6 +44,8 @@ export interface ReviewHunk {
     currentTo: number;
     memberSpans: ReviewHunkMemberSpan[];
     chunkId: ReviewChunkId;
+    overlapGroupId: string;
+    overlapGroupSize: number;
     hasConflict: boolean;
     ambiguous: boolean;
 }
@@ -51,6 +57,7 @@ export interface ReviewChunk {
     startLine: number;
     endLine: number;
     hunkIds: ReviewHunkId[];
+    overlapGroupIds: string[];
     multiHunk: boolean;
     hasConflict: boolean;
     ambiguous: boolean;
@@ -89,6 +96,9 @@ interface ReviewChunkSeed {
     startLine: number;
     endLine: number;
     hunkIds: ReviewHunkId[];
+    overlapGroupIds: string[];
+    overlapGroupByHunkKey: Record<string, string>;
+    overlapGroupSizeByHunkKey: Record<string, number>;
     multiHunk: boolean;
     hasConflict: boolean;
     ambiguous: boolean;
@@ -339,8 +349,12 @@ export function getReviewChunkControlMode(chunk: {
     hasConflict: boolean;
     multiHunk: boolean;
 }): ReviewChunkControlMode {
-    if (chunk.ambiguous || chunk.hasConflict) {
+    if (chunk.hasConflict) {
         return "panel-only";
+    }
+
+    if (chunk.ambiguous) {
+        return "inline-overlap";
     }
 
     return chunk.multiHunk ? "hunk" : "chunk";
@@ -413,13 +427,70 @@ function buildReviewChunkSeeds(hunks: ReviewHunkSeed[]): ReviewChunkSeed[] {
     const flushCurrentChunk = () => {
         const hunkIds = currentHunks.map((hunk) => hunk.id);
         const multiHunk = currentHunks.length > 1;
-        const ambiguous =
-            multiHunk &&
-            currentHunks.some((hunk, index) =>
-                currentHunks.slice(index + 1).some((other) => {
-                    return hunksOverlapCanonically(hunk, other);
-                }),
+        const chunkId = buildReviewChunkId(
+            currentHunks[0]!.trackedVersion,
+            hunkIds,
+        );
+        const overlapGroupByHunkKey: Record<string, string> = {};
+        const overlapGroupSizeByHunkKey: Record<string, number> = {};
+        const overlapGroupIds: string[] = [];
+        const visited = new Set<number>();
+
+        for (let index = 0; index < currentHunks.length; index += 1) {
+            if (visited.has(index)) {
+                continue;
+            }
+
+            const stack = [index];
+            const componentIndices: number[] = [];
+
+            while (stack.length > 0) {
+                const cursor = stack.pop();
+                if (cursor == null || visited.has(cursor)) {
+                    continue;
+                }
+
+                visited.add(cursor);
+                componentIndices.push(cursor);
+
+                for (
+                    let candidate = 0;
+                    candidate < currentHunks.length;
+                    candidate += 1
+                ) {
+                    if (visited.has(candidate) || candidate === cursor) {
+                        continue;
+                    }
+
+                    if (
+                        hunksOverlapCanonically(
+                            currentHunks[cursor]!,
+                            currentHunks[candidate]!,
+                        )
+                    ) {
+                        stack.push(candidate);
+                    }
+                }
+            }
+
+            componentIndices.sort((left, right) => left - right);
+            const componentKeys = componentIndices.map(
+                (componentIndex) => currentHunks[componentIndex]!.id.key,
             );
+            const overlapGroupId = `${chunkId.key}::${componentKeys.join("|")}`;
+            const overlapGroupSize = componentKeys.length;
+            overlapGroupIds.push(overlapGroupId);
+
+            componentKeys.forEach((hunkKey) => {
+                overlapGroupByHunkKey[hunkKey] = overlapGroupId;
+                overlapGroupSizeByHunkKey[hunkKey] = overlapGroupSize;
+            });
+        }
+
+        const maxOverlapGroupSize = Object.values(
+            overlapGroupSizeByHunkKey,
+        ).reduce((maxSize, size) => Math.max(maxSize, size), 0);
+        const ambiguous = multiHunk && maxOverlapGroupSize > 1;
         const hasConflict = currentHunks.some((hunk) => hunk.hasConflict);
         const controlMode = getReviewChunkControlMode({
             ambiguous,
@@ -428,12 +499,15 @@ function buildReviewChunkSeeds(hunks: ReviewHunkSeed[]): ReviewChunkSeed[] {
         });
 
         chunks.push({
-            id: buildReviewChunkId(currentHunks[0]!.trackedVersion, hunkIds),
+            id: chunkId,
             identityKey: currentHunks[0]!.identityKey,
             trackedVersion: currentHunks[0]!.trackedVersion,
             startLine: currentStartLine,
             endLine: currentEndLine,
             hunkIds,
+            overlapGroupIds,
+            overlapGroupByHunkKey,
+            overlapGroupSizeByHunkKey,
             multiHunk,
             hasConflict,
             ambiguous,
@@ -496,6 +570,8 @@ export function buildReviewProjection(file: TrackedFile): ReviewProjection {
     const chunkSeeds = buildReviewChunkSeeds(hunkSeeds);
     const chunkIdByHunkKey = new Map<string, ReviewChunkId>();
     const ambiguousChunkKeys = new Set<string>();
+    const overlapGroupIdByHunkKey = new Map<string, string>();
+    const overlapGroupSizeByHunkKey = new Map<string, number>();
 
     chunkSeeds.forEach((chunk) => {
         if (chunk.ambiguous) {
@@ -503,6 +579,14 @@ export function buildReviewProjection(file: TrackedFile): ReviewProjection {
         }
         chunk.hunkIds.forEach((hunkId) => {
             chunkIdByHunkKey.set(hunkId.key, chunk.id);
+            overlapGroupIdByHunkKey.set(
+                hunkId.key,
+                chunk.overlapGroupByHunkKey[hunkId.key] ?? chunk.id.key,
+            );
+            overlapGroupSizeByHunkKey.set(
+                hunkId.key,
+                chunk.overlapGroupSizeByHunkKey[hunkId.key] ?? 1,
+            );
         });
     });
 
@@ -530,6 +614,9 @@ export function buildReviewProjection(file: TrackedFile): ReviewProjection {
             currentTo: seed.currentTo,
             memberSpans: seed.memberSpans,
             chunkId,
+            overlapGroupId:
+                overlapGroupIdByHunkKey.get(seed.id.key) ?? chunkId.key,
+            overlapGroupSize: overlapGroupSizeByHunkKey.get(seed.id.key) ?? 1,
             hasConflict: seed.hasConflict,
             ambiguous: ambiguousChunkKeys.has(chunkId.key),
         };
@@ -542,6 +629,7 @@ export function buildReviewProjection(file: TrackedFile): ReviewProjection {
         startLine: chunk.startLine,
         endLine: chunk.endLine,
         hunkIds: chunk.hunkIds,
+        overlapGroupIds: chunk.overlapGroupIds,
         multiHunk: chunk.multiHunk,
         hasConflict: chunk.hasConflict,
         ambiguous: chunk.ambiguous,
@@ -616,6 +704,28 @@ export function getReviewHunksForChunk(
     return projection.hunks.filter((hunk) =>
         reviewChunkIdEquals(hunk.chunkId, chunkId),
     );
+}
+
+export function expandReviewHunksToOverlapClosure(
+    projection: ReviewProjection,
+    selectedHunks: readonly ReviewHunk[],
+): ReviewHunk[] {
+    if (selectedHunks.length === 0) {
+        return [];
+    }
+
+    const selectedOverlapGroupIds = new Set(
+        selectedHunks.map((hunk) => hunk.overlapGroupId),
+    );
+    const expanded = projection.hunks.filter((hunk) =>
+        selectedOverlapGroupIds.has(hunk.overlapGroupId),
+    );
+
+    if (expanded.length === 0) {
+        return [...selectedHunks];
+    }
+
+    return expanded;
 }
 
 export function reviewProjectionMatchesSpans(

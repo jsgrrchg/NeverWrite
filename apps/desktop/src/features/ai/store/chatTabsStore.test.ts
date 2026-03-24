@@ -102,6 +102,18 @@ describe("chatTabsStore", () => {
         expect(useChatTabsStore.getState().activeTabId).toBe(firstTabId);
     });
 
+    it("reorders tabs by index", () => {
+        useChatTabsStore.getState().openSessionTab("session-a");
+        useChatTabsStore.getState().openSessionTab("session-b");
+        useChatTabsStore.getState().openSessionTab("session-c");
+
+        useChatTabsStore.getState().reorderTabs(0, 2);
+
+        expect(
+            useChatTabsStore.getState().tabs.map((tab) => tab.sessionId),
+        ).toEqual(["session-b", "session-c", "session-a"]);
+    });
+
     it("replaces persisted session ids with live ids", () => {
         useChatTabsStore.getState().openSessionTab("persisted:history-1");
         const originalTabId = useChatTabsStore.getState().tabs[0]?.id;
