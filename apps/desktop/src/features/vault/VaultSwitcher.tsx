@@ -15,11 +15,20 @@ import { getPathBaseName } from "../../app/utils/path";
 export function VaultSwitcher() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [isOpen, setIsOpen] = useState(false);
+    const [recentSearch, setRecentSearch] = useState("");
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         path: string | null;
     }> | null>(null);
     const ref = useRef<HTMLDivElement>(null);
     const recents: RecentVault[] = isOpen ? getRecentVaults() : [];
+    const normalizedRecentSearch = recentSearch.trim().toLowerCase();
+    const filteredRecents = recents.filter((vault) => {
+        if (!normalizedRecentSearch) return true;
+        return (
+            vault.name.toLowerCase().includes(normalizedRecentSearch) ||
+            vault.path.toLowerCase().includes(normalizedRecentSearch)
+        );
+    });
 
     const vaultName = vaultPath ? getPathBaseName(vaultPath) : "No vault";
 
@@ -40,6 +49,12 @@ export function VaultSwitcher() {
             document.removeEventListener("mousedown", handleDown);
             document.removeEventListener("keydown", handleKey);
         };
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            setRecentSearch("");
+        }
     }, [isOpen]);
 
     const handleSelectVault = (path: string) => {
@@ -109,12 +124,101 @@ export function VaultSwitcher() {
                         padding: 4,
                     }}
                 >
-                    {recents.map((v) =>
-                        menuItem(
-                            v.name,
-                            () => handleSelectVault(v.path),
-                            v.path === vaultPath,
-                        ),
+                    {recents.length > 0 && (
+                        <div
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--border)",
+                                borderRadius: 6,
+                                padding: "5px 8px",
+                                marginBottom: 4,
+                            }}
+                        >
+                            <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                style={{ opacity: 0.4, flexShrink: 0 }}
+                            >
+                                <circle
+                                    cx="7"
+                                    cy="7"
+                                    r="5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                />
+                                <path
+                                    d="m13 13-2.5-2.5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                />
+                            </svg>
+                            <input
+                                value={recentSearch}
+                                onChange={(event) =>
+                                    setRecentSearch(event.target.value)
+                                }
+                                aria-label="Search vaults"
+                                placeholder="Search vaults…"
+                                style={{
+                                    flex: 1,
+                                    border: "none",
+                                    background: "transparent",
+                                    fontSize: 12,
+                                    color: "var(--text-primary)",
+                                    outline: "none",
+                                    fontFamily: "inherit",
+                                    minWidth: 0,
+                                }}
+                            />
+                            <span
+                                style={{
+                                    fontSize: 10,
+                                    color: "var(--text-secondary)",
+                                    fontFamily: "monospace",
+                                    flexShrink: 0,
+                                }}
+                            >
+                                {filteredRecents.length}/{recents.length}
+                            </span>
+                        </div>
+                    )}
+                    {recents.length > 0 && (
+                        <div
+                            role="list"
+                            aria-label="Vault switcher recent vaults"
+                            style={{
+                                maxHeight: 240,
+                                overflowY: "auto",
+                            }}
+                        >
+                            {filteredRecents.length === 0 ? (
+                                <div
+                                    style={{
+                                        padding: "6px 8px 8px",
+                                        fontSize: 12,
+                                        color: "var(--text-secondary)",
+                                    }}
+                                >
+                                    No vaults match your search.
+                                </div>
+                            ) : (
+                                filteredRecents.map((v) => (
+                                    <div key={v.path} role="listitem">
+                                        {menuItem(
+                                            v.name,
+                                            () => handleSelectVault(v.path),
+                                            v.path === vaultPath,
+                                        )}
+                                    </div>
+                                ))
+                            )}
+                        </div>
                     )}
                     {recents.length > 0 && (
                         <div
