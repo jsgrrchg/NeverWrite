@@ -1,6 +1,8 @@
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useEditorStore } from "../../app/store/editorStore";
+import { formatShortcutAction } from "../../app/shortcuts/format";
+import { getDesktopPlatform } from "../../app/utils/platform";
 
 export type SidebarView = "files" | "search" | "tags" | "bookmarks" | "maps";
 
@@ -154,6 +156,15 @@ export function ActivityBar({
         terminalButtonVisible &&
         !bottomPanelCollapsed &&
         bottomPanelView === "terminal";
+    const platform = getDesktopPlatform();
+    const livePreviewShortcut = formatShortcutAction(
+        "toggle_live_preview",
+        platform,
+    );
+    const openSettingsShortcut = formatShortcutAction(
+        "open_settings",
+        platform,
+    );
 
     const handleToggleTerminalPanel = () => {
         if (!terminalButtonVisible) return;
@@ -293,8 +304,8 @@ export function ActivityBar({
                 }
                 title={
                     livePreviewEnabled
-                        ? "Disable Live Preview (⌘E)"
-                        : "Enable Live Preview (⌘E)"
+                        ? `Disable Live Preview (${livePreviewShortcut})`
+                        : `Enable Live Preview (${livePreviewShortcut})`
                 }
                 className="flex items-center justify-center rounded"
                 style={{
@@ -500,7 +511,7 @@ export function ActivityBar({
             {/* Settings gear at bottom */}
             <button
                 onClick={onOpenSettings}
-                title="Settings (⌘,)"
+                title={`Settings (${openSettingsShortcut})`}
                 className="flex items-center justify-center rounded"
                 style={{
                     ...baseButtonStyle,

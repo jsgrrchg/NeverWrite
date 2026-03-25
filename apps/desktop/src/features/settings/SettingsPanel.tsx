@@ -21,6 +21,8 @@ import {
 } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { useSpellcheckStore } from "../spellcheck/store";
+import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
+import { formatPrimaryShortcut } from "../../app/shortcuts/format";
 import {
     buildSpellcheckLanguageDescription,
     buildSpellcheckLanguageSelectOptions,
@@ -1763,24 +1765,11 @@ function DevelopersSettings() {
     );
 }
 
-const SHORTCUTS: { label: string; shortcut: string; category: string }[] = [
-    { category: "Navigation", label: "Command Palette", shortcut: "⌘K" },
-    { category: "Navigation", label: "Quick Switcher", shortcut: "⌘O" },
-    { category: "Navigation", label: "Search in Vault", shortcut: "⌘⇧F" },
-    { category: "Vault", label: "New Note", shortcut: "⌘N" },
-    { category: "Vault", label: "Open Vault", shortcut: "⌘⇧O" },
-    { category: "Editor", label: "Bold Selection", shortcut: "⌘B" },
-    { category: "Editor", label: "Highlight Selection", shortcut: "⌘⇧H" },
-    { category: "Editor", label: "Toggle Live Preview", shortcut: "⌘E" },
-    { category: "Editor", label: "Save Note", shortcut: "⌘⇧S (manual)" },
-    { category: "Editor", label: "Close Tab", shortcut: "⌘W" },
-    { category: "View", label: "Toggle Sidebar", shortcut: "⌘S" },
-    { category: "View", label: "Toggle Right Panel", shortcut: "⌘J" },
-    { category: "View", label: "Open Settings", shortcut: "⌘," },
-];
-
 function ShortcutsSettings() {
-    const grouped = SHORTCUTS.reduce<Record<string, typeof SHORTCUTS>>(
+    const platform = getDesktopPlatform();
+    const shortcuts = getShortcutSettingsEntries(platform);
+
+    const grouped = shortcuts.reduce<Record<string, typeof shortcuts>>(
         (acc, s) => {
             (acc[s.category] ??= []).push(s);
             return acc;
@@ -1852,6 +1841,7 @@ function AISettings() {
     const setHistoryRetentionDays = useChatStore(
         (s) => s.setHistoryRetentionDays,
     );
+    const sendShortcut = formatPrimaryShortcut("Enter", getDesktopPlatform());
 
     return (
         <div>
@@ -1914,8 +1904,8 @@ function AISettings() {
             />
             <SectionLabel>Composer</SectionLabel>
             <Row
-                label="Require ⌘ Enter to send"
-                description="Press ⌘ Enter to send messages. Enter alone adds a new line, making it easier to write longer messages."
+                label={`Require ${sendShortcut} to send`}
+                description={`Press ${sendShortcut} to send messages. Enter alone adds a new line, making it easier to write longer messages.`}
                 control={
                     <Toggle
                         value={requireCmdEnterToSend}

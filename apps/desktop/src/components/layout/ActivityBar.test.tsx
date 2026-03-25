@@ -1,10 +1,24 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ActivityBar } from "./ActivityBar";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 
 describe("ActivityBar integrated terminal button", () => {
+    const originalUserAgent = navigator.userAgent;
+    const originalPlatform = navigator.platform;
+
+    function setNavigatorIdentity(userAgent: string, platform: string) {
+        Object.defineProperty(window.navigator, "userAgent", {
+            configurable: true,
+            value: userAgent,
+        });
+        Object.defineProperty(window.navigator, "platform", {
+            configurable: true,
+            value: platform,
+        });
+    }
+
     beforeEach(() => {
         useSettingsStore.setState({
             livePreviewEnabled: true,
@@ -24,6 +38,10 @@ describe("ActivityBar integrated terminal button", () => {
             bottomPanelHeight: 240,
             bottomPanelView: "terminal",
         });
+    });
+
+    afterEach(() => {
+        setNavigatorIdentity(originalUserAgent, originalPlatform);
     });
 
     it("shows the button only when the integrated terminal is enabled", () => {
@@ -80,5 +98,28 @@ describe("ActivityBar integrated terminal button", () => {
         fireEvent.click(screen.getByTitle("Hide Integrated Terminal"));
 
         expect(useLayoutStore.getState().bottomPanelCollapsed).toBe(true);
+    });
+
+    it("uses platform-aware shortcut labels in button titles", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        useSettingsStore.setState({
+            livePreviewEnabled: false,
+        });
+
+        render(
+            <ActivityBar
+                active="files"
+                onChange={() => {}}
+                onOpenSettings={() => {}}
+            />,
+        );
+
+        expect(
+            screen.getByTitle("Enable Live Preview (Ctrl+E)"),
+        ).toBeInTheDocument();
+        expect(screen.getByTitle("Settings (Ctrl+,)")).toBeInTheDocument();
     });
 });

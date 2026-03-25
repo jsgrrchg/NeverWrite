@@ -15,7 +15,7 @@ import {
 import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 import { useSpellcheckStore } from "../spellcheck/store";
-import { Editor } from "./Editor";
+import { Editor, REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 import {
     flushPromises,
     mockInvoke,
@@ -1712,5 +1712,85 @@ describe("Editor", () => {
             "tab-1",
         ]);
         expect(useEditorStore.getState().activeTabId).toBe("tab-1");
+    });
+
+    it("saves the active note before handling a global close-tab request", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "save_note") {
+                return {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    content: "Updated body",
+                };
+            }
+            return undefined;
+        });
+
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Original body",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+        setVaultNotes([
+            {
+                id: "notes/current",
+                title: "Current",
+                path: "/vault/notes/current.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+            {
+                id: "notes/other",
+                title: "Other",
+                path: "/vault/notes/other.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: "Updated body",
+                },
+            });
+        });
+
+        await act(async () => {
+            window.dispatchEvent(new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT));
+            await flushPromises();
+        });
+
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "save_note",
+            expect.objectContaining({
+                noteId: "notes/current",
+                content: "Updated body",
+                vaultPath: "/vault",
+                opId: expect.any(String),
+            }),
+        );
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-2",
+        ]);
+        expect(useEditorStore.getState().activeTabId).toBe("tab-2");
     });
 });

@@ -40,6 +40,15 @@ import {
 import { useThemeStore } from "../../app/store/themeStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    getCodeMirrorShortcut,
+    matchesShortcutAction,
+    formatPrimaryShortcut,
+} from "../../app/shortcuts/registry";
+import { getDesktopPlatform } from "../../app/utils/platform";
+
+export const REQUEST_CLOSE_ACTIVE_TAB_EVENT =
+    "vaultai:editor:request-close-active-tab";
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
@@ -519,6 +528,34 @@ export function Editor({
             clearNoteExternalConflict,
         ],
     );
+
+    const closeActiveTabWithSave = useCallback(() => {
+        const { tabs, activeTabId, closeTab } = useEditorStore.getState();
+        if (!activeTabId) return;
+
+        const tab = tabs.find((item) => item.id === activeTabId);
+        if (!tab) return;
+
+        if (!isNoteTab(tab)) {
+            closeTab(activeTabId);
+            return;
+        }
+
+        const content = viewRef.current?.state.doc.toString() ?? tab.content;
+        void (async () => {
+            const saved = await saveNow(tab, content);
+            if (saved === false) return;
+
+            // Clean up saved EditorState for all notes in this tab's history.
+            for (const entry of tab.history ?? []) {
+                if (entry.kind === "note") {
+                    tabStatesRef.current.delete(entry.noteId);
+                }
+            }
+            tabStatesRef.current.delete(tab.noteId);
+            closeTab(activeTabId);
+        })();
+    }, [saveNow]);
 
     const reloadNoteFromDisk = useCallback(async () => {
         const tab = activeTabRef.current;
@@ -1477,11 +1514,12 @@ export function Editor({
     useEffect(() => {
         const whenEditorReady = () =>
             viewRef.current !== null && activeTabRef.current !== null;
+        const platform = getDesktopPlatform();
         const commands = [
             {
                 id: "editor:heading-1",
                 label: "Heading 1",
-                shortcut: "\u23181",
+                shortcut: formatPrimaryShortcut("1", platform),
                 execute: () => {
                     applyHeadingCommand(1);
                 },
@@ -1489,7 +1527,7 @@ export function Editor({
             {
                 id: "editor:heading-2",
                 label: "Heading 2",
-                shortcut: "\u23182",
+                shortcut: formatPrimaryShortcut("2", platform),
                 execute: () => {
                     applyHeadingCommand(2);
                 },
@@ -1497,7 +1535,7 @@ export function Editor({
             {
                 id: "editor:heading-3",
                 label: "Heading 3",
-                shortcut: "\u23183",
+                shortcut: formatPrimaryShortcut("3", platform),
                 execute: () => {
                     applyHeadingCommand(3);
                 },
@@ -1505,7 +1543,7 @@ export function Editor({
             {
                 id: "editor:heading-4",
                 label: "Heading 4",
-                shortcut: "\u23184",
+                shortcut: formatPrimaryShortcut("4", platform),
                 execute: () => {
                     applyHeadingCommand(4);
                 },
@@ -1513,7 +1551,7 @@ export function Editor({
             {
                 id: "editor:heading-5",
                 label: "Heading 5",
-                shortcut: "\u23185",
+                shortcut: formatPrimaryShortcut("5", platform),
                 execute: () => {
                     applyHeadingCommand(5);
                 },
@@ -1521,7 +1559,7 @@ export function Editor({
             {
                 id: "editor:heading-6",
                 label: "Heading 6",
-                shortcut: "\u23186",
+                shortcut: formatPrimaryShortcut("6", platform),
                 execute: () => {
                     applyHeadingCommand(6);
                 },
@@ -1529,7 +1567,7 @@ export function Editor({
             {
                 id: "editor:heading-0",
                 label: "Remove Heading",
-                shortcut: "\u23180",
+                shortcut: formatPrimaryShortcut("0", platform),
                 execute: () => {
                     applyHeadingCommand(0);
                 },
@@ -1749,7 +1787,9 @@ export function Editor({
                             run: () => applyHeadingCommand(0),
                         },
                         {
-                            key: "Mod-Shift-h",
+                            key:
+                                getCodeMirrorShortcut("highlight_selection") ??
+                                "Mod-Shift-h",
                             run: (view) => {
                                 const transform = getSelectionTransform(
                                     view.state,
@@ -1766,7 +1806,9 @@ export function Editor({
                             },
                         },
                         {
-                            key: "Mod-b",
+                            key:
+                                getCodeMirrorShortcut("bold_selection") ??
+                                "Mod-b",
                             run: (view) => {
                                 const transform = getSelectionTransform(
                                     view.state,
@@ -2530,37 +2572,18 @@ export function Editor({
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
-            const { tabs, activeTabId, closeTab } = useEditorStore.getState();
+            const platform = getDesktopPlatform();
+            const { tabs, activeTabId } = useEditorStore.getState();
 
             // Cmd+W / Ctrl+W: close active tab
-            if ((e.metaKey || e.ctrlKey) && e.key === "w") {
+            if (matchesShortcutAction(e, "close_tab", platform)) {
                 e.preventDefault();
-                if (activeTabId) {
-                    const tab = tabs.find((t) => t.id === activeTabId);
-                    if (tab && isNoteTab(tab)) {
-                        const content =
-                            viewRef.current?.state.doc.toString() ??
-                            tab.content;
-                        void (async () => {
-                            const saved = await saveNow(tab, content);
-                            if (saved === false) return;
-                            // Clean up saved EditorState for all notes in this tab's history
-                            for (const entry of tab.history ?? []) {
-                                if (entry.kind === "note") {
-                                    tabStatesRef.current.delete(entry.noteId);
-                                }
-                            }
-                            tabStatesRef.current.delete(tab.noteId);
-                            closeTab(activeTabId);
-                        })();
-                    } else {
-                        closeTab(activeTabId);
-                    }
-                }
+                closeActiveTabWithSave();
+                return;
             }
 
             // Cmd+Shift+S / Ctrl+Shift+S: save active tab immediately
-            if ((e.metaKey || e.ctrlKey) && e.key === "s" && e.shiftKey) {
+            if (matchesShortcutAction(e, "save_note", platform)) {
                 const tab = tabs.find((item) => item.id === activeTabId);
                 if (!tab || !isNoteTab(tab)) return;
                 e.preventDefault();
@@ -2609,7 +2632,23 @@ export function Editor({
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [saveNow]);
+    }, [closeActiveTabWithSave, saveNow]);
+
+    useEffect(() => {
+        const handleCloseRequest = () => {
+            closeActiveTabWithSave();
+        };
+
+        window.addEventListener(
+            REQUEST_CLOSE_ACTIVE_TAB_EVENT,
+            handleCloseRequest,
+        );
+        return () =>
+            window.removeEventListener(
+                REQUEST_CLOSE_ACTIVE_TAB_EVENT,
+                handleCloseRequest,
+            );
+    }, [closeActiveTabWithSave]);
 
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,

@@ -15,7 +15,10 @@ import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
-import { Editor } from "./features/editor/Editor";
+import {
+    Editor,
+    REQUEST_CLOSE_ACTIVE_TAB_EVENT,
+} from "./features/editor/Editor";
 import { FileTabView } from "./features/editor/FileTabView";
 import { AIReviewView } from "./features/ai/components/AIReviewView";
 import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
@@ -74,6 +77,12 @@ import {
     OPEN_YOUTUBE_MODAL_EVENT,
     type OpenYouTubeModalPayload,
 } from "./features/editor/youtube";
+import { formatShortcutAction } from "./app/shortcuts/format";
+import {
+    matchesShortcutAction,
+    getShortcutDefinition,
+} from "./app/shortcuts/registry";
+import { getDesktopPlatform } from "./app/utils/platform";
 import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
 import {
     flushChatTabsPersistence,
@@ -132,6 +141,31 @@ function SidebarPanel({ view }: { view: SidebarView }) {
             {view !== "maps" && <VaultSwitcher />}
         </div>
     );
+}
+
+function cycleEditorTabs(backward: boolean) {
+    const { tabs, activeTabId, switchTab } = useEditorStore.getState();
+    const idx = tabs.findIndex((tab) => tab.id === activeTabId);
+    if (idx === -1 || tabs.length <= 1) return;
+
+    const offset = backward ? tabs.length - 1 : 1;
+    switchTab(tabs[(idx + offset) % tabs.length].id);
+}
+
+function openEmptyTab() {
+    if (!useVaultStore.getState().vaultPath) return;
+
+    useEditorStore.getState().insertExternalTab({
+        id: crypto.randomUUID(),
+        noteId: "",
+        title: "New Tab",
+        content: "",
+    });
+}
+
+function toggleLivePreviewSetting() {
+    const { livePreviewEnabled, setSetting } = useSettingsStore.getState();
+    setSetting("livePreviewEnabled", !livePreviewEnabled);
 }
 
 function RightPanel() {
@@ -420,6 +454,7 @@ function YouTubeModalHost() {
 // Register all initial commands
 function useRegisterCommands(
     openSearchPanel: () => void,
+    openSettings: () => void,
     developerCommandsEnabled: boolean,
 ) {
     const register = useCommandStore((s) => s.register);
@@ -427,6 +462,23 @@ function useRegisterCommands(
     const openQuickSwitcher = useCommandStore((s) => s.openQuickSwitcher);
 
     useEffect(() => {
+        const platform = getDesktopPlatform();
+        const commandPaletteShortcut = getShortcutDefinition("command_palette");
+        const quickSwitcherShortcut = getShortcutDefinition("quick_switcher");
+        const openVaultShortcut = getShortcutDefinition("open_vault");
+        const newNoteShortcut = getShortcutDefinition("new_note");
+        const closeTabShortcut = getShortcutDefinition("close_tab");
+        const newTabShortcut = getShortcutDefinition("new_tab");
+        const toggleSidebarShortcut = getShortcutDefinition(
+            "toggle_left_sidebar",
+        );
+        const toggleRightPanelShortcut =
+            getShortcutDefinition("toggle_right_panel");
+        const searchInVaultShortcut = getShortcutDefinition("search_in_vault");
+        const openSettingsShortcut = getShortcutDefinition("open_settings");
+        const toggleLivePreviewShortcut = getShortcutDefinition(
+            "toggle_live_preview",
+        );
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             useEditorStore.getState().activeTabId !== null;
@@ -438,17 +490,17 @@ function useRegisterCommands(
         // Navigation
         register({
             id: "nav:command-palette",
-            label: "Command Palette",
-            shortcut: "\u2318K",
-            category: "Navigation",
+            label: commandPaletteShortcut.label,
+            shortcut: formatShortcutAction(commandPaletteShortcut.id, platform),
+            category: commandPaletteShortcut.category,
             execute: openCommandPalette,
         });
 
         register({
             id: "nav:quick-switcher",
-            label: "Quick Switcher",
-            shortcut: "\u2318O",
-            category: "Navigation",
+            label: quickSwitcherShortcut.label,
+            shortcut: formatShortcutAction(quickSwitcherShortcut.id, platform),
+            category: quickSwitcherShortcut.category,
             when: hasVault,
             execute: openQuickSwitcher,
         });
@@ -456,9 +508,9 @@ function useRegisterCommands(
         // Vault
         register({
             id: "vault:open",
-            label: "Open Vault",
-            shortcut: "\u2318\u21e7O",
-            category: "Vault",
+            label: openVaultShortcut.label,
+            shortcut: formatShortcutAction(openVaultShortcut.id, platform),
+            category: openVaultShortcut.category,
             execute: () => {
                 void open({ directory: true, title: "Select vault" }).then(
                     (selected) => {
@@ -471,9 +523,9 @@ function useRegisterCommands(
 
         register({
             id: "vault:new-note",
-            label: "New Note",
-            shortcut: "\u2318N",
-            category: "Vault",
+            label: newNoteShortcut.label,
+            shortcut: formatShortcutAction(newNoteShortcut.id, platform),
+            category: newNoteShortcut.category,
             when: hasVault,
             execute: () => {
                 const { notes, createNote } = useVaultStore.getState();
@@ -518,40 +570,82 @@ function useRegisterCommands(
         // Editor
         register({
             id: "editor:close-tab",
-            label: "Close Tab",
-            shortcut: "\u2318W",
-            category: "Editor",
+            label: closeTabShortcut.label,
+            shortcut: formatShortcutAction(closeTabShortcut.id, platform),
+            category: closeTabShortcut.category,
             when: hasActiveTab,
             execute: () => {
-                const { activeTabId, closeTab } = useEditorStore.getState();
-                if (activeTabId) closeTab(activeTabId);
+                const { activeTabId, tabs, closeTab } =
+                    useEditorStore.getState();
+                if (!activeTabId) return;
+
+                const activeTab = tabs.find((tab) => tab.id === activeTabId);
+                if (activeTab && isNoteTab(activeTab)) {
+                    window.dispatchEvent(
+                        new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
+                    );
+                    return;
+                }
+
+                closeTab(activeTabId);
             },
+        });
+
+        register({
+            id: "editor:new-tab",
+            label: newTabShortcut.label,
+            shortcut: formatShortcutAction(newTabShortcut.id, platform),
+            category: newTabShortcut.category,
+            when: hasVault,
+            execute: openEmptyTab,
+        });
+
+        register({
+            id: "editor:toggle-live-preview",
+            label: toggleLivePreviewShortcut.label,
+            shortcut: formatShortcutAction(
+                toggleLivePreviewShortcut.id,
+                platform,
+            ),
+            category: toggleLivePreviewShortcut.category,
+            execute: toggleLivePreviewSetting,
         });
 
         // Layout
         register({
             id: "layout:toggle-sidebar",
-            label: "Toggle Sidebar",
-            shortcut: "\u2318S",
-            category: "View",
+            label: toggleSidebarShortcut.label,
+            shortcut: formatShortcutAction(toggleSidebarShortcut.id, platform),
+            category: toggleSidebarShortcut.category,
             execute: () => useLayoutStore.getState().toggleSidebar(),
         });
 
         register({
             id: "layout:toggle-right-panel",
-            label: "Toggle Right Panel",
-            shortcut: "\u2318J",
-            category: "View",
+            label: toggleRightPanelShortcut.label,
+            shortcut: formatShortcutAction(
+                toggleRightPanelShortcut.id,
+                platform,
+            ),
+            category: toggleRightPanelShortcut.category,
             execute: () => useLayoutStore.getState().toggleRightPanel(),
         });
 
         register({
             id: "vault:search",
-            label: "Search in Vault",
-            shortcut: "\u2318\u21e7F",
-            category: "Navigation",
+            label: searchInVaultShortcut.label,
+            shortcut: formatShortcutAction(searchInVaultShortcut.id, platform),
+            category: searchInVaultShortcut.category,
             when: hasVault,
             execute: openSearchPanel,
+        });
+
+        register({
+            id: "app:open-settings",
+            label: openSettingsShortcut.label,
+            shortcut: formatShortcutAction(openSettingsShortcut.id, platform),
+            category: openSettingsShortcut.category,
+            execute: openSettings,
         });
 
         register({
@@ -606,23 +700,21 @@ function useRegisterCommands(
         openCommandPalette,
         openQuickSwitcher,
         openSearchPanel,
+        openSettings,
         developerCommandsEnabled,
     ]);
 }
 
 // Global keyboard shortcuts that dispatch to the command store
-function useGlobalShortcuts(
-    openSearchPanel: () => void,
-    openSettings: () => void,
-) {
+function useGlobalShortcuts(openSettings: () => void) {
     const openCommandPalette = useCommandStore((s) => s.openCommandPalette);
-    const openQuickSwitcher = useCommandStore((s) => s.openQuickSwitcher);
     const closeModal = useCommandStore((s) => s.closeModal);
     const activeModal = useCommandStore((s) => s.activeModal);
 
     useEffect(() => {
+        const platform = getDesktopPlatform();
         const handler = (e: KeyboardEvent) => {
-            const mod = e.metaKey || e.ctrlKey;
+            if (e.defaultPrevented) return;
 
             // Escape closes any modal
             if (e.key === "Escape" && activeModal) {
@@ -631,15 +723,13 @@ function useGlobalShortcuts(
                 return;
             }
 
-            // Cmd+,: settings
-            if (mod && e.key === ",") {
+            if (matchesShortcutAction(e, "open_settings", platform)) {
                 e.preventDefault();
                 openSettings();
                 return;
             }
 
-            // Cmd+K: command palette
-            if (mod && e.key === "k") {
+            if (matchesShortcutAction(e, "command_palette", platform)) {
                 e.preventDefault();
                 if (activeModal === "command-palette") {
                     closeModal();
@@ -649,115 +739,82 @@ function useGlobalShortcuts(
                 return;
             }
 
-            // Cmd+O: quick switcher
-            if (mod && e.key === "o") {
+            if (matchesShortcutAction(e, "quick_switcher", platform)) {
                 e.preventDefault();
                 if (activeModal === "quick-switcher") {
                     closeModal();
                 } else {
-                    openQuickSwitcher();
+                    useCommandStore.getState().execute("nav:quick-switcher");
                 }
                 return;
             }
 
-            // Cmd+S: toggle sidebar
-            if (mod && e.key === "s" && !e.shiftKey) {
+            if (matchesShortcutAction(e, "open_vault", platform)) {
                 e.preventDefault();
-                useLayoutStore.getState().toggleSidebar();
+                useCommandStore.getState().execute("vault:open");
                 return;
             }
 
-            // Cmd+J: toggle right panel
-            if (mod && e.key === "j") {
+            if (matchesShortcutAction(e, "toggle_left_sidebar", platform)) {
                 e.preventDefault();
-                useLayoutStore.getState().toggleRightPanel();
+                useCommandStore.getState().execute("layout:toggle-sidebar");
                 return;
             }
 
-            // Cmd+Shift+F: search in vault
-            if (mod && e.shiftKey && e.key === "f") {
+            if (matchesShortcutAction(e, "toggle_right_panel", platform)) {
                 e.preventDefault();
-                openSearchPanel();
+                useCommandStore.getState().execute("layout:toggle-right-panel");
                 return;
             }
 
-            // Cmd+N: new note
-            if (mod && e.key === "n" && !e.shiftKey) {
+            if (matchesShortcutAction(e, "search_in_vault", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("vault:search");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "new_note", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("vault:new-note");
                 return;
             }
 
-            // Cmd+W: close the active editor tab, never the window
-            if (mod && e.key === "w" && !e.shiftKey) {
-                const { activeTabId, closeTab } = useEditorStore.getState();
-                if (!activeTabId) return;
+            if (matchesShortcutAction(e, "close_tab", platform)) {
                 e.preventDefault();
-                closeTab(activeTabId);
+                useCommandStore.getState().execute("editor:close-tab");
                 return;
             }
 
-            // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
-            if (e.ctrlKey && e.key === "Tab") {
+            if (matchesShortcutAction(e, "next_tab", platform)) {
                 e.preventDefault();
-                const { tabs, activeTabId, switchTab } =
-                    useEditorStore.getState();
-                const idx = tabs.findIndex((t) => t.id === activeTabId);
-                if (idx !== -1 && tabs.length > 1) {
-                    const offset = e.shiftKey ? tabs.length - 1 : 1;
-                    const next = tabs[(idx + offset) % tabs.length];
-                    switchTab(next.id);
-                }
+                cycleEditorTabs(false);
                 return;
             }
 
-            // Cmd+Option+T: cycle tabs backward
-            if (e.metaKey && e.altKey && e.key === "t") {
+            if (matchesShortcutAction(e, "previous_tab", platform)) {
                 e.preventDefault();
-                const { tabs, activeTabId, switchTab } =
-                    useEditorStore.getState();
-                const idx = tabs.findIndex((t) => t.id === activeTabId);
-                if (idx !== -1 && tabs.length > 1) {
-                    const next = tabs[(idx + tabs.length - 1) % tabs.length];
-                    switchTab(next.id);
-                }
+                cycleEditorTabs(true);
                 return;
             }
 
-            // Cmd+T: new tab
-            if (mod && e.key === "t" && !e.altKey) {
+            if (matchesShortcutAction(e, "new_tab", platform)) {
                 e.preventDefault();
-                if (useVaultStore.getState().vaultPath) {
-                    useEditorStore.getState().insertExternalTab({
-                        id: crypto.randomUUID(),
-                        noteId: "",
-                        title: "New Tab",
-                        content: "",
-                    });
-                }
+                useCommandStore.getState().execute("editor:new-tab");
                 return;
             }
 
-            // Cmd+E: toggle live preview
-            if (mod && e.key === "e") {
+            if (matchesShortcutAction(e, "toggle_live_preview", platform)) {
                 e.preventDefault();
-                const { livePreviewEnabled, setSetting } =
-                    useSettingsStore.getState();
-                setSetting("livePreviewEnabled", !livePreviewEnabled);
+                useCommandStore
+                    .getState()
+                    .execute("editor:toggle-live-preview");
                 return;
             }
         };
 
         window.addEventListener("keydown", handler, true);
         return () => window.removeEventListener("keydown", handler, true);
-    }, [
-        activeModal,
-        closeModal,
-        openCommandPalette,
-        openQuickSwitcher,
-        openSearchPanel,
-        openSettings,
-    ]);
+    }, [activeModal, closeModal, openCommandPalette, openSettings]);
 }
 
 function canScrollElement(element: HTMLElement) {
@@ -1030,8 +1087,8 @@ export default function App() {
         [vaultPath],
     );
 
-    useRegisterCommands(openSearchPanel, windowMode === "main");
-    useGlobalShortcuts(openSearchPanel, openSettings);
+    useRegisterCommands(openSearchPanel, openSettings, windowMode === "main");
+    useGlobalShortcuts(openSettings);
     useDynamicScrollbars();
     useAutoOpenReviewTab();
 

@@ -7,6 +7,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { getViewportSafeCenteredPosition } from "../../app/utils/menuPosition";
+import { formatPrimaryShortcut } from "../../app/shortcuts/format";
+import { getDesktopPlatform } from "../../app/utils/platform";
 import type { SelectionToolbarAction } from "./selectionTransforms";
 
 export type FloatingSelectionToolbarState = {
@@ -152,6 +154,7 @@ export function FloatingSelectionToolbar({
     onClose: () => void;
 }) {
     const ref = useRef<HTMLDivElement>(null);
+    const addToChatShortcut = formatPrimaryShortcut("L", getDesktopPlatform());
     const [position, setPosition] = useState<{
         x: number;
         y: number;
@@ -274,7 +277,7 @@ export function FloatingSelectionToolbar({
                     />
                     <button
                         type="button"
-                        title="Add to Chat (⌘L)"
+                        title={`Add to Chat (${addToChatShortcut})`}
                         aria-label="Add to Chat"
                         onMouseDown={(event) => {
                             event.preventDefault();
