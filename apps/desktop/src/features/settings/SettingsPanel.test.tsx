@@ -55,9 +55,7 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "AI" }));
 
-        expect(
-            screen.getByText("Require ⌘Enter to send"),
-        ).toBeInTheDocument();
+        expect(screen.getByText("Require ⌘Enter to send")).toBeInTheDocument();
         expect(
             screen.getByText(/Press ⌘Enter to send messages\./),
         ).toBeInTheDocument();
@@ -78,6 +76,24 @@ describe("SettingsPanel", () => {
         ).toBeInTheDocument();
         expect(
             screen.getByText(/Press Ctrl\+Enter to send messages\./),
+        ).toBeInTheDocument();
+    });
+
+    it("renders the screenshot retention control in AI settings", () => {
+        useChatStore.setState({
+            screenshotRetentionSeconds: 300,
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+
+        expect(screen.getByText("Screenshot retention")).toBeInTheDocument();
+        expect(screen.getByText("5 minutes")).toBeInTheDocument();
+        expect(
+            screen.getByText(
+                "How long pasted screenshots stay in the AI composer before they are removed automatically.",
+            ),
         ).toBeInTheDocument();
     });
 });

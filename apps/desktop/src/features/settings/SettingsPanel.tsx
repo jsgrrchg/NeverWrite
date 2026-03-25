@@ -1829,6 +1829,12 @@ function AISettings() {
     const toggleRequireCmdEnterToSend = useChatStore(
         (s) => s.toggleRequireCmdEnterToSend,
     );
+    const screenshotRetentionSeconds = useChatStore(
+        (s) => s.screenshotRetentionSeconds,
+    );
+    const setScreenshotRetentionSeconds = useChatStore(
+        (s) => s.setScreenshotRetentionSeconds,
+    );
     const composerFontSize = useChatStore((s) => s.composerFontSize);
     const composerFontFamily = useChatStore((s) => s.composerFontFamily);
     const setComposerFontSize = useChatStore((s) => s.setComposerFontSize);
@@ -1910,6 +1916,26 @@ function AISettings() {
                     <Toggle
                         value={requireCmdEnterToSend}
                         onChange={() => toggleRequireCmdEnterToSend()}
+                    />
+                }
+            />
+            <Row
+                label="Screenshot retention"
+                description="How long pasted screenshots stay in the AI composer before they are removed automatically."
+                control={
+                    <SelectField
+                        value={screenshotRetentionSeconds}
+                        options={[
+                            { value: 0, label: "Forever" },
+                            { value: 30, label: "30 seconds" },
+                            { value: 60, label: "1 minute" },
+                            { value: 300, label: "5 minutes" },
+                            { value: 900, label: "15 minutes" },
+                            { value: 1800, label: "30 minutes" },
+                        ]}
+                        onChange={(value) =>
+                            setScreenshotRetentionSeconds(Number(value))
+                        }
                     />
                 }
             />
