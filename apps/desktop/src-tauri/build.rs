@@ -89,6 +89,7 @@ fn stage_embedded_claude_runtime() {
     ensure_npm_dependencies(&vendor_root);
     stage_embedded_node_runtime(&embedded_node_root);
     stage_embedded_claude_project(&vendor_root, &embedded_claude_root);
+    validate_embedded_claude_runtime(&embedded_node_root, &embedded_claude_root);
 }
 
 fn stage_embedded_node_runtime(destination_root: &Path) {
@@ -102,13 +103,23 @@ fn stage_embedded_node_runtime(destination_root: &Path) {
     }
 
     let source_node = resolve_node_binary();
+    println!("cargo:rerun-if-changed={}", source_node.display());
+
+    if cargo_target_os() == "macos" {
+        stage_macos_embedded_node_runtime(destination_root, &source_node);
+    } else {
+        stage_portable_embedded_node_runtime(destination_root, &source_node);
+    }
+
+    codesign_tree(destination_root);
+}
+
+fn stage_macos_embedded_node_runtime(destination_root: &Path, source_node: &Path) {
     let node_root = source_node
         .parent()
         .and_then(Path::parent)
         .unwrap_or_else(|| panic!("unexpected node binary path: {}", source_node.display()))
         .to_path_buf();
-
-    println!("cargo:rerun-if-changed={}", source_node.display());
 
     let destination_node =
         destination_root
@@ -119,12 +130,12 @@ fn stage_embedded_node_runtime(destination_root: &Path) {
                     source_node.display()
                 )
             }));
-    copy_file(&source_node, &destination_node);
+    copy_file(source_node, &destination_node);
     ensure_executable_if_needed(&destination_node);
 
-    let mut queue = VecDeque::from([(source_node.clone(), destination_node.clone())]);
+    let mut queue = VecDeque::from([(source_node.to_path_buf(), destination_node.clone())]);
     let mut seen = BTreeSet::new();
-    seen.insert(source_node);
+    seen.insert(source_node.to_path_buf());
 
     while let Some((source_path, destination_path)) = queue.pop_front() {
         let source_path = fs::canonicalize(&source_path).unwrap_or(source_path);
@@ -183,8 +194,58 @@ fn stage_embedded_node_runtime(destination_root: &Path) {
             }
         }
     }
+}
 
-    codesign_tree(destination_root);
+fn stage_portable_embedded_node_runtime(destination_root: &Path, source_node: &Path) {
+    if cargo_target_os() == "windows"
+        && source_node
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("exe"))
+            != Some(true)
+    {
+        panic!(
+            "Windows bundles require a Windows node.exe. Build on Windows or set VAULTAI_EMBEDDED_NODE_BIN to a Windows Node runtime. Got {}",
+            source_node.display()
+        );
+    }
+
+    let destination_bin = destination_root.join("bin");
+    let destination_node = destination_bin.join(node_binary_name_for_target());
+    copy_file(source_node, &destination_node);
+    ensure_executable_if_needed(&destination_node);
+
+    let source_dir = source_node.parent().unwrap_or_else(|| {
+        panic!(
+            "node binary is missing a parent directory: {}",
+            source_node.display()
+        )
+    });
+
+    for entry in fs::read_dir(source_dir).unwrap_or_else(|error| {
+        panic!(
+            "failed to inspect embedded node source directory {}: {error}",
+            source_dir.display()
+        )
+    }) {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "failed to read entry inside embedded node source directory {}: {error}",
+                source_dir.display()
+            )
+        });
+        let path = entry.path();
+        if path == source_node {
+            continue;
+        }
+
+        if !should_copy_portable_node_runtime_entry(&path) {
+            continue;
+        }
+
+        println!("cargo:rerun-if-changed={}", path.display());
+        copy_file(&path, &destination_bin.join(entry.file_name()));
+    }
 }
 
 fn ensure_npm_dependencies(vendor_root: &Path) {
@@ -250,6 +311,47 @@ fn stage_embedded_claude_project(source_root: &Path, destination_root: &Path) {
     codesign_tree(destination_root);
 }
 
+fn validate_embedded_claude_runtime(embedded_node_root: &Path, embedded_claude_root: &Path) {
+    let required_paths = [
+        embedded_node_root
+            .join("bin")
+            .join(node_binary_name_for_target()),
+        embedded_claude_root.join("package.json"),
+        embedded_claude_root.join("dist").join("index.js"),
+        embedded_claude_root
+            .join("node_modules")
+            .join("@agentclientprotocol")
+            .join("sdk"),
+        embedded_claude_root
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-agent-sdk"),
+        embedded_claude_root.join("node_modules").join("zod"),
+    ];
+
+    for path in required_paths {
+        if !path.exists() {
+            panic!(
+                "embedded Claude runtime is incomplete for {}-{}: missing {}",
+                cargo_target_os(),
+                cargo_target_arch(),
+                path.display()
+            );
+        }
+    }
+
+    for path in target_optional_dependency_paths(embedded_claude_root) {
+        if !path.exists() {
+            panic!(
+                "embedded Claude runtime is missing target dependency {} for {}-{}",
+                path.display(),
+                cargo_target_os(),
+                cargo_target_arch()
+            );
+        }
+    }
+}
+
 fn npm_runtime_dependency_paths(source_root: &Path) -> io::Result<Vec<PathBuf>> {
     let normalized_source_root =
         fs::canonicalize(source_root).unwrap_or_else(|_| source_root.to_path_buf());
@@ -276,7 +378,7 @@ fn npm_runtime_dependency_paths(source_root: &Path) -> io::Result<Vec<PathBuf>> 
 }
 
 fn fallback_runtime_dependency_paths(source_root: &Path) -> Vec<PathBuf> {
-    vec![
+    let mut paths = vec![
         source_root
             .join("node_modules")
             .join("@agentclientprotocol")
@@ -290,18 +392,10 @@ fn fallback_runtime_dependency_paths(source_root: &Path) -> Vec<PathBuf> {
             .join("@anthropic-ai")
             .join("claude-code"),
         source_root.join("node_modules").join("zod"),
-        source_root
-            .join("node_modules")
-            .join("@img")
-            .join("sharp-darwin-arm64"),
-        source_root
-            .join("node_modules")
-            .join("@img")
-            .join("sharp-libvips-darwin-arm64"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect()
+    ];
+
+    paths.extend(target_optional_dependency_paths(source_root));
+    paths.into_iter().filter(|path| path.exists()).collect()
 }
 
 fn resolve_node_binary() -> PathBuf {
@@ -511,7 +605,7 @@ fn candidate_paths(manifest_dir: &Path, spec: &RuntimeStageSpec<'_>) -> Vec<Path
 }
 
 fn runtime_binary_name(base: &'static str) -> &'static str {
-    if cfg!(target_os = "windows") {
+    if cargo_target_os() == "windows" {
         if base == "codex-acp" {
             "codex-acp.exe"
         } else {
@@ -597,9 +691,126 @@ fn find_program(program: &str) -> Option<PathBuf> {
     }
 
     let paths = env::var_os("PATH")?;
-    env::split_paths(&paths)
-        .map(|path| path.join(program))
-        .find(|path| path.exists() && path.is_file())
+    for directory in env::split_paths(&paths) {
+        for candidate in executable_candidates(&directory, program) {
+            if candidate.exists() && candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn cargo_target_os() -> String {
+    env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| env::consts::OS.to_string())
+}
+
+fn cargo_target_arch() -> String {
+    env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| env::consts::ARCH.to_string())
+}
+
+fn cargo_target_env() -> Option<String> {
+    env::var("CARGO_CFG_TARGET_ENV").ok()
+}
+
+fn node_binary_name_for_target() -> &'static str {
+    if cargo_target_os() == "windows" {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
+fn should_copy_portable_node_runtime_entry(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+
+    let lower = file_name.to_ascii_lowercase();
+    lower.ends_with(".dll")
+        || lower.ends_with(".dat")
+        || lower.ends_with(".so")
+        || lower.contains(".so.")
+}
+
+fn target_optional_dependency_paths(root: &Path) -> Vec<PathBuf> {
+    let img_root = root.join("node_modules").join("@img");
+    let target_os = cargo_target_os();
+    let target_arch = cargo_target_arch();
+    let npm_arch = match target_arch.as_str() {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        other => other,
+    };
+
+    match target_os.as_str() {
+        "windows" => vec![img_root.join(format!("sharp-win32-{npm_arch}"))],
+        "macos" => vec![
+            img_root.join(format!("sharp-darwin-{npm_arch}")),
+            img_root.join(format!("sharp-libvips-darwin-{npm_arch}")),
+        ],
+        "linux" => {
+            let libc_variant = if cargo_target_env().as_deref() == Some("musl") {
+                "linuxmusl"
+            } else {
+                "linux"
+            };
+            let mut paths = vec![img_root.join(format!("sharp-{libc_variant}-{npm_arch}"))];
+            if libc_variant != "windows" {
+                paths.push(img_root.join(format!("sharp-libvips-{libc_variant}-{npm_arch}")));
+            }
+            paths
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn executable_candidates(directory: &Path, program: &str) -> Vec<PathBuf> {
+    let base = directory.join(program);
+    if cargo_target_os() == "windows" {
+        let mut candidates = vec![base.clone()];
+        let has_extension = Path::new(program).extension().is_some();
+        if !has_extension {
+            for extension in windows_path_extensions() {
+                let normalized = extension.trim();
+                if normalized.is_empty() {
+                    continue;
+                }
+                let ext = normalized.strip_prefix('.').unwrap_or(normalized);
+                candidates.push(directory.join(format!("{program}.{ext}")));
+            }
+            if !candidates.iter().any(|candidate| {
+                candidate
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+            }) {
+                candidates.push(directory.join(format!("{program}.exe")));
+            }
+        }
+        candidates
+    } else {
+        vec![base]
+    }
+}
+
+fn windows_path_extensions() -> Vec<String> {
+    env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .map(|raw| {
+            raw.split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn codesign_tree(root: &Path) {

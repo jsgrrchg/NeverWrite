@@ -545,14 +545,76 @@ fn find_program(program: &str) -> Option<PathBuf> {
     }
 
     let paths = env::var_os("PATH")?;
-    env::split_paths(&paths)
-        .map(|path| path.join(program))
-        .find(|path| path.exists() && path.is_file())
+    for directory in env::split_paths(&paths) {
+        for candidate in executable_candidates(&directory, program) {
+            if candidate.exists() && candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn executable_candidates(directory: &Path, program: &str) -> Vec<PathBuf> {
+    let base = directory.join(program);
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = vec![base.clone()];
+        let has_extension = Path::new(program).extension().is_some();
+
+        if !has_extension {
+            for extension in windows_path_extensions() {
+                let normalized = extension.trim();
+                if normalized.is_empty() {
+                    continue;
+                }
+                let ext = normalized.strip_prefix('.').unwrap_or(normalized);
+                candidates.push(directory.join(format!("{program}.{ext}")));
+            }
+
+            if !candidates.iter().any(|candidate| {
+                candidate
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+            }) {
+                candidates.push(directory.join(format!("{program}.exe")));
+            }
+        }
+
+        return candidates;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![base]
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_path_extensions() -> Vec<String> {
+    env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .map(|raw| {
+            raw.split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    use std::{env, sync::Mutex};
+
+    #[cfg(target_os = "windows")]
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn merge_input_clears_gateway_auth_when_any_gateway_field_changes() {
@@ -637,6 +699,42 @@ mod tests {
         assert_eq!(resolved.source, AiRuntimeBinarySource::Bundled);
 
         let _ = fs::remove_file(bundled_path);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn find_program_resolves_exe_from_pathext() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp_dir = env::temp_dir().join(format!(
+            "vaultai-claude-find-program-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let node_path = temp_dir.join("node.exe");
+        fs::write(&node_path, b"test").unwrap();
+
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        env::set_var("PATH", &temp_dir);
+        env::set_var("PATHEXT", ".EXE;.CMD");
+
+        let resolved = find_program("node");
+
+        if let Some(value) = original_path {
+            env::set_var("PATH", value);
+        } else {
+            env::remove_var("PATH");
+        }
+
+        if let Some(value) = original_pathext {
+            env::set_var("PATHEXT", value);
+        } else {
+            env::remove_var("PATHEXT");
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        assert_eq!(resolved.as_deref(), Some(node_path.as_path()));
     }
 }
 

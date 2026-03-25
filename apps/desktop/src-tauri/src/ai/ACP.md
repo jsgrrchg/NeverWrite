@@ -46,6 +46,8 @@ Bun-compiled binaries are unreliable when spawned as child processes by Tauri du
 
 When a `.js` file is resolved, the app wraps it automatically: `node /path/to/index.js`.
 
+On Windows, PATH lookup is `PATHEXT`-aware, so `node` and other executable names resolve correctly to `.exe` / `.cmd` entries when needed.
+
 ---
 
 ## Binary Staging (build-time)
@@ -73,11 +75,19 @@ The staged Claude project includes:
 - `package.json`
 - the runtime dependency subset from `node_modules/`
 
+Staging is target-aware:
+
+- macOS keeps the dylib-copy/sign path for the embedded Node runtime
+- Windows stages `node.exe` plus sibling runtime files such as `.dll` and `.dat`
+- the build now validates the staged Claude tree after copying so missing runtime dependencies fail fast during build
+
+For Windows targets, the build intentionally rejects accidental reuse of a non-Windows `node` binary. In practice that means Windows bundles should be built on a Windows machine/runner, or with an explicit `VAULTAI_EMBEDDED_NODE_BIN` override that points to a real Windows `node.exe`.
+
 Codex does not use Node — it's still a Rust binary built with `cargo build`.
 
 ### Tauri resource bundling
 
-`tauri.conf.json` includes `"resources": ["binaries/*", "embedded/**/*"]`, so both the classic binaries and the embedded Claude runtime are bundled into the `.app`.
+`tauri.conf.json` includes `"resources": ["binaries/*", "embedded/**/*"]`, so both the classic binaries and the embedded Claude runtime are bundled into the final Tauri artifact.
 
 ---
 
