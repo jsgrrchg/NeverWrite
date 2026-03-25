@@ -62,10 +62,8 @@ import {
 } from "./tabDragAttachments";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
-import {
-    getTrafficLightSpacerWidth,
-    getTitlebarPaddingTop,
-} from "../../app/utils/platform";
+import { WindowChrome } from "../../components/layout/WindowChrome";
+import { getDesktopPlatform } from "../../app/utils/platform";
 
 const appWindow = getCurrentWindow();
 
@@ -74,6 +72,14 @@ function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     event.preventDefault();
     void appWindow.startDragging().catch(() => {
         // Ignore denied / unsupported drag attempts and keep the bar interactive.
+    });
+}
+
+function toggleWindowMaximize() {
+    if (getDesktopPlatform() !== "windows") return;
+    if (typeof appWindow.toggleMaximize !== "function") return;
+    void appWindow.toggleMaximize().catch(() => {
+        // Ignore denied / unsupported maximize attempts.
     });
 }
 
@@ -363,6 +369,7 @@ interface UnifiedBarProps {
 }
 
 export function UnifiedBar({ windowMode }: UnifiedBarProps) {
+    const desktopPlatform = getDesktopPlatform();
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const switchTab = useEditorStore((s) => s.switchTab);
@@ -1183,33 +1190,25 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const hasTabs = visualTabs.length > 0;
 
     return (
-        <div
-            onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
-                    startWindowDrag(event);
-                }
-            }}
-            style={{
-                paddingTop: getTitlebarPaddingTop(),
-                background:
-                    "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
-                borderBottom: "1px solid var(--border)",
-                backdropFilter: "blur(18px)",
-                boxShadow: "0 1px 0 rgba(255,255,255,0.04)",
-            }}
-        >
-            <div
-                className="flex items-stretch select-none"
-                style={{ height: 38, cursor: "default", padding: "0 6px" }}
+        <>
+            <WindowChrome
+                showWindowControls
+                onBackgroundMouseDown={(event) => {
+                    if (event.target === event.currentTarget) {
+                        startWindowDrag(event);
+                    }
+                }}
+                showLeadingInset
+                onLeadingInsetMouseDown={startWindowDrag}
+                shellStyle={{
+                    background:
+                        "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
+                    borderBottom: "1px solid var(--border)",
+                    backdropFilter: "blur(18px)",
+                    boxShadow: "0 1px 0 rgba(255,255,255,0.04)",
+                }}
+                barStyle={{ padding: "0 6px" }}
             >
-                <div
-                    onMouseDown={startWindowDrag}
-                    style={{
-                        width: getTrafficLightSpacerWidth(),
-                        flexShrink: 0,
-                    }}
-                />
-
                 {windowMode === "main" && (
                     <>
                         <button
@@ -1646,6 +1645,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
                                 <div
                                     onMouseDown={startWindowDrag}
+                                    onDoubleClick={() => toggleWindowMaximize()}
                                     className="min-w-2 flex-1"
                                 />
                             </div>
@@ -1698,7 +1698,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         <div
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end shrink-0"
-                            style={{ width: windowMode === "main" ? 152 : 16 }}
+                            style={{ width: 152 }}
                         >
                             <div style={controlsGroupStyle}>
                                 {windowMode === "main" && (
@@ -1844,6 +1844,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         <div
                             ref={tabDropZoneRef}
                             onMouseDown={startWindowDrag}
+                            onDoubleClick={() => toggleWindowMaximize()}
                             className="flex-1"
                             style={{
                                 minHeight: 30,
@@ -1861,7 +1862,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         <div
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end shrink-0"
-                            style={{ width: 152 }}
+                            style={{
+                                width: desktopPlatform === "windows" ? 16 : 152,
+                            }}
                         >
                             {windowMode === "main" && (
                                 <div style={controlsGroupStyle}>
@@ -1991,7 +1994,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         </div>
                     </>
                 )}
-            </div>
+            </WindowChrome>
             {historyContextMenu &&
                 (() => {
                     const { tabs: currentTabs, activeTabId: currentActiveId } =
@@ -2158,6 +2161,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     })()}
                 />
             )}
-        </div>
+        </>
     );
 }

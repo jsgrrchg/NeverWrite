@@ -28,7 +28,8 @@ import {
     buildSpellcheckSecondaryLanguageSelectOptions,
     buildSpellcheckLanguagesSummary,
 } from "../spellcheck/language";
-import { getTrafficLightSpacerWidth } from "../../app/utils/platform";
+import { WindowChrome } from "../../components/layout/WindowChrome";
+import { getDesktopPlatform } from "../../app/utils/platform";
 
 // --- Primitives ---
 
@@ -2168,8 +2169,10 @@ export function SettingsPanel({
             }}
         >
             {/* Header */}
-            <div
-                onMouseDown={(e) => {
+            <WindowChrome
+                showLeadingInset={standalone}
+                showWindowControls={standalone}
+                onBackgroundMouseDown={(e) => {
                     if (
                         standalone &&
                         e.button === 0 &&
@@ -2179,14 +2182,33 @@ export function SettingsPanel({
                         void getCurrentWindow().startDragging();
                     }
                 }}
-                style={{
-                    height: 38,
-                    display: "flex",
+                onBackgroundDoubleClick={(e) => {
+                    if (
+                        !standalone ||
+                        getDesktopPlatform() !== "windows" ||
+                        (e.target as HTMLElement).closest("button")
+                    ) {
+                        return;
+                    }
+
+                    if (
+                        typeof getCurrentWindow().toggleMaximize !== "function"
+                    ) {
+                        return;
+                    }
+
+                    void getCurrentWindow().toggleMaximize();
+                }}
+                onLeadingInsetMouseDown={(e) => {
+                    if (standalone && e.button === 0) {
+                        e.preventDefault();
+                        void getCurrentWindow().startDragging();
+                    }
+                }}
+                barStyle={{
                     alignItems: "center",
                     justifyContent: "space-between",
-                    padding: standalone
-                        ? `0 20px 0 ${getTrafficLightSpacerWidth() + 20}px`
-                        : "0 20px",
+                    padding: "0 20px",
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
                     backgroundColor: "var(--bg-secondary)",
@@ -2231,7 +2253,7 @@ export function SettingsPanel({
                 >
                     ✕
                 </button>
-            </div>
+            </WindowChrome>
 
             {/* Body */}
             <div

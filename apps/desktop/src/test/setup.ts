@@ -220,20 +220,33 @@ vi.mock("@xterm/addon-web-links", () => ({
     },
 }));
 
+const mockCurrentWindow = {
+    listen: vi.fn(),
+    once: vi.fn(),
+    onCloseRequested: vi.fn(),
+    onMoved: vi.fn().mockResolvedValue(vi.fn()),
+    onResized: vi.fn().mockResolvedValue(vi.fn()),
+    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+    setFocus: vi.fn(),
+    startDragging: vi.fn(),
+    minimize: vi.fn().mockResolvedValue(undefined),
+    maximize: vi.fn().mockResolvedValue(undefined),
+    unmaximize: vi.fn().mockResolvedValue(undefined),
+    toggleMaximize: vi.fn().mockResolvedValue(undefined),
+    isMaximized: vi.fn().mockResolvedValue(false),
+    emitTo: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined),
+    label: "main",
+};
+
+Object.defineProperty(globalThis, "__mockCurrentWindow", {
+    value: mockCurrentWindow,
+    writable: true,
+    configurable: true,
+});
+
 vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => ({
-        listen: vi.fn(),
-        once: vi.fn(),
-        onCloseRequested: vi.fn(),
-        onMoved: vi.fn().mockResolvedValue(vi.fn()),
-        onResized: vi.fn().mockResolvedValue(vi.fn()),
-        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-        setFocus: vi.fn(),
-        startDragging: vi.fn(),
-        emitTo: vi.fn(),
-        close: vi.fn(),
-        label: "main",
-    }),
+    getCurrentWindow: () => mockCurrentWindow,
 }));
 
 vi.mock("@tauri-apps/api/webview", () => ({
