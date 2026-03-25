@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useEditorStore, isReviewTab } from "../../../app/store/editorStore";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,8 @@ import type { TrackedFile } from "../diff/actionLogTypes";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
+
+const invokeMock = vi.mocked(invoke);
 
 function createTrackedFile(
     path: string,
@@ -286,9 +289,68 @@ describe("EditedFilesBufferPanel", () => {
         ).toBeDisabled();
     });
 
+    it("opens supported text files from the buffer even before the vault index refreshes", async () => {
+        const session = createSession("session-open-fallback", [
+            createTrackedFile("/vault/tmp/result.txt", {
+                diffBase: "alpha",
+                currentText: "beta",
+            }),
+        ]);
+        setVaultEntries([]);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "tmp/result.txt",
+                    vaultPath: "/vault",
+                });
+                return {
+                    path: "/vault/tmp/result.txt",
+                    relative_path: "tmp/result.txt",
+                    file_name: "result.txt",
+                    mime_type: "text/plain",
+                    content: "beta",
+                };
+            }
+            throw new Error(`Unexpected invoke call: ${command}`);
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            rejectEditedFile: vi.fn(async () => {}),
+            resolveEditedFileWithMergedText: vi.fn(async () => {}),
+            rejectAllEditedFiles: vi.fn(async () => {}),
+            keepAllEditedFiles: vi.fn(),
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        const openButton = screen.getByRole("button", { name: "Open File" });
+        expect(openButton).toBeEnabled();
+
+        fireEvent.click(openButton);
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(activeTab).toMatchObject({
+                kind: "file",
+                relativePath: "tmp/result.txt",
+                path: "/vault/tmp/result.txt",
+                title: "result.txt",
+            });
+        });
+    });
+
     it("keeps Review Diff available inline even when Open File is disabled", async () => {
         const session = createSession("session-inline", [
-            createTrackedFile("/vault/tmp/result.txt", {
+            createTrackedFile("/vault/tmp/result.bin", {
                 diffBase: "alpha",
                 currentText: "beta",
             }),
@@ -316,7 +378,7 @@ describe("EditedFilesBufferPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
 
         expect(
-            screen.getByTestId("edited-buffer-diff:/vault/tmp/result.txt"),
+            screen.getByTestId("edited-buffer-diff:/vault/tmp/result.bin"),
         ).toBeInTheDocument();
         expect(screen.getByText("beta")).toBeInTheDocument();
         expect(screen.getByText("alpha")).toBeInTheDocument();

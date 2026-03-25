@@ -24,12 +24,13 @@ import {
     formatDiffStat,
     stepDiffZoom,
 } from "../diff/reviewDiff";
+import { getFileOperation } from "../store/actionLogModel";
 import { useChatStore } from "../store/chatStore";
 import {
     selectHasUndoReject,
     selectVisibleTrackedFiles,
 } from "../store/editedFilesBufferModel";
-import { canOpenAiEditedFileEntry } from "../chatFileNavigation";
+import { canOpenAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 import {
     createPersistedReviewAnchor,
     getReviewViewStorageKey,
@@ -227,6 +228,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
     const entries = useVaultStore((state) => state.entries);
+    const notes = useVaultStore((state) => state.notes);
     const [persistVersion, setPersistVersion] = useState(0);
     const reviewStorageKey = useMemo(
         () => getReviewViewStorageKey(vaultPath, tab.sessionId),
@@ -241,11 +243,14 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const openablePathSet = useMemo(
         () =>
             new Set(
-                entries
-                    .filter((entry) => canOpenAiEditedFileEntry(entry))
-                    .map((entry) => entry.path),
+                visibleEntries
+                    .filter((file) => getFileOperation(file) !== "delete")
+                    .filter((file) =>
+                        canOpenAiEditedFileByAbsolutePath(file.path),
+                    )
+                    .map((file) => file.path),
             ),
-        [entries],
+        [entries, notes, vaultPath, visibleEntries],
     );
 
     const items = useMemo(

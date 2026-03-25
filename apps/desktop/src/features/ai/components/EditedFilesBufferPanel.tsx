@@ -4,6 +4,7 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { formatDiffStat } from "../diff/reviewDiff";
 import { getReviewTabTitle } from "../sessionPresentation";
 import { useChatStore } from "../store/chatStore";
+import { getFileOperation } from "../store/actionLogModel";
 import {
     selectHasUndoReject,
     selectVisibleTrackedFiles,
@@ -18,7 +19,7 @@ import {
     deriveReviewItems,
     deriveReviewSummary,
 } from "../diff/editedFilesPresentationModel";
-import { canOpenAiEditedFileEntry } from "../chatFileNavigation";
+import { canOpenAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 
 const COMPACT_MAX_LIST_HEIGHT = "208px";
 const UNDO_ONLY_BANNER_TIMEOUT_MS = 5000;
@@ -108,6 +109,8 @@ export function EditedFilesBufferPanel({
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const entries = useVaultStore((state) => state.entries);
+    const notes = useVaultStore((state) => state.notes);
+    const vaultPath = useVaultStore((state) => state.vaultPath);
     const [autoDismissedBannerKey, setAutoDismissedBannerKey] = useState<
         string | null
     >(null);
@@ -116,11 +119,14 @@ export function EditedFilesBufferPanel({
     const openablePathSet = useMemo(
         () =>
             new Set(
-                entries
-                    .filter((entry) => canOpenAiEditedFileEntry(entry))
-                    .map((entry) => entry.path),
+                visibleEntries
+                    .filter((file) => getFileOperation(file) !== "delete")
+                    .filter((file) =>
+                        canOpenAiEditedFileByAbsolutePath(file.path),
+                    )
+                    .map((file) => file.path),
             ),
-        [entries],
+        [entries, notes, vaultPath, visibleEntries],
     );
     const items = useMemo(
         () => deriveReviewItems(visibleEntries, openablePathSet),
