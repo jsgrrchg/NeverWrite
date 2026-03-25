@@ -1,4 +1,5 @@
 mod ai;
+mod clipper_api;
 mod devtools;
 mod maps;
 mod spellcheck;
@@ -4115,6 +4116,298 @@ fn traffic_light_position_for_version(version: u32) -> (f64, f64) {
     }
 }
 
+pub(crate) const WEB_CLIPPER_CLIP_SAVED_EVENT: &str = "vaultai:web-clipper/clip-saved";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebClipperSavedPayload {
+    request_id: String,
+    vault_path: String,
+    note_id: String,
+    title: String,
+    relative_path: String,
+    content: String,
+}
+
+fn clipper_vault_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn resolve_web_clipper_vault_key(
+    state: &AppState,
+    vault_path_hint: Option<&str>,
+    vault_name_hint: Option<&str>,
+) -> Result<String, String> {
+    let ready_keys: Vec<String> = state
+        .vaults
+        .iter()
+        .filter_map(|(path, instance)| {
+            if instance.open_state.stage == "ready" && instance.vault.is_some() {
+                Some(path.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if ready_keys.is_empty() {
+        return Err("No ready vault is available in VaultAI.".to_string());
+    }
+
+    if let Some(path_hint) = vault_path_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(found) = ready_keys.iter().find(|path| path.as_str() == path_hint) {
+            return Ok(found.clone());
+        }
+    }
+
+    if let Some(name_hint) = vault_name_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let lower = name_hint.to_lowercase();
+        let mut matches = ready_keys
+            .iter()
+            .filter(|path| clipper_vault_name(path).to_lowercase() == lower)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if matches.len() == 1 {
+            return Ok(matches.remove(0));
+        }
+    }
+
+    if ready_keys.len() == 1 {
+        return Ok(ready_keys[0].clone());
+    }
+
+    Err("VaultAI has multiple open vaults. Provide a more specific vault hint.".to_string())
+}
+
+fn normalize_web_clipper_folder(folder: &str) -> Result<String, String> {
+    let mut normalized = PathBuf::new();
+
+    for component in Path::new(folder).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err("Folder hint must stay inside the vault.".to_string())
+            }
+        }
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
+}
+
+fn sanitize_web_clipper_title(title: &str) -> String {
+    let sanitized = title
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            value if value.is_control() => ' ',
+            value => value,
+        })
+        .collect::<String>()
+        .replace('.', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-");
+
+    sanitized
+        .trim_matches('-')
+        .to_string()
+        .chars()
+        .take(96)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn build_web_clipper_relative_note_path(
+    vault: &Vault,
+    folder: &str,
+    title: &str,
+) -> Result<String, String> {
+    let normalized_folder = normalize_web_clipper_folder(folder)?;
+    let stem = sanitize_web_clipper_title(title);
+    let base = if stem.is_empty() {
+        "untitled-clip".to_string()
+    } else {
+        stem
+    };
+
+    for index in 1..10_000 {
+        let file_name = if index == 1 {
+            format!("{base}.md")
+        } else {
+            format!("{base}-{index}.md")
+        };
+        let relative_path = if normalized_folder.is_empty() {
+            file_name
+        } else {
+            format!("{normalized_folder}/{file_name}")
+        };
+
+        let path = vault
+            .resolve_relative_path(&relative_path)
+            .map_err(|error| error.to_string())?;
+        if !path.exists() {
+            return Ok(relative_path);
+        }
+    }
+
+    Err("Could not find a free filename for the clip.".to_string())
+}
+
+pub(crate) fn web_clipper_ready_vaults(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
+    let state = app.state::<Mutex<AppState>>();
+    let guard = lock!(state)?;
+    Ok(guard
+        .vaults
+        .iter()
+        .filter_map(|(path, instance)| {
+            if instance.open_state.stage == "ready" && instance.vault.is_some() {
+                Some((path.clone(), clipper_vault_name(path)))
+            } else {
+                None
+            }
+        })
+        .collect())
+}
+
+pub(crate) fn web_clipper_list_folders(
+    app: &AppHandle,
+    vault_path_hint: Option<&str>,
+    vault_name_hint: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let state = app.state::<Mutex<AppState>>();
+    let guard = lock!(state)?;
+    let vault_key = resolve_web_clipper_vault_key(&guard, vault_path_hint, vault_name_hint)?;
+    let instance = guard
+        .vaults
+        .get(&vault_key)
+        .ok_or("Vault not found".to_string())?;
+
+    let mut folders: Vec<String> = instance
+        .entries
+        .as_ref()
+        .ok_or("Vault entries are not loaded yet.".to_string())?
+        .iter()
+        .filter(|entry| entry.kind == "folder")
+        .map(|entry| entry.relative_path.clone())
+        .collect();
+
+    folders.sort();
+    Ok(folders)
+}
+
+pub(crate) fn web_clipper_list_tags(
+    app: &AppHandle,
+    vault_path_hint: Option<&str>,
+    vault_name_hint: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let state = app.state::<Mutex<AppState>>();
+    let guard = lock!(state)?;
+    let vault_key = resolve_web_clipper_vault_key(&guard, vault_path_hint, vault_name_hint)?;
+    let instance = guard
+        .vaults
+        .get(&vault_key)
+        .ok_or("Vault not found".to_string())?;
+    let index = instance
+        .index
+        .as_ref()
+        .ok_or("Vault index is not available.".to_string())?;
+
+    let mut tags: Vec<String> = index.tags.keys().cloned().collect();
+    tags.sort();
+    Ok(tags)
+}
+
+pub(crate) fn web_clipper_save_note(
+    app: &AppHandle,
+    request_id: String,
+    vault_path_hint: Option<&str>,
+    vault_name_hint: Option<&str>,
+    title: &str,
+    folder: &str,
+    content: &str,
+) -> Result<WebClipperSavedPayload, String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = lock!(state)?;
+    let vault_key = resolve_web_clipper_vault_key(&guard, vault_path_hint, vault_name_hint)?;
+    let write_tracker = guard.write_tracker.clone();
+    let op_id = next_change_op_id(&mut guard, VAULT_CHANGE_ORIGIN_EXTERNAL);
+    let instance = guard
+        .vaults
+        .get_mut(&vault_key)
+        .ok_or("Vault not found".to_string())?;
+
+    let (note, entry, relative_path) = {
+        let vault = instance
+            .vault
+            .as_ref()
+            .ok_or("Vault is not loaded.".to_string())?;
+        let relative_path = build_web_clipper_relative_note_path(vault, folder, title)?;
+        let abs_path = vault.root.join(&relative_path);
+        write_tracker.track_content(abs_path, content);
+
+        let note = vault
+            .create_note(&relative_path, content)
+            .map_err(|error| error.to_string())?;
+        let entry = vault
+            .read_vault_entry_from_path(&note.path.0)
+            .map_err(|error| error.to_string())?;
+
+        (note, entry, relative_path)
+    };
+
+    let revision = advance_note_revision(&mut instance.note_revisions, &note.id.0, None);
+    let change = note_change_from_document(
+        &vault_key,
+        &note,
+        entry.relative_path.clone(),
+        VAULT_CHANGE_ORIGIN_EXTERNAL,
+        Some(op_id),
+        revision,
+        instance.graph_revision.max(1),
+    );
+
+    if let Some(index) = instance.index.as_mut() {
+        index.reindex_note(note.clone());
+    }
+    invalidate_graph_query_cache(instance);
+    invalidate_graph_cache(instance);
+    mutate_entries_cache(instance, |vault, entries| {
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry);
+        Ok(())
+    })?;
+
+    let payload = WebClipperSavedPayload {
+        request_id,
+        vault_path: vault_key.clone(),
+        note_id: note.id.0.clone(),
+        title: note.title.clone(),
+        relative_path,
+        content: content.to_string(),
+    };
+
+    drop(guard);
+    emit_vault_note_change(app, "web_clipper_save", change);
+    let _ = app.emit(WEB_CLIPPER_CLIP_SAVED_EVENT, payload.clone());
+    Ok(payload)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -4148,6 +4441,8 @@ pub fn run() {
             .hidden_title(true)
             .traffic_light_position(tauri::LogicalPosition::new(tl_x, tl_y))
             .build()?;
+
+            clipper_api::start_server(app.handle().clone());
 
             Ok(())
         })

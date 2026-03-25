@@ -24,6 +24,8 @@ import { SearchView } from "./features/search/SearchView";
 import { PdfTabView } from "./features/pdf/PdfTabView";
 import { MapsPanel } from "./features/maps/MapsPanel";
 import { BookmarksPanel } from "./features/bookmarks/BookmarksPanel";
+import ClipNotification from "./features/clip/ClipNotification";
+import { useClipImportStore } from "./features/clip/clipImportStore";
 import { useBookmarkStore } from "./app/store/bookmarkStore";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
@@ -100,6 +102,15 @@ function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
         change.origin === "unknown" ||
         change.origin === "agent"
     );
+}
+
+interface WebClipperSavedPayload {
+    requestId: string;
+    vaultPath: string;
+    noteId: string;
+    title: string;
+    relativePath: string;
+    content: string;
 }
 
 function SidebarPanel({ view }: { view: SidebarView }) {
@@ -1580,6 +1591,52 @@ export default function App() {
         };
     }, [insertExternalTab]);
 
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        let unlisten: (() => void) | undefined;
+
+        void listen<WebClipperSavedPayload>(
+            "vaultai:web-clipper/clip-saved",
+            (event) => {
+                void (async () => {
+                    const currentVaultPath = useVaultStore.getState().vaultPath;
+                    if (
+                        event.payload.vaultPath &&
+                        currentVaultPath !== event.payload.vaultPath
+                    ) {
+                        await useVaultStore
+                            .getState()
+                            .openVault(event.payload.vaultPath);
+                    }
+
+                    useEditorStore
+                        .getState()
+                        .openNote(
+                            event.payload.noteId,
+                            event.payload.title,
+                            event.payload.content,
+                        );
+                    useClipImportStore.getState().showNotice({
+                        id: event.payload.requestId,
+                        title: event.payload.title,
+                        message:
+                            "Saved from the web clipper and opened in the editor.",
+                        relativePath: event.payload.relativePath,
+                    });
+                })();
+            },
+        ).then((cleanup) => {
+            unlisten = cleanup;
+        });
+
+        return () => {
+            if (unlisten) {
+                void unlisten();
+            }
+        };
+    }, [windowMode]);
+
     if (windowMode === "ghost") {
         const title =
             new URLSearchParams(window.location.search).get("title") ?? "Tab";
@@ -1627,6 +1684,7 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
+            <ClipNotification />
             <UnifiedBar windowMode="main" />
 
             <div className="relative flex-1 flex overflow-hidden">
