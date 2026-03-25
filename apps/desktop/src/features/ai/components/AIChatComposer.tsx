@@ -668,8 +668,6 @@ function getInlineTriggerMatch(root: HTMLElement, pattern: RegExp) {
 }
 
 const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
-const PLAN_KEYWORDS = ["plan", "planning", "steps", "roadmap"];
-
 function getNoteMentionSuggestions(
     notes: AIChatNoteSummary[],
     query: string,
@@ -726,15 +724,6 @@ function getMentionSuggestions(
         )
     ) {
         results.push({ kind: "fetch" });
-    }
-
-    if (
-        !nq ||
-        PLAN_KEYWORDS.some(
-            (kw) => kw.startsWith(nq) || nq.startsWith(kw.slice(0, nq.length)),
-        )
-    ) {
-        results.push({ kind: "plan" });
     }
 
     // Match folders

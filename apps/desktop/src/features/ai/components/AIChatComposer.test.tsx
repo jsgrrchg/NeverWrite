@@ -92,6 +92,18 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("does not show /plan in the @ picker", async () => {
+        const { composer } = renderComposer();
+        composer.textContent = "@pl";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.queryByText("/plan")).not.toBeInTheDocument();
+        });
+    });
+
     it("opens the slash picker when the caret is on the root element", async () => {
         const { composer } = renderComposer();
         composer.textContent = "/pl";
