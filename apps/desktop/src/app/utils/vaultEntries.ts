@@ -160,18 +160,45 @@ const IMAGE_EXTENSIONS = new Set([
     "ico",
 ]);
 
-export function isTextLikeVaultEntry(
-    entry: Pick<VaultEntryDto, "extension" | "mime_type" | "file_name">,
-) {
-    const extension = entry.extension.toLowerCase();
+function getNormalizedExtension(pathOrExtension: string) {
+    const normalized = pathOrExtension.toLowerCase().split("/").pop() ?? "";
+    if (!normalized.includes(".")) {
+        return normalized;
+    }
+    return normalized.split(".").slice(1).pop() ?? "";
+}
+
+function getNormalizedFileName(pathOrFileName: string) {
+    return pathOrFileName.toLowerCase().split("/").pop() ?? "";
+}
+
+export function isTextLikeVaultPath(path: string) {
+    const extension = getNormalizedExtension(path);
     if (TEXT_EXTENSIONS.has(extension)) return true;
-    const fileName = entry.file_name.toLowerCase();
+    const fileName = getNormalizedFileName(path);
     if (TEXT_FILE_NAMES.has(fileName)) return true;
     if (fileName === ".env" || fileName.startsWith(".env.")) return true;
     if (
         fileName.startsWith(".") &&
         (fileName.endsWith("rc") || fileName.endsWith("ignore"))
     ) {
+        return true;
+    }
+    return false;
+}
+
+export function isImageLikeVaultPath(path: string) {
+    return IMAGE_EXTENSIONS.has(getNormalizedExtension(path));
+}
+
+export function isExcalidrawVaultPath(path: string) {
+    return getNormalizedExtension(path) === "excalidraw";
+}
+
+export function isTextLikeVaultEntry(
+    entry: Pick<VaultEntryDto, "extension" | "mime_type" | "file_name">,
+) {
+    if (isTextLikeVaultPath(entry.file_name)) {
         return true;
     }
     if (!entry.mime_type) return false;
@@ -187,8 +214,7 @@ export function isTextLikeVaultEntry(
 export function isImageLikeVaultEntry(
     entry: Pick<VaultEntryDto, "extension" | "mime_type">,
 ) {
-    const extension = entry.extension.toLowerCase();
-    if (IMAGE_EXTENSIONS.has(extension)) return true;
+    if (isImageLikeVaultPath(entry.extension)) return true;
     return entry.mime_type?.startsWith("image/") ?? false;
 }
 
@@ -299,7 +325,7 @@ export async function insertVaultEntryTab(
 export function isExcalidrawVaultEntry(
     entry: Pick<VaultEntryDto, "extension">,
 ) {
-    return entry.extension.toLowerCase() === "excalidraw";
+    return isExcalidrawVaultPath(entry.extension);
 }
 
 export async function openVaultFileEntry(

@@ -255,6 +255,28 @@ describe("AIReviewView", () => {
         expect(screen.getByRole("button", { name: "Open File" })).toBeEnabled();
     });
 
+    it("enables Open File for supported text files even when the vault entry is not indexed yet", () => {
+        const sessionId = "sess-file-fallback";
+        const file = makeTrackedFile({
+            identityKey: "open-file-fallback-1",
+            path: "/vault/src/generated.ts",
+            originPath: "/vault/src/generated.ts",
+            status: { kind: "created", existingFileContent: null },
+        });
+
+        setVaultEntries([]);
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        renderComponent(<AIReviewView />);
+        expect(screen.getByRole("button", { name: "Open File" })).toBeEnabled();
+    });
+
     it("scopes review actions to the review tab session instead of the active chat session", () => {
         const reviewSessionId = "sess-review";
         const activeSessionId = "sess-active";

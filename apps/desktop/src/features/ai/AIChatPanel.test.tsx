@@ -1243,7 +1243,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         const openFileButton = screen.getByRole("button", {
             name: "Open File",
         });
-        expect(openFileButton).toBeDisabled();
+        expect(openFileButton).toBeEnabled();
 
         fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
 
