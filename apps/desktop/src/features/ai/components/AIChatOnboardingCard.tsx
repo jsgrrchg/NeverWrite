@@ -6,6 +6,7 @@ interface AIChatOnboardingCardProps {
     runtime?: AIRuntimeOption | null;
     setupStatus: AIRuntimeSetupStatus;
     saving?: boolean;
+    mode?: "onboarding" | "settings";
     onSaveSetup: (input: {
         runtimeId?: string;
         customBinaryPath?: string;
@@ -36,6 +37,7 @@ export function AIChatOnboardingCard({
     runtime = null,
     setupStatus,
     saving = false,
+    mode = "onboarding",
     onSaveSetup,
     onAuthenticate,
 }: AIChatOnboardingCardProps) {
@@ -75,6 +77,13 @@ export function AIChatOnboardingCard({
     const isGatewayMethod = selectedMethod?.id === "gateway";
     const isApiKeyMethod = isOpenAiApiKeyMethod || isCodexApiKeyMethod;
     const apiKeyPlaceholder = getApiKeyPlaceholder(selectedMethod?.id);
+    const isSettingsMode = mode === "settings";
+    const title = isSettingsMode
+        ? `Manage ${runtimeName}`
+        : `Connect ${runtimeName} to start chatting`;
+    const subtitle = isSettingsMode
+        ? "Update credentials, reconnect authentication, or override the runtime path."
+        : "VaultAI keeps a runtime-specific local setup. Existing external editor settings are not modified.";
 
     return (
         <div className="px-3 pt-3">
@@ -95,14 +104,13 @@ export function AIChatOnboardingCard({
                     className="mt-1 text-base font-semibold"
                     style={{ color: "var(--text-primary)" }}
                 >
-                    Connect {runtimeName} to start chatting
+                    {title}
                 </div>
                 <div
                     className="mt-2 text-sm"
                     style={{ color: "var(--text-secondary)" }}
                 >
-                    VaultAI keeps a runtime-specific local setup. Existing
-                    external editor settings are not modified.
+                    {subtitle}
                 </div>
 
                 <div
@@ -514,7 +522,11 @@ export function AIChatOnboardingCard({
                         {saving
                             ? "Connecting…"
                             : isApiKeyMethod
-                              ? "Save and continue"
+                              ? isSettingsMode &&
+                                setupStatus.authMethod === selectedMethod?.id &&
+                                setupStatus.authReady
+                                  ? "Replace key"
+                                  : "Save and continue"
                               : isGatewayMethod
                                 ? "Save gateway"
                                 : getContinueLabel(selectedMethod?.id)}
