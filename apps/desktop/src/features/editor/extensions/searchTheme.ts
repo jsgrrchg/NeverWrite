@@ -7,7 +7,7 @@ export const searchTheme = EditorView.theme({
         justifyContent: "center",
         background: "transparent",
         border: "none",
-        padding: "12px 16px 0",
+        padding: "6px 12px 0",
     },
     ".cm-panels-top": {
         borderBottom: "none",
@@ -16,42 +16,41 @@ export const searchTheme = EditorView.theme({
     ".cm-search": {
         display: "flex",
         alignItems: "center",
-        gap: "8px",
-        width: "min(100%, 820px)",
-        padding: "10px 12px",
-        background:
-            "color-mix(in srgb, var(--bg-primary) 88%, var(--bg-secondary))",
-        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-        borderRadius: "16px",
-        boxShadow: "0 12px 32px rgba(0,0,0,0.10)",
+        gap: "4px",
+        width: "min(100%, 720px)",
+        padding: "5px 6px",
+        background: "var(--bg-elevated)",
+        border: "1px solid var(--border)",
+        borderRadius: "10px",
+        boxShadow: "0 4px 16px rgba(0,0,0,0.06)",
         flexWrap: "wrap",
-        backdropFilter: "blur(10px)",
     },
 
     ".cm-textfield": {
-        backgroundColor: "color-mix(in srgb, var(--bg-primary) 94%, white 6%)",
+        backgroundColor:
+            "color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-primary))",
         color: "var(--text-primary)",
-        border: "1px solid color-mix(in srgb, var(--border) 75%, transparent)",
-        borderRadius: "10px",
-        padding: "0 10px",
+        border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+        borderRadius: "6px",
+        padding: "0 8px",
         fontSize: "12px",
         outline: "none",
         minWidth: "0",
-        height: "32px",
+        height: "26px",
         fontFamily: "inherit",
-        transition: "border-color 140ms ease, box-shadow 140ms ease",
+        transition: "border-color 100ms ease, box-shadow 100ms ease",
     },
     ".cm-textfield:focus": {
         borderColor: "var(--accent)",
         boxShadow:
-            "0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent)",
+            "0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent)",
     },
     ".cm-textfield[name=search]": {
-        flex: "1 1 220px",
+        flex: "1 1 180px",
     },
 
     ".cm-textfield[name=replace]": {
-        flex: "1 1 220px",
+        flex: "1 1 180px",
         marginLeft: "0",
     },
 
@@ -60,77 +59,73 @@ export const searchTheme = EditorView.theme({
         color: "var(--text-secondary)",
         border: "1px solid transparent",
         cursor: "pointer",
-        padding: "0 10px",
-        borderRadius: "10px",
+        padding: "0 8px",
+        borderRadius: "6px",
         fontSize: "11px",
-        fontWeight: "600",
-        height: "30px",
+        fontWeight: "500",
+        height: "26px",
         display: "inline-flex",
         alignItems: "center",
         whiteSpace: "nowrap",
         fontFamily: "inherit",
         flexShrink: "0",
-        letterSpacing: "0.01em",
-        transition:
-            "background-color 140ms ease, color 140ms ease, border-color 140ms ease",
+        transition: "background-color 100ms ease, color 100ms ease",
     },
     ".cm-button:hover": {
         backgroundColor:
-            "color-mix(in srgb, var(--bg-secondary) 70%, transparent)",
+            "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)",
         color: "var(--text-primary)",
-        borderColor: "color-mix(in srgb, var(--border) 80%, transparent)",
     },
     ".cm-button[name=next], .cm-button[name=prev]": {
-        minWidth: "30px",
-        padding: "0 9px",
+        minWidth: "26px",
+        padding: "0 6px",
     },
     ".cm-button[name=replace], .cm-button[name=replaceAll]": {
         background:
-            "color-mix(in srgb, var(--bg-secondary) 82%, var(--bg-primary))",
-        borderColor: "color-mix(in srgb, var(--border) 80%, transparent)",
+            "color-mix(in srgb, var(--bg-secondary) 80%, var(--bg-primary))",
+        borderColor: "color-mix(in srgb, var(--border) 70%, transparent)",
     },
 
     ".cm-button[name=close]": {
         marginLeft: "auto",
-        fontSize: "16px",
-        width: "30px",
+        fontSize: "14px",
+        width: "26px",
         padding: "0",
-        color: "var(--text-primary)",
-        opacity: "0.45",
+        color: "var(--text-secondary)",
+        opacity: "0.6",
     },
     ".cm-button[name=close]:hover": {
         opacity: "1",
         color: "#ef4444",
-        backgroundColor: "color-mix(in srgb, #ef4444 12%, transparent)",
-        borderColor: "transparent",
+        backgroundColor: "color-mix(in srgb, #ef4444 10%, transparent)",
     },
 
     ".cm-search label": {
         color: "var(--text-secondary)",
-        fontSize: "11px",
+        fontSize: "10.5px",
         display: "inline-flex",
         alignItems: "center",
-        gap: "5px",
+        gap: "3px",
         cursor: "pointer",
-        padding: "0 8px",
-        borderRadius: "999px",
-        height: "28px",
+        padding: "0 5px",
+        borderRadius: "5px",
+        height: "24px",
         whiteSpace: "nowrap",
         border: "1px solid transparent",
         background: "transparent",
-        transition:
-            "background-color 140ms ease, color 140ms ease, border-color 140ms ease",
+        transition: "background-color 100ms ease, color 100ms ease",
     },
     ".cm-search label:hover": {
         color: "var(--text-primary)",
         backgroundColor:
-            "color-mix(in srgb, var(--bg-secondary) 72%, transparent)",
-        borderColor: "color-mix(in srgb, var(--border) 78%, transparent)",
+            "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)",
     },
     ".cm-search input[type=checkbox]": {
         accentColor: "var(--accent)",
         cursor: "pointer",
         margin: "0",
+        width: "12px",
+        height: "12px",
     },
 
     ".cm-search br": {
@@ -146,11 +141,11 @@ export const searchTheme = EditorView.theme({
 
     "@media (max-width: 900px)": {
         ".cm-panels": {
-            padding: "10px 12px 0",
+            padding: "6px 8px 0",
         },
         ".cm-search": {
-            gap: "6px",
-            padding: "10px",
+            gap: "4px",
+            padding: "5px 6px",
         },
         ".cm-button[name=close]": {
             order: "-1",
@@ -163,11 +158,11 @@ export const searchTheme = EditorView.theme({
 
     ".cm-searchMatch": {
         backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)",
-        borderRadius: "4px",
+        borderRadius: "3px",
     },
     ".cm-searchMatch.cm-searchMatch-selected": {
         backgroundColor: "color-mix(in srgb, var(--accent) 50%, transparent)",
         outline: "1px solid var(--accent)",
-        borderRadius: "4px",
+        borderRadius: "3px",
     },
 });
