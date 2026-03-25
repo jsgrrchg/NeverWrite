@@ -7,7 +7,7 @@ import * as path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 import { SettingsManager } from "./settings.js";
 import { createPostToolUseHook, planEntries, registerHookCallback, toolInfoFromToolUse, toolUpdateFromEditToolResponse, toolUpdateFromToolResult, } from "./tools.js";
-import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
+import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable, } from "./utils.js";
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 const MAX_TITLE_LENGTH = 256;
 function sanitizeTitle(text) {
@@ -27,7 +27,9 @@ function isStaticBinary() {
 export async function claudeCliPath() {
     return isStaticBinary()
         ? (await import("@anthropic-ai/claude-agent-sdk/embed")).default
-        : import.meta.resolve("@anthropic-ai/claude-agent-sdk").replace("sdk.mjs", "cli.js");
+        : import.meta
+            .resolve("@anthropic-ai/claude-agent-sdk")
+            .replace("sdk.mjs", "cli.js");
 }
 function shouldHideClaudeAuth() {
     return process.argv.includes("--hide-claude-auth");
@@ -136,7 +138,8 @@ export class ClaudeAcpAgent {
                 version: packageJson.version,
             },
             authMethods: [
-                ...(!shouldHideClaudeAuth() && (supportsTerminalAuth || supportsMetaTerminalAuth)
+                ...(!shouldHideClaudeAuth() &&
+                    (supportsTerminalAuth || supportsMetaTerminalAuth)
                     ? [terminalAuthMethod]
                     : []),
                 ...(supportsGatewayAuth ? [gatewayAuthMethod] : []),
@@ -151,7 +154,8 @@ export class ClaudeAcpAgent {
         }
         const response = await this.createSession(params, {
             // Revisit these meta values once we support resume
-            resume: params._meta?.claudeCode?.options?.resume,
+            resume: params._meta?.claudeCode?.options
+                ?.resume,
         });
         // Needs to happen after we return the session
         setTimeout(() => {
@@ -284,7 +288,10 @@ export class ClaudeAcpAgent {
                                     sessionId: message.session_id,
                                     update: {
                                         sessionUpdate: "agent_message_chunk",
-                                        content: { type: "text", text: "\n\nCompacting completed." },
+                                        content: {
+                                            type: "text",
+                                            text: "\n\nCompacting completed.",
+                                        },
                                     },
                                 });
                                 promptReplayed = true;
@@ -319,9 +326,12 @@ export class ClaudeAcpAgent {
                     case "result": {
                         // Accumulate usage from this result
                         session.accumulatedUsage.inputTokens += message.usage.input_tokens;
-                        session.accumulatedUsage.outputTokens += message.usage.output_tokens;
-                        session.accumulatedUsage.cachedReadTokens += message.usage.cache_read_input_tokens;
-                        session.accumulatedUsage.cachedWriteTokens += message.usage.cache_creation_input_tokens;
+                        session.accumulatedUsage.outputTokens +=
+                            message.usage.output_tokens;
+                        session.accumulatedUsage.cachedReadTokens +=
+                            message.usage.cache_read_input_tokens;
+                        session.accumulatedUsage.cachedWriteTokens +=
+                            message.usage.cache_creation_input_tokens;
                         // Calculate context window size from modelUsage (minimum across all models used)
                         const contextWindows = Object.values(message.modelUsage).map((m) => m.contextWindow);
                         const contextWindowSize = contextWindows.length > 0 ? Math.min(...contextWindows) : 200000;
@@ -432,7 +442,8 @@ export class ClaudeAcpAgent {
                             }
                         }
                         // Store latest assistant usage (excluding subagents)
-                        if (message.message.usage && message.parent_tool_use_id === null) {
+                        if (message.message.usage &&
+                            message.parent_tool_use_id === null) {
                             const messageWithUsage = message.message;
                             lastAssistantTotalUsage =
                                 messageWithUsage.usage.input_tokens +
@@ -696,7 +707,11 @@ export class ClaudeAcpAgent {
                         name: "Yes, and auto-accept edits",
                         optionId: "acceptEdits",
                     },
-                    { kind: "allow_once", name: "Yes, and manually approve edits", optionId: "default" },
+                    {
+                        kind: "allow_once",
+                        name: "Yes, and manually approve edits",
+                        optionId: "default",
+                    },
                     { kind: "reject_once", name: "No, keep planning", optionId: "plan" },
                 ];
                 if (ALLOW_BYPASS) {
@@ -734,7 +749,11 @@ export class ClaudeAcpAgent {
                         behavior: "allow",
                         updatedInput: toolInput,
                         updatedPermissions: suggestions ?? [
-                            { type: "setMode", mode: response.outcome.optionId, destination: "session" },
+                            {
+                                type: "setMode",
+                                mode: response.outcome.optionId,
+                                destination: "session",
+                            },
                         ],
                     };
                 }
@@ -750,7 +769,12 @@ export class ClaudeAcpAgent {
                     behavior: "allow",
                     updatedInput: toolInput,
                     updatedPermissions: suggestions ?? [
-                        { type: "addRules", rules: [{ toolName }], behavior: "allow", destination: "session" },
+                        {
+                            type: "addRules",
+                            rules: [{ toolName }],
+                            behavior: "allow",
+                            destination: "session",
+                        },
                     ],
                 };
             }
@@ -775,7 +799,8 @@ export class ClaudeAcpAgent {
                 throw new Error("Tool use aborted");
             }
             if (response.outcome?.outcome === "selected" &&
-                (response.outcome.optionId === "allow" || response.outcome.optionId === "allow_always")) {
+                (response.outcome.optionId === "allow" ||
+                    response.outcome.optionId === "allow_always")) {
                 // If Claude Code has suggestions, it will update their settings already
                 if (response.outcome.optionId === "allow_always") {
                     return {
@@ -822,7 +847,9 @@ export class ClaudeAcpAgent {
         if (!session)
             return;
         this.syncSessionConfigState(session, configId, value);
-        session.configOptions = session.configOptions.map((o) => o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o);
+        session.configOptions = session.configOptions.map((o) => o.id === configId && typeof o.currentValue === "string"
+            ? { ...o, currentValue: value }
+            : o);
         await this.client.sessionUpdate({
             sessionId,
             update: {
@@ -905,7 +932,10 @@ export class ClaudeAcpAgent {
                 }
             }
         }
-        let systemPrompt = { type: "preset", preset: "claude_code" };
+        let systemPrompt = {
+            type: "preset",
+            preset: "claude_code",
+        };
         if (params._meta?.systemPrompt) {
             const customPrompt = params._meta.systemPrompt;
             if (typeof customPrompt === "string") {
@@ -932,7 +962,9 @@ export class ClaudeAcpAgent {
         // disableBuiltInTools is a legacy shorthand for tools: [] — kept for
         // backward compatibility but callers should prefer the tools array.
         const tools = userProvidedOptions?.tools ??
-            (params._meta?.disableBuiltInTools === true ? [] : { type: "preset", preset: "claude_code" });
+            (params._meta?.disableBuiltInTools === true
+                ? []
+                : { type: "preset", preset: "claude_code" });
         const abortController = userProvidedOptions?.abortController || new AbortController();
         const options = {
             systemPrompt,
@@ -965,7 +997,10 @@ export class ClaudeAcpAgent {
                 ...userProvidedOptions?.extraArgs,
                 "replay-user-messages": "",
             },
-            disallowedTools: [...(userProvidedOptions?.disallowedTools || []), ...disallowedTools],
+            disallowedTools: [
+                ...(userProvidedOptions?.disallowedTools || []),
+                ...disallowedTools,
+            ],
             tools,
             hooks: {
                 ...userProvidedOptions?.hooks,
@@ -1136,7 +1171,9 @@ function buildConfigOptions(modes, models) {
 const MODEL_CONTEXT_HINT_PATTERN = /\[(\d+m)\]$/i;
 function tokenizeModelPreference(model) {
     const lower = model.trim().toLowerCase();
-    const contextHint = lower.match(MODEL_CONTEXT_HINT_PATTERN)?.[1]?.toLowerCase();
+    const contextHint = lower
+        .match(MODEL_CONTEXT_HINT_PATTERN)?.[1]
+        ?.toLowerCase();
     const normalized = lower.replace(MODEL_CONTEXT_HINT_PATTERN, " $1 ");
     const rawTokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
     const tokens = rawTokens
@@ -1176,7 +1213,7 @@ function resolveModelPreference(models, preference) {
     const includesMatch = models.find((model) => {
         const value = model.value.toLowerCase();
         const display = model.displayName.toLowerCase();
-        return value.includes(lower) || display.includes(lower) || lower.includes(value);
+        return (value.includes(lower) || display.includes(lower) || lower.includes(value));
     });
     if (includesMatch)
         return includesMatch;
@@ -1208,7 +1245,7 @@ async function getAvailableModels(query, models, settingsManager) {
     return {
         availableModels: models.map((model) => ({
             modelId: model.value,
-            name: model.displayName,
+            name: model.displayName.replace("Default (recommended)", "Opus"),
             description: model.description,
         })),
         currentModelId: currentModel.value,
@@ -1422,7 +1459,9 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                             onPostToolUseHook: async (toolUseId, toolInput, toolResponse) => {
                                 const toolUse = toolUseCache[toolUseId];
                                 if (toolUse) {
-                                    const editDiff = toolUse.name === "Edit" ? toolUpdateFromEditToolResponse(toolResponse) : {};
+                                    const editDiff = toolUse.name === "Edit"
+                                        ? toolUpdateFromEditToolResponse(toolResponse)
+                                        : {};
                                     const update = {
                                         _meta: {
                                             claudeCode: {
@@ -1517,7 +1556,11 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                                 _meta: {
                                     terminal_output: toolMeta.terminal_output,
                                     ...(options?.parentToolUseId
-                                        ? { claudeCode: { parentToolUseId: options.parentToolUseId } }
+                                        ? {
+                                            claudeCode: {
+                                                parentToolUseId: options.parentToolUseId,
+                                            },
+                                        }
                                         : {}),
                                 },
                                 toolCallId: chunk.tool_use_id,
@@ -1530,7 +1573,9 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                             claudeCode: {
                                 toolName: toolUse.name,
                             },
-                            ...(toolMeta?.terminal_exit ? { terminal_exit: toolMeta.terminal_exit } : {}),
+                            ...(toolMeta?.terminal_exit
+                                ? { terminal_exit: toolMeta.terminal_exit }
+                                : {}),
                         },
                         toolCallId: chunk.tool_use_id,
                         sessionUpdate: "tool_call_update",
