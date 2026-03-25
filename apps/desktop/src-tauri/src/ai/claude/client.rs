@@ -1781,10 +1781,6 @@ fn strip_effort_suffix(text: &str) -> &str {
     text
 }
 
-fn normalize_claude_model_name(name: &str) -> String {
-    strip_effort_suffix(name).replace("Default (recommended)", "Opus")
-}
-
 /// Extract the effort level from an ACP model id (e.g. "gpt-5.3-codex/medium" → "medium").
 fn extract_effort(model_id: &str) -> Option<&str> {
     let suffix = model_id.rsplit('/').next()?;
@@ -1869,7 +1865,7 @@ fn map_session_models(state: agent_client_protocol::SessionModelState) -> Mapped
         models.push(AiModelOption {
             id: display_id,
             runtime_id: CLAUDE_RUNTIME_ID.to_string(),
-            name: normalize_claude_model_name(&model.name),
+            name: strip_effort_suffix(&model.name).to_string(),
             description: model.description.unwrap_or_default(),
         });
     }
@@ -2541,24 +2537,6 @@ mod tests {
                 .map(|diff| diff.reversible),
             Some(true)
         );
-    }
-
-    #[test]
-    fn map_session_models_renames_default_recommended_to_opus() {
-        let state = agent_client_protocol::SessionModelState::new(
-            "default",
-            vec![
-                agent_client_protocol::ModelInfo::new("default", "Default (recommended)")
-                    .description("Most capable"),
-            ],
-        );
-
-        let mapped = map_session_models(state);
-
-        assert_eq!(mapped.models.len(), 1);
-        assert_eq!(mapped.models[0].id, "default");
-        assert_eq!(mapped.models[0].name, "Opus");
-        assert_eq!(mapped.models[0].description, "Most capable");
     }
 
     #[test]
