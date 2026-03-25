@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isReviewTab, useEditorStore } from "../../../app/store/editorStore";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatSession, AIRuntimeDescriptor } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
+import * as actionLogModel from "../store/actionLogModel";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { buildPatchFromTexts } from "../store/actionLogModel";
 import { useAutoOpenReviewTab } from "./useAutoOpenReviewTab";
@@ -157,5 +158,46 @@ describe("useAutoOpenReviewTab", () => {
             .tabs.filter((tab) => isReviewTab(tab));
         expect(reviewTabs).toHaveLength(1);
         expect(reviewTabs[0]?.sessionId).toBe("session-a");
+    });
+
+    it("recomputes tracked counts only for sessions whose object changed", () => {
+        const sessionA = createSession("session-a", ["/vault/a.ts"]);
+        const sessionB = createSession("session-b", ["/vault/b.ts"]);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes,
+            activeSessionId: sessionA.sessionId,
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+                [sessionB.sessionId]: sessionB,
+            },
+        }));
+
+        const countSpy = vi.spyOn(actionLogModel, "getTrackedFilesForSession");
+
+        renderComponent(<AutoOpenReviewHarness />);
+        countSpy.mockClear();
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionA.sessionId]: {
+                    ...state.sessionsById[sessionA.sessionId]!,
+                    messages: [
+                        {
+                            id: "session-a-message",
+                            role: "assistant",
+                            kind: "text",
+                            content: "update",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        expect(countSpy).toHaveBeenCalledTimes(1);
     });
 });

@@ -144,6 +144,32 @@ interface QueuedMessageEditState {
     previousAttachments: AIChatAttachment[];
 }
 
+function aiPrefsEqual(
+    left: Pick<
+        ChatState,
+        | "autoContextEnabled"
+        | "requireCmdEnterToSend"
+        | "composerFontSize"
+        | "chatFontSize"
+        | "composerFontFamily"
+        | "chatFontFamily"
+        | "editDiffZoom"
+        | "historyRetentionDays"
+    >,
+    right: NormalizedAiPreferences,
+) {
+    return (
+        left.autoContextEnabled === right.autoContextEnabled &&
+        left.requireCmdEnterToSend === right.requireCmdEnterToSend &&
+        left.composerFontSize === right.composerFontSize &&
+        left.chatFontSize === right.chatFontSize &&
+        left.composerFontFamily === right.composerFontFamily &&
+        left.chatFontFamily === right.chatFontFamily &&
+        left.editDiffZoom === right.editDiffZoom &&
+        left.historyRetentionDays === right.historyRetentionDays
+    );
+}
+
 function loadAiPreferences(): AiPreferences {
     try {
         const raw = localStorage.getItem(AI_PREFS_KEY);
@@ -6388,19 +6414,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
 // Sync AI preferences when another window (e.g. standalone Settings) updates localStorage
 if (typeof window !== "undefined") {
+    let aiPrefsSyncTimer: number | null = null;
     window.addEventListener("storage", (event) => {
         if (event.key === AI_PREFS_KEY) {
-            const prefs = getNormalizedAiPreferences();
-            useChatStore.setState({
-                autoContextEnabled: prefs.autoContextEnabled,
-                requireCmdEnterToSend: prefs.requireCmdEnterToSend,
-                composerFontSize: prefs.composerFontSize,
-                chatFontSize: prefs.chatFontSize,
-                composerFontFamily: prefs.composerFontFamily,
-                chatFontFamily: prefs.chatFontFamily,
-                editDiffZoom: prefs.editDiffZoom,
-                historyRetentionDays: prefs.historyRetentionDays,
-            });
+            if (aiPrefsSyncTimer != null) {
+                window.clearTimeout(aiPrefsSyncTimer);
+            }
+            aiPrefsSyncTimer = window.setTimeout(() => {
+                aiPrefsSyncTimer = null;
+                const prefs = getNormalizedAiPreferences();
+                useChatStore.setState((state) =>
+                    aiPrefsEqual(state, prefs)
+                        ? state
+                        : {
+                              autoContextEnabled: prefs.autoContextEnabled,
+                              requireCmdEnterToSend:
+                                  prefs.requireCmdEnterToSend,
+                              composerFontSize: prefs.composerFontSize,
+                              chatFontSize: prefs.chatFontSize,
+                              composerFontFamily: prefs.composerFontFamily,
+                              chatFontFamily: prefs.chatFontFamily,
+                              editDiffZoom: prefs.editDiffZoom,
+                              historyRetentionDays: prefs.historyRetentionDays,
+                          },
+                );
+            }, 80);
         }
     });
 }

@@ -180,4 +180,36 @@ describe("reviewTabPersistence", () => {
             expect.arrayContaining(["server-newer", "local-stale"]),
         );
     });
+
+    it("skips rewriting localStorage when the persisted review state is semantically unchanged", () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+
+        const first = persistReviewViewState("/vault", "sess-stable", {
+            expandedIdentityKeys: ["a"],
+            scrollTop: 64,
+            anchor: {
+                identityKey: "a",
+                trackedVersion: 2,
+                hunkKeys: ["1:2:1:2"],
+            },
+        });
+
+        vi.setSystemTime(new Date("2026-03-24T12:00:05.000Z"));
+
+        const second = persistReviewViewState("/vault", "sess-stable", {
+            expandedIdentityKeys: ["a"],
+            scrollTop: 64,
+            anchor: {
+                identityKey: "a",
+                trackedVersion: 2,
+                hunkKeys: ["1:2:1:2"],
+            },
+        });
+
+        expect(second?.updatedAt).toBe(first?.updatedAt);
+        expect(
+            readPersistedReviewViewState("/vault", "sess-stable")?.updatedAt,
+        ).toBe(first?.updatedAt);
+    });
 });

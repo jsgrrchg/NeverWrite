@@ -29,6 +29,71 @@ export interface PersistedReviewViewState {
     updatedAt: number;
 }
 
+function stringArraysEqual(left: string[], right: string[]) {
+    if (left.length !== right.length) {
+        return false;
+    }
+
+    return left.every((value, index) => value === right[index]);
+}
+
+function lineSpansEqual(
+    left: PersistedReviewHunkLineSpan[] | undefined,
+    right: PersistedReviewHunkLineSpan[] | undefined,
+) {
+    if (!left && !right) {
+        return true;
+    }
+    if (!left || !right || left.length !== right.length) {
+        return false;
+    }
+
+    return left.every((span, index) => {
+        const other = right[index];
+        return (
+            span.oldStart === other?.oldStart &&
+            span.oldEnd === other?.oldEnd &&
+            span.newStart === other?.newStart &&
+            span.newEnd === other?.newEnd
+        );
+    });
+}
+
+function anchorsEqual(
+    left: PersistedReviewAnchor | null,
+    right: PersistedReviewAnchor | null,
+) {
+    if (left === right) {
+        return true;
+    }
+    if (!left || !right) {
+        return false;
+    }
+
+    return (
+        left.identityKey === right.identityKey &&
+        left.trackedVersion === right.trackedVersion &&
+        stringArraysEqual(left.hunkKeys, right.hunkKeys) &&
+        stringArraysEqual(left.pathAliases ?? [], right.pathAliases ?? []) &&
+        lineSpansEqual(left.hunkLineSpans, right.hunkLineSpans)
+    );
+}
+
+function persistedReviewStateSemanticallyEqual(
+    left: PersistedReviewViewState,
+    right: PersistedReviewViewState,
+) {
+    return (
+        left.version === right.version &&
+        stringArraysEqual(
+            left.expandedIdentityKeys,
+            right.expandedIdentityKeys,
+        ) &&
+        left.scrollTop === right.scrollTop &&
+        anchorsEqual(left.anchor, right.anchor)
+    );
+}
+
 function getReviewViewStateKey(vaultPath: string, sessionId: string) {
     return `${REVIEW_VIEW_STATE_PREFIX}:${vaultPath}:${sessionId}`;
 }
@@ -265,6 +330,10 @@ export function persistReviewViewState(
                   anchor: existing.anchor,
               }
             : requested;
+
+    if (existing && persistedReviewStateSemanticallyEqual(existing, payload)) {
+        return existing;
+    }
 
     try {
         localStorage.setItem(
