@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -162,73 +162,148 @@ function buildOutlineTree(headings: OutlineHeading[]): OutlineNode[] {
     return root.children;
 }
 
+function Chevron({ open }: { open: boolean }) {
+    return (
+        <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            style={{
+                flexShrink: 0,
+                transform: open ? "rotate(90deg)" : "rotate(0deg)",
+                transition: "transform 120ms ease",
+                opacity: 0.5,
+            }}
+        >
+            <path
+                d="M6 4l4 4-4 4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+        </svg>
+    );
+}
+
+function CollapsibleChildren({
+    open,
+    children,
+}: {
+    open: boolean;
+    children: React.ReactNode;
+}) {
+    return (
+        <div
+            style={{
+                display: "grid",
+                gridTemplateRows: open ? "1fr" : "0fr",
+                transition: "grid-template-rows 150ms ease",
+            }}
+        >
+            <div style={{ overflow: "hidden" }}>{children}</div>
+        </div>
+    );
+}
+
 function OutlineTree({
     nodes,
     depth,
+    collapsed,
+    onToggle,
     onSelect,
     onContextMenu,
 }: {
     nodes: OutlineNode[];
     depth: number;
+    collapsed: Set<string>;
+    onToggle: (id: string) => void;
     onSelect: (selection: OutlineSelection) => void;
     onContextMenu: (event: React.MouseEvent, node: OutlineNode) => void;
 }) {
     return (
         <>
-            {nodes.map((node) => (
-                <div key={node.id}>
-                    <button
-                        onClick={() =>
-                            onSelect({
-                                anchor: node.anchor,
-                                head: node.head,
-                            })
-                        }
-                        onContextMenu={(event) => onContextMenu(event, node)}
-                        className="w-full text-left rounded-sm"
-                        style={{
-                            display: "block",
-                            padding: "4px 10px 4px 12px",
-                            marginLeft: depth * 14,
-                            color: "var(--text-primary)",
-                            borderLeft:
-                                depth > 0
-                                    ? "1px solid color-mix(in srgb, var(--border) 85%, transparent)"
-                                    : "none",
-                            fontSize: 12,
-                            lineHeight: 1.45,
-                            opacity: depth === 0 ? 1 : 0.88,
-                        }}
-                        onMouseEnter={(e) =>
-                            (e.currentTarget.style.backgroundColor =
-                                "var(--bg-tertiary)")
-                        }
-                        onMouseLeave={(e) =>
-                            (e.currentTarget.style.backgroundColor =
-                                "transparent")
-                        }
-                    >
-                        <span
-                            style={{
-                                display: "-webkit-box",
-                                WebkitBoxOrient: "vertical",
-                                WebkitLineClamp: 3,
-                                overflow: "hidden",
-                            }}
+            {nodes.map((node) => {
+                const hasChildren = node.children.length > 0;
+                const isOpen = !collapsed.has(node.id);
+
+                return (
+                    <div key={node.id}>
+                        <div
+                            className="flex items-center group"
+                            style={{ paddingLeft: depth * 14 }}
                         >
-                            {node.title}
-                        </span>
-                    </button>
-                    {node.children.length > 0 && (
-                        <OutlineTree
-                            nodes={node.children}
-                            depth={depth + 1}
-                            onSelect={onSelect}
-                            onContextMenu={onContextMenu}
-                        />
-                    )}
-                </div>
-            ))}
+                            {hasChildren ? (
+                                <button
+                                    onClick={() => onToggle(node.id)}
+                                    className="flex-shrink-0 flex items-center justify-center rounded-sm"
+                                    style={{
+                                        width: 20,
+                                        height: 20,
+                                        color: "var(--text-secondary)",
+                                    }}
+                                >
+                                    <Chevron open={isOpen} />
+                                </button>
+                            ) : (
+                                <span style={{ width: 20, flexShrink: 0 }} />
+                            )}
+                            <button
+                                onClick={() =>
+                                    onSelect({
+                                        anchor: node.anchor,
+                                        head: node.head,
+                                    })
+                                }
+                                onContextMenu={(event) =>
+                                    onContextMenu(event, node)
+                                }
+                                className="flex-1 min-w-0 text-left rounded-sm transition-colors duration-75"
+                                style={{
+                                    padding: "3px 8px",
+                                    color: "var(--text-primary)",
+                                    fontSize: 12,
+                                    lineHeight: 1.45,
+                                    fontWeight: depth === 0 ? 500 : 400,
+                                    opacity: depth === 0 ? 1 : 0.85,
+                                }}
+                                onMouseEnter={(e) =>
+                                    (e.currentTarget.style.backgroundColor =
+                                        "var(--bg-tertiary)")
+                                }
+                                onMouseLeave={(e) =>
+                                    (e.currentTarget.style.backgroundColor =
+                                        "transparent")
+                                }
+                            >
+                                <span
+                                    style={{
+                                        display: "-webkit-box",
+                                        WebkitBoxOrient: "vertical",
+                                        WebkitLineClamp: 2,
+                                        overflow: "hidden",
+                                    }}
+                                >
+                                    {node.title}
+                                </span>
+                            </button>
+                        </div>
+                        {hasChildren && (
+                            <CollapsibleChildren open={isOpen}>
+                                <OutlineTree
+                                    nodes={node.children}
+                                    depth={depth + 1}
+                                    collapsed={collapsed}
+                                    onToggle={onToggle}
+                                    onSelect={onSelect}
+                                    onContextMenu={onContextMenu}
+                                />
+                            </CollapsibleChildren>
+                        )}
+                    </div>
+                );
+            })}
         </>
     );
 }
@@ -243,6 +318,7 @@ export function OutlinePanel({
     const deferredContent = useDeferredValue(content);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<OutlineNode> | null>(null);
+    const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
     const headings = useMemo(
         () => (deferredContent ? extractHeadings(deferredContent) : []),
         [deferredContent],
@@ -250,15 +326,97 @@ export function OutlinePanel({
 
     const tree = useMemo(() => buildOutlineTree(headings), [headings]);
 
+    const handleToggle = useCallback((id: string) => {
+        setCollapsed((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }, []);
+
+    const allCollapsibleIds = useMemo(() => {
+        const ids: string[] = [];
+        const walk = (nodes: OutlineNode[]) => {
+            for (const n of nodes) {
+                if (n.children.length > 0) ids.push(n.id);
+                walk(n.children);
+            }
+        };
+        walk(tree);
+        return ids;
+    }, [tree]);
+
+    const allCollapsed =
+        allCollapsibleIds.length > 0 &&
+        allCollapsibleIds.every((id) => collapsed.has(id));
+
+    const handleToggleAll = useCallback(() => {
+        setCollapsed(() => {
+            if (allCollapsed) return new Set();
+            return new Set(allCollapsibleIds);
+        });
+    }, [allCollapsed, allCollapsibleIds]);
+
     return (
         <div className="h-full flex flex-col overflow-hidden">
             <div
-                className="px-3 py-2 text-xs font-semibold uppercase tracking-wider"
+                className="px-3 py-2 flex items-center justify-between"
                 style={{ color: "var(--text-secondary)" }}
             >
-                Outline
+                <span className="text-xs font-semibold uppercase tracking-wider">
+                    Outline
+                </span>
+                {allCollapsibleIds.length > 0 && (
+                    <button
+                        onClick={handleToggleAll}
+                        className="rounded-sm transition-colors duration-75"
+                        style={{
+                            padding: "2px 4px",
+                            color: "var(--text-secondary)",
+                        }}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                                "var(--bg-tertiary)")
+                        }
+                        onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                                "transparent")
+                        }
+                        title={allCollapsed ? "Expand all" : "Collapse all"}
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                        >
+                            {allCollapsed ? (
+                                <>
+                                    <path
+                                        d="M4 6l4 4 4-4"
+                                        stroke="currentColor"
+                                        strokeWidth="1.5"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    />
+                                </>
+                            ) : (
+                                <>
+                                    <path
+                                        d="M4 10l4-4 4 4"
+                                        stroke="currentColor"
+                                        strokeWidth="1.5"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    />
+                                </>
+                            )}
+                        </svg>
+                    </button>
+                )}
             </div>
-            <div className="flex-1 overflow-y-auto pl-1 pr-2.5 pb-3">
+            <div className="flex-1 overflow-y-auto px-1 pb-3">
                 {tree.length === 0 ? (
                     <div
                         className="px-3 py-2 text-xs"
@@ -270,6 +428,8 @@ export function OutlinePanel({
                     <OutlineTree
                         nodes={tree}
                         depth={0}
+                        collapsed={collapsed}
+                        onToggle={handleToggle}
                         onSelect={onSelectHeading}
                         onContextMenu={(event, node) => {
                             event.preventDefault();
