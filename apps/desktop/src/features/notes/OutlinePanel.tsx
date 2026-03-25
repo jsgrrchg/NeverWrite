@@ -237,7 +237,7 @@ function OutlineTree({
                             {hasChildren ? (
                                 <button
                                     onClick={() => onToggle(node.id)}
-                                    className="flex-shrink-0 flex items-center justify-center rounded-sm"
+                                    className="shrink-0 flex items-center justify-center rounded-sm"
                                     style={{
                                         width: 20,
                                         height: 20,
