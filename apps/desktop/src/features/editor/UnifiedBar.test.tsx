@@ -12,23 +12,32 @@ import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
 const onDragDropEventMock = vi.fn();
+const minimizeMock = vi.fn().mockResolvedValue(undefined);
+const toggleMaximizeMock = vi.fn().mockResolvedValue(undefined);
+const isMaximizedMock = vi.fn().mockResolvedValue(false);
+const closeMock = vi.fn().mockResolvedValue(undefined);
+
+const mockCurrentWindow = {
+    listen: vi.fn(),
+    once: vi.fn(),
+    onCloseRequested: vi.fn(),
+    onMoved: vi.fn().mockResolvedValue(vi.fn()),
+    onResized: vi.fn().mockResolvedValue(vi.fn()),
+    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+    innerPosition: innerPositionMock,
+    scaleFactor: scaleFactorMock,
+    setFocus: vi.fn(),
+    startDragging: vi.fn(),
+    minimize: minimizeMock,
+    toggleMaximize: toggleMaximizeMock,
+    isMaximized: isMaximizedMock,
+    emitTo: vi.fn(),
+    close: closeMock,
+    label: "main",
+};
 
 vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => ({
-        listen: vi.fn(),
-        once: vi.fn(),
-        onCloseRequested: vi.fn(),
-        onMoved: vi.fn().mockResolvedValue(vi.fn()),
-        onResized: vi.fn().mockResolvedValue(vi.fn()),
-        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-        innerPosition: innerPositionMock,
-        scaleFactor: scaleFactorMock,
-        setFocus: vi.fn(),
-        startDragging: vi.fn(),
-        emitTo: vi.fn(),
-        close: vi.fn(),
-        label: "main",
-    }),
+    getCurrentWindow: () => mockCurrentWindow,
 }));
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -79,6 +88,11 @@ describe("UnifiedBar tab strip drop", () => {
     beforeEach(() => {
         onDragDropEventMock.mockReset();
         onDragDropEventMock.mockResolvedValue(vi.fn());
+        minimizeMock.mockClear();
+        toggleMaximizeMock.mockClear();
+        isMaximizedMock.mockReset();
+        isMaximizedMock.mockResolvedValue(false);
+        closeMock.mockClear();
 
         scaleFactorMock.mockResolvedValue(1);
         innerPositionMock.mockResolvedValue({
@@ -280,5 +294,54 @@ describe("UnifiedBar tab strip drop", () => {
             "tab-a",
             "tab-b",
         ]);
+    });
+
+    it("renders native window controls on Windows and dispatches commands", async () => {
+        Object.defineProperty(window.navigator, "userAgent", {
+            configurable: true,
+            value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        });
+        Object.defineProperty(window.navigator, "platform", {
+            configurable: true,
+            value: "Win32",
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="note" />);
+        await flushPromises();
+
+        expect(
+            container.querySelector('[data-window-controls="windows"]'),
+        ).not.toBeNull();
+
+        fireEvent.click(
+            container.querySelector(
+                '[data-window-control="minimize"]',
+            ) as HTMLElement,
+        );
+        fireEvent.click(
+            container.querySelector(
+                '[data-window-control="maximize"]',
+            ) as HTMLElement,
+        );
+        fireEvent.click(
+            container.querySelector(
+                '[data-window-control="close"]',
+            ) as HTMLElement,
+        );
+
+        expect(minimizeMock).toHaveBeenCalledTimes(1);
+        expect(toggleMaximizeMock).toHaveBeenCalledTimes(1);
+        expect(closeMock).toHaveBeenCalledTimes(1);
     });
 });
