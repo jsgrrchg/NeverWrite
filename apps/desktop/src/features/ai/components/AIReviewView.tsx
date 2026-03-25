@@ -281,6 +281,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const didRunPersistEffectRef = useRef(false);
     const restoreAppliedRef = useRef(false);
     const scrollPersistTimerRef = useRef<number | null>(null);
+    const storageRefreshTimerRef = useRef<number | null>(null);
     const pendingScrollTopRef = useRef<number | null>(null);
     const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
@@ -324,6 +325,17 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         pendingScrollTopRef.current = null;
     }, []);
 
+    const schedulePersistedStateRefresh = useCallback(() => {
+        if (storageRefreshTimerRef.current != null) {
+            return;
+        }
+
+        storageRefreshTimerRef.current = window.setTimeout(() => {
+            storageRefreshTimerRef.current = null;
+            setPersistVersion((current) => current + 1);
+        }, 80);
+    }, []);
+
     const schedulePersistFromScroll = useCallback(
         (scrollTop: number) => {
             pendingScrollTopRef.current = scrollTop;
@@ -362,23 +374,25 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                 if (parsed.writerId === reviewWriterIdRef.current) {
                     return;
                 }
-                if (
-                    typeof parsed.updatedAt === "number" &&
-                    parsed.updatedAt > lastSeenPersistedUpdatedAtRef.current
-                ) {
-                    lastSeenPersistedUpdatedAtRef.current = parsed.updatedAt;
+                if (typeof parsed.updatedAt !== "number") {
+                    return;
                 }
+                if (parsed.updatedAt <= lastSeenPersistedUpdatedAtRef.current) {
+                    return;
+                }
+                lastSeenPersistedUpdatedAtRef.current = parsed.updatedAt;
             } catch {
                 // Ignore malformed storage payloads from other windows.
+                return;
             }
-            setPersistVersion((current) => current + 1);
+            schedulePersistedStateRefresh();
         };
 
         window.addEventListener("storage", onStorage);
         return () => {
             window.removeEventListener("storage", onStorage);
         };
-    }, [reviewStorageKey]);
+    }, [reviewStorageKey, schedulePersistedStateRefresh]);
 
     useEffect(() => {
         if (!didRunPersistEffectRef.current) {
@@ -465,6 +479,10 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     useEffect(
         () => () => {
             flushScheduledScrollPersist();
+            if (storageRefreshTimerRef.current != null) {
+                window.clearTimeout(storageRefreshTimerRef.current);
+                storageRefreshTimerRef.current = null;
+            }
             persistViewState();
         },
         [flushScheduledScrollPersist, persistViewState],

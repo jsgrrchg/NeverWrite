@@ -549,6 +549,43 @@ describe("chatStore", () => {
         });
     });
 
+    it("coalesces rapid AI preference storage events and applies only the latest values", () => {
+        vi.useFakeTimers();
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                editDiffZoom: 0.8,
+            }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                editDiffZoom: 0.9,
+            }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        expect(useChatStore.getState().editDiffZoom).toBe(0.72);
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().editDiffZoom).toBe(0.9);
+        vi.useRealTimers();
+    });
+
     it("loads runtimes and creates an initial session", async () => {
         await useChatStore.getState().initialize();
 

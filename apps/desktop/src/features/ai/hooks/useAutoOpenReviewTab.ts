@@ -2,25 +2,60 @@ import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useChatStore } from "../store/chatStore";
 import { getReviewTabTitle } from "../sessionPresentation";
-import { selectVisibleTrackedFilesCount } from "../store/editedFilesBufferModel";
+import { getTrackedFilesForSession } from "../store/actionLogModel";
+import type { AIChatSession } from "../types";
+
+const trackedFileCountCache = new WeakMap<AIChatSession, number>();
+
+function getVisibleTrackedFilesCountForSession(
+    session: AIChatSession | null | undefined,
+) {
+    if (!session) {
+        return 0;
+    }
+
+    const cached = trackedFileCountCache.get(session);
+    if (typeof cached === "number") {
+        return cached;
+    }
+
+    const count = Object.keys(
+        getTrackedFilesForSession(session.actionLog),
+    ).length;
+    trackedFileCountCache.set(session, count);
+    return count;
+}
 
 export function useAutoOpenReviewTab() {
     const prevCountsRef = useRef<Map<string, number>>(new Map());
+    const prevSessionsByIdRef = useRef(useChatStore.getState().sessionsById);
 
     useEffect(() => {
         const initialState = useChatStore.getState();
         prevCountsRef.current = new Map(
-            Object.keys(initialState.sessionsById).map((sessionId) => [
-                sessionId,
-                selectVisibleTrackedFilesCount(initialState, sessionId),
-            ]),
+            Object.entries(initialState.sessionsById).map(
+                ([sessionId, session]) => [
+                    sessionId,
+                    getVisibleTrackedFilesCountForSession(session),
+                ],
+            ),
         );
+        prevSessionsByIdRef.current = initialState.sessionsById;
 
         const unsubscribe = useChatStore.subscribe((state) => {
-            const nextSessionIds = new Set(Object.keys(state.sessionsById));
+            const prevSessionsById = prevSessionsByIdRef.current;
+            const nextSessionsById = state.sessionsById;
+            if (nextSessionsById === prevSessionsById) {
+                return;
+            }
 
-            for (const sessionId of nextSessionIds) {
-                const count = selectVisibleTrackedFilesCount(state, sessionId);
+            for (const [sessionId, session] of Object.entries(
+                nextSessionsById,
+            )) {
+                if (prevSessionsById[sessionId] === session) {
+                    continue;
+                }
+                const count = getVisibleTrackedFilesCountForSession(session);
                 const prev = prevCountsRef.current.get(sessionId) ?? 0;
                 prevCountsRef.current.set(sessionId, count);
 
@@ -34,11 +69,13 @@ export function useAutoOpenReviewTab() {
                 }
             }
 
-            for (const sessionId of Array.from(prevCountsRef.current.keys())) {
-                if (!nextSessionIds.has(sessionId)) {
+            for (const sessionId of Object.keys(prevSessionsById)) {
+                if (!(sessionId in nextSessionsById)) {
                     prevCountsRef.current.delete(sessionId);
                 }
             }
+
+            prevSessionsByIdRef.current = nextSessionsById;
         });
 
         return unsubscribe;

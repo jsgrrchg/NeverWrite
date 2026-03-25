@@ -7,11 +7,12 @@ import {
 
 const EMPTY_TRACKED_FILES: TrackedFile[] = [];
 
-// Cache for Object.values(tracked) to maintain referential stability.
-// Zustand immutable updates guarantee that actionLog reference only changes
-// when data actually changes, so we can use it as a cache key.
-let _cachedTracked: Record<string, TrackedFile> | null = null;
-let _cachedFiles: TrackedFile[] = EMPTY_TRACKED_FILES;
+// Cache Object.values(tracked) per tracked-files snapshot so different
+// sessions do not clobber each other's selector results.
+const _trackedFilesCache = new WeakMap<
+    Record<string, TrackedFile>,
+    TrackedFile[]
+>();
 
 function hasDiffBuffer(message: AIChatMessage) {
     return (message.diffs?.length ?? 0) > 0;
@@ -112,13 +113,14 @@ export function selectVisibleTrackedFiles(
         return EMPTY_TRACKED_FILES;
     }
 
-    // Cache to maintain referential stability — Zustand's immutable
-    // updates guarantee `tracked` reference only changes on real mutations.
-    if (tracked !== _cachedTracked) {
-        _cachedTracked = tracked;
-        _cachedFiles = Object.values(tracked);
+    const cachedFiles = _trackedFilesCache.get(tracked);
+    if (cachedFiles) {
+        return cachedFiles;
     }
-    return _cachedFiles;
+
+    const nextFiles = Object.values(tracked);
+    _trackedFilesCache.set(tracked, nextFiles);
+    return nextFiles;
 }
 
 export function selectVisibleTrackedFilesCount(
