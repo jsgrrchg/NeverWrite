@@ -49,6 +49,7 @@ import {
     appendFileAttachmentPart,
     appendScreenshotPart,
     createEmptyComposerParts,
+    normalizeComposerParts,
 } from "./composerParts";
 import { exportChatSessionToVaultNote } from "./chatExport";
 import { useChatStore } from "./store/chatStore";
@@ -81,6 +82,15 @@ export function AIChatPanel() {
     const chatActions = useRef(useChatStore.getState()).current;
     const refreshEntries = useVaultStore((state) => state.refreshEntries);
     const vaultPath = useVaultStore((state) => state.vaultPath);
+    const screenshotRetentionSeconds = useChatStore(
+        (state) => state.screenshotRetentionSeconds,
+    );
+    const composerPartsBySessionId = useChatStore(
+        (state) => state.composerPartsBySessionId,
+    );
+    const screenshotTimersRef = useRef<
+        Map<string, { timeoutId: number; durationMs: number }>
+    >(new Map());
 
     const handleRemoveAttachment = useCallback(
         (sessionId: string, attachmentId: string) => {
@@ -280,6 +290,76 @@ export function AIChatPanel() {
         }),
     );
     const composerSessionId = currentSession?.sessionId ?? null;
+
+    useEffect(() => {
+        const timers = screenshotTimersRef.current;
+        const durationMs = screenshotRetentionSeconds * 1000;
+
+        if (durationMs <= 0) {
+            for (const { timeoutId } of timers.values()) {
+                window.clearTimeout(timeoutId);
+            }
+            timers.clear();
+            return;
+        }
+
+        const activeKeys = new Set<string>();
+
+        for (const [sessionId, parts] of Object.entries(
+            composerPartsBySessionId,
+        )) {
+            for (const part of parts) {
+                if (part.type !== "screenshot") continue;
+
+                const key = `${sessionId}:${part.id}`;
+                activeKeys.add(key);
+
+                const existing = timers.get(key);
+                if (existing && existing.durationMs === durationMs) {
+                    continue;
+                }
+                if (existing) {
+                    window.clearTimeout(existing.timeoutId);
+                }
+
+                const timeoutId = window.setTimeout(() => {
+                    const currentParts =
+                        useChatStore.getState().composerPartsBySessionId[
+                            sessionId
+                        ] ?? createEmptyComposerParts();
+                    const nextParts = normalizeComposerParts(
+                        currentParts.filter(
+                            (candidate) =>
+                                candidate.type !== "screenshot" ||
+                                candidate.id !== part.id,
+                        ),
+                    );
+                    chatActions.setComposerPartsForSession(
+                        sessionId,
+                        nextParts,
+                    );
+                    screenshotTimersRef.current.delete(key);
+                }, durationMs);
+
+                timers.set(key, { timeoutId, durationMs });
+            }
+        }
+
+        for (const [key, { timeoutId }] of timers.entries()) {
+            if (activeKeys.has(key)) continue;
+            window.clearTimeout(timeoutId);
+            timers.delete(key);
+        }
+    }, [chatActions, composerPartsBySessionId, screenshotRetentionSeconds]);
+
+    useEffect(() => {
+        return () => {
+            for (const { timeoutId } of screenshotTimersRef.current.values()) {
+                window.clearTimeout(timeoutId);
+            }
+            screenshotTimersRef.current.clear();
+        };
+    }, []);
 
     const noteOptions = notes.map((note) => ({
         id: note.id,

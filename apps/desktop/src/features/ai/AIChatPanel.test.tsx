@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isNoteTab, useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
@@ -127,6 +127,10 @@ describe("AIChatPanel tabs lifecycle", () => {
             pendingSelectionReveal: null,
             currentSelection: null,
         });
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it("opens and activates a chat tab when selecting an existing session", async () => {
@@ -976,6 +980,68 @@ describe("AIChatPanel tabs lifecycle", () => {
                 ]?.[0]?.content,
             ).toBe("Queued while streaming");
         });
+    });
+
+    it("removes composer screenshots after the configured retention timeout", async () => {
+        vi.useFakeTimers();
+
+        const session = createSession("session-a", "Screenshot timeout");
+        const screenshotPart: AIComposerPart = {
+            id: "shot-1",
+            type: "screenshot",
+            filePath: "/vault/assets/chat/pasted-image.png",
+            mimeType: "image/png",
+            label: "Screenshot 10:30 hrs",
+        };
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            screenshotRetentionSeconds: 1,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [
+                    { id: "text-before", type: "text", text: "" },
+                    screenshotPart,
+                    { id: "text-after", type: "text", text: " trailing" },
+                ],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: session.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId[session.sessionId],
+        ).toEqual([
+            { id: "text-before", type: "text", text: "" },
+            screenshotPart,
+            { id: "text-after", type: "text", text: " trailing" },
+        ]);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+        });
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId[session.sessionId],
+        ).toEqual([{ id: "text-before", type: "text", text: " trailing" }]);
     });
 
     it("exports a chat tab to markdown and opens the created note", async () => {

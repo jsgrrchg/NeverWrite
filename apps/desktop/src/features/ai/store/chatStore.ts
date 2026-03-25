@@ -116,6 +116,7 @@ interface AiPreferences {
     chatFontFamily?: EditorFontFamily;
     editDiffZoom?: number;
     historyRetentionDays?: number;
+    screenshotRetentionSeconds?: number;
 }
 
 interface NormalizedAiPreferences {
@@ -127,6 +128,7 @@ interface NormalizedAiPreferences {
     chatFontFamily: EditorFontFamily;
     editDiffZoom: number;
     historyRetentionDays: number;
+    screenshotRetentionSeconds: number;
 }
 
 interface AIRuntimeCatalogSnapshot {
@@ -155,6 +157,7 @@ function aiPrefsEqual(
         | "chatFontFamily"
         | "editDiffZoom"
         | "historyRetentionDays"
+        | "screenshotRetentionSeconds"
     >,
     right: NormalizedAiPreferences,
 ) {
@@ -166,7 +169,8 @@ function aiPrefsEqual(
         left.composerFontFamily === right.composerFontFamily &&
         left.chatFontFamily === right.chatFontFamily &&
         left.editDiffZoom === right.editDiffZoom &&
-        left.historyRetentionDays === right.historyRetentionDays
+        left.historyRetentionDays === right.historyRetentionDays &&
+        left.screenshotRetentionSeconds === right.screenshotRetentionSeconds
     );
 }
 
@@ -209,6 +213,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
         historyRetentionDays: prefs.historyRetentionDays ?? 0,
+        screenshotRetentionSeconds: prefs.screenshotRetentionSeconds ?? 0,
     };
 }
 
@@ -351,6 +356,7 @@ interface ChatStore {
     chatFontFamily: EditorFontFamily;
     editDiffZoom: number;
     historyRetentionDays: number;
+    screenshotRetentionSeconds: number;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
@@ -547,6 +553,7 @@ interface ChatStore {
     setChatFontFamily: (fontFamily: EditorFontFamily) => void;
     setEditDiffZoom: (size: number) => void;
     setHistoryRetentionDays: (days: number) => Promise<void>;
+    setScreenshotRetentionSeconds: (seconds: number) => void;
     openNotePicker: () => void;
     closeNotePicker: () => void;
 }
@@ -2605,6 +2612,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         chatFontFamily: initialPreferences.chatFontFamily,
         editDiffZoom: initialPreferences.editDiffZoom,
         historyRetentionDays: initialPreferences.historyRetentionDays,
+        screenshotRetentionSeconds:
+            initialPreferences.screenshotRetentionSeconds,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},
@@ -6406,6 +6415,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        setScreenshotRetentionSeconds: (seconds) => {
+            const next = Math.max(0, Math.round(seconds));
+            set({ screenshotRetentionSeconds: next });
+            saveAiPreferences({ screenshotRetentionSeconds: next });
+        },
+
         openNotePicker: () => set({ notePickerOpen: true }),
 
         closeNotePicker: () => set({ notePickerOpen: false }),
@@ -6436,6 +6451,8 @@ if (typeof window !== "undefined") {
                               chatFontFamily: prefs.chatFontFamily,
                               editDiffZoom: prefs.editDiffZoom,
                               historyRetentionDays: prefs.historyRetentionDays,
+                              screenshotRetentionSeconds:
+                                  prefs.screenshotRetentionSeconds,
                           },
                 );
             }, 80);
@@ -6472,6 +6489,7 @@ export function resetChatStore() {
         chatFontFamily: prefs.chatFontFamily,
         editDiffZoom: prefs.editDiffZoom,
         historyRetentionDays: prefs.historyRetentionDays,
+        screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},
