@@ -1487,6 +1487,16 @@ function VaultSettings() {
         getRecentVaults(),
     );
     const [confirmPath, setConfirmPath] = useState<string | null>(null);
+    const [recentSearch, setRecentSearch] = useState("");
+
+    const normalizedRecentSearch = recentSearch.trim().toLowerCase();
+    const filteredRecents = recents.filter((vault) => {
+        if (!normalizedRecentSearch) return true;
+        return (
+            vault.name.toLowerCase().includes(normalizedRecentSearch) ||
+            vault.path.toLowerCase().includes(normalizedRecentSearch)
+        );
+    });
 
     const handleRemoveVault = async (path: string) => {
         await removeVaultFromList(path);
@@ -1497,6 +1507,8 @@ function VaultSettings() {
     const handleClearRecents = () => {
         localStorage.removeItem("vaultai:recentVaults");
         setRecents([]);
+        setRecentSearch("");
+        setConfirmPath(null);
     };
 
     return (
@@ -1537,129 +1549,223 @@ function VaultSettings() {
                 </p>
             ) : (
                 <>
-                    {recents.map((vault) => (
-                        <div
-                            key={vault.path}
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            backgroundColor: "var(--bg-secondary)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 7,
+                            padding: "5px 10px",
+                            marginBottom: 10,
+                        }}
+                    >
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            style={{ opacity: 0.4, flexShrink: 0 }}
+                        >
+                            <circle
+                                cx="7"
+                                cy="7"
+                                r="5"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                            />
+                            <path
+                                d="m13 13-2.5-2.5"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                            />
+                        </svg>
+                        <input
+                            value={recentSearch}
+                            onChange={(event) =>
+                                setRecentSearch(event.target.value)
+                            }
+                            aria-label="Search recent vaults"
+                            placeholder="Search recent vaults…"
                             style={{
-                                display: "flex",
-                                alignItems: "center",
-                                padding: "8px 0",
-                                borderBottom: "1px solid var(--border)",
-                                gap: 8,
+                                flex: 1,
+                                border: "none",
+                                background: "transparent",
+                                fontSize: 12,
+                                color: "var(--text-primary)",
+                                outline: "none",
+                                fontFamily: "inherit",
+                            }}
+                        />
+                        <span
+                            style={{
+                                fontSize: 11,
+                                color: "var(--text-secondary)",
+                                fontFamily: "monospace",
+                                flexShrink: 0,
                             }}
                         >
-                            <div style={{ flex: 1, minWidth: 0 }}>
+                            {filteredRecents.length}/{recents.length}
+                        </span>
+                    </div>
+                    <div
+                        role="list"
+                        aria-label="Recent vaults"
+                        style={{
+                            maxHeight: 420,
+                            overflowY: "auto",
+                            borderTop: "1px solid var(--border)",
+                            borderBottom: "1px solid var(--border)",
+                        }}
+                    >
+                        {filteredRecents.length === 0 ? (
+                            <p
+                                style={{
+                                    fontSize: 12,
+                                    color: "var(--text-secondary)",
+                                    padding: "12px 0",
+                                }}
+                            >
+                                No vaults match your search.
+                            </p>
+                        ) : (
+                            filteredRecents.map((vault) => (
                                 <div
+                                    key={vault.path}
+                                    role="listitem"
                                     style={{
-                                        fontSize: 13,
-                                        color: "var(--text-primary)",
-                                        fontWeight: 500,
-                                    }}
-                                >
-                                    {vault.name}
-                                </div>
-                                <div
-                                    style={{
-                                        fontSize: 11,
-                                        color: "var(--text-secondary)",
-                                        fontFamily: "monospace",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                    }}
-                                >
-                                    {vault.path}
-                                </div>
-                            </div>
-                            {confirmPath === vault.path ? (
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        gap: 4,
-                                        flexShrink: 0,
-                                    }}
-                                >
-                                    <button
-                                        onClick={() =>
-                                            handleRemoveVault(vault.path)
-                                        }
-                                        style={{
-                                            fontSize: 11,
-                                            color: "#fff",
-                                            backgroundColor: "#ef4444",
-                                            border: "none",
-                                            borderRadius: 5,
-                                            padding: "3px 8px",
-                                            cursor: "pointer",
-                                        }}
-                                    >
-                                        Confirm
-                                    </button>
-                                    <button
-                                        onClick={() => setConfirmPath(null)}
-                                        style={{
-                                            fontSize: 11,
-                                            color: "var(--text-secondary)",
-                                            backgroundColor:
-                                                "var(--bg-tertiary)",
-                                            border: "1px solid var(--border)",
-                                            borderRadius: 5,
-                                            padding: "3px 8px",
-                                            cursor: "pointer",
-                                        }}
-                                    >
-                                        Cancel
-                                    </button>
-                                </div>
-                            ) : (
-                                <button
-                                    onClick={() => setConfirmPath(vault.path)}
-                                    title="Remove vault from list and delete cached data"
-                                    style={{
-                                        width: 24,
-                                        height: 24,
                                         display: "flex",
                                         alignItems: "center",
-                                        justifyContent: "center",
-                                        borderRadius: 5,
-                                        border: "none",
-                                        background: "transparent",
-                                        cursor: "pointer",
-                                        color: "var(--text-secondary)",
-                                        opacity: 0.5,
-                                        flexShrink: 0,
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        e.currentTarget.style.opacity = "1";
-                                        e.currentTarget.style.color = "#ef4444";
-                                        e.currentTarget.style.backgroundColor =
-                                            "var(--bg-tertiary)";
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        e.currentTarget.style.opacity = "0.5";
-                                        e.currentTarget.style.color =
-                                            "var(--text-secondary)";
-                                        e.currentTarget.style.backgroundColor =
-                                            "transparent";
+                                        padding: "8px 0",
+                                        borderBottom: "1px solid var(--border)",
+                                        gap: 8,
                                     }}
                                 >
-                                    <svg
-                                        width="14"
-                                        height="14"
-                                        viewBox="0 0 16 16"
-                                        fill="none"
-                                    >
-                                        <path
-                                            d="M4 4l8 8M12 4l-8 8"
-                                            stroke="currentColor"
-                                            strokeWidth="1.5"
-                                            strokeLinecap="round"
-                                        />
-                                    </svg>
-                                </button>
-                            )}
-                        </div>
-                    ))}
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div
+                                            style={{
+                                                fontSize: 13,
+                                                color: "var(--text-primary)",
+                                                fontWeight: 500,
+                                            }}
+                                        >
+                                            {vault.name}
+                                        </div>
+                                        <div
+                                            style={{
+                                                fontSize: 11,
+                                                color: "var(--text-secondary)",
+                                                fontFamily: "monospace",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                            }}
+                                        >
+                                            {vault.path}
+                                        </div>
+                                    </div>
+                                    {confirmPath === vault.path ? (
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                gap: 4,
+                                                flexShrink: 0,
+                                            }}
+                                        >
+                                            <button
+                                                onClick={() =>
+                                                    handleRemoveVault(
+                                                        vault.path,
+                                                    )
+                                                }
+                                                style={{
+                                                    fontSize: 11,
+                                                    color: "#fff",
+                                                    backgroundColor: "#ef4444",
+                                                    border: "none",
+                                                    borderRadius: 5,
+                                                    padding: "3px 8px",
+                                                    cursor: "pointer",
+                                                }}
+                                            >
+                                                Confirm
+                                            </button>
+                                            <button
+                                                onClick={() =>
+                                                    setConfirmPath(null)
+                                                }
+                                                style={{
+                                                    fontSize: 11,
+                                                    color: "var(--text-secondary)",
+                                                    backgroundColor:
+                                                        "var(--bg-tertiary)",
+                                                    border: "1px solid var(--border)",
+                                                    borderRadius: 5,
+                                                    padding: "3px 8px",
+                                                    cursor: "pointer",
+                                                }}
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            onClick={() =>
+                                                setConfirmPath(vault.path)
+                                            }
+                                            title="Remove vault from list and delete cached data"
+                                            style={{
+                                                width: 24,
+                                                height: 24,
+                                                display: "flex",
+                                                alignItems: "center",
+                                                justifyContent: "center",
+                                                borderRadius: 5,
+                                                border: "none",
+                                                background: "transparent",
+                                                cursor: "pointer",
+                                                color: "var(--text-secondary)",
+                                                opacity: 0.5,
+                                                flexShrink: 0,
+                                            }}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.opacity =
+                                                    "1";
+                                                e.currentTarget.style.color =
+                                                    "#ef4444";
+                                                e.currentTarget.style.backgroundColor =
+                                                    "var(--bg-tertiary)";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.opacity =
+                                                    "0.5";
+                                                e.currentTarget.style.color =
+                                                    "var(--text-secondary)";
+                                                e.currentTarget.style.backgroundColor =
+                                                    "transparent";
+                                            }}
+                                        >
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                            >
+                                                <path
+                                                    d="M4 4l8 8M12 4l-8 8"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                />
+                                            </svg>
+                                        </button>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                    </div>
                     <div style={{ paddingTop: 12 }}>
                         <button
                             onClick={handleClearRecents}

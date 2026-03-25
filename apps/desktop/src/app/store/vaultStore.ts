@@ -120,6 +120,7 @@ function didStructureMetadataChange(
 
 const LAST_VAULT_KEY = "vaultai:lastVaultPath";
 const RECENT_VAULTS_KEY = "vaultai:recentVaults";
+const MAX_RECENT_VAULTS = 100;
 const OPEN_STATE_POLL_MS = 120;
 
 const IDLE_OPEN_STATE: VaultOpenState = {
@@ -229,7 +230,7 @@ function addToRecentVaults(path: string) {
     const prev = getRecentVaults().filter((v) => v.path !== path);
     localStorage.setItem(
         RECENT_VAULTS_KEY,
-        JSON.stringify([{ path, name }, ...prev].slice(0, 10)),
+        JSON.stringify([{ path, name }, ...prev].slice(0, MAX_RECENT_VAULTS)),
     );
 }
 
