@@ -33,7 +33,6 @@ import {
     buildSelectionLabel,
     type AIRuntimeConnectionState,
     type AIComposerPart,
-    type AIChatSession,
     type QueuedChatMessage,
 } from "./types";
 import { AIChatAgentControls } from "./components/AIChatAgentControls";
@@ -232,11 +231,7 @@ export function AIChatPanel() {
     const ensureSessionTab = useChatTabsStore(
         (state) => state.ensureSessionTab,
     );
-    const openSessionTab = useChatTabsStore((state) => state.openSessionTab);
     const setActiveTab = useChatTabsStore((state) => state.setActiveTab);
-    const reorderTabs = useChatTabsStore((state) => state.reorderTabs);
-    const closeTab = useChatTabsStore((state) => state.closeTab);
-    const resetTabs = useChatTabsStore((state) => state.reset);
 
     const notes = useVaultStore((state) => state.notes);
     const createNote = useVaultStore((state) => state.createNote);

@@ -146,7 +146,7 @@ interface QueuedMessageEditState {
 
 function aiPrefsEqual(
     left: Pick<
-        ChatState,
+        ChatStore,
         | "autoContextEnabled"
         | "requireCmdEnterToSend"
         | "composerFontSize"
