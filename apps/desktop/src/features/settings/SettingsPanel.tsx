@@ -32,6 +32,7 @@ import {
 } from "../spellcheck/language";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import { AIProvidersSettings } from "./AIProvidersSettings";
 
 // --- Primitives ---
 
@@ -1968,6 +1969,10 @@ function AISettings() {
     );
 }
 
+function AIProvidersCategorySettings() {
+    return <AIProvidersSettings />;
+}
+
 // --- Categories ---
 
 type Category =
@@ -1978,6 +1983,7 @@ type Category =
     | "developers"
     | "vault"
     | "shortcuts"
+    | "ai_providers"
     | "ai";
 
 const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
@@ -2115,6 +2121,27 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
         ),
     },
     {
+        id: "ai_providers",
+        label: "AI providers",
+        icon: (
+            <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <rect x="2.5" y="3" width="11" height="4" rx="1.5" />
+                <path d="M4.5 5h2M11 5h.01" />
+                <rect x="2.5" y="9" width="11" height="4" rx="1.5" />
+                <path d="M4.5 11h2M11 11h.01" />
+            </svg>
+        ),
+    },
+    {
         id: "ai",
         label: "AI",
         icon: (
@@ -2144,7 +2171,8 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     developers: "Advanced developer-facing file tree options",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
-    ai: "AI assistant preferences",
+    ai_providers: "AI runtimes, authentication, and API keys",
+    ai: "AI assistant chat preferences",
 };
 
 // --- Main panel ---
@@ -2452,6 +2480,9 @@ export function SettingsPanel({
                         {active === "developers" && <DevelopersSettings />}
                         {active === "vault" && <VaultSettings />}
                         {active === "shortcuts" && <ShortcutsSettings />}
+                        {active === "ai_providers" && (
+                            <AIProvidersCategorySettings />
+                        )}
                         {active === "ai" && <AISettings />}
                     </div>
                 </div>
