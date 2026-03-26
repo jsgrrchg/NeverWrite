@@ -4,6 +4,7 @@ import {
     isReviewTab,
     type ReviewTab,
 } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { EditedFilesReviewList } from "./EditedFilesReviewList";
 import {
@@ -227,6 +228,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
+    const lineWrapping = useSettingsStore((state) => state.lineWrapping);
     const entries = useVaultStore((state) => state.entries);
     const notes = useVaultStore((state) => state.notes);
     const [persistVersion, setPersistVersion] = useState(0);
@@ -694,6 +696,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                         items={items}
                         variant="full"
                         diffZoom={editDiffZoom}
+                        lineWrapping={lineWrapping}
                         expandedKeys={expansion.expandedKeys}
                         onToggleItem={expansion.toggleFile}
                         onKeepItem={(identityKey) =>

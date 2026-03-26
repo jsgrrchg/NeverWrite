@@ -409,24 +409,60 @@ function getDisplayedLineNumber(line: DiffLine) {
     return line.oldLineNumber ?? line.newLineNumber ?? "";
 }
 
+function getDiffLineGridTemplateColumns({
+    compactLineNumbers,
+    exact,
+    lineWrapping,
+}: {
+    compactLineNumbers: boolean;
+    exact: boolean;
+    lineWrapping: boolean;
+}) {
+    const contentColumn = lineWrapping ? "minmax(0, 1fr)" : "max-content";
+    if (exact) {
+        return compactLineNumbers
+            ? `44px ${contentColumn}`
+            : `56px 56px ${contentColumn}`;
+    }
+
+    return `36px ${contentColumn}`;
+}
+
+function getDiffLineTextStyles(lineWrapping: boolean) {
+    return {
+        whiteSpace: lineWrapping ? ("pre-wrap" as const) : ("pre" as const),
+        wordBreak: lineWrapping ? ("break-all" as const) : ("normal" as const),
+        overflowWrap: lineWrapping
+            ? ("anywhere" as const)
+            : ("normal" as const),
+    };
+}
+
 export function DiffLineView({
     line,
     compactLineNumbers = false,
+    lineWrapping = true,
 }: {
     line: DiffLine;
     compactLineNumbers?: boolean;
+    lineWrapping?: boolean;
 }) {
     const isExact = line.exact === true;
+    const textStyles = getDiffLineTextStyles(lineWrapping);
 
     if (isExact) {
         if (line.type === "separator") {
             return (
                 <div
+                    data-diff-line="true"
+                    data-line-wrapping={String(lineWrapping)}
                     style={{
                         display: "grid",
-                        gridTemplateColumns: compactLineNumbers
-                            ? "44px minmax(0, 1fr)"
-                            : "56px 56px minmax(0, 1fr)",
+                        gridTemplateColumns: getDiffLineGridTemplateColumns({
+                            compactLineNumbers,
+                            exact: true,
+                            lineWrapping,
+                        }),
                         padding: "2px 8px",
                         opacity: 0.5,
                         color: "var(--text-secondary)",
@@ -444,10 +480,13 @@ export function DiffLineView({
                 <div
                     style={{
                         display: "grid",
-                        gridTemplateColumns: "44px minmax(0, 1fr)",
+                        gridTemplateColumns: getDiffLineGridTemplateColumns({
+                            compactLineNumbers,
+                            exact: true,
+                            lineWrapping,
+                        }),
                         alignItems: "stretch",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-all",
+                        ...textStyles,
                         backgroundColor:
                             line.type === "add"
                                 ? "color-mix(in srgb, var(--diff-add) 5%, transparent)"
@@ -489,12 +528,17 @@ export function DiffLineView({
 
         return (
             <div
+                data-diff-line="true"
+                data-line-wrapping={String(lineWrapping)}
                 style={{
                     display: "grid",
-                    gridTemplateColumns: "56px 56px minmax(0, 1fr)",
+                    gridTemplateColumns: getDiffLineGridTemplateColumns({
+                        compactLineNumbers,
+                        exact: true,
+                        lineWrapping,
+                    }),
                     alignItems: "stretch",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-all",
+                    ...textStyles,
                     backgroundColor:
                         line.type === "add"
                             ? "color-mix(in srgb, var(--diff-add) 5%, transparent)"
@@ -551,7 +595,11 @@ export function DiffLineView({
             <div
                 style={{
                     display: "grid",
-                    gridTemplateColumns: "36px minmax(0, 1fr)",
+                    gridTemplateColumns: getDiffLineGridTemplateColumns({
+                        compactLineNumbers,
+                        exact: false,
+                        lineWrapping,
+                    }),
                     padding: "2px 8px",
                     opacity: 0.5,
                     color: "var(--text-secondary)",
@@ -567,12 +615,17 @@ export function DiffLineView({
 
     return (
         <div
+            data-diff-line="true"
+            data-line-wrapping={String(lineWrapping)}
             style={{
                 display: "grid",
-                gridTemplateColumns: "36px minmax(0, 1fr)",
+                gridTemplateColumns: getDiffLineGridTemplateColumns({
+                    compactLineNumbers,
+                    exact: false,
+                    lineWrapping,
+                }),
                 alignItems: "stretch",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
+                ...textStyles,
                 backgroundColor:
                     line.type === "add"
                         ? "color-mix(in srgb, var(--diff-add) 5%, transparent)"
@@ -616,6 +669,7 @@ export function EditedFileDiffPreview({
     diff,
     expanded,
     diffZoom,
+    lineWrapping = true,
     testId,
     emptyLabel = "Path-only change",
     showWhenEmpty = true,
@@ -630,6 +684,7 @@ export function EditedFileDiffPreview({
     diff: AIFileDiff;
     expanded: boolean;
     diffZoom: number;
+    lineWrapping?: boolean;
     testId?: string;
     emptyLabel?: string;
     showWhenEmpty?: boolean;
@@ -839,280 +894,313 @@ export function EditedFileDiffPreview({
         >
             <div
                 data-testid={testId}
+                data-line-wrapping={String(lineWrapping)}
                 style={{
                     fontSize: `${diffZoom}em`,
                     fontFamily: "var(--font-mono, monospace)",
                     lineHeight: 1.55,
                     backgroundColor:
                         "color-mix(in srgb, var(--bg-primary) 60%, var(--bg-elevated))",
+                    overflowX: lineWrapping ? "hidden" : "auto",
+                    overflowY: "hidden",
                 }}
             >
-                {lines.length > 0 ? (
-                    <div style={{ padding: "4px 0" }}>
-                        {renderBlocks.map((block) => {
-                            if (block.kind === "separator") {
-                                return (
-                                    <DiffLineView
-                                        key={block.key}
-                                        line={block.line}
-                                        compactLineNumbers={compactLineNumbers}
-                                    />
-                                );
-                            }
-
-                            if (block.kind !== "visual") {
-                                return (
-                                    <div key={block.key}>
-                                        {block.lines.map((line, idx) => (
-                                            <DiffLineView
-                                                key={`${block.key}:${idx}`}
-                                                line={line}
-                                                compactLineNumbers={
-                                                    compactLineNumbers
-                                                }
-                                            />
-                                        ))}
-                                    </div>
-                                );
-                            }
-
-                            if (!interactiveHunksEnabled || !file) {
-                                return (
-                                    <div key={block.key}>
-                                        {block.lines.map((line, idx) => (
-                                            <DiffLineView
-                                                key={`${block.key}:${idx}`}
-                                                line={line}
-                                                compactLineNumbers={
-                                                    compactLineNumbers
-                                                }
-                                            />
-                                        ))}
-                                    </div>
-                                );
-                            }
-
-                            const visualBlock = visualBlockByIndex.get(
-                                block.visualBlockIndex,
-                            );
-                            const segments =
-                                reviewHunks && reviewHunks.length > 0
-                                    ? buildSemanticDecisionSegments(
-                                          block.lines,
-                                          semanticHunks,
-                                      )
-                                    : buildVisualDecisionSegments(block.lines);
-                            const matchedSemanticHunkIndexes = [
-                                ...new Set(
-                                    segments
-                                        .filter(
-                                            (
-                                                segment,
-                                            ): segment is Extract<
-                                                VisualDecisionSegment,
-                                                { kind: "decision" }
-                                            > => segment.kind === "decision",
-                                        )
-                                        .map(
-                                            (segment) =>
-                                                segment.decisionHunkIndex,
-                                        ),
-                                ),
-                            ];
-
-                            return (
-                                <div
-                                    key={block.key}
-                                    style={{
-                                        margin: "4px 6px",
-                                        borderRadius: 8,
-                                        border: "1px solid color-mix(in srgb, var(--border) 40%, transparent)",
-                                        overflow: "hidden",
-                                        backgroundColor:
-                                            "color-mix(in srgb, var(--bg-primary) 40%, var(--bg-elevated))",
-                                    }}
-                                >
-                                    {visualBlock &&
-                                    (reviewHunks && reviewHunks.length > 0
-                                        ? matchedSemanticHunkIndexes.length > 1
-                                        : visualBlock.decisionHunkIndexes
-                                              .length > 1) ? (
-                                        <div
-                                            style={{
-                                                padding: "5px 10px 0",
-                                                fontSize: "0.68em",
-                                                fontWeight: 500,
-                                                letterSpacing: "0.02em",
-                                                color: "var(--text-secondary)",
-                                                opacity: 0.55,
-                                            }}
-                                        >
-                                            Linked changes
-                                        </div>
-                                    ) : null}
-                                    <div style={{ padding: 4 }}>
-                                        {segments.map((segment) => {
-                                            if (segment.kind === "plain") {
-                                                return (
-                                                    <div key={segment.key}>
-                                                        {segment.lines.map(
-                                                            (line, idx) => (
-                                                                <DiffLineView
-                                                                    key={`${segment.key}:${idx}`}
-                                                                    line={line}
-                                                                    compactLineNumbers={
-                                                                        compactLineNumbers
-                                                                    }
-                                                                />
-                                                            ),
-                                                        )}
-                                                    </div>
-                                                );
+                <div
+                    style={{
+                        width: lineWrapping ? "100%" : "max-content",
+                        minWidth: "100%",
+                    }}
+                >
+                    {lines.length > 0 ? (
+                        <div style={{ padding: "4px 0" }}>
+                            {renderBlocks.map((block) => {
+                                if (block.kind === "separator") {
+                                    return (
+                                        <DiffLineView
+                                            key={block.key}
+                                            line={block.line}
+                                            compactLineNumbers={
+                                                compactLineNumbers
                                             }
+                                            lineWrapping={lineWrapping}
+                                        />
+                                    );
+                                }
 
-                                            const semanticHunk =
-                                                semanticHunkByIndex.get(
-                                                    segment.decisionHunkIndex,
-                                                );
-                                            const reviewHunk =
-                                                reviewHunkByIndex.get(
-                                                    segment.decisionHunkIndex,
-                                                );
-                                            const decision = semanticHunk
-                                                ? hunkDecisions.get(
-                                                      semanticHunk.idKey,
-                                                  )
-                                                : undefined;
-                                            const reviewTrackedVersion =
-                                                reviewHunk?.trackedVersion ??
-                                                file.version;
-                                            const reviewHunkKey =
-                                                reviewHunk?.id.key ??
-                                                semanticHunk?.idKey;
-                                            const wrapperStyle =
-                                                decision === "accepted"
-                                                    ? {
-                                                          backgroundColor:
-                                                              "color-mix(in srgb, var(--diff-add) 6%, transparent)",
-                                                          opacity: 0.6,
-                                                      }
-                                                    : decision === "rejected"
-                                                      ? {
-                                                            backgroundColor:
-                                                                "color-mix(in srgb, var(--diff-remove) 6%, transparent)",
-                                                            opacity: 0.4,
-                                                        }
-                                                      : undefined;
+                                if (block.kind !== "visual") {
+                                    return (
+                                        <div key={block.key}>
+                                            {block.lines.map((line, idx) => (
+                                                <DiffLineView
+                                                    key={`${block.key}:${idx}`}
+                                                    line={line}
+                                                    compactLineNumbers={
+                                                        compactLineNumbers
+                                                    }
+                                                    lineWrapping={lineWrapping}
+                                                />
+                                            ))}
+                                        </div>
+                                    );
+                                }
 
-                                            return (
-                                                <div
-                                                    key={segment.key}
-                                                    data-review-file-key={
-                                                        file.identityKey
+                                if (!interactiveHunksEnabled || !file) {
+                                    return (
+                                        <div key={block.key}>
+                                            {block.lines.map((line, idx) => (
+                                                <DiffLineView
+                                                    key={`${block.key}:${idx}`}
+                                                    line={line}
+                                                    compactLineNumbers={
+                                                        compactLineNumbers
                                                     }
-                                                    data-review-hunk-key={
-                                                        reviewHunkKey
-                                                    }
-                                                    data-review-tracked-version={
-                                                        reviewTrackedVersion
-                                                    }
-                                                    className="group"
-                                                    style={{
-                                                        position: "relative",
-                                                        margin: "4px 0",
-                                                        borderRadius: 4,
-                                                        border: "1px solid color-mix(in srgb, var(--border) 32%, transparent)",
-                                                        overflow: "hidden",
-                                                        backgroundColor:
-                                                            "color-mix(in srgb, var(--bg-elevated) 70%, transparent)",
-                                                        ...wrapperStyle,
-                                                    }}
-                                                >
-                                                    <HunkActionBar
-                                                        hunkIndex={
-                                                            segment.decisionHunkIndex
-                                                        }
-                                                        decision={decision}
-                                                        onAccept={() =>
-                                                            handleHunkDecision(
-                                                                segment.decisionHunkIndex,
-                                                                "accepted",
-                                                            )
-                                                        }
-                                                        onReject={() =>
-                                                            handleHunkDecision(
-                                                                segment.decisionHunkIndex,
-                                                                "rejected",
-                                                            )
-                                                        }
-                                                        onUndo={() =>
-                                                            setHunkDecisionState(
-                                                                (current) => {
-                                                                    const next =
-                                                                        new Map(
-                                                                            current.key ===
-                                                                                decisionStateKey
-                                                                                ? current.map
-                                                                                : undefined,
-                                                                        );
-                                                                    if (
-                                                                        semanticHunk
-                                                                    ) {
-                                                                        next.delete(
-                                                                            semanticHunk.idKey,
-                                                                        );
-                                                                    }
-                                                                    return {
-                                                                        key: decisionStateKey,
-                                                                        map: next,
-                                                                    };
-                                                                },
-                                                            )
-                                                        }
-                                                    />
+                                                    lineWrapping={lineWrapping}
+                                                />
+                                            ))}
+                                        </div>
+                                    );
+                                }
+
+                                const visualBlock = visualBlockByIndex.get(
+                                    block.visualBlockIndex,
+                                );
+                                const segments =
+                                    reviewHunks && reviewHunks.length > 0
+                                        ? buildSemanticDecisionSegments(
+                                              block.lines,
+                                              semanticHunks,
+                                          )
+                                        : buildVisualDecisionSegments(
+                                              block.lines,
+                                          );
+                                const matchedSemanticHunkIndexes = [
+                                    ...new Set(
+                                        segments
+                                            .filter(
+                                                (
+                                                    segment,
+                                                ): segment is Extract<
+                                                    VisualDecisionSegment,
+                                                    { kind: "decision" }
+                                                > =>
+                                                    segment.kind === "decision",
+                                            )
+                                            .map(
+                                                (segment) =>
+                                                    segment.decisionHunkIndex,
+                                            ),
+                                    ),
+                                ];
+
+                                return (
+                                    <div
+                                        key={block.key}
+                                        style={{
+                                            margin: "4px 6px",
+                                            borderRadius: 8,
+                                            border: "1px solid color-mix(in srgb, var(--border) 40%, transparent)",
+                                            overflow: "hidden",
+                                            backgroundColor:
+                                                "color-mix(in srgb, var(--bg-primary) 40%, var(--bg-elevated))",
+                                        }}
+                                    >
+                                        {visualBlock &&
+                                        (reviewHunks && reviewHunks.length > 0
+                                            ? matchedSemanticHunkIndexes.length >
+                                              1
+                                            : visualBlock.decisionHunkIndexes
+                                                  .length > 1) ? (
+                                            <div
+                                                style={{
+                                                    padding: "5px 10px 0",
+                                                    fontSize: "0.68em",
+                                                    fontWeight: 500,
+                                                    letterSpacing: "0.02em",
+                                                    color: "var(--text-secondary)",
+                                                    opacity: 0.55,
+                                                }}
+                                            >
+                                                Linked changes
+                                            </div>
+                                        ) : null}
+                                        <div style={{ padding: 4 }}>
+                                            {segments.map((segment) => {
+                                                if (segment.kind === "plain") {
+                                                    return (
+                                                        <div key={segment.key}>
+                                                            {segment.lines.map(
+                                                                (line, idx) => (
+                                                                    <DiffLineView
+                                                                        key={`${segment.key}:${idx}`}
+                                                                        line={
+                                                                            line
+                                                                        }
+                                                                        compactLineNumbers={
+                                                                            compactLineNumbers
+                                                                        }
+                                                                        lineWrapping={
+                                                                            lineWrapping
+                                                                        }
+                                                                    />
+                                                                ),
+                                                            )}
+                                                        </div>
+                                                    );
+                                                }
+
+                                                const semanticHunk =
+                                                    semanticHunkByIndex.get(
+                                                        segment.decisionHunkIndex,
+                                                    );
+                                                const reviewHunk =
+                                                    reviewHunkByIndex.get(
+                                                        segment.decisionHunkIndex,
+                                                    );
+                                                const decision = semanticHunk
+                                                    ? hunkDecisions.get(
+                                                          semanticHunk.idKey,
+                                                      )
+                                                    : undefined;
+                                                const reviewTrackedVersion =
+                                                    reviewHunk?.trackedVersion ??
+                                                    file.version;
+                                                const reviewHunkKey =
+                                                    reviewHunk?.id.key ??
+                                                    semanticHunk?.idKey;
+                                                const wrapperStyle =
+                                                    decision === "accepted"
+                                                        ? {
+                                                              backgroundColor:
+                                                                  "color-mix(in srgb, var(--diff-add) 6%, transparent)",
+                                                              opacity: 0.6,
+                                                          }
+                                                        : decision ===
+                                                            "rejected"
+                                                          ? {
+                                                                backgroundColor:
+                                                                    "color-mix(in srgb, var(--diff-remove) 6%, transparent)",
+                                                                opacity: 0.4,
+                                                            }
+                                                          : undefined;
+
+                                                return (
                                                     <div
+                                                        key={segment.key}
+                                                        data-review-file-key={
+                                                            file.identityKey
+                                                        }
+                                                        data-review-hunk-key={
+                                                            reviewHunkKey
+                                                        }
+                                                        data-review-tracked-version={
+                                                            reviewTrackedVersion
+                                                        }
+                                                        className="group"
                                                         style={{
-                                                            paddingTop: 4,
-                                                            paddingRight: 4,
-                                                            textDecoration:
-                                                                decision ===
-                                                                "rejected"
-                                                                    ? "line-through"
-                                                                    : "none",
+                                                            position:
+                                                                "relative",
+                                                            margin: "4px 0",
+                                                            borderRadius: 4,
+                                                            border: "1px solid color-mix(in srgb, var(--border) 32%, transparent)",
+                                                            overflow: "hidden",
+                                                            backgroundColor:
+                                                                "color-mix(in srgb, var(--bg-elevated) 70%, transparent)",
+                                                            ...wrapperStyle,
                                                         }}
                                                     >
-                                                        {segment.lines.map(
-                                                            (line, idx) => (
-                                                                <DiffLineView
-                                                                    key={`${segment.key}:${idx}`}
-                                                                    line={line}
-                                                                    compactLineNumbers={
-                                                                        compactLineNumbers
-                                                                    }
-                                                                />
-                                                            ),
-                                                        )}
+                                                        <HunkActionBar
+                                                            hunkIndex={
+                                                                segment.decisionHunkIndex
+                                                            }
+                                                            decision={decision}
+                                                            onAccept={() =>
+                                                                handleHunkDecision(
+                                                                    segment.decisionHunkIndex,
+                                                                    "accepted",
+                                                                )
+                                                            }
+                                                            onReject={() =>
+                                                                handleHunkDecision(
+                                                                    segment.decisionHunkIndex,
+                                                                    "rejected",
+                                                                )
+                                                            }
+                                                            onUndo={() =>
+                                                                setHunkDecisionState(
+                                                                    (
+                                                                        current,
+                                                                    ) => {
+                                                                        const next =
+                                                                            new Map(
+                                                                                current.key ===
+                                                                                    decisionStateKey
+                                                                                    ? current.map
+                                                                                    : undefined,
+                                                                            );
+                                                                        if (
+                                                                            semanticHunk
+                                                                        ) {
+                                                                            next.delete(
+                                                                                semanticHunk.idKey,
+                                                                            );
+                                                                        }
+                                                                        return {
+                                                                            key: decisionStateKey,
+                                                                            map: next,
+                                                                        };
+                                                                    },
+                                                                )
+                                                            }
+                                                        />
+                                                        <div
+                                                            style={{
+                                                                paddingTop: 4,
+                                                                paddingRight: 4,
+                                                                textDecoration:
+                                                                    decision ===
+                                                                    "rejected"
+                                                                        ? "line-through"
+                                                                        : "none",
+                                                            }}
+                                                        >
+                                                            {segment.lines.map(
+                                                                (line, idx) => (
+                                                                    <DiffLineView
+                                                                        key={`${segment.key}:${idx}`}
+                                                                        line={
+                                                                            line
+                                                                        }
+                                                                        compactLineNumbers={
+                                                                            compactLineNumbers
+                                                                        }
+                                                                        lineWrapping={
+                                                                            lineWrapping
+                                                                        }
+                                                                    />
+                                                                ),
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            );
-                                        })}
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                ) : (
-                    <div
-                        style={{
-                            padding: "12px 16px",
-                            color: "var(--text-secondary)",
-                            opacity: 0.7,
-                            textAlign: "center",
-                        }}
-                    >
-                        {emptyLabel}
-                    </div>
-                )}
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div
+                            style={{
+                                padding: "12px 16px",
+                                color: "var(--text-secondary)",
+                                opacity: 0.7,
+                                textAlign: "center",
+                            }}
+                        >
+                            {emptyLabel}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );

@@ -5,6 +5,8 @@ import { FrontmatterBody } from "./FrontmatterPanel";
 export interface MarkdownNoteHeaderProps {
     /** Current editable title text */
     editableTitle: string;
+    /** Whether the editor is using wrapped document layout */
+    lineWrapping: boolean;
     /** Callback when the user edits the title */
     onTitleChange: (nextValue: string) => void;
     /** Ref forwarded to the title textarea */
@@ -27,6 +29,7 @@ export interface MarkdownNoteHeaderProps {
 
 export function MarkdownNoteHeader({
     editableTitle,
+    lineWrapping,
     onTitleChange,
     titleInputRef,
     onTitleContextMenu,
@@ -39,10 +42,12 @@ export function MarkdownNoteHeader({
 }: MarkdownNoteHeaderProps) {
     return (
         <div
+            data-editor-note-header="true"
+            data-line-wrapping={String(lineWrapping)}
             style={{
-                maxWidth: "var(--editor-content-width)",
-                margin: "0 auto",
-                padding: "40px clamp(24px, 5vw, 56px) 0",
+                maxWidth: lineWrapping ? "var(--editor-content-width)" : "none",
+                margin: lineWrapping ? "0 auto" : "0",
+                padding: "40px var(--editor-horizontal-inset) 0",
                 boxSizing: "border-box",
             }}
         >

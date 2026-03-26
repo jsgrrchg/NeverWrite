@@ -30,6 +30,7 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import {
     baseTheme,
     getEditorFontFamily,
+    getEditorHorizontalInset,
     getSyntaxExtension,
     getWrappingExtension,
 } from "./editorExtensions";
@@ -646,6 +647,7 @@ export function FileTextTabView() {
         "--editor-font-family": getEditorFontFamily(editorFontFamily),
         "--text-input-line-height": String(editorLineHeight / 100),
         "--editor-content-width": `${editorContentWidth}px`,
+        "--editor-horizontal-inset": getEditorHorizontalInset(lineWrapping),
     } as CSSProperties;
 
     const reloadFileFromDisk = useCallback(async () => {
