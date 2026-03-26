@@ -111,6 +111,7 @@ import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
 import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
 import { subscribeEditorReviewSync } from "./editorReviewSync";
+import { shouldEnableInlineReviewMergeView } from "./editorReviewGate";
 import { resolveMarkdownCodeLanguage } from "./codeLanguage";
 import {
     activateWikilinkSuggesterAnnotation,
@@ -407,6 +408,7 @@ export function Editor({
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
     const justifyText = useSettingsStore((s) => s.justifyText);
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
+    const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const tabSize = useSettingsStore((s) => s.tabSize);
     const editorSpellcheck = useSettingsStore((s) => s.editorSpellcheck);
     const spellcheckPrimaryLanguage = useSettingsStore(
@@ -457,17 +459,20 @@ export function Editor({
     });
 
     const runMergeViewSync = useCallback((mode?: "source" | "preview") => {
+        const resolvedMode =
+            mode ??
+            (useSettingsStore.getState().livePreviewEnabled
+                ? "preview"
+                : "source");
         const noteId = activeTabRef.current?.noteId;
         syncMergeViewForPaths(
             viewRef.current,
-            noteId ? [`${noteId}.md`] : [],
+            shouldEnableInlineReviewMergeView(resolvedMode) && noteId
+                ? [`${noteId}.md`]
+                : [],
             useChatStore.getState().sessionsById,
             {
-                mode:
-                    mode ??
-                    (useSettingsStore.getState().livePreviewEnabled
-                        ? "preview"
-                        : "source"),
+                mode: resolvedMode,
             },
         );
     }, []);
@@ -2831,6 +2836,7 @@ export function Editor({
         scheduleMergeViewSync();
     }, [
         activeNoteId,
+        inlineReviewEnabled,
         handleOpenLinkContextMenu,
         livePreviewEnabled,
         restoreTabScrollPosition,
@@ -2856,7 +2862,13 @@ export function Editor({
 
     useEffect(() => {
         scheduleMergeViewSync();
-    }, [activeTabId, activeNoteId, livePreviewEnabled, scheduleMergeViewSync]);
+    }, [
+        activeTabId,
+        activeNoteId,
+        inlineReviewEnabled,
+        livePreviewEnabled,
+        scheduleMergeViewSync,
+    ]);
 
     useEffect(() => {
         viewRef.current?.dispatch({

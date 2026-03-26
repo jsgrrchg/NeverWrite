@@ -13,6 +13,7 @@ export interface Settings {
     lineWrapping: boolean;
     justifyText: boolean;
     livePreviewEnabled: boolean;
+    inlineReviewEnabled: boolean;
     tabSize: 2 | 4;
     editorSpellcheck: boolean;
     spellcheckPrimaryLanguage: SpellcheckLanguage;
@@ -103,6 +104,7 @@ const defaults: Settings = {
     lineWrapping: true,
     justifyText: false,
     livePreviewEnabled: true,
+    inlineReviewEnabled: true,
     tabSize: 4,
     editorSpellcheck: true,
     spellcheckPrimaryLanguage: "system",
@@ -278,6 +280,9 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             justifyText: parsed.state.justifyText ?? defaults.justifyText,
             livePreviewEnabled:
                 parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
+            inlineReviewEnabled:
+                parsed.state.inlineReviewEnabled ??
+                defaults.inlineReviewEnabled,
             tabSize: normalizeTabSize(parsed.state.tabSize),
             editorSpellcheck:
                 parsed.state.editorSpellcheck ?? defaults.editorSpellcheck,
@@ -361,6 +366,7 @@ function pickSettings(state: SettingsStore): Settings {
         lineWrapping: state.lineWrapping,
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
+        inlineReviewEnabled: state.inlineReviewEnabled,
         tabSize: state.tabSize,
         editorSpellcheck: state.editorSpellcheck,
         spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,

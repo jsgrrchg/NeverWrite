@@ -1,5 +1,6 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { SettingsPanel } from "./SettingsPanel";
 import { renderComponent } from "../../test/test-utils";
@@ -160,7 +161,7 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("VaultAI")).toBeInTheDocument();
         expect(screen.getByText("Work 2026")).toBeInTheDocument();
 
-        fireEvent.change(search, { target: { value: "geo" } });
+        fireEvent.change(search, { target: { value: "work" } });
 
         expect(screen.getByText("1/2")).toBeInTheDocument();
         expect(screen.queryByText("VaultAI")).not.toBeInTheDocument();
@@ -246,5 +247,23 @@ describe("SettingsPanel", () => {
                 "How long pasted screenshots stay in the AI composer before they are removed automatically.",
             ),
         ).toBeInTheDocument();
+    });
+
+    it("renders and persists the inline review toggle in AI settings", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+
+        const label = screen.getByText("Inline review in editor");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        const toggle = within(row as HTMLElement).getByRole("switch");
+        expect(toggle).toHaveAttribute("aria-checked", "true");
+
+        fireEvent.click(toggle);
+
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+        expect(toggle).toHaveAttribute("aria-checked", "false");
     });
 });

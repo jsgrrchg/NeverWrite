@@ -1930,6 +1930,8 @@ function ShortcutsSettings() {
 }
 
 function AISettings() {
+    const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
+    const setSetting = useSettingsStore((s) => s.setSetting);
     const autoContextEnabled = useChatStore((s) => s.autoContextEnabled);
     const toggleAutoContext = useChatStore((s) => s.toggleAutoContext);
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
@@ -1966,6 +1968,18 @@ function AISettings() {
                     <Toggle
                         value={autoContextEnabled}
                         onChange={() => toggleAutoContext()}
+                    />
+                }
+            />
+            <Row
+                label="Inline review in editor"
+                description="Show AI file changes inline in editors with accept and reject controls. Available only in source mode. This preference is saved per vault."
+                control={
+                    <Toggle
+                        value={inlineReviewEnabled}
+                        onChange={(value) =>
+                            setSetting("inlineReviewEnabled", value)
+                        }
                     />
                 }
             />

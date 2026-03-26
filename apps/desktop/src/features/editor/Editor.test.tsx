@@ -10,6 +10,7 @@ import {
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
     emptyActionLogState,
+    getTrackedFilesForSession,
     setTrackedFilesForWorkCycle,
 } from "../ai/store/actionLogModel";
 import type { TrackedFile } from "../ai/diff/actionLogTypes";
@@ -352,6 +353,29 @@ describe("Editor", () => {
         expect(document.querySelector(".cm-editor")).toHaveAttribute(
             "data-live-preview",
             "true",
+        );
+    });
+
+    it("does not activate merge view when inline review is disabled", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "new line",
+            },
+        ]);
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        seedTrackedDiff("notes/current.md", "old line", "new line");
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        expect(getChunks(view.state)).toBeNull();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "false",
         );
     });
 
@@ -1836,6 +1860,109 @@ describe("Editor", () => {
             });
             await flushPromises();
         });
+    });
+
+    it("clears merge view when inline review is turned off in source mode", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "new line",
+            },
+        ]);
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        seedTrackedDiff("notes/current.md", "old line", "new line");
+
+        renderComponent(<Editor />);
+        expect(getChunks(getEditorView().state)?.chunks.length).toBe(1);
+        expect(getEditorView().state.doc.toString()).toBe("new line");
+
+        await act(async () => {
+            useSettingsStore
+                .getState()
+                .setSetting("inlineReviewEnabled", false);
+            await flushPromises();
+        });
+
+        expect(getChunks(getEditorView().state)).toBeNull();
+        expect(getEditorView().state.doc.toString()).toBe("new line");
+    });
+
+    it("keeps tracked files in the review store while inline review stays disabled and the editor remains unprojected", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "local body",
+            },
+        ]);
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        seedTrackedDiff("notes/current.md", "base body", "agent body");
+
+        renderComponent(<Editor />);
+
+        let view = getEditorView();
+        expect(view.state.doc.toString()).toBe("local body");
+        expect(getChunks(view.state)).toBeNull();
+        expect(
+            Object.keys(
+                getTrackedFilesForSession(
+                    useChatStore.getState().sessionsById["session-inline-diff"]
+                        ?.actionLog,
+                ),
+            ),
+        ).toContain("notes/current.md");
+
+        const updatedTrackedFile: TrackedFile = {
+            identityKey: "notes/current.md",
+            originPath: "notes/current.md",
+            path: "notes/current.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "base body",
+            currentText: "agent body v2",
+            unreviewedRanges: buildTextRangePatchFromTexts(
+                "base body",
+                "agent body v2",
+            ),
+            unreviewedEdits: buildPatchFromTexts("base body", "agent body v2"),
+            version: 2,
+            isText: true,
+            updatedAt: 2,
+        };
+
+        await act(async () => {
+            useChatStore.setState({
+                sessionsById: {
+                    "session-inline-diff": {
+                        ...useChatStore.getState().sessionsById[
+                            "session-inline-diff"
+                        ],
+                        actionLog: setTrackedFilesForWorkCycle(
+                            emptyActionLogState(),
+                            "wc-inline-diff",
+                            { "notes/current.md": updatedTrackedFile },
+                        ),
+                    },
+                },
+            });
+            await flushPromises();
+        });
+
+        view = getEditorView();
+        expect(view.state.doc.toString()).toBe("local body");
+        expect(getChunks(view.state)).toBeNull();
+        expect(
+            Object.keys(
+                getTrackedFilesForSession(
+                    useChatStore.getState().sessionsById["session-inline-diff"]
+                        ?.actionLog,
+                ),
+            ),
+        ).toContain("notes/current.md");
     });
 
     it("closes the active tab on Cmd+W", async () => {

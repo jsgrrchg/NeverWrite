@@ -600,4 +600,156 @@ describe("FileTabView", () => {
             await Promise.resolve();
         });
     });
+
+    it("does not activate merge view for text files when inline review is disabled", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "text-tab-1",
+                    kind: "file",
+                    relativePath: "src/config.toml",
+                    title: "config.toml",
+                    path: "/vault/src/config.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "VaultAI"',
+                },
+            ],
+            "text-tab-1",
+        );
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        seedTrackedDiff(
+            "/vault/src/config.toml",
+            'name = "Old"',
+            'name = "VaultAI"',
+        );
+
+        await act(async () => {
+            renderComponent(<FileTabView />);
+            await Promise.resolve();
+        });
+        const view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)).toBeNull();
+    });
+
+    it("does not reapply merge view for text files when returning to a tab while inline review is disabled", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "text-tab-1",
+                    kind: "file",
+                    relativePath: "src/config.toml",
+                    title: "config.toml",
+                    path: "/vault/src/config.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "VaultAI"',
+                },
+                {
+                    id: "text-tab-2",
+                    kind: "file",
+                    relativePath: "src/next.toml",
+                    title: "next.toml",
+                    path: "/vault/src/next.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "Next"',
+                },
+            ],
+            "text-tab-1",
+        );
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        seedTrackedDiff(
+            "/vault/src/config.toml",
+            'name = "Old"',
+            'name = "VaultAI"',
+        );
+
+        await act(async () => {
+            renderComponent(<FileTabView />);
+            await Promise.resolve();
+        });
+
+        let view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)).toBeNull();
+        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("text-tab-2");
+            await Promise.resolve();
+        });
+
+        view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)).toBeNull();
+        expect(view!.state.doc.toString()).toBe('name = "Next"');
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("text-tab-1");
+            await Promise.resolve();
+        });
+
+        view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)).toBeNull();
+        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+    });
+
+    it("clears merge view for text files when inline review is turned off", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "text-tab-1",
+                    kind: "file",
+                    relativePath: "src/config.toml",
+                    title: "config.toml",
+                    path: "/vault/src/config.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "VaultAI"',
+                },
+            ],
+            "text-tab-1",
+        );
+        seedTrackedDiff(
+            "/vault/src/config.toml",
+            'name = "Old"',
+            'name = "VaultAI"',
+        );
+
+        await act(async () => {
+            renderComponent(<FileTabView />);
+            await Promise.resolve();
+        });
+        let view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)?.chunks.length).toBe(1);
+        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+
+        await act(async () => {
+            useSettingsStore
+                .getState()
+                .setSetting("inlineReviewEnabled", false);
+            await Promise.resolve();
+        });
+
+        view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)).toBeNull();
+        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+    });
 });

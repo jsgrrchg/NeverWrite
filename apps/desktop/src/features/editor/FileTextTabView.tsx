@@ -42,6 +42,7 @@ import { searchTheme } from "./extensions/searchTheme";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
 import { subscribeEditorReviewSync } from "./editorReviewSync";
+import { shouldEnableInlineReviewMergeView } from "./editorReviewGate";
 
 type SavedVaultFileDetail = {
     relative_path: string;
@@ -87,6 +88,7 @@ export function FileTextTabView() {
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const languagePath = tab?.path ?? null;
@@ -555,7 +557,9 @@ export function FileTextTabView() {
             const currentTab = tabRef.current;
             syncMergeViewForPaths(
                 viewRef.current,
-                currentTab ? [currentTab.path, currentTab.relativePath] : [],
+                shouldEnableInlineReviewMergeView("source") && currentTab
+                    ? [currentTab.path, currentTab.relativePath]
+                    : [],
                 useChatStore.getState().sessionsById,
                 { mode: "source" },
             );
@@ -566,13 +570,15 @@ export function FileTextTabView() {
             const currentTab = tabRef.current;
             syncMergeViewForPaths(
                 viewRef.current,
-                currentTab ? [currentTab.path, currentTab.relativePath] : [],
+                shouldEnableInlineReviewMergeView("source") && currentTab
+                    ? [currentTab.path, currentTab.relativePath]
+                    : [],
                 state.sessionsById,
                 { mode: "source" },
             );
         });
         return unsub;
-    }, []);
+    }, [inlineReviewEnabled]);
 
     useEffect(() => {
         return subscribeEditorReviewSync(() =>
@@ -584,11 +590,13 @@ export function FileTextTabView() {
         const currentTab = tabRef.current;
         syncMergeViewForPaths(
             viewRef.current,
-            currentTab ? [currentTab.path, currentTab.relativePath] : [],
+            shouldEnableInlineReviewMergeView("source") && currentTab
+                ? [currentTab.path, currentTab.relativePath]
+                : [],
             useChatStore.getState().sessionsById,
             { mode: "source" },
         );
-    }, [tab, trackedFileMatch?.trackedFile.version]);
+    }, [inlineReviewEnabled, tab, trackedFileMatch?.trackedFile.version]);
 
     useEffect(() => {
         queueMicrotask(() => setEditorContextMenu(null));
