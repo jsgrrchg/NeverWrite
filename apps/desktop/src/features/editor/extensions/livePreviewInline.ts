@@ -53,6 +53,8 @@ const headingMarks: Record<number, Decoration> = {
     6: Decoration.mark({ class: "cm-lp-h6" }),
 };
 
+const boldMark = Decoration.mark({ class: "cm-lp-bold" });
+const italicMark = Decoration.mark({ class: "cm-lp-italic" });
 const inlineCodeMark = Decoration.mark({ class: "cm-lp-code" });
 const strikethroughMark = Decoration.mark({ class: "cm-lp-strikethrough" });
 const highlightMark = Decoration.mark({ class: "cm-lp-highlight" });
@@ -66,7 +68,6 @@ const LOOSE_UNORDERED_LIST_RE = /^([ \t]*)([-+*]|[•◦▪‣–—−])([ \t]+
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/g;
 const INLINE_HTML_RE = /<(sub|sup|kbd)>([^<\n]+)<\/\1>/gi;
 const INLINE_BR_RE = /<br\s*\/?>/gi;
-const INLINE_MATH_RE = /(^|[^\\$])\$(?!\$)(?!\s)([^\n$]|\\\$)+?\$(?!\$)/g;
 const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
 const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.*)$/;
 const CALLOUT_RE = /^\s*>\s+\[!([a-zA-Z0-9-]+)\]([+-])?(?:\s+(.*))?$/;
@@ -915,6 +916,8 @@ const listContinuationRule: NodeRule = (node, context) => {
 
 const nodeRules: NodeRule[] = [
     headingRule,
+    createInlineFormattingRule("StrongEmphasis", boldMark, "EmphasisMark"),
+    createInlineFormattingRule("Emphasis", italicMark, "EmphasisMark"),
     createInlineFormattingRule("InlineCode", inlineCodeMark, "CodeMark"),
     createInlineFormattingRule("Subscript", subscriptMark, "SubscriptMark"),
     createInlineFormattingRule(
@@ -1467,53 +1470,6 @@ function applyRichRegexRules(context: BuildContext) {
             );
         } else {
             pushDeco(context, absFrom + 2, absTo - 2, createMathMark("block"));
-        }
-    }
-
-    INLINE_MATH_RE.lastIndex = 0;
-    let inlineMathMatch: RegExpExecArray | null;
-    while ((inlineMathMatch = INLINE_MATH_RE.exec(context.vpText)) !== null) {
-        const prefixLength = inlineMathMatch[1]?.length ?? 0;
-        const absFrom = context.vpFrom + inlineMathMatch.index + prefixLength;
-        const absTo =
-            context.vpFrom + inlineMathMatch.index + inlineMathMatch[0].length;
-        if (rangeOverlapsBlock(context, absFrom, absTo)) continue;
-
-        const contentFrom = absFrom + 1;
-        const contentTo = absTo - 1;
-        if (contentTo <= contentFrom) continue;
-
-        const tex = context.state.doc
-            .sliceString(contentFrom, contentTo)
-            .trim();
-        if (!tex) continue;
-        registerRevealSensitiveRange(context, "range", absFrom, absTo);
-
-        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
-            pushDeco(
-                context,
-                absFrom,
-                absTo,
-                Decoration.replace({
-                    widget: new InlineMathWidget(tex),
-                }),
-            );
-        } else {
-            hideRangeUnlessTokenActive(
-                context,
-                absFrom,
-                contentFrom,
-                absFrom,
-                absTo,
-            );
-            pushDeco(context, contentFrom, contentTo, createMathMark("inline"));
-            hideRangeUnlessTokenActive(
-                context,
-                contentTo,
-                absTo,
-                absFrom,
-                absTo,
-            );
         }
     }
 }

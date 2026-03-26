@@ -452,7 +452,7 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
-    it("keeps bold markers visible when bold live preview is disabled", () => {
+    it("keeps bold markers hidden when the caret is outside the token", () => {
         const doc = "before **bold** after";
         const { plugin, parent, view } = createView(
             doc,
@@ -462,17 +462,17 @@ describe("createInlineLivePreviewPlugin", () => {
         const decorations = collectDecorations(view, plugin);
 
         expect(hasHiddenRange(decorations, 7, 9, "cm-lp-hidden-inline")).toBe(
-            false,
+            true,
         );
         expect(hasHiddenRange(decorations, 13, 15, "cm-lp-hidden-inline")).toBe(
-            false,
+            true,
         );
 
         view.destroy();
         parent.remove();
     });
 
-    it("keeps bold markers visible when the caret is inside the token", () => {
+    it("reveals both bold delimiters when the caret is inside the token", () => {
         const doc = "before **bold** after";
         const { plugin, parent, view } = createView(
             doc,
@@ -657,26 +657,6 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
-    it("reveals inline math raw when the token is active", () => {
-        const doc = "$x$";
-        const { plugin, parent, view } = createView(
-            doc,
-            EditorSelection.cursor(1),
-        );
-
-        let decorations = collectDecorations(view, plugin);
-        expect(hasWidgetRange(decorations, 0, 3)).toBe(false);
-
-        view.dispatch({
-            selection: EditorSelection.cursor(doc.length),
-        });
-        decorations = collectDecorations(view, plugin);
-        expect(hasWidgetRange(decorations, 0, 3)).toBe(true);
-
-        view.destroy();
-        parent.remove();
-    });
-
     it("reveals single-line block math raw when the token is active", () => {
         const doc = "$$x$$";
         const { plugin, parent, view } = createView(
@@ -692,6 +672,20 @@ describe("createInlineLivePreviewPlugin", () => {
         });
         decorations = collectDecorations(view, plugin);
         expect(hasWidgetRange(decorations, 0, 5)).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("does not treat dollar prices as inline math widgets", () => {
+        const doc = "**WTI +4.90% a $94.75** y **Brent +5.60% a $97.10**";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(0),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        expect(decorations.some((deco) => deco.hasWidget)).toBe(false);
 
         view.destroy();
         parent.remove();
