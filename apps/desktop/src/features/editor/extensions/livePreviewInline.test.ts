@@ -91,16 +91,6 @@ function hasHiddenRange(
     );
 }
 
-function hasReplaceRange(
-    decorations: DecorationInfo[],
-    from: number,
-    minTo: number,
-) {
-    return decorations.some(
-        (deco) => deco.isReplace && deco.from === from && deco.to >= minTo,
-    );
-}
-
 function hasWidgetRange(
     decorations: DecorationInfo[],
     from: number,

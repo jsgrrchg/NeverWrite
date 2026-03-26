@@ -252,6 +252,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                     )
                     .map((file) => file.path),
             ),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- entries/notes/vaultPath invalidate canOpenAiEditedFileByAbsolutePath which reads from getState()
         [entries, notes, vaultPath, visibleEntries],
     );
 
