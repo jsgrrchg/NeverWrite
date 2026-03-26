@@ -7,7 +7,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { EditorView, drawSelection, keymap } from "@codemirror/view";
-import { EditorSelection, EditorState, type Text } from "@codemirror/state";
+import {
+    EditorSelection,
+    EditorState,
+    Prec,
+    type Text,
+} from "@codemirror/state";
 import {
     history,
     defaultKeymap,
@@ -2051,23 +2056,39 @@ export function Editor({
                     }),
                     markdownSearchMatchTheme,
                     markdownAutopairExtension,
+                    Prec.highest(
+                        keymap.of([
+                            {
+                                key: "ArrowDown",
+                                run: () =>
+                                    wikilinkSuggesterRef.current
+                                        ? moveWikilinkSuggesterSelection(1)
+                                        : false,
+                            },
+                            {
+                                key: "ArrowUp",
+                                run: () =>
+                                    wikilinkSuggesterRef.current
+                                        ? moveWikilinkSuggesterSelection(-1)
+                                        : false,
+                            },
+                            {
+                                key: "Enter",
+                                run: () =>
+                                    wikilinkSuggesterRef.current
+                                        ? commitWikilinkSuggestion()
+                                        : false,
+                            },
+                            {
+                                key: "Escape",
+                                run: () =>
+                                    wikilinkSuggesterRef.current
+                                        ? closeWikilinkSuggester()
+                                        : false,
+                            },
+                        ]),
+                    ),
                     keymap.of([
-                        {
-                            key: "ArrowDown",
-                            run: () => moveWikilinkSuggesterSelection(1),
-                        },
-                        {
-                            key: "ArrowUp",
-                            run: () => moveWikilinkSuggesterSelection(-1),
-                        },
-                        {
-                            key: "Enter",
-                            run: () => commitWikilinkSuggestion(),
-                        },
-                        {
-                            key: "Escape",
-                            run: () => closeWikilinkSuggester(),
-                        },
                         {
                             key: "Mod-f",
                             run: (view) => {

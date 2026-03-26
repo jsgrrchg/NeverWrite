@@ -1,5 +1,6 @@
 import { act, fireEvent, screen } from "@testing-library/react";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
+import { EditorSelection } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
@@ -17,6 +18,7 @@ import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { Editor, REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
+import { activateWikilinkSuggesterAnnotation } from "./extensions/markdownAutopair";
 import {
     flushPromises,
     mockInvoke,
@@ -2115,5 +2117,81 @@ describe("Editor", () => {
             "tab-2",
         ]);
         expect(useEditorStore.getState().activeTabId).toBe("tab-2");
+    });
+
+    it("commits the selected wikilink suggestion on Enter instead of inserting a newline", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "suggest_wikilinks") {
+                return [
+                    {
+                        id: "code/System/CodeMirror.md",
+                        title: "CodeMirror",
+                        subtitle: "code/System/CodeMirror.md",
+                        insert_text: "System/CodeMirror",
+                    },
+                ];
+            }
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        Object.defineProperty(view, "hasFocus", {
+            configurable: true,
+            get: () => true,
+        });
+        vi.spyOn(view, "coordsAtPos").mockImplementation(() => ({
+            left: 40,
+            right: 140,
+            top: 24,
+            bottom: 44,
+        }));
+
+        await act(async () => {
+            view.focus();
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: "[[]]",
+                },
+                selection: EditorSelection.cursor(2),
+                annotations: activateWikilinkSuggesterAnnotation.of(true),
+                userEvent: "input",
+            });
+            await flushPromises();
+        });
+
+        expect(await screen.findByText("CodeMirror")).toBeInTheDocument();
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "suggest_wikilinks",
+            expect.objectContaining({
+                noteId: "notes/current",
+                query: "",
+                limit: 8,
+            }),
+        );
+
+        await act(async () => {
+            fireEvent.keyDown(view.contentDOM, {
+                key: "Enter",
+                bubbles: true,
+            });
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("[[System/CodeMirror]]");
+        expect(view.state.doc.toString()).not.toContain("\n");
+        expect(screen.queryByText("CodeMirror")).not.toBeInTheDocument();
     });
 });

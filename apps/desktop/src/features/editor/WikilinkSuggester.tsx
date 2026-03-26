@@ -118,6 +118,10 @@ export function WikilinkSuggester({
                                     event.preventDefault();
                                     onSelect(item);
                                 }}
+                                onClick={(event) => {
+                                    event.preventDefault();
+                                    onSelect(item);
+                                }}
                                 style={{
                                     display: "flex",
                                     alignItems: "center",
