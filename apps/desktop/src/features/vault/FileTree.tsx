@@ -360,6 +360,7 @@ function ChevronIcon({ open, size = 13 }: { open: boolean; size?: number }) {
 }
 
 function FolderIcon({ open, size = 15 }: { open: boolean; size?: number }) {
+    const fill = "var(--icon-muted)";
     if (open) {
         return (
             <svg
@@ -371,13 +372,13 @@ function FolderIcon({ open, size = 15 }: { open: boolean; size?: number }) {
             >
                 <path
                     d="M1.5 3.5A1 1 0 0 1 2.5 2.5H6l1.5 1.5h5a1 1 0 0 1 1 1V5H2.5V3.5Z"
-                    fill="#000000"
-                    opacity="0.7"
+                    fill={fill}
+                    opacity="0.85"
                 />
                 <path
                     d="M1 5.5h13l-1.5 7.5H2.5L1 5.5Z"
-                    fill="#000000"
-                    opacity="0.5"
+                    fill={fill}
+                    opacity="0.65"
                 />
             </svg>
         );
@@ -392,8 +393,8 @@ function FolderIcon({ open, size = 15 }: { open: boolean; size?: number }) {
         >
             <path
                 d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                fill="#000000"
-                opacity="0.5"
+                fill={fill}
+                opacity="0.65"
             />
         </svg>
     );

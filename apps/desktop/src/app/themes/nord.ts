@@ -11,6 +11,7 @@ export const nordTheme: ThemePalette = {
         textSecondary: "#4c566a",
         border: "#d0d6e1",
         accent: "#5e81ac",
+        iconMuted: "#4c566a",
         shadowSoft: "0 18px 48px rgba(46, 52, 64, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const nordTheme: ThemePalette = {
         textSecondary: "#d8dee9",
         border: "#4c566a",
         accent: "#88c0d0",
+        iconMuted: "#b0b8c8",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.30)",
     },
 };

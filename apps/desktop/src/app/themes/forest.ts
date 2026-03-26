@@ -11,6 +11,7 @@ export const forestTheme: ThemePalette = {
         textSecondary: "#78716c",
         border: "#d6d3d1",
         accent: "#10b981",
+        iconMuted: "#78716c",
         shadowSoft: "0 18px 48px rgba(28, 25, 23, 0.06)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const forestTheme: ThemePalette = {
         textSecondary: "#a8a29e",
         border: "#3a3a36",
         accent: "#34d399",
+        iconMuted: "#958e88",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.3)",
     },
 };

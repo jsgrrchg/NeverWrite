@@ -11,6 +11,7 @@ export const catppuccinTheme: ThemePalette = {
         textSecondary: "#6c6f85",
         border: "#ccd0da",
         accent: "#8839ef",
+        iconMuted: "#6c6f85",
         shadowSoft: "0 18px 48px rgba(76, 79, 105, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const catppuccinTheme: ThemePalette = {
         textSecondary: "#a6adc8",
         border: "#45475a",
         accent: "#cba6f7",
+        iconMuted: "#9399b2",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

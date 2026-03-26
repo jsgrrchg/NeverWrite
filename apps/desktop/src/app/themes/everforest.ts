@@ -11,6 +11,7 @@ export const everforestTheme: ThemePalette = {
         textSecondary: "#829181",
         border: "#E6E2CC",
         accent: "#8da101",
+        iconMuted: "#829181",
         shadowSoft: "0 18px 48px rgba(92, 106, 114, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const everforestTheme: ThemePalette = {
         textSecondary: "#859289",
         border: "#475258",
         accent: "#A7C080",
+        iconMuted: "#7a8a7e",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.30)",
     },
 };

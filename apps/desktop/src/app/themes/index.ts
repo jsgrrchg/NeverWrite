@@ -29,6 +29,7 @@ export interface ThemeColors {
     textSecondary: string;
     border: string;
     accent: string;
+    iconMuted: string;
     shadowSoft: string;
 }
 
@@ -94,6 +95,7 @@ const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
     textSecondary: "--text-secondary",
     border: "--border",
     accent: "--accent",
+    iconMuted: "--icon-muted",
     shadowSoft: "--shadow-soft",
 };
 

@@ -11,6 +11,7 @@ export const tokyoNightTheme: ThemePalette = {
         textSecondary: "#6172b0",
         border: "#c0c1c6",
         accent: "#2e7de9",
+        iconMuted: "#6172b0",
         shadowSoft: "0 18px 48px rgba(52, 59, 89, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const tokyoNightTheme: ThemePalette = {
         textSecondary: "#7982a9",
         border: "#33384e",
         accent: "#7aa2f7",
+        iconMuted: "#8891b3",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.38)",
     },
 };

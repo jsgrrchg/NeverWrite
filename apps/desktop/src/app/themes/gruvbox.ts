@@ -11,6 +11,7 @@ export const gruvboxTheme: ThemePalette = {
         textSecondary: "#7c6f64",
         border: "#d5c4a1",
         accent: "#427b58",
+        iconMuted: "#7c6f64",
         shadowSoft: "0 18px 48px rgba(60, 56, 54, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const gruvboxTheme: ThemePalette = {
         textSecondary: "#a89984",
         border: "#504945",
         accent: "#8ec07c",
+        iconMuted: "#a89984",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

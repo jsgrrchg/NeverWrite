@@ -11,6 +11,7 @@ export const nightOwlTheme: ThemePalette = {
         textSecondary: "#7e8a9e",
         border: "#d9d9d9",
         accent: "#2aa298",
+        iconMuted: "#7e8a9e",
         shadowSoft: "0 18px 48px rgba(64, 63, 83, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const nightOwlTheme: ThemePalette = {
         textSecondary: "#5f7e97",
         border: "#122d42",
         accent: "#82aaff",
+        iconMuted: "#6d849c",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.40)",
     },
 };

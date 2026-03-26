@@ -11,6 +11,7 @@ export const claudeTheme: ThemePalette = {
         textSecondary: "#8a8780",
         border: "#dfdcd4",
         accent: "#c15f3c",
+        iconMuted: "#8a8780",
         shadowSoft: "0 18px 48px rgba(20, 20, 19, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const claudeTheme: ThemePalette = {
         textSecondary: "#a09d95",
         border: "#3a3835",
         accent: "#d97757",
+        iconMuted: "#908d86",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.32)",
     },
 };

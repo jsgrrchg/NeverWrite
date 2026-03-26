@@ -18,12 +18,11 @@ function FolderIcon() {
             height="13"
             viewBox="0 0 14 14"
             fill="none"
-            stroke="currentColor"
+            stroke="var(--icon-muted)"
             strokeWidth="1.3"
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
-            style={{ color: "var(--text-secondary)", opacity: 0.6 }}
         >
             <path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.5 1.5h4.5a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z" />
         </svg>

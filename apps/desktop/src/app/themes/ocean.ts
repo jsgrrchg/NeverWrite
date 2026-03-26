@@ -11,6 +11,7 @@ export const oceanTheme: ThemePalette = {
         textSecondary: "#64748b",
         border: "#cbd5e1",
         accent: "#0ea5e9",
+        iconMuted: "#64748b",
         shadowSoft: "0 18px 48px rgba(15, 23, 42, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const oceanTheme: ThemePalette = {
         textSecondary: "#94a3b8",
         border: "#334155",
         accent: "#38bdf8",
+        iconMuted: "#8494a7",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };
