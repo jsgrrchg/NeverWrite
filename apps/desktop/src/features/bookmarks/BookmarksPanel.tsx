@@ -14,6 +14,7 @@ import {
     type BookmarkFolder,
     type BookmarkItem,
 } from "../../app/store/bookmarkStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -26,12 +27,6 @@ import {
     openVaultFileEntry,
 } from "../../app/utils/vaultEntries";
 import { openDetachedNoteWindow } from "../../app/detachedWindows";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const ROW_HEIGHT = 28;
 
 // ---------------------------------------------------------------------------
 // Row model
@@ -90,11 +85,11 @@ function flattenRows(
 // Icons
 // ---------------------------------------------------------------------------
 
-function ChevronIcon({ open }: { open: boolean }) {
+function ChevronIcon({ open, size = 12 }: { open: boolean; size?: number }) {
     return (
         <svg
-            width="12"
-            height="12"
+            width={size}
+            height={size}
             viewBox="0 0 16 16"
             fill="currentColor"
             style={{
@@ -116,11 +111,11 @@ function ChevronIcon({ open }: { open: boolean }) {
     );
 }
 
-function NoteIcon() {
+function NoteIcon({ size = 11 }: { size?: number }) {
     return (
         <svg
-            width="11"
-            height="11"
+            width={size}
+            height={size}
             viewBox="0 0 16 16"
             fill="none"
             style={{ flexShrink: 0, opacity: 0.4 }}
@@ -134,11 +129,11 @@ function NoteIcon() {
     );
 }
 
-function PdfIcon() {
+function PdfIcon({ size = 11 }: { size?: number }) {
     return (
         <svg
-            width="11"
-            height="11"
+            width={size}
+            height={size}
             viewBox="0 0 16 16"
             fill="none"
             style={{ flexShrink: 0, opacity: 0.4 }}
@@ -158,11 +153,11 @@ function PdfIcon() {
     );
 }
 
-function FileIcon() {
+function FileIcon({ size = 11 }: { size?: number }) {
     return (
         <svg
-            width="11"
-            height="11"
+            width={size}
+            height={size}
             viewBox="0 0 16 16"
             fill="none"
             style={{ flexShrink: 0, opacity: 0.4 }}
@@ -180,33 +175,33 @@ function FileIcon() {
     );
 }
 
-function FolderIcon() {
+function FolderIcon({ size = 15 }: { size?: number }) {
+    const fill = "var(--icon-muted)";
     return (
         <svg
-            width="12"
-            height="12"
+            width={size}
+            height={size}
             viewBox="0 0 16 16"
             fill="none"
-            style={{ flexShrink: 0, opacity: 0.45 }}
+            style={{ flexShrink: 0, transform: "translateY(0.5px)" }}
         >
             <path
-                d="M2 4h4.5l1.5 1.5H14v8H2z"
-                stroke="currentColor"
-                strokeWidth="1"
-                strokeLinejoin="round"
+                d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
+                fill={fill}
+                opacity="0.65"
             />
         </svg>
     );
 }
 
-function itemIcon(kind: BookmarkItem["kind"]) {
+function itemIcon(kind: BookmarkItem["kind"], size?: number) {
     switch (kind) {
         case "note":
-            return <NoteIcon />;
+            return <NoteIcon size={size} />;
         case "pdf":
-            return <PdfIcon />;
+            return <PdfIcon size={size} />;
         case "file":
-            return <FileIcon />;
+            return <FileIcon size={size} />;
     }
 }
 
@@ -237,6 +232,19 @@ export function BookmarksPanel() {
     const renameFolder = useBookmarkStore((s) => s.renameFolder);
     const deleteFolder = useBookmarkStore((s) => s.deleteFolder);
     const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
+    const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
+
+    const m = useMemo(() => {
+        const s = fileTreeScale / 100;
+        return {
+            rowHeight: Math.round(28 * s),
+            fontSize: Math.max(12, Math.round(12 * s)),
+            smallIcon: Math.max(11, Math.round(11 * s)),
+            chevronIcon: Math.max(12, Math.round(12 * s)),
+            folderIcon: Math.max(15, Math.round(15 * s)),
+            indent: Math.round(20 * s),
+        };
+    }, [fileTreeScale]);
 
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [renamingFolderId, setRenamingFolderId] = useState<string | null>(
@@ -267,7 +275,7 @@ export function BookmarksPanel() {
         () => flattenRows(folders, items, expanded),
         [folders, items, expanded],
     );
-    const virtual = useVirtualList(listRef, rows.length, ROW_HEIGHT, 10);
+    const virtual = useVirtualList(listRef, rows.length, m.rowHeight, 10);
     const visibleRows = rows.slice(virtual.startIndex, virtual.endIndex);
 
     // ---------------------------------------------------------------------------
@@ -718,16 +726,16 @@ export function BookmarksPanel() {
                             position: "relative",
                             height:
                                 virtual.totalHeight +
-                                (creatingFolder ? ROW_HEIGHT : 0),
+                                (creatingFolder ? m.rowHeight : 0),
                         }}
                     >
                         {/* Create folder input */}
                         {creatingFolder && (
                             <div
                                 className="flex items-center gap-1.5 px-2"
-                                style={{ height: ROW_HEIGHT }}
+                                style={{ height: m.rowHeight }}
                             >
-                                <FolderIcon />
+                                <FolderIcon size={m.folderIcon} />
                                 <input
                                     ref={createInputRef}
                                     type="text"
@@ -743,8 +751,9 @@ export function BookmarksPanel() {
                                     }}
                                     onBlur={confirmCreateFolder}
                                     placeholder="Folder name…"
-                                    className="flex-1 bg-transparent text-xs outline-none"
+                                    className="flex-1 bg-transparent outline-none"
                                     style={{
+                                        fontSize: m.fontSize,
                                         color: "var(--text-primary)",
                                         border: "1px solid var(--accent)",
                                         borderRadius: 3,
@@ -762,7 +771,7 @@ export function BookmarksPanel() {
                                 right: 0,
                                 top:
                                     virtual.offsetTop +
-                                    (creatingFolder ? ROW_HEIGHT : 0),
+                                    (creatingFolder ? m.rowHeight : 0),
                             }}
                         >
                             {visibleRows.map((row) => {
@@ -797,14 +806,18 @@ export function BookmarksPanel() {
                                                     },
                                                 });
                                             }}
-                                            className="flex items-center gap-1.5 w-full text-left py-1 px-2 text-xs rounded"
+                                            className="flex items-center gap-1.5 w-full text-left py-1 px-2 rounded"
                                             style={{
+                                                fontSize: m.fontSize,
                                                 color: "var(--text-primary)",
-                                                minHeight: ROW_HEIGHT,
+                                                minHeight: m.rowHeight,
                                             }}
                                         >
-                                            <ChevronIcon open={isExpanded} />
-                                            <FolderIcon />
+                                            <ChevronIcon
+                                                open={isExpanded}
+                                                size={m.chevronIcon}
+                                            />
+                                            <FolderIcon size={m.folderIcon} />
                                             {isRenaming ? (
                                                 <input
                                                     ref={renameInputRef}
@@ -830,8 +843,9 @@ export function BookmarksPanel() {
                                                             cancelRename();
                                                     }}
                                                     onBlur={confirmRename}
-                                                    className="flex-1 bg-transparent text-xs outline-none"
+                                                    className="flex-1 bg-transparent outline-none"
                                                     style={{
+                                                        fontSize: m.fontSize,
                                                         color: "var(--text-primary)",
                                                         border: "1px solid var(--accent)",
                                                         borderRadius: 3,
@@ -845,10 +859,12 @@ export function BookmarksPanel() {
                                                 </span>
                                             )}
                                             <span
-                                                className="text-xs tabular-nums"
+                                                className="tabular-nums"
                                                 style={{
                                                     color: "var(--text-secondary)",
-                                                    fontSize: "0.65rem",
+                                                    fontSize: Math.round(
+                                                        m.fontSize * 0.85,
+                                                    ),
                                                 }}
                                             >
                                                 {row.itemCount}
@@ -859,7 +875,7 @@ export function BookmarksPanel() {
 
                                 // Item row
                                 const title = resolveItemTitle(row.item);
-                                const indent = row.depth > 0 ? 20 : 0;
+                                const indent = row.depth > 0 ? m.indent : 0;
 
                                 return (
                                     <button
@@ -887,12 +903,13 @@ export function BookmarksPanel() {
                                                 },
                                             });
                                         }}
-                                        className="flex items-center gap-1.5 w-full text-left py-0.5 text-xs rounded mx-1"
+                                        className="flex items-center gap-1.5 w-full text-left py-0.5 rounded mx-1"
                                         style={{
+                                            fontSize: m.fontSize,
                                             paddingLeft: 8 + indent,
                                             width: "calc(100% - 8px)",
                                             color: "var(--text-secondary)",
-                                            minHeight: ROW_HEIGHT,
+                                            minHeight: m.rowHeight,
                                         }}
                                         onMouseEnter={(e) =>
                                             (e.currentTarget.style.color =
@@ -903,7 +920,7 @@ export function BookmarksPanel() {
                                                 "var(--text-secondary)")
                                         }
                                     >
-                                        {itemIcon(row.item.kind)}
+                                        {itemIcon(row.item.kind, m.smallIcon)}
                                         <span className="truncate">
                                             {title}
                                         </span>
