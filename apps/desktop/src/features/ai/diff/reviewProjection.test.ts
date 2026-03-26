@@ -297,6 +297,21 @@ describe("reviewProjection", () => {
                     ambiguous: true,
                 },
             ],
+            diagnostics: {
+                metrics: {
+                    totalLines: 0,
+                    hunkCount: 2,
+                    chunkCount: 1,
+                    visibleChunkCount: 1,
+                    invalidChunkCount: 0,
+                    inlineSafeChunkCount: 0,
+                    degradedChunkCount: 0,
+                    status: "projection_ready" as const,
+                },
+                hunkInvariantIdsByKey: {},
+                chunkInvariantIdsByKey: {},
+                chunkRenderStateByKey: {},
+            },
         };
 
         const closure = expandReviewHunksToOverlapClosure(projection, [

@@ -31,10 +31,18 @@ function makeProjectionState(
     overrides: Partial<ReviewProjectionInlineState> = {},
 ): ReviewProjectionInlineState {
     return {
+        projectionState: "projection_ready",
         reviewProjectionReady: true,
         hasAmbiguousChunks: false,
         hasConflicts: false,
         hasMultiHunkChunks: false,
+        totalLines: 0,
+        hunkCount: 0,
+        chunkCount: 0,
+        visibleChunkCount: 0,
+        invalidChunkCount: 0,
+        inlineSafeChunkCount: 0,
+        degradedChunkCount: 0,
         ...overrides,
     };
 }
@@ -119,7 +127,7 @@ describe("mergeViewConfig", () => {
     it("includes merge-critical fields in the structural signature", () => {
         const a = buildMergeStructuralSignature({
             identityKey: "note.md",
-            inlineState: "ready",
+            inlineState: "projection_ready",
             level: "medium",
             mode: "source",
             reviewState: "finalized",
@@ -130,7 +138,7 @@ describe("mergeViewConfig", () => {
         });
         const b = buildMergeStructuralSignature({
             identityKey: "note.md",
-            inlineState: "ready",
+            inlineState: "projection_ready",
             level: "large",
             mode: "source",
             reviewState: "finalized",
@@ -146,7 +154,7 @@ describe("mergeViewConfig", () => {
     it("includes tracked version in the structural signature", () => {
         const a = buildMergeStructuralSignature({
             identityKey: "note.md",
-            inlineState: "ready",
+            inlineState: "projection_ready",
             level: "medium",
             mode: "source",
             reviewState: "finalized",
@@ -157,7 +165,7 @@ describe("mergeViewConfig", () => {
         });
         const b = buildMergeStructuralSignature({
             identityKey: "note.md",
-            inlineState: "ready",
+            inlineState: "projection_ready",
             level: "medium",
             mode: "source",
             reviewState: "finalized",
