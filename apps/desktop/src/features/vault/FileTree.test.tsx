@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -71,7 +71,7 @@ function buildFolderEntry(path: string) {
 }
 
 describe("FileTree", () => {
-    it("anchors the virtualized layers to the viewport width", async () => {
+    it("lets the virtualized tree grow horizontally for long labels", async () => {
         const user = userEvent.setup();
 
         setVaultNotes([
@@ -102,33 +102,30 @@ describe("FileTree", () => {
             paddingInline: "4px",
         });
         expect(virtualCanvas).toHaveStyle({
-            width: "100%",
+            width: "max-content",
             minWidth: "100%",
             boxSizing: "border-box",
         });
-        expect(virtualCanvas.getAttribute("style")).not.toContain(
-            "fit-content",
-        );
         expect(rowsLayer).toHaveStyle({
-            width: "100%",
+            width: "max-content",
             minWidth: "100%",
             boxSizing: "border-box",
         });
         expect(row).toHaveStyle({
-            width: "100%",
-            minWidth: "0",
+            width: "max-content",
+            minWidth: "100%",
             boxSizing: "border-box",
         });
-        expect(label).toHaveClass(
+        expect(label).toHaveClass("shrink-0", "whitespace-nowrap");
+        expect(label).not.toHaveClass(
             "min-w-0",
             "flex-1",
             "overflow-hidden",
             "text-ellipsis",
-            "whitespace-nowrap",
         );
     });
 
-    it("keeps sticky folder layers aligned with the viewport width after scrolling", async () => {
+    it("keeps sticky folder layers aligned while the tree scrolls horizontally", async () => {
         const user = userEvent.setup();
 
         setVaultNotes([
@@ -165,6 +162,7 @@ describe("FileTree", () => {
             value: 48,
         });
         viewport.scrollTop = 40;
+        viewport.scrollLeft = 56;
         fireEvent.scroll(viewport);
         fireEvent(window, new Event("resize"));
 
@@ -173,6 +171,16 @@ describe("FileTree", () => {
             width: "100%",
             minWidth: "100%",
             boxSizing: "border-box",
+        });
+
+        const stickyRootFolder = within(stickyLayer)
+            .getByText("root")
+            .closest("button");
+        expect(stickyRootFolder).not.toBeNull();
+        expect(stickyRootFolder?.parentElement).toHaveStyle({
+            width: "max-content",
+            minWidth: "100%",
+            transform: "translateX(-56px)",
         });
     });
 

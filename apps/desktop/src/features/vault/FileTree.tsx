@@ -84,18 +84,17 @@ interface TreeMetrics {
 }
 
 const TREE_VIEWPORT_SIDE_PADDING_PX = 4;
-const TREE_LAYER_BOX_STYLE = {
-    width: "100%",
+const TREE_CONTENT_BOX_STYLE = {
+    width: "max-content",
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
 const TREE_ROW_BOX_STYLE = {
-    width: "100%",
-    minWidth: 0,
+    width: "max-content",
+    minWidth: "100%",
     boxSizing: "border-box" as const,
 };
-const TREE_LABEL_CLASSNAME =
-    "min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap";
+const TREE_LABEL_CLASSNAME = "shrink-0 whitespace-nowrap";
 
 // --- Tree building ---
 
@@ -1544,6 +1543,7 @@ export function FileTree() {
     // Virtualization state
     const [viewportHeight, setViewportHeight] = useState(600);
     const [scrollTop, setScrollTop] = useState(0);
+    const [scrollLeft, setScrollLeft] = useState(0);
 
     const activeTreePath = useMemo(() => {
         if (activeNoteId) return activeNoteId;
@@ -1774,6 +1774,7 @@ export function FileTree() {
         const syncViewportMetrics = () => {
             setViewportHeight(el.clientHeight);
             setScrollTop(el.scrollTop);
+            setScrollLeft(el.scrollLeft);
         };
 
         syncViewportMetrics();
@@ -1830,7 +1831,9 @@ export function FileTree() {
         cancelAnimationFrame(rafScrollRef.current);
         rafScrollRef.current = requestAnimationFrame(() => {
             const el = treeScrollRef.current;
-            if (el) setScrollTop(el.scrollTop);
+            if (!el) return;
+            setScrollTop(el.scrollTop);
+            setScrollLeft(el.scrollLeft);
         });
     }, []);
 
@@ -4193,10 +4196,13 @@ export function FileTree() {
                                 style={{
                                     position: "sticky",
                                     top: 0,
+                                    left: 0,
                                     height: 0,
                                     zIndex: 10,
                                     overflow: "visible",
-                                    ...TREE_LAYER_BOX_STYLE,
+                                    minWidth: "100%",
+                                    width: "100%",
+                                    boxSizing: "border-box",
                                 }}
                             >
                                 {stickyFolders.map(({ row, top }) => (
@@ -4206,7 +4212,8 @@ export function FileTree() {
                                             position: "absolute",
                                             top,
                                             left: 0,
-                                            ...TREE_LAYER_BOX_STYLE,
+                                            transform: `translateX(${-scrollLeft}px)`,
+                                            ...TREE_CONTENT_BOX_STYLE,
                                             zIndex: 20 - row.depth,
                                         }}
                                     >
@@ -4300,7 +4307,7 @@ export function FileTree() {
                             style={{
                                 height: totalHeight,
                                 position: "relative",
-                                ...TREE_LAYER_BOX_STYLE,
+                                ...TREE_CONTENT_BOX_STYLE,
                             }}
                         >
                             <div
@@ -4309,7 +4316,7 @@ export function FileTree() {
                                     position: "absolute",
                                     top: offsetY,
                                     left: 0,
-                                    ...TREE_LAYER_BOX_STYLE,
+                                    ...TREE_CONTENT_BOX_STYLE,
                                 }}
                             >
                                 {visibleRows.map((row) => {
