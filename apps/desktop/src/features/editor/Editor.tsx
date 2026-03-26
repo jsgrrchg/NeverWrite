@@ -53,7 +53,12 @@ import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
 import { fileTreeDropExtension } from "./extensions/fileTreeDrop";
-import { searchTheme } from "./extensions/searchTheme";
+import {
+    createMarkdownSearchPanel,
+    markdownSearchMatchTheme,
+    setSearchPanelContextMenuCallback,
+    type SearchPanelOptions,
+} from "./extensions/markdownSearchPanel";
 import {
     continueMarkdownListItem,
     backspaceMarkdownListMarker,
@@ -242,6 +247,12 @@ export function Editor({
         useState<ContextMenuState<SpellcheckContextMenuPayload> | null>(null);
     const [titleContextMenu, setTitleContextMenu] =
         useState<ContextMenuState<SpellcheckContextMenuPayload> | null>(null);
+    const [searchContextMenu, setSearchContextMenu] = useState<{
+        x: number;
+        y: number;
+        options: SearchPanelOptions;
+        toggle: (key: keyof SearchPanelOptions) => void;
+    } | null>(null);
     const [selectionToolbar, setSelectionToolbar] =
         useState<FloatingSelectionToolbarState | null>(null);
     const [wikilinkSuggester, setWikilinkSuggester] =
@@ -251,6 +262,14 @@ export function Editor({
     const spellcheckRequestIdRef = useRef(0);
     const didLogCoordinateLookupErrorRef = useRef(false);
     const [, setEditorView] = useState<EditorView | null>(null);
+
+    // Bridge: search panel context menu callback
+    useEffect(() => {
+        setSearchPanelContextMenuCallback((x, y, options, toggle) => {
+            setSearchContextMenu({ x, y, options, toggle });
+        });
+        return () => setSearchPanelContextMenuCallback(null);
+    }, []);
 
     const attachScrollHeader = useCallback((view: EditorView) => {
         if (!scrollHeaderRef.current) {
@@ -1837,8 +1856,11 @@ export function Editor({
                             useSettingsStore.getState().livePreviewEnabled,
                         ),
                     ),
-                    search({ top: true }),
-                    searchTheme,
+                    search({
+                        top: true,
+                        createPanel: createMarkdownSearchPanel,
+                    }),
+                    markdownSearchMatchTheme,
                     markdownAutopairExtension,
                     keymap.of([
                         {
@@ -3155,6 +3177,32 @@ export function Editor({
                     menu={titleContextMenu}
                     onClose={() => setTitleContextMenu(null)}
                     entries={titleContextMenuEntries}
+                />
+            )}
+            {searchContextMenu && (
+                <ContextMenu
+                    menu={{
+                        x: searchContextMenu.x,
+                        y: searchContextMenu.y,
+                        payload: undefined,
+                    }}
+                    onClose={() => setSearchContextMenu(null)}
+                    minWidth={140}
+                    entries={[
+                        {
+                            label: `${searchContextMenu.options.caseSensitive ? "✓ " : "   "}Match Case`,
+                            action: () =>
+                                searchContextMenu.toggle("caseSensitive"),
+                        },
+                        {
+                            label: `${searchContextMenu.options.regexp ? "✓ " : "   "}Regular Expression`,
+                            action: () => searchContextMenu.toggle("regexp"),
+                        },
+                        {
+                            label: `${searchContextMenu.options.wholeWord ? "✓ " : "   "}Whole Word`,
+                            action: () => searchContextMenu.toggle("wholeWord"),
+                        },
+                    ]}
                 />
             )}
         </div>
