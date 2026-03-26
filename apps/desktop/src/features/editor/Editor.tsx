@@ -1035,7 +1035,6 @@ export function Editor({
                 if (useEditorStore.getState().currentSelection !== null) {
                     useEditorStore.getState().clearCurrentSelection();
                 }
-                clearEditorDomSelection(view);
                 syncSelectionLayerVisibility(view);
                 setSelectionToolbar((prev) => (prev === null ? prev : null));
                 return;
@@ -1907,6 +1906,26 @@ export function Editor({
                             shift: removeConfiguredTab,
                         },
                         {
+                            key: "Mod-c",
+                            run: (view) => {
+                                if (view.state.selection.main.empty) {
+                                    return false;
+                                }
+                                void copySelectedText();
+                                return true;
+                            },
+                        },
+                        {
+                            key: "Mod-x",
+                            run: (view) => {
+                                if (view.state.selection.main.empty) {
+                                    return false;
+                                }
+                                void cutSelectedText();
+                                return true;
+                            },
+                        },
+                        {
                             key: "Mod-l",
                             run: (view) => {
                                 if (view.state.selection.main.empty)
@@ -2065,6 +2084,8 @@ export function Editor({
             updateWikilinkSuggester,
             handleOpenLinkContextMenu,
             applyHeadingCommand,
+            copySelectedText,
+            cutSelectedText,
             syncDerivedTitle,
             updateTabContent,
         ],
