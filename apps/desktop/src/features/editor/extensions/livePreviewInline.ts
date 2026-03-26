@@ -53,8 +53,6 @@ const headingMarks: Record<number, Decoration> = {
     6: Decoration.mark({ class: "cm-lp-h6" }),
 };
 
-const boldMark = Decoration.mark({ class: "cm-lp-bold" });
-const italicMark = Decoration.mark({ class: "cm-lp-italic" });
 const inlineCodeMark = Decoration.mark({ class: "cm-lp-code" });
 const strikethroughMark = Decoration.mark({ class: "cm-lp-strikethrough" });
 const highlightMark = Decoration.mark({ class: "cm-lp-highlight" });
@@ -917,8 +915,6 @@ const listContinuationRule: NodeRule = (node, context) => {
 
 const nodeRules: NodeRule[] = [
     headingRule,
-    createInlineFormattingRule("StrongEmphasis", boldMark, "EmphasisMark"),
-    createInlineFormattingRule("Emphasis", italicMark, "EmphasisMark"),
     createInlineFormattingRule("InlineCode", inlineCodeMark, "CodeMark"),
     createInlineFormattingRule("Subscript", subscriptMark, "SubscriptMark"),
     createInlineFormattingRule(
