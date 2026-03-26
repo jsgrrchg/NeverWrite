@@ -17,7 +17,8 @@ use catalog::{
 };
 use engine::{
     build_dictionary_selection, build_suggestions, check_text_spelling, ignored_session_key,
-    normalize_dictionary_word, DictionaryBundle, DictionarySelection,
+    normalize_dictionary_word, normalize_dictionary_word_key, DictionaryBundle,
+    DictionarySelection,
 };
 use language::{list_supported_languages, resolve_language, resolve_language_selection};
 use storage::{
@@ -189,6 +190,8 @@ pub fn spellcheck_add_to_dictionary(
     let resolved = resolve_primary_action_language(&app, language)?;
     let normalized_word = normalize_dictionary_word(&word)
         .ok_or_else(|| "Word must be a single spellcheck token".to_string())?;
+    let normalized_key = normalize_dictionary_word_key(&word)
+        .ok_or_else(|| "Word must be a single spellcheck token".to_string())?;
 
     write_word_to_user_dictionary(&app, &resolved, &normalized_word)?;
     invalidate_dictionary_cache(&state, &resolved)?;
@@ -196,7 +199,7 @@ pub fn spellcheck_add_to_dictionary(
         .ignored_session_words
         .lock()
         .map_err(|error| error.to_string())?
-        .remove(&ignored_session_key(&normalized_word));
+        .remove(&ignored_session_key(&normalized_key));
     let user_dictionary_path = user_dictionary_path(&app, &resolved)?
         .to_string_lossy()
         .to_string();
@@ -244,12 +247,14 @@ pub fn spellcheck_ignore_word(
     let resolved = resolve_primary_action_language(&app, language)?;
     let normalized_word = normalize_dictionary_word(&word)
         .ok_or_else(|| "Word must be a single spellcheck token".to_string())?;
+    let normalized_key = normalize_dictionary_word_key(&word)
+        .ok_or_else(|| "Word must be a single spellcheck token".to_string())?;
 
     state
         .ignored_session_words
         .lock()
         .map_err(|error| error.to_string())?
-        .insert(ignored_session_key(&normalized_word));
+        .insert(ignored_session_key(&normalized_key));
     let user_dictionary_path = user_dictionary_path(&app, &resolved)?
         .to_string_lossy()
         .to_string();

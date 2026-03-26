@@ -12,6 +12,7 @@ use super::types::{
 pub struct DictionaryBundle {
     pub language: String,
     pub dictionary: Dictionary,
+    pub custom_words: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,23 +50,28 @@ pub fn load_hunspell_bundle(
 ) -> Result<DictionaryBundle, String> {
     let mut dictionary =
         Dictionary::new(aff_content, dic_content).map_err(|error| error.to_string())?;
+    let mut custom_words = HashSet::new();
 
     for word in extra_words {
         if let Some(normalized) = normalize_dictionary_word(&word) {
             dictionary
                 .add(&normalized)
                 .map_err(|error| error.to_string())?;
+            if let Some(key) = normalize_dictionary_word_key(&normalized) {
+                custom_words.insert(key);
+            }
         }
     }
 
     Ok(DictionaryBundle {
         language: language.to_string(),
         dictionary,
+        custom_words,
     })
 }
 
 pub fn normalize_dictionary_word(word: &str) -> Option<String> {
-    let normalized = normalize_word(word);
+    let normalized = trim_dictionary_word(word);
     if normalized.is_empty() || normalized.chars().any(char::is_whitespace) {
         return None;
     }
@@ -80,6 +86,10 @@ pub fn normalize_dictionary_word(word: &str) -> Option<String> {
     should_check_word(&normalized).then_some(normalized)
 }
 
+pub fn normalize_dictionary_word_key(word: &str) -> Option<String> {
+    normalize_dictionary_word(word).map(|normalized| normalized.to_lowercase())
+}
+
 pub fn check_text_spelling(
     text: &str,
     selection: &DictionarySelection,
@@ -91,13 +101,20 @@ pub fn check_text_spelling(
         .filter(|token| {
             let normalized = normalize_word(&token.raw);
             let primary_correct = selection.primary.dictionary.check(&token.raw);
+            let primary_custom_correct = custom_word_matches(&selection.primary, &token.raw);
             let secondary_correct = selection
                 .secondary
                 .as_ref()
                 .is_some_and(|bundle| bundle.dictionary.check(&token.raw));
+            let secondary_custom_correct = selection
+                .secondary
+                .as_ref()
+                .is_some_and(|bundle| custom_word_matches(bundle, &token.raw));
             !normalized.is_empty()
                 && !primary_correct
+                && !primary_custom_correct
                 && !secondary_correct
+                && !secondary_custom_correct
                 && !ignored_session_words.contains(&ignored_session_key(&normalized))
         })
         .map(|token| SpellcheckDiagnostic {
@@ -121,11 +138,12 @@ pub fn build_suggestions(
     word: &str,
     selection: &DictionarySelection,
 ) -> SpellcheckSuggestionResponse {
-    let primary_correct = selection.primary.dictionary.check(word);
+    let primary_correct =
+        selection.primary.dictionary.check(word) || custom_word_matches(&selection.primary, word);
     let secondary_correct = selection
         .secondary
         .as_ref()
-        .is_some_and(|bundle| bundle.dictionary.check(word));
+        .is_some_and(|bundle| bundle.dictionary.check(word) || custom_word_matches(bundle, word));
     let correct = primary_correct || secondary_correct;
     let mut suggestions = Vec::new();
     selection.primary.dictionary.suggest(word, &mut suggestions);
@@ -176,9 +194,18 @@ fn should_check_word(word: &str) -> bool {
     letter_count >= 2
 }
 
-fn normalize_word(word: &str) -> String {
+fn trim_dictionary_word(word: &str) -> String {
     word.trim_matches(|ch: char| !ch.is_alphabetic() && ch != '\'' && ch != '’')
-        .to_lowercase()
+        .to_string()
+}
+
+fn normalize_word(word: &str) -> String {
+    trim_dictionary_word(word).to_lowercase()
+}
+
+fn custom_word_matches(bundle: &DictionaryBundle, word: &str) -> bool {
+    normalize_dictionary_word_key(word)
+        .is_some_and(|normalized| bundle.custom_words.contains(&normalized))
 }
 
 fn tokenize_words(text: &str) -> Vec<Token> {
@@ -232,7 +259,7 @@ mod tests {
 
     use super::{
         build_dictionary_selection, build_suggestions, check_text_spelling, load_hunspell_bundle,
-        normalize_dictionary_word, DictionaryBundle,
+        normalize_dictionary_word, normalize_dictionary_word_key, DictionaryBundle,
     };
     use crate::spellcheck::types::SpellcheckLanguageSelection;
 
@@ -244,6 +271,16 @@ mod tests {
             std::iter::empty(),
         )
         .expect("should build test dictionary")
+    }
+
+    fn bundle_with_custom_words(words: &[&str], extra_words: &[&str]) -> DictionaryBundle {
+        load_hunspell_bundle(
+            "en-US",
+            "SET UTF-8\nTRY esiarntolcdugmphbyfvkwzxjq\n",
+            &format!("{}\n{}\n", words.len(), words.join("\n")),
+            extra_words.iter().map(|word| (*word).to_string()),
+        )
+        .expect("should build test dictionary with custom words")
     }
 
     #[test]
@@ -270,11 +307,23 @@ mod tests {
     fn normalizes_valid_dictionary_words() {
         assert_eq!(
             normalize_dictionary_word("  O'Brien "),
-            Some("o'brien".to_string())
+            Some("O'Brien".to_string())
         );
         assert_eq!(
             normalize_dictionary_word("mother-in-law"),
             Some("mother-in-law".to_string())
+        );
+        assert_eq!(
+            normalize_dictionary_word("CodeMirror"),
+            Some("CodeMirror".to_string())
+        );
+        assert_eq!(
+            normalize_dictionary_word("MacOS"),
+            Some("MacOS".to_string())
+        );
+        assert_eq!(
+            normalize_dictionary_word_key("CodeMirror"),
+            Some("codemirror".to_string())
         );
     }
 
@@ -334,6 +383,59 @@ mod tests {
         assert!(bundle.dictionary.check("world"));
         assert!(bundle.dictionary.check("adios"));
         assert!(bundle.dictionary.check("custom"));
+    }
+
+    #[test]
+    fn treats_custom_dictionary_words_as_correct_across_case_variants() {
+        let result = check_text_spelling(
+            "CodeMirror codemirror MacOS macos O'Brien o'brien",
+            &build_dictionary_selection(
+                &SpellcheckLanguageSelection {
+                    primary: "en-US".to_string(),
+                    secondary: None,
+                },
+                bundle_with_custom_words(&["hello"], &["CodeMirror", "MacOS", "O'Brien"]),
+                None,
+            ),
+            &HashSet::new(),
+        );
+
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn treats_legacy_lowercase_custom_dictionary_words_as_correct() {
+        let result = check_text_spelling(
+            "CodeMirror codeMirror",
+            &build_dictionary_selection(
+                &SpellcheckLanguageSelection {
+                    primary: "en-US".to_string(),
+                    secondary: None,
+                },
+                bundle_with_custom_words(&["hello"], &["codemirror"]),
+                None,
+            ),
+            &HashSet::new(),
+        );
+
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn marks_custom_dictionary_words_as_correct_in_suggestions() {
+        let response = build_suggestions(
+            "CodeMirror",
+            &build_dictionary_selection(
+                &SpellcheckLanguageSelection {
+                    primary: "en-US".to_string(),
+                    secondary: None,
+                },
+                bundle_with_custom_words(&["hello"], &["codemirror"]),
+                None,
+            ),
+        );
+
+        assert!(response.correct);
     }
 
     #[test]

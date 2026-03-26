@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
-use super::engine::{bundled_hunspell_files_for_language, load_hunspell_bundle, DictionaryBundle};
+use super::engine::{
+    bundled_hunspell_files_for_language, load_hunspell_bundle, normalize_dictionary_word_key,
+    DictionaryBundle,
+};
 use super::types::ResolvedSpellcheckLanguage;
 
 pub fn app_spellcheck_directory(app: &AppHandle) -> Result<PathBuf, String> {
@@ -81,7 +84,7 @@ fn read_word_list(path: &Path) -> Result<HashSet<String>, String> {
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
     Ok(content
         .lines()
-        .map(|line| line.trim().to_lowercase())
+        .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty())
         .collect())
 }
@@ -113,6 +116,11 @@ pub fn write_word_to_user_dictionary(
 ) -> Result<(), String> {
     let path = user_dictionary_path(app, language)?;
     let mut words = read_word_list(&path)?;
+    let normalized = normalize_dictionary_word_key(word)
+        .ok_or_else(|| "Word must be a single spellcheck token".to_string())?;
+    words.retain(|existing| {
+        normalize_dictionary_word_key(existing).as_deref() != Some(normalized.as_str())
+    });
     words.insert(word.to_string());
     write_word_lines(&path, &words)
 }
@@ -124,7 +132,13 @@ pub fn remove_word_from_user_dictionary(
 ) -> Result<bool, String> {
     let path = user_dictionary_path(app, language)?;
     let mut words = read_word_list(&path)?;
-    let removed = words.remove(word);
+    let normalized = normalize_dictionary_word_key(word)
+        .ok_or_else(|| "Word must be a single spellcheck token".to_string())?;
+    let original_len = words.len();
+    words.retain(|existing| {
+        normalize_dictionary_word_key(existing).as_deref() != Some(normalized.as_str())
+    });
+    let removed = words.len() != original_len;
     write_word_lines(&path, &words)?;
     Ok(removed)
 }
