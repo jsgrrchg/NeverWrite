@@ -10,7 +10,10 @@ import {
     createTableLivePreviewExtension,
     type TableInteractionHandlers,
 } from "./livePreviewBlocks";
-import { createInlineLivePreviewPlugin } from "./livePreviewInline";
+import {
+    createInlineLivePreviewPlugin,
+    createLeadingContentCollapseField,
+} from "./livePreviewInline";
 import { livePreviewTheme } from "./livePreviewTheme";
 
 const TASK_TOGGLE_MARKER_WIDTH_EM = 1.2;
@@ -488,6 +491,7 @@ export function livePreviewExtension(
     return [
         linkReferenceField,
         createInlineLivePreviewPlugin(),
+        createLeadingContentCollapseField(),
         createCodeBlockLivePreviewExtension(),
         createImageLivePreviewExtension(vaultRoot),
         createImageResizeExtension(),
