@@ -69,6 +69,11 @@ interface Block {
     language?: string;
 }
 
+interface MarkdownTable {
+    headers: string[];
+    rows: string[][];
+}
+
 function parseBlocks(text: string): Block[] {
     const blocks: Block[] = [];
     const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
@@ -95,6 +100,67 @@ function parseBlocks(text: string): Block[] {
     }
 
     return blocks;
+}
+
+function parseMarkdownTableRow(line: string): string[] | null {
+    if (!line.includes("|")) return null;
+
+    let normalized = line.trim();
+    if (normalized.startsWith("|")) {
+        normalized = normalized.slice(1);
+    }
+    if (normalized.endsWith("|")) {
+        normalized = normalized.slice(0, -1);
+    }
+
+    const cells = normalized.split("|").map((cell) => cell.trim());
+    if (cells.length < 2) return null;
+    if (cells.every((cell) => cell.length === 0)) return null;
+
+    return cells;
+}
+
+function isMarkdownTableSeparator(line: string, expectedColumns: number) {
+    const cells = parseMarkdownTableRow(line);
+    if (!cells || cells.length !== expectedColumns) return false;
+
+    return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseMarkdownTable(
+    lines: string[],
+    startIndex: number,
+): { table: MarkdownTable; nextIndex: number } | null {
+    const headers = parseMarkdownTableRow(lines[startIndex] ?? "");
+    if (!headers || headers.length < 2) return null;
+
+    const separatorLine = lines[startIndex + 1];
+    if (
+        !separatorLine ||
+        !isMarkdownTableSeparator(separatorLine, headers.length)
+    )
+        return null;
+
+    const rows: string[][] = [];
+    let index = startIndex + 2;
+
+    while (index < lines.length) {
+        const line = lines[index];
+        if (line.trim() === "") break;
+
+        const row = parseMarkdownTableRow(line);
+        if (!row || row.length !== headers.length) break;
+        rows.push(row);
+        index += 1;
+    }
+
+    return {
+        table: {
+            headers,
+            rows,
+        },
+        nextIndex: index,
+    };
 }
 
 interface MarkdownPillContextMenuPayload {
@@ -505,7 +571,91 @@ function TextBlock({
         listItems = [];
     }
 
-    for (const line of lines) {
+    let lineIndex = 0;
+    while (lineIndex < lines.length) {
+        const line = lines[lineIndex];
+
+        const table = parseMarkdownTable(lines, lineIndex);
+        if (table) {
+            flushList();
+            elements.push(
+                <div
+                    key={elements.length}
+                    className="my-2 max-w-full overflow-x-auto"
+                >
+                    <table
+                        style={{
+                            width: "100%",
+                            borderCollapse: "collapse",
+                            minWidth: "max-content",
+                            fontSize: "0.92em",
+                        }}
+                    >
+                        <thead>
+                            <tr>
+                                {table.table.headers.map((header, index) => (
+                                    <th
+                                        key={index}
+                                        style={{
+                                            textAlign: "left",
+                                            padding: "8px 10px",
+                                            borderBottom:
+                                                "1px solid var(--border)",
+                                            color: "var(--text-primary)",
+                                            background:
+                                                "color-mix(in srgb, var(--bg-tertiary) 78%, transparent)",
+                                            verticalAlign: "top",
+                                        }}
+                                    >
+                                        {renderInlineMarkdown(
+                                            header,
+                                            pillMetrics,
+                                            handleNoteContextMenu,
+                                            handleMapContextMenu,
+                                            handlePdfContextMenu,
+                                        )}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {table.table.rows.map((row, rowIndex) => (
+                                <tr key={rowIndex}>
+                                    {row.map((cell, cellIndex) => (
+                                        <td
+                                            key={cellIndex}
+                                            style={{
+                                                padding: "8px 10px",
+                                                borderBottom:
+                                                    rowIndex ===
+                                                    table.table.rows.length - 1
+                                                        ? "none"
+                                                        : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
+                                                color: "var(--text-secondary)",
+                                                verticalAlign: "top",
+                                                overflowWrap: "anywhere",
+                                                wordBreak: "break-word",
+                                            }}
+                                        >
+                                            {renderInlineMarkdown(
+                                                cell,
+                                                pillMetrics,
+                                                handleNoteContextMenu,
+                                                handleMapContextMenu,
+                                                handlePdfContextMenu,
+                                            )}
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>,
+            );
+            lineIndex = table.nextIndex;
+            continue;
+        }
+
         // Headers
         const headerMatch = /^(#{1,6})\s+(.+)$/.exec(line);
         if (headerMatch) {
@@ -537,6 +687,7 @@ function TextBlock({
                     )}
                 </div>,
             );
+            lineIndex += 1;
             continue;
         }
 
@@ -546,6 +697,7 @@ function TextBlock({
             if (listItems.length > 0 && listOrdered) flushList();
             listOrdered = false;
             listItems.push({ ordered: false, text: ulMatch[1] });
+            lineIndex += 1;
             continue;
         }
 
@@ -555,6 +707,7 @@ function TextBlock({
             if (listItems.length > 0 && !listOrdered) flushList();
             listOrdered = true;
             listItems.push({ ordered: true, text: olMatch[1] });
+            lineIndex += 1;
             continue;
         }
 
@@ -569,6 +722,7 @@ function TextBlock({
                     style={{ borderColor: "var(--border)" }}
                 />,
             );
+            lineIndex += 1;
             continue;
         }
 
@@ -593,12 +747,14 @@ function TextBlock({
                     )}
                 </blockquote>,
             );
+            lineIndex += 1;
             continue;
         }
 
         // Empty line
         if (line.trim() === "") {
             elements.push(<div key={elements.length} className="h-2" />);
+            lineIndex += 1;
             continue;
         }
 
@@ -620,6 +776,7 @@ function TextBlock({
                 )}
             </div>,
         );
+        lineIndex += 1;
     }
 
     flushList();
