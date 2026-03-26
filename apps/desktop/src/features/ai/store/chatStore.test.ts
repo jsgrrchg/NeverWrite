@@ -2391,45 +2391,148 @@ describe("chatStore", () => {
         ).toBeUndefined();
     });
 
-    it("returns the session to idle after a completed tool event with no active work left", async () => {
+    it("does not force the session back to idle after a quiet tool event", async () => {
         vi.useFakeTimers();
+        try {
+            await useChatStore.getState().initialize();
+
+            const activeSessionId = getActiveSessionId();
+            const session =
+                useChatStore.getState().sessionsById[activeSessionId]!;
+
+            useChatStore.setState({
+                sessionsById: {
+                    ...useChatStore.getState().sessionsById,
+                    [activeSessionId]: {
+                        ...session,
+                        status: "streaming",
+                        messages: [
+                            {
+                                id: "user-1",
+                                role: "user",
+                                kind: "text",
+                                content: "Open the file and fix it",
+                                timestamp: Date.now() - 10,
+                            },
+                        ],
+                    },
+                },
+            });
+
+            useChatStore.getState().applyToolActivity({
+                session_id: activeSessionId,
+                tool_call_id: "tool-1",
+                title: "Read file",
+                kind: "read",
+                status: "completed",
+                summary: "README.md",
+            });
+            vi.runAllTimers();
+
+            expect(
+                useChatStore.getState().sessionsById[activeSessionId]?.status,
+            ).toBe("streaming");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("restores streaming when late activity arrives on a live idle session", async () => {
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
-        const session = useChatStore.getState().sessionsById[activeSessionId]!;
 
-        useChatStore.setState({
+        useChatStore.setState((state) => ({
             sessionsById: {
-                ...useChatStore.getState().sessionsById,
+                ...state.sessionsById,
                 [activeSessionId]: {
-                    ...session,
-                    status: "streaming",
-                    messages: [
-                        {
-                            id: "user-1",
-                            role: "user",
-                            kind: "text",
-                            content: "Open the file and fix it",
-                            timestamp: Date.now() - 10,
-                        },
-                    ],
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
                 },
             },
-        });
+        }));
 
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
-            tool_call_id: "tool-1",
-            title: "Read file",
-            kind: "read",
-            status: "completed",
-            summary: "README.md",
+            tool_call_id: "tool-restore-1",
+            title: "Write file",
+            kind: "edit",
+            status: "in_progress",
+            summary: "notes/today.md",
         });
-        vi.runAllTimers();
-
         expect(
             useChatStore.getState().sessionsById[activeSessionId]?.status,
-        ).toBe("idle");
+        ).toBe("streaming");
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
+                },
+            },
+        }));
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "status-restore-1",
+            kind: "turn_started",
+            status: "in_progress",
+            title: "Turn started",
+            detail: "Agent resumed work",
+            emphasis: "normal",
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.status,
+        ).toBe("streaming");
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
+                },
+            },
+        }));
+
+        useChatStore.getState().applyPlanUpdate({
+            session_id: activeSessionId,
+            plan_id: "plan-restore-1",
+            title: "Continue execution",
+            detail: "Still running",
+            entries: [
+                {
+                    content: "Finish the write",
+                    priority: "medium",
+                    status: "in_progress",
+                },
+            ],
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.status,
+        ).toBe("streaming");
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-restore-1",
+            delta: "Still working",
+        });
+        flushDeltasSync();
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.status,
+        ).toBe("streaming");
     });
 
     it("upserts tool diffs into a single tool message and preserves its timestamp", async () => {
