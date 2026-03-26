@@ -233,38 +233,45 @@ function FullRow({
                         onClick={() =>
                             void openAiEditedFileByAbsolutePath(file.path)
                         }
-                        className="review-action-btn shrink-0 rounded-md px-2 py-1"
-                        style={getNeutralButtonStyle()}
+                        className="review-action-btn shrink-0 rounded px-1.5"
+                        style={{
+                            ...getNeutralButtonStyle(),
+                            fontSize: "0.68em",
+                            fontWeight: 600,
+                            lineHeight: "22px",
+                        }}
                     >
-                        <span style={{ fontSize: "0.78em", fontWeight: 600 }}>
-                            Open
-                        </span>
+                        Open
                     </button>
                     {canReject ? (
                         <button
                             type="button"
                             title="Reject"
                             onClick={onReject}
-                            className="review-action-btn shrink-0 rounded-md px-2 py-1"
-                            style={getDangerButtonStyle()}
+                            className="review-action-btn shrink-0 rounded px-1.5"
+                            style={{
+                                ...getDangerButtonStyle(),
+                                fontSize: "0.68em",
+                                fontWeight: 600,
+                                lineHeight: "22px",
+                            }}
                         >
-                            <span
-                                style={{ fontSize: "0.78em", fontWeight: 600 }}
-                            >
-                                Reject
-                            </span>
+                            Reject
                         </button>
                     ) : null}
                     <button
                         type="button"
                         title="Accept"
                         onClick={onKeep}
-                        className="review-action-btn shrink-0 rounded-md px-2 py-1"
-                        style={getAccentButtonStyle()}
+                        className="review-action-btn shrink-0 rounded px-1.5"
+                        style={{
+                            ...getAccentButtonStyle(),
+                            fontSize: "0.68em",
+                            fontWeight: 600,
+                            lineHeight: "22px",
+                        }}
                     >
-                        <span style={{ fontSize: "0.78em", fontWeight: 600 }}>
-                            Accept
-                        </span>
+                        Accept
                     </button>
                 </div>
             </div>
