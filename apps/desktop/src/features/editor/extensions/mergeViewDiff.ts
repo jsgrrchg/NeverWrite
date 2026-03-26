@@ -22,6 +22,7 @@ import type {
     ReviewProjectionMetrics,
 } from "../../ai/diff/reviewProjection";
 import type { ChangePresentationLevel } from "../changePresentationModel";
+import { createChangeRailExtension } from "./changeRail";
 import { createReviewProjectionControlsExtension } from "./reviewProjectionControls";
 import { mergeViewTheme } from "./mergeViewTheme";
 
@@ -189,6 +190,9 @@ export function createMergeViewExtension(
                           view,
                       }),
               })
+            : []),
+        ...(config.highlightChanges && config.reviewHunks.length > 0
+            ? createChangeRailExtension(config.reviewHunks)
             : []),
         unifiedMergeView({
             original: config.original,
