@@ -785,6 +785,67 @@ export function Editor({
         ],
     );
 
+    const loadSpellcheckSuggestions = useCallback(
+        async (
+            word: string,
+            language = useSettingsStore.getState().spellcheckPrimaryLanguage,
+        ) => {
+            return useSpellcheckStore.getState().suggestWord(word, language);
+        },
+        [],
+    );
+
+    const loadGrammarDiagnostics = useCallback(
+        async (
+            text: string,
+            language = useSettingsStore.getState().spellcheckPrimaryLanguage,
+        ) => {
+            const response = await spellcheckCheckGrammar(
+                text,
+                language,
+                useSettingsStore.getState().grammarCheckServerUrl || undefined,
+            );
+            return response.diagnostics;
+        },
+        [],
+    );
+
+    const getSecondaryLanguageCandidates = useCallback(() => {
+        const excludedPrimaryLanguages = new Set(
+            resolveFrontendSpellcheckLanguageCandidates(
+                useSettingsStore.getState().spellcheckPrimaryLanguage,
+            ),
+        );
+        const excludedPrimaryFamilies = new Set(
+            [...excludedPrimaryLanguages].map(
+                (language) => language.split("-")[0]?.toLowerCase() ?? language,
+            ),
+        );
+        const currentSecondary =
+            useSettingsStore.getState().spellcheckSecondaryLanguage;
+
+        return useSpellcheckStore
+            .getState()
+            .languages.filter(
+                (language) =>
+                    language.available &&
+                    !excludedPrimaryLanguages.has(language.id) &&
+                    !excludedPrimaryFamilies.has(
+                        language.id.split("-")[0]?.toLowerCase() ?? language.id,
+                    ),
+            )
+            .map((language) => ({
+                id: language.id,
+                label: language.label,
+            }))
+            .sort((left, right) => {
+                if (left.id === currentSecondary) return -1;
+                if (right.id === currentSecondary) return 1;
+                return left.label.localeCompare(right.label, "en");
+            })
+            .slice(0, 3);
+    }, []);
+
     const handleTitleContextMenu = useCallback(
         async (event: React.MouseEvent<HTMLTextAreaElement>) => {
             event.preventDefault();
@@ -1482,31 +1543,6 @@ export function Editor({
         return true;
     }, []);
 
-    const loadSpellcheckSuggestions = useCallback(
-        async (
-            word: string,
-            language = useSettingsStore.getState().spellcheckPrimaryLanguage,
-        ) => {
-            return useSpellcheckStore.getState().suggestWord(word, language);
-        },
-        [],
-    );
-
-    const loadGrammarDiagnostics = useCallback(
-        async (
-            text: string,
-            language = useSettingsStore.getState().spellcheckPrimaryLanguage,
-        ) => {
-            const response = await spellcheckCheckGrammar(
-                text,
-                language,
-                useSettingsStore.getState().grammarCheckServerUrl || undefined,
-            );
-            return response.diagnostics;
-        },
-        [],
-    );
-
     const refreshEditorSpellcheck = useCallback(() => {
         const view = viewRef.current;
         const noteId = activeTabRef.current?.noteId ?? null;
@@ -1524,42 +1560,6 @@ export function Editor({
                 }),
             ),
         });
-    }, []);
-
-    const getSecondaryLanguageCandidates = useCallback(() => {
-        const excludedPrimaryLanguages = new Set(
-            resolveFrontendSpellcheckLanguageCandidates(
-                useSettingsStore.getState().spellcheckPrimaryLanguage,
-            ),
-        );
-        const excludedPrimaryFamilies = new Set(
-            [...excludedPrimaryLanguages].map(
-                (language) => language.split("-")[0]?.toLowerCase() ?? language,
-            ),
-        );
-        const currentSecondary =
-            useSettingsStore.getState().spellcheckSecondaryLanguage;
-
-        return useSpellcheckStore
-            .getState()
-            .languages.filter(
-                (language) =>
-                    language.available &&
-                    !excludedPrimaryLanguages.has(language.id) &&
-                    !excludedPrimaryFamilies.has(
-                        language.id.split("-")[0]?.toLowerCase() ?? language.id,
-                    ),
-            )
-            .map((language) => ({
-                id: language.id,
-                label: language.label,
-            }))
-            .sort((left, right) => {
-                if (left.id === currentSecondary) return -1;
-                if (right.id === currentSecondary) return 1;
-                return left.label.localeCompare(right.label, "en");
-            })
-            .slice(0, 3);
     }, []);
 
     const handleEditorContextMenu = useCallback(
