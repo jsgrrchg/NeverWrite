@@ -33,6 +33,11 @@ import { subscribeEditorReviewSync } from "../../editor/editorReviewSync";
 
 const invokeMock = vi.mocked(invoke);
 const AI_PREFS_KEY = "vaultai.ai.preferences";
+const AI_AUTO_CONTEXT_KEY_PREFIX = "vaultai.ai.auto-context:";
+
+function getAutoContextKey(vaultPath: string | null) {
+    return `${AI_AUTO_CONTEXT_KEY_PREFIX}${vaultPath ?? "__global__"}`;
+}
 
 function getVisibleBuffer(sessionId: string): TrackedFile[] {
     return selectVisibleTrackedFiles(useChatStore.getState(), sessionId);
@@ -511,6 +516,36 @@ describe("chatStore", () => {
         });
     });
 
+    it("persists auto context per vault path", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+
+        useChatStore.getState().toggleAutoContext();
+
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
+        expect(localStorage.getItem(getAutoContextKey("/vaults/one"))).toBe(
+            "false",
+        );
+        expect(localStorage.getItem(AI_PREFS_KEY)).toBeNull();
+    });
+
+    it("reloads auto context when switching vaults", () => {
+        localStorage.setItem(getAutoContextKey("/vaults/one"), "false");
+        localStorage.setItem(getAutoContextKey("/vaults/two"), "true");
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
+
+        useVaultStore.setState({ vaultPath: "/vaults/two" });
+        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
+    });
+
     it("restores persisted AI font families from preferences", () => {
         localStorage.setItem(
             AI_PREFS_KEY,
@@ -589,6 +624,56 @@ describe("chatStore", () => {
         vi.advanceTimersByTime(80);
 
         expect(useChatStore.getState().editDiffZoom).toBe(0.9);
+        vi.useRealTimers();
+    });
+
+    it("ignores global AI preference storage events for auto context and syncs only the active vault key", () => {
+        vi.useFakeTimers();
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                autoContextEnabled: false,
+                editDiffZoom: 0.8,
+            }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().editDiffZoom).toBe(0.8);
+        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+
+        localStorage.setItem(getAutoContextKey("/vaults/two"), "false");
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: getAutoContextKey("/vaults/two"),
+                newValue: "false",
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+
+        localStorage.setItem(getAutoContextKey("/vaults/one"), "false");
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: getAutoContextKey("/vaults/one"),
+                newValue: "false",
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
         vi.useRealTimers();
     });
 
