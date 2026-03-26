@@ -553,6 +553,61 @@ describe("Editor", () => {
         warnSpy.mockRestore();
     });
 
+    it("copies the selected text even when selection coordinate lookup fails", async () => {
+        const warnSpy = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => undefined);
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
+            throw new Error("No tile at position 0");
+        });
+
+        await act(async () => {
+            view.focus();
+            view.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 11,
+                },
+            });
+            await flushPromises();
+        });
+
+        const copyBinding = view.state
+            .facet(keymap)
+            .flat()
+            .find((binding) => binding.key === "Mod-c");
+
+        expect(copyBinding).toBeDefined();
+
+        await act(async () => {
+            expect(copyBinding?.run?.(view)).toBe(true);
+            await flushPromises();
+        });
+
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+            "Hello world",
+        );
+        expect(warnSpy).toHaveBeenCalledWith(
+            "Ignoring transient CodeMirror coordinate lookup failure in coordsAtPos.",
+            expect.any(Error),
+        );
+
+        warnSpy.mockRestore();
+    });
+
     it("registers structural editor commands and executes them from the command palette store", async () => {
         setEditorTabs([
             {
