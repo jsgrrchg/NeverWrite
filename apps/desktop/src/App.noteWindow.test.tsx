@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import {
@@ -6,6 +6,8 @@ import {
     setEditorTabs,
     flushPromises,
 } from "./test/test-utils";
+import { useCommandStore } from "./features/command-palette/store/commandStore";
+import { useEditorStore } from "./app/store/editorStore";
 
 vi.mock("@tauri-apps/api/event", () => ({
     listen: vi.fn().mockResolvedValue(vi.fn()),
@@ -150,5 +152,29 @@ describe("App note window", () => {
             "flex",
             "flex-col",
         );
+    });
+
+    it("closes an active New Tab through the global close-tab command", async () => {
+        setEditorTabs([
+            {
+                id: "new-tab-1",
+                kind: "note",
+                noteId: "",
+                title: "New Tab",
+                content: "",
+            },
+        ]);
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            useCommandStore.getState().execute("editor:close-tab");
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        expect(useEditorStore.getState().tabs).toHaveLength(0);
+        expect(useEditorStore.getState().activeTabId).toBeNull();
     });
 });

@@ -7,6 +7,7 @@ import {
     setVaultEntries,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
 
 const innerPositionMock = vi.fn();
@@ -113,6 +114,8 @@ describe("UnifiedBar tab strip drop", () => {
             value: vi.fn(() => false),
             configurable: true,
         });
+
+        useSettingsStore.setState({ fileTreeShowExtensions: false });
     });
 
     it("switches tabs when clicking another tab", async () => {
@@ -343,5 +346,35 @@ describe("UnifiedBar tab strip drop", () => {
         expect(minimizeMock).toHaveBeenCalledTimes(1);
         expect(toggleMaximizeMock).toHaveBeenCalledTimes(1);
         expect(closeMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders New Tab without a fake .md suffix and closes it from the tab strip", async () => {
+        useSettingsStore.setState({ fileTreeShowExtensions: true });
+        setEditorTabs([
+            {
+                id: "tab-new",
+                kind: "note",
+                noteId: "",
+                title: "New Tab",
+                content: "",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        expect(container).toHaveTextContent("New Tab");
+        expect(container).not.toHaveTextContent(".md");
+
+        const closeButton = container.querySelector(
+            '[data-tab-id="tab-new"] button',
+        ) as HTMLElement | null;
+        expect(closeButton).not.toBeNull();
+
+        fireEvent.click(closeButton!);
+
+        expect(useEditorStore.getState().tabs).toHaveLength(0);
+        expect(useEditorStore.getState().activeTabId).toBeNull();
     });
 });

@@ -584,7 +584,11 @@ function useRegisterCommands(
                 if (!activeTabId) return;
 
                 const activeTab = tabs.find((tab) => tab.id === activeTabId);
-                if (activeTab && isNoteTab(activeTab)) {
+                if (
+                    activeTab &&
+                    isNoteTab(activeTab) &&
+                    activeTab.noteId !== ""
+                ) {
                     window.dispatchEvent(
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );
