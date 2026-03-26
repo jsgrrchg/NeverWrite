@@ -90,7 +90,77 @@ describe("MarkdownContent", () => {
             />,
         );
 
-        expect(screen.getByText((_content, node) => node?.tagName === "CODE"))
-            .toHaveTextContent(/-beta\s+\+beta 2/);
+        expect(
+            screen.getByText((_content, node) => node?.tagName === "CODE"),
+        ).toHaveTextContent(/-beta\s+\+beta 2/);
+    });
+
+    it("renders markdown tables as semantic table markup", () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "| File | Status |",
+                    "| --- | --- |",
+                    "| watcher.rs | Done |",
+                    "| parser.rs | Pending |",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.getByRole("table")).toBeInTheDocument();
+        expect(
+            screen.getByRole("columnheader", { name: "File" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("cell", { name: "watcher.rs" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("cell", { name: "Pending" }),
+        ).toBeInTheDocument();
+    });
+
+    it("renders inline markdown inside table cells", () => {
+        setVaultNotes([
+            {
+                id: "docs/guide.md",
+                title: "guide",
+                path: "/vault/docs/guide.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "| Note | State |",
+                    "| --- | --- |",
+                    "| `/vault/docs/guide.md` | **Ready** |",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "guide" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByText("Ready", { selector: "strong" }),
+        ).toBeInTheDocument();
+    });
+
+    it("does not mistake plain pipe-separated text for a markdown table", () => {
+        renderComponent(
+            <MarkdownContent
+                content="status | pending | review"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.queryByRole("table")).not.toBeInTheDocument();
+        expect(
+            screen.getByText("status | pending | review"),
+        ).toBeInTheDocument();
     });
 });
