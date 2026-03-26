@@ -632,6 +632,70 @@ describe("chatStore", () => {
         expect(userMessage?.workCycleId).toBe(session.activeWorkCycleId);
     });
 
+    it("sends plain full paths to the agent for path-based composer parts", async () => {
+        await useChatStore.getState().initialize();
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Review " },
+            {
+                id: "mention-1",
+                type: "mention",
+                noteId: "notes/spec.md",
+                label: "Spec",
+                path: "notes/spec.md",
+            },
+            { id: "text-2", type: "text", text: " and " },
+            {
+                id: "folder-1",
+                type: "folder_mention",
+                label: "docs",
+                folderPath: "docs",
+            },
+            { id: "text-3", type: "text", text: " with " },
+            {
+                id: "selection-1",
+                type: "selection_mention",
+                noteId: "notes/spec.md",
+                label: "Lines 3-4",
+                path: "notes/spec.md",
+                selectedText: "selected",
+                startLine: 3,
+                endLine: 4,
+            },
+            { id: "text-4", type: "text", text: " plus " },
+            {
+                id: "file-1",
+                type: "file_attachment",
+                filePath: "/vault/docs/guide.md",
+                mimeType: "text/markdown",
+                label: "guide.md",
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const sendCall = invokeMock.mock.calls.find(
+            ([command]) => command === "ai_send_message",
+        );
+
+        expect(sendCall).toBeTruthy();
+        expect(sendCall?.[1]).toMatchObject({
+            content:
+                "Review /vault/notes/spec.md and /vault/docs with /vault/notes/spec.md:3-4 plus /vault/docs/guide.md",
+        });
+    });
+
     it("keeps the previous visible work cycle while its permission buffer is unresolved", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command) => {

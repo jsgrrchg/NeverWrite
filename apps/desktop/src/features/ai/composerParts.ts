@@ -1,5 +1,29 @@
 import type { AIComposerPart } from "./types";
 
+interface SerializeComposerPartsForAIOptions {
+    vaultPath?: string | null;
+}
+
+function normalizePathForAI(
+    path: string,
+    options: SerializeComposerPartsForAIOptions = {},
+) {
+    const trimmed = path.trim().replace(/^@+/, "");
+    if (!trimmed) return trimmed;
+
+    const normalized = trimmed.replace(/\\/g, "/");
+    const isAbsolute =
+        normalized.startsWith("/") ||
+        /^[A-Za-z]:\//.test(normalized) ||
+        normalized.startsWith("//");
+    if (isAbsolute) return normalized;
+
+    const vaultPath = options.vaultPath?.trim().replace(/\\/g, "/");
+    if (!vaultPath) return normalized;
+
+    return `${vaultPath.replace(/\/+$/, "")}/${normalized.replace(/^\/+/, "")}`;
+}
+
 export function createEmptyComposerParts(): AIComposerPart[] {
     return [
         {
@@ -26,18 +50,25 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
         .join("");
 }
 
-export function serializeComposerPartsForAI(parts: AIComposerPart[]): string {
+export function serializeComposerPartsForAI(
+    parts: AIComposerPart[],
+    options: SerializeComposerPartsForAIOptions = {},
+): string {
     return parts
         .map((part) => {
             if (part.type === "text") return part.text;
             if (part.type === "fetch_mention") return "@fetch";
             if (part.type === "plan_mention") return "/plan";
-            if (part.type === "folder_mention") return `@${part.folderPath}`;
-            if (part.type === "mention") return `@${part.path}`;
+            if (part.type === "folder_mention")
+                return normalizePathForAI(part.folderPath, options);
+            if (part.type === "mention")
+                return normalizePathForAI(part.path, options);
             if (part.type === "selection_mention")
-                return `@${part.path}:${part.startLine}-${part.endLine}`;
-            if (part.type === "screenshot") return `@${part.filePath}`;
-            if (part.type === "file_attachment") return `@${part.filePath}`;
+                return `${normalizePathForAI(part.path, options)}:${part.startLine}-${part.endLine}`;
+            if (part.type === "screenshot")
+                return normalizePathForAI(part.filePath, options);
+            if (part.type === "file_attachment")
+                return normalizePathForAI(part.filePath, options);
             return "";
         })
         .join("");

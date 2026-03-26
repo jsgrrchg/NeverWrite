@@ -965,7 +965,9 @@ function buildQueuedMessage(
 ): QueuedChatMessage | null {
     const composerPartsSnapshot = cloneComposerParts(composerParts);
     const content = serializeComposerParts(composerParts).trim();
-    const prompt = serializeComposerPartsForAI(composerPartsSnapshot).trim();
+    const prompt = serializeComposerPartsForAI(composerPartsSnapshot, {
+        vaultPath: useVaultStore.getState().vaultPath,
+    }).trim();
     if (!content || !prompt) {
         return null;
     }
