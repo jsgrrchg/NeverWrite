@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../../../app/store/editorStore";
-import { useVaultStore } from "../../../app/store/vaultStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { formatDiffStat } from "../diff/reviewDiff";
 import { getReviewTabTitle } from "../sessionPresentation";
 import { useChatStore } from "../store/chatStore";
@@ -108,9 +108,7 @@ export function EditedFilesBufferPanel({
             : null,
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
-    const entries = useVaultStore((state) => state.entries);
-    const notes = useVaultStore((state) => state.notes);
-    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const lineWrapping = useSettingsStore((state) => state.lineWrapping);
     const [autoDismissedBannerKey, setAutoDismissedBannerKey] = useState<
         string | null
     >(null);
@@ -126,7 +124,7 @@ export function EditedFilesBufferPanel({
                     )
                     .map((file) => file.path),
             ),
-        [entries, notes, vaultPath, visibleEntries],
+        [visibleEntries],
     );
     const items = useMemo(
         () => deriveReviewItems(visibleEntries, openablePathSet),
@@ -395,6 +393,7 @@ export function EditedFilesBufferPanel({
                         items={items}
                         variant="compact"
                         diffZoom={editDiffZoom}
+                        lineWrapping={lineWrapping}
                         onKeepItem={(identityKey) =>
                             keepEditedFile(activeSessionId, identityKey)
                         }
