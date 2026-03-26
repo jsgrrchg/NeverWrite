@@ -64,6 +64,7 @@ import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 
 const appWindow = getCurrentWindow();
 
@@ -528,7 +529,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     return;
                 }
 
-                closeTab(tabId);
+                closeTab(tabId, { reason: "detach" });
                 return;
             }
 
@@ -548,7 +549,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
-            closeTab(tabId);
+            closeTab(tabId, { reason: "detach" });
         },
         [closeTab, vaultPath, windowMode],
     );
@@ -744,17 +745,27 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
     const handleCloseTab = useCallback(
         async (tabId: string) => {
-            if (
-                windowMode === "note" &&
-                useEditorStore.getState().tabs.length === 1
-            ) {
+            const { tabs: currentTabs, activeTabId } =
+                useEditorStore.getState();
+
+            if (windowMode === "note" && currentTabs.length === 1) {
                 await appWindow.close().catch((error) => {
                     console.error("No se pudo cerrar la ventana:", error);
                 });
                 return;
             }
 
-            closeTab(tabId);
+            if (windowMode === "main" && tabId === activeTabId) {
+                const activeTab = currentTabs.find((tab) => tab.id === tabId);
+                if (activeTab && isNoteTab(activeTab)) {
+                    window.dispatchEvent(
+                        new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
+                    );
+                    return;
+                }
+            }
+
+            closeTab(tabId, { reason: "user" });
         },
         [closeTab, windowMode],
     );
@@ -867,43 +878,39 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     );
 
     const closeOtherTabs = useCallback((tabId: string) => {
-        useEditorStore.setState((state) => {
-            const kept = state.tabs.filter((tab) => tab.id === tabId);
-            return {
-                tabs: kept,
-                activeTabId: kept[0]?.id ?? null,
-            };
-        });
+        const tabIds = useEditorStore
+            .getState()
+            .tabs.filter((tab) => tab.id !== tabId)
+            .map((tab) => tab.id);
+
+        for (const id of tabIds) {
+            useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
+        }
     }, []);
 
     const closeTabsToTheRight = useCallback((tabId: string) => {
-        useEditorStore.setState((state) => {
-            const index = state.tabs.findIndex((tab) => tab.id === tabId);
-            if (index === -1) return state;
-            const kept = state.tabs.slice(0, index + 1);
-            return {
-                tabs: kept,
-                activeTabId:
-                    kept.find((tab) => tab.id === state.activeTabId)?.id ??
-                    kept[index]?.id ??
-                    null,
-            };
-        });
+        const state = useEditorStore.getState();
+        const index = state.tabs.findIndex((tab) => tab.id === tabId);
+        if (index === -1) return;
+
+        const tabIds = state.tabs
+            .slice(index + 1)
+            .map((tab) => tab.id)
+            .reverse();
+        for (const id of tabIds) {
+            useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
+        }
     }, []);
 
     const closeTabsToTheLeft = useCallback((tabId: string) => {
-        useEditorStore.setState((state) => {
-            const index = state.tabs.findIndex((tab) => tab.id === tabId);
-            if (index === -1) return state;
-            const kept = state.tabs.slice(index);
-            return {
-                tabs: kept,
-                activeTabId:
-                    kept.find((tab) => tab.id === state.activeTabId)?.id ??
-                    kept[0]?.id ??
-                    null,
-            };
-        });
+        const state = useEditorStore.getState();
+        const index = state.tabs.findIndex((tab) => tab.id === tabId);
+        if (index === -1) return;
+
+        const tabIds = state.tabs.slice(0, index).map((tab) => tab.id);
+        for (const id of tabIds) {
+            useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
+        }
     }, []);
 
     const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");

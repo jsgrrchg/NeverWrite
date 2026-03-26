@@ -6,6 +6,7 @@ import { useVaultStore } from "./vaultStore";
 
 const SESSION_KEY = "vaultai.session.tabs";
 const SESSION_KEY_PREFIX = "vaultai.session.tabs:";
+const MAX_RECENTLY_CLOSED_TABS = 20;
 
 interface PersistedSession {
     tabs?: TabInput[];
@@ -268,6 +269,18 @@ export type PdfViewMode = "single" | "continuous";
 export type FileViewerMode = "text" | "image";
 
 export type Tab = NoteTab | PdfTab | FileTab | ReviewTab | MapTab | GraphTab;
+
+export type TabCloseReason =
+    | "user"
+    | "bulk-user"
+    | "delete"
+    | "detach"
+    | "cleanup";
+
+export interface RecentlyClosedTab {
+    tab: Tab;
+    index: number;
+}
 
 export function isNoteTab(tab: Tab): tab is NoteTab;
 export function isNoteTab(tab: TabInput): tab is NoteTabInput;
@@ -559,6 +572,23 @@ function buildTabFromHistory(
     };
 }
 
+function shouldRememberClosedTab(reason: TabCloseReason) {
+    return reason === "user" || reason === "bulk-user";
+}
+
+function pushRecentlyClosedTab(
+    entries: RecentlyClosedTab[],
+    tab: Tab,
+    index: number,
+) {
+    const next = entries.filter((entry) => entry.tab.id !== tab.id);
+    next.push({
+        tab,
+        index: Math.max(0, index),
+    });
+    return next.slice(-MAX_RECENTLY_CLOSED_TABS);
+}
+
 function createNoteTab(
     noteId: string,
     title: string,
@@ -816,6 +846,7 @@ interface NoteReloadMetadata {
 interface EditorStore {
     tabs: Tab[];
     activeTabId: string | null;
+    recentlyClosedTabs: RecentlyClosedTab[];
     activationHistory: string[];
     tabNavigationHistory: string[];
     tabNavigationIndex: number;
@@ -848,7 +879,8 @@ interface EditorStore {
     goBack: () => void;
     goForward: () => void;
     navigateToHistoryIndex: (index: number) => void;
-    closeTab: (tabId: string) => void;
+    closeTab: (tabId: string, options?: { reason?: TabCloseReason }) => void;
+    reopenLastClosedTab: () => void;
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
@@ -898,6 +930,7 @@ interface EditorStore {
 export const useEditorStore = create<EditorStore>((set, get) => ({
     tabs: [],
     activeTabId: null,
+    recentlyClosedTabs: [],
     activationHistory: [],
     tabNavigationHistory: [],
     tabNavigationIndex: -1,
@@ -1294,11 +1327,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }
     },
 
-    closeTab: (tabId) => {
+    closeTab: (tabId, options) => {
         set((state) => {
             const idx = state.tabs.findIndex((t) => t.id === tabId);
+            if (idx === -1) return state;
+
+            const closedTab = state.tabs[idx];
             const tabs = state.tabs.filter((t) => t.id !== tabId);
             let activeTabId = state.activeTabId;
+            const reason = options?.reason ?? "user";
+            const recentlyClosedTabs = shouldRememberClosedTab(reason)
+                ? pushRecentlyClosedTab(
+                      state.recentlyClosedTabs,
+                      closedTab,
+                      idx,
+                  )
+                : state.recentlyClosedTabs;
             const activationHistory = state.activationHistory.filter(
                 (id) => id !== tabId,
             );
@@ -1329,6 +1373,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                     return {
                         tabs,
                         activeTabId,
+                        recentlyClosedTabs,
                         activationHistory,
                         tabNavigationHistory: navigation.history,
                         tabNavigationIndex: navigation.index,
@@ -1341,9 +1386,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             return {
                 tabs,
                 activeTabId,
+                recentlyClosedTabs,
                 activationHistory,
                 tabNavigationHistory,
                 tabNavigationIndex,
+            };
+        });
+    },
+
+    reopenLastClosedTab: () => {
+        set((state) => {
+            const closed =
+                state.recentlyClosedTabs[state.recentlyClosedTabs.length - 1];
+            if (!closed) return state;
+
+            const tabs = state.tabs.filter(
+                (existing) => existing.id !== closed.tab.id,
+            );
+            const insertIndex = Math.max(
+                0,
+                Math.min(closed.index, tabs.length),
+            );
+            tabs.splice(insertIndex, 0, closed.tab);
+
+            return {
+                tabs,
+                recentlyClosedTabs: state.recentlyClosedTabs.slice(0, -1),
+                ...activateTab(state, closed.tab.id),
             };
         });
     },
@@ -1501,6 +1570,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set({
             tabs: hydratedTabs,
             activeTabId: nextActiveTabId,
+            recentlyClosedTabs: [],
             activationHistory: nextActiveTabId ? [nextActiveTabId] : [],
             tabNavigationHistory: nextActiveTabId ? [nextActiveTabId] : [],
             tabNavigationIndex: nextActiveTabId ? 0 : -1,

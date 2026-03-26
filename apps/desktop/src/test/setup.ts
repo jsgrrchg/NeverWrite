@@ -497,6 +497,7 @@ beforeEach(async () => {
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
+        recentlyClosedTabs: [],
         activationHistory: [],
         tabNavigationHistory: [],
         tabNavigationIndex: -1,

@@ -3252,7 +3252,7 @@ export function FileTree() {
             const { tabs: currentTabs } = useEditorStore.getState();
             currentTabs.forEach((tab) => {
                 if (isNoteTab(tab) && noteIds.has(tab.noteId)) {
-                    closeTab(tab.id);
+                    closeTab(tab.id, { reason: "delete" });
                 }
             });
 
@@ -3295,7 +3295,7 @@ export function FileTree() {
                     (tab.noteId === relativePath ||
                         tab.noteId.startsWith(prefix))
                 ) {
-                    closeTab(tab.id);
+                    closeTab(tab.id, { reason: "delete" });
                     return;
                 }
 
@@ -3306,7 +3306,7 @@ export function FileTree() {
                         tab.path === sourceAbsolutePath ||
                         tab.path.startsWith(`${sourceAbsolutePath}/`))
                 ) {
-                    closeTab(tab.id);
+                    closeTab(tab.id, { reason: "delete" });
                     return;
                 }
 
@@ -3317,7 +3317,7 @@ export function FileTree() {
                         tab.path === sourceAbsolutePath ||
                         tab.path.startsWith(`${sourceAbsolutePath}/`))
                 ) {
-                    closeTab(tab.id);
+                    closeTab(tab.id, { reason: "delete" });
                 }
             });
 

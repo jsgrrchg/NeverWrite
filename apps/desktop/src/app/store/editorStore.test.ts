@@ -95,6 +95,7 @@ beforeEach(() => {
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
+        recentlyClosedTabs: [],
         activationHistory: [],
         tabNavigationHistory: [],
         tabNavigationIndex: -1,
@@ -850,6 +851,12 @@ describe("editorStore tab management", () => {
         useEditorStore.getState().closeTab("tab-c");
 
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
+        expect(useEditorStore.getState().recentlyClosedTabs).toMatchObject([
+            {
+                index: 2,
+                tab: { id: "tab-c" },
+            },
+        ]);
     });
 
     it("tracks switching history when deciding which tab to restore", () => {
@@ -883,6 +890,123 @@ describe("editorStore tab management", () => {
         useEditorStore.getState().closeTab("tab-b");
 
         expect(useEditorStore.getState().activeTabId).toBe("tab-c");
+    });
+
+    it("reopens the most recently closed tab at its previous index", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+                makeFileTab({
+                    id: "tab-b",
+                    relativePath: "assets/banner.png",
+                    title: "banner.png",
+                    path: "/vault/assets/banner.png",
+                    content: "",
+                    mimeType: "image/png",
+                    viewer: "image",
+                }),
+                makeTab({
+                    id: "tab-c",
+                    noteId: "notes/c",
+                    title: "C",
+                    content: "c",
+                }),
+            ],
+            activeTabId: "tab-b",
+            activationHistory: ["tab-a", "tab-b"],
+            tabNavigationHistory: ["tab-a", "tab-b"],
+            tabNavigationIndex: 1,
+        });
+
+        useEditorStore.getState().closeTab("tab-b");
+        useEditorStore.getState().reopenLastClosedTab();
+
+        const { tabs, activeTabId, recentlyClosedTabs } =
+            useEditorStore.getState();
+        expect(tabs.map((tab) => tab.id)).toEqual(["tab-a", "tab-b", "tab-c"]);
+        expect(activeTabId).toBe("tab-b");
+        expect(recentlyClosedTabs).toEqual([]);
+        expect(isFileTab(tabs[1]) ? tabs[1].viewer : null).toBe("image");
+    });
+
+    it("reopens closed tabs in LIFO order", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+                makeTab({
+                    id: "tab-b",
+                    noteId: "notes/b",
+                    title: "B",
+                    content: "b",
+                }),
+                makeTab({
+                    id: "tab-c",
+                    noteId: "notes/c",
+                    title: "C",
+                    content: "c",
+                }),
+            ],
+            activeTabId: "tab-c",
+            activationHistory: ["tab-a", "tab-b", "tab-c"],
+            tabNavigationHistory: ["tab-a", "tab-b", "tab-c"],
+            tabNavigationIndex: 2,
+        });
+
+        useEditorStore.getState().closeTab("tab-c");
+        useEditorStore.getState().closeTab("tab-b");
+
+        useEditorStore.getState().reopenLastClosedTab();
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
+
+        useEditorStore.getState().reopenLastClosedTab();
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+            "tab-c",
+        ]);
+    });
+
+    it("does not remember tabs closed for delete or cleanup flows", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+                makePdfTab({
+                    id: "tab-b",
+                    entryId: "docs/spec",
+                    title: "spec.pdf",
+                    path: "/vault/docs/spec.pdf",
+                }),
+            ],
+            activeTabId: "tab-b",
+            activationHistory: ["tab-a", "tab-b"],
+            tabNavigationHistory: ["tab-a", "tab-b"],
+            tabNavigationIndex: 1,
+        });
+
+        useEditorStore.getState().closeTab("tab-b", { reason: "delete" });
+        useEditorStore.getState().closeTab("tab-a", { reason: "cleanup" });
+
+        expect(useEditorStore.getState().recentlyClosedTabs).toEqual([]);
+        useEditorStore.getState().reopenLastClosedTab();
+        expect(useEditorStore.getState().tabs).toEqual([]);
     });
 
     it("does not rewrite state when switching to the already active tab", () => {

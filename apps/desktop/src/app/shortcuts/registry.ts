@@ -15,6 +15,7 @@ export type ShortcutActionId =
     | "new_note"
     | "new_tab"
     | "close_tab"
+    | "reopen_closed_tab"
     | "next_tab"
     | "previous_tab"
     | "toggle_left_sidebar"
@@ -103,6 +104,15 @@ const shortcutDefinitions = [
         bindings: {
             macos: [{ key: "w", modifiers: ["meta"] }],
             windows: [{ key: "w", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "reopen_closed_tab",
+        label: "Reopen Closed Tab",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "t", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "t", modifiers: ["ctrl", "shift"] }],
         },
     },
     {
@@ -232,6 +242,7 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "open_vault",
     "new_note",
     "new_tab",
+    "reopen_closed_tab",
     "bold_selection",
     "highlight_selection",
     "toggle_live_preview",

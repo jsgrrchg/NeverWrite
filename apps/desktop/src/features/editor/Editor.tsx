@@ -560,7 +560,7 @@ export function Editor({
         if (!tab) return;
 
         if (!isNoteTab(tab)) {
-            closeTab(activeTabId);
+            closeTab(activeTabId, { reason: "user" });
             return;
         }
 
@@ -576,7 +576,7 @@ export function Editor({
                 }
             }
             tabStatesRef.current.delete(tab.noteId);
-            closeTab(activeTabId);
+            closeTab(activeTabId, { reason: "user" });
         })();
     }, [saveNow]);
 
