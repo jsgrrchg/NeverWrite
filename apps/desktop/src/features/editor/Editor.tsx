@@ -61,7 +61,6 @@ import {
     removeConfiguredTab,
 } from "./markdownLists";
 import {
-    FRONTMATTER_RE,
     getNoteLocation,
     deriveDisplayedTitle,
     upsertFrontmatterTitle,
@@ -103,6 +102,8 @@ import {
 } from "./editorExtensions";
 import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
+import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
+import { subscribeEditorReviewSync } from "./editorReviewSync";
 import {
     activateWikilinkSuggesterAnnotation,
     markdownAutopairExtension,
@@ -116,7 +117,6 @@ import {
     FloatingSelectionToolbar,
     type FloatingSelectionToolbarState,
 } from "./FloatingSelectionToolbar";
-import { FrontmatterPanel } from "./FrontmatterPanel";
 import {
     getBlockquoteTransform,
     getCodeBlockLanguageAtSelection,
@@ -201,6 +201,9 @@ export function Editor({
     const contentUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
         null,
     );
+    const externalReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
     const restoreScrollFrameRef = useRef<number | null>(null);
     const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
     const mergeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -274,14 +277,11 @@ export function Editor({
     // Extract and strip frontmatter from content. Stores the raw block in the ref.
     // Returns the body (content after the frontmatter block).
     const stripFrontmatter = useCallback(
-        (tabId: string, content: string): string => {
-            const match = content.match(FRONTMATTER_RE);
-            if (!match) {
-                frontmatterByTabId.current.delete(tabId);
-                return content;
-            }
-            frontmatterByTabId.current.set(tabId, match[0]);
-            return content.slice(match[0].length);
+        (_tabId: string, content: string): string => {
+            // Source mode: frontmatter stays in the editor as raw text.
+            // This keeps the editor document aligned with TrackedFile.currentText
+            // so that the inline diff / merge view works correctly.
+            return content;
         },
         [],
     );
@@ -412,8 +412,9 @@ export function Editor({
     }, []);
 
     const serializePersistedContent = useCallback(
-        (tabId: string, body: string) =>
-            `${frontmatterByTabId.current.get(tabId) ?? ""}${body}`,
+        (_tabId: string, body: string) =>
+            // Source mode: frontmatter is already in the editor body.
+            body,
         [],
     );
 
@@ -2017,6 +2018,10 @@ export function Editor({
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             if (contentUpdateTimerRef.current)
                 clearTimeout(contentUpdateTimerRef.current);
+            if (externalReloadTimerRef.current) {
+                clearTimeout(externalReloadTimerRef.current);
+                externalReloadTimerRef.current = null;
+            }
             if (mergeSyncTimerRef.current) {
                 clearTimeout(mergeSyncTimerRef.current);
                 mergeSyncTimerRef.current = null;
@@ -2304,6 +2309,12 @@ export function Editor({
     }, [runMergeViewSync, scheduleMergeViewSync]);
 
     useEffect(() => {
+        return subscribeEditorReviewSync(() =>
+            resolveEditorTargetForOpenTab(activeTabRef.current),
+        );
+    }, [activeTabId, activeNoteId]);
+
+    useEffect(() => {
         scheduleMergeViewSync();
     }, [activeTabId, activeNoteId, livePreviewEnabled, scheduleMergeViewSync]);
 
@@ -2471,33 +2482,90 @@ export function Editor({
             }
             if (incoming === currentDoc) return;
 
-            const selection = view.state.selection.main;
-            const nextDocLength = incoming.length;
-            // Capture scroll position as a CM6 effect so it is
-            // restored within the same transaction — no visible jump.
-            const scrollEffect = view.scrollSnapshot();
-            const effects = isForced
-                ? [scrollEffect, mergeViewCompartment.reconfigure([])]
-                : [scrollEffect];
+            const applyReload = () => {
+                externalReloadTimerRef.current = null;
 
-            isInternalRef.current = true;
-            view.dispatch({
-                changes: {
-                    from: 0,
-                    to: currentDoc.length,
-                    insert: incoming,
-                },
-                selection: {
-                    anchor: Math.min(selection.anchor, nextDocLength),
-                    head: Math.min(selection.head, nextDocLength),
-                },
-                annotations: [changeAuthorAnnotation.of("agent")],
-                effects,
-            });
-            isInternalRef.current = false;
+                const liveView = viewRef.current;
+                const liveTab = useEditorStore
+                    .getState()
+                    .tabs.find((candidate) => candidate.id === tabId);
+                if (
+                    !liveView ||
+                    !liveTab ||
+                    !isNoteTab(liveTab) ||
+                    liveTab.noteId !== tab.noteId
+                ) {
+                    return;
+                }
+
+                const liveDoc = liveView.state.doc.toString();
+                if (liveDoc === incoming) {
+                    scheduleMergeViewSync();
+                    return;
+                }
+
+                const selection = liveView.state.selection.main;
+                const nextDocLength = incoming.length;
+                const effects = [mergeViewCompartment.reconfigure([])];
+                try {
+                    if (liveView.state.doc.length > 0) {
+                        effects.unshift(liveView.scrollSnapshot());
+                    }
+
+                    isInternalRef.current = true;
+                    liveView.dispatch({
+                        changes: {
+                            from: 0,
+                            to: liveDoc.length,
+                            insert: incoming,
+                        },
+                        selection: {
+                            anchor: Math.min(selection.anchor, nextDocLength),
+                            head: Math.min(selection.head, nextDocLength),
+                        },
+                        annotations: [changeAuthorAnnotation.of("agent")],
+                        effects,
+                    });
+                    isInternalRef.current = false;
+                } catch (error) {
+                    isInternalRef.current = false;
+                    if (error instanceof RangeError) {
+                        const fallbackSelection = Math.min(
+                            selection.anchor,
+                            nextDocLength,
+                        );
+                        const nextState = createEditorState(
+                            incoming,
+                            liveTab.noteId,
+                        ).update({
+                            selection: {
+                                anchor: fallbackSelection,
+                                head: Math.min(selection.head, nextDocLength),
+                            },
+                        }).state;
+                        replaceEditorView(nextState);
+                    } else {
+                        throw error;
+                    }
+                }
+
+                scheduleMergeViewSync();
+            };
+
+            if (externalReloadTimerRef.current) {
+                clearTimeout(externalReloadTimerRef.current);
+            }
+            externalReloadTimerRef.current = setTimeout(applyReload, 0);
         });
         return unsub;
-    }, [markTabSaved, serializePersistedContent, stripFrontmatter]);
+    }, [
+        createEditorState,
+        markTabSaved,
+        replaceEditorView,
+        scheduleMergeViewSync,
+        serializePersistedContent,
+        stripFrontmatter,
+    ]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
@@ -3050,12 +3118,10 @@ export function Editor({
                                 });
                             }}
                         />
-                        <div style={{ marginTop: 20 }}>
-                            <FrontmatterPanel
-                                raw={activeFrontmatter ?? ""}
-                                onChange={applyFrontmatterChange}
-                            />
-                        </div>
+                        {/* FrontmatterPanel disabled in source mode —
+                            frontmatter is shown as raw text in the editor
+                            to keep document aligned with TrackedFile for
+                            inline diff / merge view. */}
                     </div>,
                     scrollHeaderRef.current,
                 )}
