@@ -654,17 +654,16 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
     /* ── Chunk line decorations (gutter + background) ──────── */
     ".cm-review-chunk-line": {
         position: "relative",
-        backgroundColor:
-            "color-mix(in srgb, var(--diff-update) 6%, transparent)",
-        boxShadow: "inset 3px 0 0 0 var(--diff-update)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 6%, transparent)",
+        boxShadow: "inset 3px 0 0 0 var(--diff-add)",
     },
     ".cm-review-chunk-line-start": {
         borderTop:
-            "1px solid color-mix(in srgb, var(--diff-update) 18%, transparent)",
+            "1px solid color-mix(in srgb, var(--diff-add) 18%, transparent)",
     },
     ".cm-review-chunk-line-end": {
         borderBottom:
-            "1px solid color-mix(in srgb, var(--diff-update) 18%, transparent)",
+            "1px solid color-mix(in srgb, var(--diff-add) 18%, transparent)",
     },
 
     /* ── Badge ─────────────────────────────────────────────── */

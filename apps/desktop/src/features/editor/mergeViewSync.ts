@@ -9,8 +9,15 @@ import {
     type ReviewHunkId,
     type ReviewProjection,
     type ReviewProjectionInlineState,
+    type ReviewProjectionMetrics,
 } from "../ai/diff/reviewProjection";
 import type { AIChatSession } from "../ai/types";
+import {
+    isFileTab,
+    isNoteTab,
+    useEditorStore,
+} from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { deriveFileChangePresentation } from "./changePresentationModel";
 import {
     buildMergeStructuralSignature,
@@ -18,18 +25,32 @@ import {
 } from "./mergeViewConfig";
 import {
     buildReplaceOriginalDocEffect,
+    createMergeViewRuntimeExtension,
     createMergeViewExtension,
     mergeControlsSignatureFacet,
     mergeEnabledFacet,
     mergeIdentityKeyFacet,
+    mergeInlineStateFacet,
     mergeLevelFacet,
     mergeReviewStateFacet,
     mergeStatusKindFacet,
     mergeSessionIdFacet,
+    mergeTargetIdFacet,
+    mergeTargetKindFacet,
     mergeTrackedVersionFacet,
+    mergeTransitionReasonFacet,
     mergeViewCompartment,
     setLastDispatchedDiffBase,
+    type MergeInlineState,
+    type MergeTargetKind,
+    type MergeTransitionReason,
+    type MergeViewRuntimeConfig,
 } from "./extensions/mergeViewDiff";
+import {
+    resolveEditorTargetForTrackedPath,
+    resolveEditorTargetForOpenTab,
+    type EditorTarget,
+} from "./editorTargetResolver";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 
 const MERGE_RESYNC_RETRY_DELAY_MS = 48;
@@ -41,11 +62,48 @@ type MergeResyncRetryState = {
     timeout: ReturnType<typeof setTimeout> | null;
 };
 
+type MergeResyncRetryReason = "stale-doc" | "dispatch-failed";
+
+type MergeResyncRetryIdentity = {
+    reason: MergeResyncRetryReason;
+    mode: "source" | "preview";
+    candidatePaths: string[];
+    sessionId: string | null;
+    identityKey: string | null;
+    trackedVersion: number | null;
+    editorDocSignature: string;
+    trackedTextSignature: string | null;
+    projectionSignature?: string | null;
+};
+
 const mergeResyncRetryByView = new WeakMap<EditorView, MergeResyncRetryState>();
-const mergeOutOfRangeProjectionWarnKeyByView = new WeakMap<
+const mergeProjectionDiagnosticsWarnKeyByView = new WeakMap<
     EditorView,
     string
 >();
+const mergeDebugLogKeyByView = new WeakMap<EditorView, string>();
+
+function buildProjectionDiagnosticsLogInfo(
+    projection: ReviewProjection | null,
+): {
+    warnKey: string;
+    invalidChunkKeys: string[];
+    invalidHunkKeys: string[];
+} | null {
+    if (!projection) return null;
+    const { diagnostics } = projection;
+    const invalidChunkKeys = Object.entries(diagnostics.chunkInvariantIdsByKey)
+        .filter(([, ids]) => ids.length > 0)
+        .map(([key]) => key);
+    const invalidHunkKeys = Object.entries(diagnostics.hunkInvariantIdsByKey)
+        .filter(([, ids]) => ids.length > 0)
+        .map(([key]) => key);
+    if (invalidChunkKeys.length === 0 && invalidHunkKeys.length === 0) {
+        return null;
+    }
+    const warnKey = [...invalidChunkKeys, ...invalidHunkKeys].sort().join(",");
+    return { warnKey, invalidChunkKeys, invalidHunkKeys };
+}
 
 export function syncMergeViewForPaths(
     view: EditorView | null,
@@ -69,6 +127,7 @@ export function syncMergeViewForPaths(
         sessionId: view.state.facet(mergeSessionIdFacet),
         identityKey: view.state.facet(mergeIdentityKeyFacet),
         trackedVersion: view.state.facet(mergeTrackedVersionFacet),
+        inlineState: view.state.facet(mergeInlineStateFacet),
         reviewState: view.state.facet(mergeReviewStateFacet),
         level: view.state.facet(mergeLevelFacet),
         statusKind: view.state.facet(mergeStatusKindFacet),
@@ -80,16 +139,21 @@ export function syncMergeViewForPaths(
 
     if (candidatePaths.length === 0) {
         clearMergeResyncRetry(view);
+        clearMergeDebugLog(view);
         setMergeTransitioning(view, false);
         reconfigureMergeView(view, currentSignature, {
             shouldShowMerge: false,
             sessionId: null,
             identityKey: null,
             trackedVersion: null,
+            inlineState: "disabled",
             reviewState: "finalized",
             level: "small",
             statusKind: null,
             mode: options.mode,
+            transitionReason: "no_candidate_paths",
+            targetKind: null,
+            targetId: null,
         });
         return;
     }
@@ -97,83 +161,255 @@ export function syncMergeViewForPaths(
     const { match } = resolveTrackedFileMatchForPaths(
         candidatePaths,
         sessionsById,
+        {
+            vaultPath: useVaultStore.getState().vaultPath,
+        },
     );
     if (!match || options.mode === "preview") {
         clearMergeResyncRetry(view);
+        clearMergeDebugLog(view);
         setMergeTransitioning(view, false);
         reconfigureMergeView(view, currentSignature, {
             shouldShowMerge: false,
             sessionId: null,
             identityKey: null,
             trackedVersion: null,
+            inlineState: "disabled",
             reviewState: "finalized",
             level: "small",
             statusKind: null,
             mode: options.mode,
+            transitionReason:
+                options.mode === "preview" ? "preview_mode" : "no_tracked_file",
+            targetKind: null,
+            targetId: null,
         });
         return;
     }
 
     const { trackedFile, sessionId } = match;
+    const presentation = deriveFileChangePresentation(trackedFile);
+    const target = resolveEditorTargetForTrackedPath(trackedFile.path);
+    const targetKind = getMergeTargetKind(target);
+    const targetId = getMergeTargetId(target);
+    if (!isResolvedTargetActiveForCandidates(target, candidatePaths)) {
+        clearMergeResyncRetry(view);
+        setMergeTransitioning(view, true);
+        logMergeSyncState(
+            view,
+            "debug",
+            "[merge-inline] waiting for editor target",
+            {
+                candidatePaths,
+                sessionId,
+                identityKey: trackedFile.identityKey,
+                trackedVersion: trackedFile.version,
+                trackedPath: trackedFile.path,
+                inlineState: "waiting_for_editor_target",
+                transitionReason: target
+                    ? "target_not_active"
+                    : "target_not_resolved",
+                target,
+                editorDocSignature: buildNormalizedTextSignature(
+                    view.state.doc.toString(),
+                ),
+                trackedTextSignature: buildNormalizedTextSignature(
+                    trackedFile.currentText,
+                ),
+            },
+        );
+        reconfigureMergeView(view, currentSignature, {
+            shouldShowMerge: false,
+            sessionId,
+            identityKey: trackedFile.identityKey,
+            trackedVersion: trackedFile.version,
+            inlineState: "waiting_for_editor_target",
+            reviewState: presentation.reviewState,
+            level: presentation.level,
+            statusKind: trackedFile.status.kind,
+            mode: options.mode,
+            transitionReason: target
+                ? "target_not_active"
+                : "target_not_resolved",
+            targetKind,
+            targetId,
+        });
+        return;
+    }
+
+    if (isTransientlyEmptyEditorDoc(view, trackedFile.currentText)) {
+        setMergeTransitioning(view, true);
+        scheduleMergeResyncRetry(view, retryContext, {
+            reason: "stale-doc",
+            mode: options.mode,
+            candidatePaths,
+            sessionId,
+            identityKey: trackedFile.identityKey,
+            trackedVersion: trackedFile.version,
+            editorDocSignature: buildNormalizedTextSignature(
+                view.state.doc.toString(),
+            ),
+            trackedTextSignature: buildNormalizedTextSignature(
+                trackedFile.currentText,
+            ),
+        });
+        logMergeSyncState(
+            view,
+            "debug",
+            "[merge-inline] waiting for editor reload to settle",
+            {
+                candidatePaths,
+                sessionId,
+                identityKey: trackedFile.identityKey,
+                trackedVersion: trackedFile.version,
+                trackedPath: trackedFile.path,
+                inlineState: "waiting_for_editor_doc",
+                transitionReason: "editor_doc_stale",
+                target,
+                editorDocSignature: buildNormalizedTextSignature(
+                    view.state.doc.toString(),
+                ),
+                trackedTextSignature: buildNormalizedTextSignature(
+                    trackedFile.currentText,
+                ),
+                editorLength: view.state.doc.length,
+                trackedLength: countNormalizedLength(trackedFile.currentText),
+            },
+        );
+        return;
+    }
+
     const isDocSynced = isEditorDocSyncedWithTrackedCurrentText(
         view,
         trackedFile.currentText,
     );
     if (!isDocSynced) {
         setMergeTransitioning(view, true);
-        scheduleMergeResyncRetry(view, retryContext);
-        console.debug("[merge-inline] defer merge sync while editor is stale", {
+        const editorDocSignature = buildNormalizedTextSignature(
+            view.state.doc.toString(),
+        );
+        const trackedTextSignature = buildNormalizedTextSignature(
+            trackedFile.currentText,
+        );
+        scheduleMergeResyncRetry(view, retryContext, {
+            reason: "stale-doc",
+            mode: options.mode,
+            candidatePaths,
             sessionId,
             identityKey: trackedFile.identityKey,
             trackedVersion: trackedFile.version,
-            editorLength: view.state.doc.length,
-            trackedLength: countNormalizedLength(trackedFile.currentText),
+            editorDocSignature,
+            trackedTextSignature,
         });
+        logMergeSyncState(
+            view,
+            "debug",
+            "[merge-inline] defer merge sync while editor is stale",
+            {
+                candidatePaths,
+                sessionId,
+                identityKey: trackedFile.identityKey,
+                trackedVersion: trackedFile.version,
+                trackedPath: trackedFile.path,
+                inlineState: "waiting_for_editor_doc",
+                transitionReason: "editor_doc_stale",
+                target,
+                editorDocSignature,
+                trackedTextSignature,
+                editorLength: view.state.doc.length,
+                trackedLength: countNormalizedLength(trackedFile.currentText),
+            },
+        );
+        reconfigureMergeView(view, currentSignature, {
+            shouldShowMerge: false,
+            sessionId,
+            identityKey: trackedFile.identityKey,
+            trackedVersion: trackedFile.version,
+            inlineState: "waiting_for_editor_doc",
+            reviewState: presentation.reviewState,
+            level: presentation.level,
+            statusKind: trackedFile.status.kind,
+            mode: options.mode,
+            transitionReason: "editor_doc_stale",
+            targetKind,
+            targetId,
+        });
+        return;
     } else {
         clearMergeResyncRetry(view);
+        clearMergeDebugLog(view);
         setMergeTransitioning(view, false);
     }
 
-    const presentation = deriveFileChangePresentation(trackedFile);
     const reviewProjection = buildReviewProjectionSafely(trackedFile);
-    const outOfRangeInfo =
-        reviewProjection &&
-        getOutOfRangeProjectionInfo(reviewProjection, view.state.doc.lines);
-    if (outOfRangeInfo && isDocSynced) {
-        setMergeTransitioning(view, true);
-        scheduleMergeResyncRetry(view, retryContext);
+    const projectionState = reviewProjection
+        ? summarizeReviewProjectionInlineState(reviewProjection)
+        : EMPTY_INLINE_STATE;
+    const projectionDiagnostics =
+        buildProjectionDiagnosticsLogInfo(reviewProjection);
 
-        const warnKey = JSON.stringify([
-            trackedFile.identityKey,
-            trackedFile.version,
-            outOfRangeInfo.maxStartLine,
-            outOfRangeInfo.maxEndLine,
-            outOfRangeInfo.docLines,
-        ]);
-        if (mergeOutOfRangeProjectionWarnKeyByView.get(view) !== warnKey) {
-            mergeOutOfRangeProjectionWarnKeyByView.set(view, warnKey);
-            console.warn(
-                "[merge-inline] review projection out of range; scheduling resync",
-                {
-                    sessionId,
-                    identityKey: trackedFile.identityKey,
-                    trackedVersion: trackedFile.version,
-                    docLines: outOfRangeInfo.docLines,
-                    outOfRangeChunkCount: outOfRangeInfo.outOfRangeChunkCount,
-                    maxStartLine: outOfRangeInfo.maxStartLine,
-                    maxEndLine: outOfRangeInfo.maxEndLine,
-                },
-            );
-        }
-        return;
+    if (
+        projectionDiagnostics &&
+        mergeProjectionDiagnosticsWarnKeyByView.get(view) !==
+            projectionDiagnostics.warnKey
+    ) {
+        mergeProjectionDiagnosticsWarnKeyByView.set(
+            view,
+            projectionDiagnostics.warnKey,
+        );
+        logMergeSyncState(
+            view,
+            "warn",
+            projectionState.projectionState === "projection_partial"
+                ? "[merge-inline] review projection partially degraded"
+                : "[merge-inline] review projection invalid",
+            {
+                candidatePaths,
+                sessionId,
+                identityKey: trackedFile.identityKey,
+                trackedVersion: trackedFile.version,
+                trackedPath: trackedFile.path,
+                inlineState: projectionState.projectionState,
+                transitionReason:
+                    projectionState.projectionState === "projection_invalid"
+                        ? "projection_invalid"
+                        : "none",
+                target,
+                totalLines: projectionState.totalLines,
+                chunkCount: projectionState.chunkCount,
+                visibleChunkCount: projectionState.visibleChunkCount,
+                inlineSafeChunkCount: projectionState.inlineSafeChunkCount,
+                degradedChunkCount: projectionState.degradedChunkCount,
+                invalidChunkCount: projectionState.invalidChunkCount,
+                invalidChunkKeys: projectionDiagnostics.invalidChunkKeys,
+                invalidHunkKeys: projectionDiagnostics.invalidHunkKeys,
+                editorDocSignature: buildNormalizedTextSignature(
+                    view.state.doc.toString(),
+                ),
+                trackedTextSignature: buildNormalizedTextSignature(
+                    trackedFile.currentText,
+                ),
+            },
+        );
+    } else if (!projectionDiagnostics) {
+        clearMergeDebugLog(view);
+        mergeProjectionDiagnosticsWarnKeyByView.delete(view);
     }
-    mergeOutOfRangeProjectionWarnKeyByView.delete(view);
+    clearMergeDebugLog(view);
+    mergeProjectionDiagnosticsWarnKeyByView.delete(view);
     const nextControlsSignature = buildMergeControlsSignature(reviewProjection);
+    const resolvedInlineState: MergeInlineState =
+        projectionState.projectionState === "projection_ready"
+            ? "projection_ready"
+            : projectionState.projectionState === "projection_partial"
+              ? "projection_partial"
+              : "disabled";
     const nextSignature = buildMergeStructuralSignature({
         shouldShowMerge: true,
         sessionId,
         identityKey: trackedFile.identityKey,
         trackedVersion: trackedFile.version,
+        inlineState: resolvedInlineState,
         reviewState: presentation.reviewState,
         level: presentation.level,
         statusKind: trackedFile.status.kind,
@@ -210,10 +446,16 @@ export function syncMergeViewForPaths(
                         trackedVersion: trackedFile.version,
                         sessionId,
                         identityKey: trackedFile.identityKey,
+                        targetKind,
+                        targetId,
                         controlsSignature: nextControlsSignature,
                         reviewState: presentation.reviewState,
                         level: presentation.level,
                         statusKind: trackedFile.status.kind,
+                        inlineState: resolvedInlineState,
+                        projectionMetrics:
+                            reviewProjection?.diagnostics.metrics ??
+                            EMPTY_PROJECTION_METRICS,
                         highlightChanges: flags.highlightChanges,
                         allowInlineDiffs: flags.allowInlineDiffs,
                         enableControls: flags.enableControls,
@@ -252,6 +494,22 @@ export function syncMergeViewForPaths(
                                 scheduleMergeResyncRetry(
                                     mergeView,
                                     retryContext,
+                                    {
+                                        reason: "dispatch-failed",
+                                        mode: options.mode,
+                                        candidatePaths,
+                                        sessionId: liveSessionId,
+                                        identityKey: liveIdentityKey,
+                                        trackedVersion: liveTrackedVersion,
+                                        editorDocSignature:
+                                            buildNormalizedTextSignature(
+                                                mergeView.state.doc.toString(),
+                                            ),
+                                        trackedTextSignature:
+                                            buildNormalizedTextSignature(
+                                                trackedFile.currentText,
+                                            ),
+                                    },
                                 );
                                 console.debug(
                                     "[merge-inline] stale inline decision ignored; refreshing",
@@ -287,7 +545,21 @@ export function syncMergeViewForPaths(
             // Position mismatch during state transition (e.g. editor doc not
             // yet updated after reject). Schedule a short retry.
             setMergeTransitioning(view, true);
-            scheduleMergeResyncRetry(view, retryContext);
+            scheduleMergeResyncRetry(view, retryContext, {
+                reason: "dispatch-failed",
+                mode: options.mode,
+                candidatePaths,
+                sessionId,
+                identityKey: trackedFile.identityKey,
+                trackedVersion: trackedFile.version,
+                editorDocSignature: buildNormalizedTextSignature(
+                    view.state.doc.toString(),
+                ),
+                trackedTextSignature: buildNormalizedTextSignature(
+                    trackedFile.currentText,
+                ),
+                projectionSignature: nextControlsSignature,
+            });
         }
         return;
     }
@@ -328,8 +600,9 @@ function scheduleMergeResyncRetry(
         options: { mode: "source" | "preview" };
         sessionsById: Record<string, AIChatSession>;
     },
+    identity: MergeResyncRetryIdentity,
 ) {
-    const key = JSON.stringify([context.options.mode, context.candidatePaths]);
+    const key = buildMergeResyncRetryKey(identity);
     const current = mergeResyncRetryByView.get(view);
     if (current?.key !== key && current?.timeout) {
         clearTimeout(current.timeout);
@@ -417,16 +690,49 @@ function buildMergeDiffChanges(
 function reconfigureMergeView(
     view: EditorView,
     currentSignature: string,
-    nextConfig: Parameters<typeof buildMergeStructuralSignature>[0],
+    nextConfig: Parameters<typeof buildMergeStructuralSignature>[0] & {
+        transitionReason: MergeTransitionReason;
+        targetKind: MergeTargetKind | null;
+        targetId: string | null;
+    },
 ) {
     const nextSignature = buildMergeStructuralSignature(nextConfig);
-    if (currentSignature === nextSignature) {
+    const nextRuntimeConfig: MergeViewRuntimeConfig = {
+        enabled: nextConfig.shouldShowMerge,
+        trackedVersion: nextConfig.trackedVersion,
+        sessionId: nextConfig.sessionId,
+        identityKey: nextConfig.identityKey,
+        targetKind: nextConfig.targetKind,
+        targetId: nextConfig.targetId,
+        controlsSignature: null,
+        reviewState: nextConfig.reviewState,
+        level: nextConfig.level,
+        statusKind: nextConfig.statusKind,
+        inlineState: nextConfig.inlineState,
+        transitionReason: nextConfig.transitionReason,
+        projectionMetrics: EMPTY_PROJECTION_METRICS,
+    };
+
+    if (
+        currentSignature === nextSignature &&
+        isEquivalentMergeRuntimeConfig(view, nextRuntimeConfig)
+    ) {
         return;
     }
 
-    view.dispatch({
-        effects: mergeViewCompartment.reconfigure([]),
-    });
+    try {
+        view.dispatch({
+            effects: mergeViewCompartment.reconfigure(
+                createMergeViewRuntimeExtension(nextRuntimeConfig),
+            ),
+        });
+    } catch (error) {
+        if (error instanceof RangeError) {
+            setMergeTransitioning(view, true);
+            return;
+        }
+        throw error;
+    }
 }
 
 function countNormalizedLength(text: string) {
@@ -437,6 +743,20 @@ function countNormalizedLength(text: string) {
         }
     }
     return len;
+}
+
+function buildNormalizedTextSignature(text: string) {
+    const normalized = normalizeEditorText(text);
+    let hash = 2166136261;
+    for (let i = 0; i < normalized.length; i++) {
+        hash ^= normalized.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${normalized.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function buildMergeResyncRetryKey(identity: MergeResyncRetryIdentity) {
+    return JSON.stringify(identity);
 }
 
 function buildMergeControlsSignature(
@@ -464,11 +784,30 @@ function buildMergeControlsSignature(
     });
 }
 
+const EMPTY_PROJECTION_METRICS: ReviewProjectionMetrics = {
+    totalLines: 0,
+    hunkCount: 0,
+    chunkCount: 0,
+    visibleChunkCount: 0,
+    invalidChunkCount: 0,
+    inlineSafeChunkCount: 0,
+    degradedChunkCount: 0,
+    status: "projection_invalid",
+};
+
 const EMPTY_INLINE_STATE: ReviewProjectionInlineState = {
+    projectionState: "projection_invalid",
     reviewProjectionReady: false,
     hasAmbiguousChunks: false,
     hasConflicts: false,
     hasMultiHunkChunks: false,
+    totalLines: 0,
+    hunkCount: 0,
+    chunkCount: 0,
+    visibleChunkCount: 0,
+    invalidChunkCount: 0,
+    inlineSafeChunkCount: 0,
+    degradedChunkCount: 0,
 };
 
 function buildReviewProjectionSafely(
@@ -499,23 +838,211 @@ export function isMergeDecisionStale(
     );
 }
 
-function getOutOfRangeProjectionInfo(
-    reviewProjection: ReviewProjection,
-    docLines: number,
+function isResolvedTargetActiveForCandidates(
+    target: EditorTarget | null,
+    candidatePaths: string[],
 ) {
-    const outOfRangeChunks = reviewProjection.chunks.filter(
-        (chunk) => chunk.startLine >= docLines || chunk.endLine > docLines,
+    if (!target?.openTab) {
+        return false;
+    }
+
+    const targetPaths =
+        target.kind === "note"
+            ? [
+                  target.absolutePath,
+                  target.noteId,
+                  target.noteId.endsWith(".md")
+                      ? target.noteId
+                      : `${target.noteId}.md`,
+              ]
+            : [target.absolutePath, target.relativePath];
+
+    return candidatePaths.some((candidatePath) =>
+        targetPaths.some((targetPath) =>
+            matchesCandidatePath(targetPath, candidatePath),
+        ),
     );
-    if (outOfRangeChunks.length === 0) {
+}
+
+function matchesCandidatePath(targetPath: string, candidatePath: string) {
+    const normalizedTarget = normalizeTrackedPath(targetPath);
+    const normalizedCandidate = normalizeTrackedPath(candidatePath);
+
+    if (normalizedTarget === normalizedCandidate) {
+        return true;
+    }
+
+    if (!normalizedCandidate.startsWith("/")) {
+        return normalizedTarget.endsWith(`/${normalizedCandidate}`);
+    }
+
+    return false;
+}
+
+function normalizeTrackedPath(path: string) {
+    return path.replace(/\\/g, "/");
+}
+
+function isTransientlyEmptyEditorDoc(
+    view: EditorView,
+    trackedCurrentText: string,
+) {
+    return (
+        view.state.doc.length === 0 &&
+        countNormalizedLength(trackedCurrentText) > 0
+    );
+}
+
+function getMergeTargetKind(
+    target: EditorTarget | null,
+): MergeTargetKind | null {
+    return target?.kind ?? null;
+}
+
+function getMergeTargetId(target: EditorTarget | null) {
+    if (!target) {
         return null;
     }
 
+    return target.kind === "note" ? target.noteId : target.relativePath;
+}
+
+function getActiveEditorTargetDebugInfo() {
+    const { tabs, activeTabId } = useEditorStore.getState();
+    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+    const editorTab =
+        activeTab && (isNoteTab(activeTab) || isFileTab(activeTab))
+            ? activeTab
+            : null;
+    const activeTarget = resolveEditorTargetForOpenTab(editorTab);
+
     return {
-        docLines,
-        outOfRangeChunkCount: outOfRangeChunks.length,
-        maxStartLine: Math.max(
-            ...outOfRangeChunks.map((chunk) => chunk.startLine),
-        ),
-        maxEndLine: Math.max(...outOfRangeChunks.map((chunk) => chunk.endLine)),
+        activeTabId: activeTab?.id ?? null,
+        activeTabKind: editorTab
+            ? isNoteTab(editorTab)
+                ? "note"
+                : "file"
+            : (activeTab?.kind ?? null),
+        activeTargetKind: getMergeTargetKind(activeTarget),
+        activeTargetId: getMergeTargetId(activeTarget),
     };
+}
+
+function isEquivalentMergeRuntimeConfig(
+    view: EditorView,
+    config: MergeViewRuntimeConfig,
+) {
+    const state = view.state;
+    return (
+        state.facet(mergeEnabledFacet) === config.enabled &&
+        state.facet(mergeSessionIdFacet) === config.sessionId &&
+        state.facet(mergeIdentityKeyFacet) === config.identityKey &&
+        state.facet(mergeTrackedVersionFacet) === config.trackedVersion &&
+        state.facet(mergeTargetKindFacet) === config.targetKind &&
+        state.facet(mergeTargetIdFacet) === config.targetId &&
+        state.facet(mergeControlsSignatureFacet) === config.controlsSignature &&
+        state.facet(mergeReviewStateFacet) === config.reviewState &&
+        state.facet(mergeLevelFacet) === config.level &&
+        state.facet(mergeStatusKindFacet) === config.statusKind &&
+        state.facet(mergeInlineStateFacet) === config.inlineState &&
+        state.facet(mergeTransitionReasonFacet) === config.transitionReason
+    );
+}
+
+function clearMergeDebugLog(view: EditorView) {
+    mergeDebugLogKeyByView.delete(view);
+}
+
+function logMergeSyncState(
+    view: EditorView,
+    level: "debug" | "warn",
+    message: string,
+    payload: {
+        candidatePaths: string[];
+        sessionId: string | null;
+        identityKey: string | null;
+        trackedVersion: number | null;
+        trackedPath: string;
+        inlineState: MergeInlineState;
+        transitionReason: MergeTransitionReason;
+        target: EditorTarget | null;
+        editorDocSignature: string;
+        trackedTextSignature: string | null;
+        editorLength?: number;
+        trackedLength?: number;
+        docLines?: number;
+        outOfRangeChunkCount?: number;
+        maxStartLine?: number;
+        maxEndLine?: number;
+        totalLines?: number;
+        chunkCount?: number;
+        visibleChunkCount?: number;
+        inlineSafeChunkCount?: number;
+        degradedChunkCount?: number;
+        invalidChunkCount?: number;
+        invalidChunkKeys?: string[];
+        invalidHunkKeys?: string[];
+    },
+) {
+    const activeTarget = getActiveEditorTargetDebugInfo();
+    const targetKind = getMergeTargetKind(payload.target);
+    const targetId = getMergeTargetId(payload.target);
+    const targetAbsolutePath = payload.target?.absolutePath ?? null;
+    const key = JSON.stringify({
+        level,
+        message,
+        sessionId: payload.sessionId,
+        identityKey: payload.identityKey,
+        trackedVersion: payload.trackedVersion,
+        trackedPath: payload.trackedPath,
+        inlineState: payload.inlineState,
+        transitionReason: payload.transitionReason,
+        candidatePaths: payload.candidatePaths,
+        targetKind,
+        targetId,
+        targetAbsolutePath,
+        activeTabId: activeTarget.activeTabId,
+        activeTabKind: activeTarget.activeTabKind,
+        activeTargetKind: activeTarget.activeTargetKind,
+        activeTargetId: activeTarget.activeTargetId,
+        editorDocSignature: payload.editorDocSignature,
+        trackedTextSignature: payload.trackedTextSignature,
+        editorLength: payload.editorLength,
+        trackedLength: payload.trackedLength,
+        docLines: payload.docLines,
+        outOfRangeChunkCount: payload.outOfRangeChunkCount,
+        maxStartLine: payload.maxStartLine,
+        maxEndLine: payload.maxEndLine,
+    });
+    if (mergeDebugLogKeyByView.get(view) === key) {
+        return;
+    }
+
+    mergeDebugLogKeyByView.set(view, key);
+
+    const logger = level === "warn" ? console.warn : console.debug;
+    logger(message, {
+        sessionId: payload.sessionId,
+        identityKey: payload.identityKey,
+        trackedVersion: payload.trackedVersion,
+        trackedPath: payload.trackedPath,
+        inlineState: payload.inlineState,
+        transitionReason: payload.transitionReason,
+        candidatePaths: payload.candidatePaths,
+        targetKind,
+        targetId,
+        targetAbsolutePath,
+        activeTabId: activeTarget.activeTabId,
+        activeTabKind: activeTarget.activeTabKind,
+        activeTargetKind: activeTarget.activeTargetKind,
+        activeTargetId: activeTarget.activeTargetId,
+        editorDocSignature: payload.editorDocSignature,
+        trackedTextSignature: payload.trackedTextSignature,
+        editorLength: payload.editorLength,
+        trackedLength: payload.trackedLength,
+        docLines: payload.docLines,
+        outOfRangeChunkCount: payload.outOfRangeChunkCount,
+        maxStartLine: payload.maxStartLine,
+        maxEndLine: payload.maxEndLine,
+    });
 }

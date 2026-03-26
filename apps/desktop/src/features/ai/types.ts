@@ -245,6 +245,7 @@ export interface AIChatMessage {
 export interface AIChatSession {
     sessionId: string;
     historySessionId: string;
+    vaultPath?: string | null;
     status: AIChatSessionStatus;
     activeWorkCycleId?: string | null;
     visibleWorkCycleId?: string | null;

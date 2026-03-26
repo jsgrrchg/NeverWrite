@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
@@ -793,7 +794,7 @@ export interface EditorSelectionContext {
     endLine: number;
 }
 
-interface ReloadedNoteDetail {
+export interface ReloadedDetail {
     content: string;
     title: string;
     origin?: "user" | "agent" | "external" | "system" | "unknown";
@@ -802,10 +803,8 @@ interface ReloadedNoteDetail {
     contentHash?: string | null;
 }
 
-interface ReloadedFileDetail {
-    content: string;
-    title: string;
-}
+type ReloadedNoteDetail = ReloadedDetail;
+type ReloadedFileDetail = Pick<ReloadedDetail, "content" | "title">;
 
 interface NoteReloadMetadata {
     origin: "user" | "agent" | "external" | "system" | "unknown";
@@ -877,6 +876,10 @@ interface EditorStore {
     forceReloadFileContent: (
         relativePath: string,
         detail: ReloadedFileDetail,
+    ) => void;
+    forceReloadEditorTarget: (
+        target: EditorTarget,
+        detail: ReloadedDetail,
     ) => void;
     clearForceReload: (noteId: string) => void;
     clearForceFileReload: (relativePath: string) => void;
@@ -1647,6 +1650,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
+    forceReloadEditorTarget: (target, detail) => {
+        if (!target.openTab) {
+            return;
+        }
+
+        if (target.kind === "note") {
+            get().forceReloadNoteContent(target.noteId, detail);
+            return;
+        }
+
+        get().forceReloadFileContent(target.relativePath, {
+            content: detail.content,
+            title: detail.title,
+        });
+    },
+
     clearForceReload: (noteId) => {
         set((state) => {
             if (!state._pendingForceReloads.has(noteId)) return state;
@@ -1778,7 +1797,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                     history: t.history?.map((entry) =>
                         entry.kind === "note" && entry.noteId === oldNoteId
                             ? { ...entry, noteId: newNoteId }
-                            : entry
+                            : entry,
                     ),
                 };
             }),

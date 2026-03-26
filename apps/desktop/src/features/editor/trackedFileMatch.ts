@@ -19,6 +19,9 @@ export interface TrackedFileMatchResult {
 export function resolveTrackedFileMatchForPaths(
     candidatePaths: string[],
     sessionsById: Record<string, AIChatSession>,
+    options: {
+        vaultPath: string | null;
+    },
 ): TrackedFileMatchResult {
     const normalizedCandidates = candidatePaths
         .map((path) => normalizePath(path))
@@ -31,6 +34,9 @@ export function resolveTrackedFileMatchForPaths(
     let foundTrackedFile = false;
 
     for (const [sessionId, session] of Object.entries(sessionsById)) {
+        if ((session.vaultPath ?? null) !== options.vaultPath) {
+            continue;
+        }
         if (!session.actionLog) continue;
 
         const files = getTrackedFilesForSession(session.actionLog);

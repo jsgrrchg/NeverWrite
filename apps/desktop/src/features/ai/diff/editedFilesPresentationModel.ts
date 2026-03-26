@@ -55,7 +55,7 @@ export function getFileTone(file: TrackedFile) {
         case "delete":
             return { accent: "var(--diff-remove)", badge: null };
         default:
-            return { accent: "var(--diff-update)", badge: null };
+            return { accent: "var(--diff-add)", badge: null };
     }
 }
 

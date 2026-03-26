@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    isFileTab,
     isNoteTab,
     markSessionReady,
     readPersistedSession,
@@ -991,5 +992,87 @@ describe("editorStore tab management", () => {
             revision: 3,
             opId: "external-3",
         });
+    });
+
+    it("force reloads a note target through the shared target API", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "Old title",
+                    content: "Old body",
+                }),
+            ],
+            activeTabId: "tab-a",
+        });
+
+        const noteTab = useEditorStore.getState().tabs[0];
+        useEditorStore.getState().forceReloadEditorTarget(
+            {
+                kind: "note",
+                absolutePath: "/vault/notes/a.md",
+                noteId: "notes/a",
+                openTab: isNoteTab(noteTab) ? noteTab : null,
+            },
+            {
+                title: "New title",
+                content: "New body",
+                origin: "agent",
+                revision: 4,
+                opId: "agent-4",
+            },
+        );
+
+        const state = useEditorStore.getState();
+        expect(state.tabs[0]).toMatchObject({
+            title: "New title",
+            content: "New body",
+        });
+        expect(state._pendingForceReloads.has("notes/a")).toBe(true);
+        expect(state._noteReloadMetadata["notes/a"]).toMatchObject({
+            origin: "agent",
+            revision: 4,
+            opId: "agent-4",
+        });
+    });
+
+    it("force reloads a file target through the shared target API", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeFileTab({
+                    id: "tab-a",
+                    relativePath: "src/watcher.rs",
+                    title: "watcher.rs",
+                    path: "/vault/src/watcher.rs",
+                    content: "old line",
+                    mimeType: "text/rust",
+                    viewer: "text",
+                }),
+            ],
+            activeTabId: "tab-a",
+        });
+
+        const fileTab = useEditorStore.getState().tabs[0];
+        useEditorStore.getState().forceReloadEditorTarget(
+            {
+                kind: "file",
+                absolutePath: "/vault/src/watcher.rs",
+                relativePath: "src/watcher.rs",
+                openTab: isFileTab(fileTab) ? fileTab : null,
+            },
+            {
+                title: "watcher.rs",
+                content: "new line",
+                origin: "agent",
+            },
+        );
+
+        const state = useEditorStore.getState();
+        expect(state.tabs[0]).toMatchObject({
+            title: "watcher.rs",
+            content: "new line",
+        });
+        expect(state._pendingForceFileReloads.has("src/watcher.rs")).toBe(true);
     });
 });

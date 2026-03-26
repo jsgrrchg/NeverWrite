@@ -372,11 +372,16 @@ describe("reviewProjection", () => {
 
         expect(
             summarizeReviewProjectionInlineState(buildReviewProjection(file)),
-        ).toEqual({
+        ).toMatchObject({
+            projectionState: "projection_ready",
             reviewProjectionReady: true,
             hasAmbiguousChunks: false,
             hasConflicts: true,
             hasMultiHunkChunks: true,
+            totalLines: 1,
+            hunkCount: 2,
+            chunkCount: 1,
+            visibleChunkCount: 1,
         });
     });
 
@@ -413,6 +418,20 @@ describe("reviewProjection", () => {
         const projection = buildReviewProjection(file);
 
         expect(reviewHunkIdsStableWithinVersion(file, projection)).toBe(true);
+        expect(validateReviewProjection(file, projection)).toEqual([]);
+    });
+
+    it("keeps EOF deletions anchored within the current document", () => {
+        const file = createTrackedFile("one\ntwo\nthree\nfour", "one\ntwo\n");
+
+        const projection = buildReviewProjection(file);
+
+        expect(projection.hunks).toHaveLength(1);
+        expect(projection.chunks).toHaveLength(1);
+        expect(projection.hunks[0]!.visualStartLine).toBeLessThanOrEqual(3);
+        expect(projection.hunks[0]!.visualEndLine).toBeLessThanOrEqual(3);
+        expect(projection.chunks[0]!.startLine).toBeLessThanOrEqual(3);
+        expect(projection.chunks[0]!.endLine).toBeLessThanOrEqual(3);
         expect(validateReviewProjection(file, projection)).toEqual([]);
     });
 });
