@@ -65,10 +65,36 @@ export interface ReviewChunk {
     canResolveInlineExactly: boolean;
 }
 
+export type ReviewProjectionStatus =
+    | "projection_ready"
+    | "projection_partial"
+    | "projection_invalid";
+
+export type ReviewChunkRenderState = "inline-safe" | "degraded" | "invalid";
+
+export interface ReviewProjectionMetrics {
+    totalLines: number;
+    hunkCount: number;
+    chunkCount: number;
+    visibleChunkCount: number;
+    invalidChunkCount: number;
+    inlineSafeChunkCount: number;
+    degradedChunkCount: number;
+    status: ReviewProjectionStatus;
+}
+
+export interface ReviewProjectionDiagnostics {
+    metrics: ReviewProjectionMetrics;
+    hunkInvariantIdsByKey: Record<string, ReviewProjectionInvariantId[]>;
+    chunkInvariantIdsByKey: Record<string, ReviewProjectionInvariantId[]>;
+    chunkRenderStateByKey: Record<string, ReviewChunkRenderState>;
+}
+
 export interface ReviewProjection {
     trackedVersion: number;
     hunks: ReviewHunk[];
     chunks: ReviewChunk[];
+    diagnostics: ReviewProjectionDiagnostics;
 }
 
 interface ReviewHunkSeed {
@@ -107,23 +133,51 @@ interface ReviewChunkSeed {
 }
 
 export interface ReviewProjectionInlineState {
+    projectionState: ReviewProjectionStatus;
     reviewProjectionReady: boolean;
     hasAmbiguousChunks: boolean;
     hasConflicts: boolean;
     hasMultiHunkChunks: boolean;
+    totalLines: number;
+    hunkCount: number;
+    chunkCount: number;
+    visibleChunkCount: number;
+    invalidChunkCount: number;
+    inlineSafeChunkCount: number;
+    degradedChunkCount: number;
 }
 
 export type ReviewProjectionInvariantId =
     | "review_projection_matches_spans"
-    | "review_hunk_ids_stable_within_version";
+    | "review_hunk_ids_stable_within_version"
+    | "review_projection_within_current_doc"
+    | "review_hunk_member_spans_non_empty"
+    | "review_hunk_line_range_ordered"
+    | "review_hunk_line_range_within_current_doc"
+    | "review_chunk_hunk_ids_non_empty"
+    | "review_chunk_line_range_ordered"
+    | "review_chunk_line_range_within_current_doc"
+    | "review_chunk_covers_hunk_lines";
 
 export interface ReviewProjectionInvariantViolation {
     id: ReviewProjectionInvariantId;
     message: string;
+    subject: "projection" | "hunk" | "chunk";
+    entityKey?: string;
 }
 
 const projectionCache = new WeakMap<TrackedFile, ReviewProjection>();
 const DEFAULT_CHUNK_LINE_GAP = 1;
+const EMPTY_PROJECTION_METRICS: ReviewProjectionMetrics = {
+    totalLines: 0,
+    hunkCount: 0,
+    chunkCount: 0,
+    visibleChunkCount: 0,
+    invalidChunkCount: 0,
+    inlineSafeChunkCount: 0,
+    degradedChunkCount: 0,
+    status: "projection_invalid",
+};
 
 function compareCanonicalSpans(
     left: Pick<
@@ -280,6 +334,26 @@ function deriveSpanLineRange(
     };
 }
 
+function deriveCurrentDocLineCount(text: string): number {
+    return buildLineStartOffsets(text).length;
+}
+
+function isLineRangeOrdered(startLine: number, endLine: number): boolean {
+    return startLine >= 0 && endLine >= startLine;
+}
+
+function isLineRangeWithinCurrentDoc(
+    startLine: number,
+    endLine: number,
+    docLines: number,
+): boolean {
+    return (
+        isLineRangeOrdered(startLine, endLine) &&
+        startLine < docLines &&
+        endLine <= docLines
+    );
+}
+
 function rangesStrictlyOverlap(
     leftStart: number,
     leftEnd: number,
@@ -385,14 +459,11 @@ function buildReviewHunkSeeds(file: TrackedFile): ReviewHunkSeed[] {
             file.currentText,
             span,
         );
-        const visualStartLine = Math.min(
-            lineRange.oldStartLine,
-            lineRange.newStartLine,
-        );
-        const visualEndLine = Math.max(
-            lineRange.oldEndLine,
-            lineRange.newEndLine,
-        );
+        // Inline controls render against the current editor document, not the
+        // historical base snapshot. For deletions near EOF, using the max of
+        // old/new line ranges can place controls beyond the current doc.
+        const visualStartLine = lineRange.newStartLine;
+        const visualEndLine = lineRange.newEndLine;
 
         return {
             id: buildReviewHunkId(file.version, [memberSpan]),
@@ -557,6 +628,152 @@ export function isReviewChunkMultiHunk(chunk: ReviewChunk): boolean {
     return chunk.hunkIds.length > 1;
 }
 
+function getReviewHunkInvariantIds(
+    hunk: ReviewHunk,
+    docLines: number,
+): ReviewProjectionInvariantId[] {
+    const invariantIds: ReviewProjectionInvariantId[] = [];
+
+    if (hunk.memberSpans.length === 0) {
+        invariantIds.push("review_hunk_member_spans_non_empty");
+    }
+
+    if (!isLineRangeOrdered(hunk.visualStartLine, hunk.visualEndLine)) {
+        invariantIds.push("review_hunk_line_range_ordered");
+    } else if (
+        !isLineRangeWithinCurrentDoc(
+            hunk.visualStartLine,
+            hunk.visualEndLine,
+            docLines,
+        )
+    ) {
+        invariantIds.push("review_hunk_line_range_within_current_doc");
+    }
+
+    return invariantIds;
+}
+
+function getReviewChunkInvariantIds(
+    chunk: ReviewChunk,
+    hunkByIdKey: Map<string, ReviewHunk>,
+    hunkInvariantIdsByKey: Record<string, ReviewProjectionInvariantId[]>,
+    docLines: number,
+): ReviewProjectionInvariantId[] {
+    const invariantIds: ReviewProjectionInvariantId[] = [];
+
+    if (chunk.hunkIds.length === 0) {
+        invariantIds.push("review_chunk_hunk_ids_non_empty");
+    }
+
+    if (!isLineRangeOrdered(chunk.startLine, chunk.endLine)) {
+        invariantIds.push("review_chunk_line_range_ordered");
+    } else if (
+        !isLineRangeWithinCurrentDoc(chunk.startLine, chunk.endLine, docLines)
+    ) {
+        invariantIds.push("review_chunk_line_range_within_current_doc");
+    }
+
+    const coversAllMemberHunks = chunk.hunkIds.every((hunkId) => {
+        const hunk = hunkByIdKey.get(hunkId.key);
+        if (!hunk) {
+            return false;
+        }
+        if ((hunkInvariantIdsByKey[hunk.id.key] ?? []).length > 0) {
+            return false;
+        }
+        return (
+            hunk.visualStartLine >= chunk.startLine &&
+            hunk.visualEndLine <= chunk.endLine
+        );
+    });
+    if (!coversAllMemberHunks) {
+        invariantIds.push("review_chunk_covers_hunk_lines");
+    }
+
+    return invariantIds;
+}
+
+function buildReviewProjectionDiagnostics(
+    file: TrackedFile,
+    hunks: ReviewHunk[],
+    chunks: ReviewChunk[],
+): ReviewProjectionDiagnostics {
+    const totalLines = deriveCurrentDocLineCount(file.currentText);
+    const hunkByIdKey = new Map(hunks.map((hunk) => [hunk.id.key, hunk]));
+    const hunkInvariantIdsByKey: Record<string, ReviewProjectionInvariantId[]> =
+        {};
+    const chunkInvariantIdsByKey: Record<
+        string,
+        ReviewProjectionInvariantId[]
+    > = {};
+    const chunkRenderStateByKey: Record<string, ReviewChunkRenderState> = {};
+
+    hunks.forEach((hunk) => {
+        hunkInvariantIdsByKey[hunk.id.key] = getReviewHunkInvariantIds(
+            hunk,
+            totalLines,
+        );
+    });
+
+    let invalidChunkCount = 0;
+    let inlineSafeChunkCount = 0;
+    let degradedChunkCount = 0;
+
+    chunks.forEach((chunk) => {
+        const chunkInvariantIds = getReviewChunkInvariantIds(
+            chunk,
+            hunkByIdKey,
+            hunkInvariantIdsByKey,
+            totalLines,
+        );
+        chunkInvariantIdsByKey[chunk.id.key] = chunkInvariantIds;
+
+        const hasInvalidMembers = chunk.hunkIds.some(
+            (hunkId) => (hunkInvariantIdsByKey[hunkId.key] ?? []).length > 0,
+        );
+        const renderState: ReviewChunkRenderState =
+            chunkInvariantIds.length > 0 || hasInvalidMembers
+                ? "invalid"
+                : chunk.controlMode === "panel-only" ||
+                    !chunk.canResolveInlineExactly
+                  ? "degraded"
+                  : "inline-safe";
+        chunkRenderStateByKey[chunk.id.key] = renderState;
+
+        if (renderState === "invalid") {
+            invalidChunkCount += 1;
+        } else if (renderState === "degraded") {
+            degradedChunkCount += 1;
+        } else {
+            inlineSafeChunkCount += 1;
+        }
+    });
+
+    const visibleChunkCount = chunks.length - invalidChunkCount;
+    const status: ReviewProjectionStatus =
+        chunks.length === 0 || invalidChunkCount === 0
+            ? "projection_ready"
+            : visibleChunkCount > 0
+              ? "projection_partial"
+              : "projection_invalid";
+
+    return {
+        metrics: {
+            totalLines,
+            hunkCount: hunks.length,
+            chunkCount: chunks.length,
+            visibleChunkCount,
+            invalidChunkCount,
+            inlineSafeChunkCount,
+            degradedChunkCount,
+            status,
+        },
+        hunkInvariantIdsByKey,
+        chunkInvariantIdsByKey,
+        chunkRenderStateByKey,
+    };
+}
+
 export function buildReviewProjection(file: TrackedFile): ReviewProjection {
     const syncedFile = syncDerivedLinePatch(file);
     const cached = projectionCache.get(syncedFile);
@@ -641,6 +858,11 @@ export function buildReviewProjection(file: TrackedFile): ReviewProjection {
         trackedVersion: syncedFile.version,
         hunks,
         chunks,
+        diagnostics: buildReviewProjectionDiagnostics(
+            syncedFile,
+            hunks,
+            chunks,
+        ),
     };
 
     projectionCache.set(syncedFile, projection);
@@ -664,18 +886,23 @@ export function summarizeReviewProjectionInlineState(
 ): ReviewProjectionInlineState {
     if (!projection) {
         return {
+            projectionState: "projection_invalid",
             reviewProjectionReady: false,
             hasAmbiguousChunks: false,
             hasConflicts: false,
             hasMultiHunkChunks: false,
+            ...EMPTY_PROJECTION_METRICS,
         };
     }
 
+    const { metrics } = projection.diagnostics;
     return {
-        reviewProjectionReady: true,
+        projectionState: metrics.status,
+        reviewProjectionReady: metrics.visibleChunkCount > 0,
         hasAmbiguousChunks: projection.chunks.some((chunk) => chunk.ambiguous),
         hasConflicts: projection.chunks.some((chunk) => chunk.hasConflict),
         hasMultiHunkChunks: projection.chunks.some((chunk) => chunk.multiHunk),
+        ...metrics,
     };
 }
 
@@ -695,6 +922,35 @@ export function getReviewChunkById(
     const chunks: readonly ReviewChunk[] =
         "chunks" in source ? source.chunks : source;
     return chunks.find((chunk) => reviewChunkIdEquals(chunk.id, id));
+}
+
+export function getReviewChunkRenderState(
+    projection: ReviewProjection,
+    chunkId: ReviewChunkId,
+): ReviewChunkRenderState {
+    return (
+        projection.diagnostics.chunkRenderStateByKey[chunkId.key] ?? "invalid"
+    );
+}
+
+export function getRenderableReviewChunks(
+    projection: ReviewProjection,
+): ReviewChunk[] {
+    return projection.chunks.filter(
+        (chunk) =>
+            getReviewChunkRenderState(projection, chunk.id) !== "invalid",
+    );
+}
+
+export function getRenderableReviewHunks(
+    projection: ReviewProjection,
+): ReviewHunk[] {
+    const renderableChunkKeys = new Set(
+        getRenderableReviewChunks(projection).map((chunk) => chunk.id.key),
+    );
+    return projection.hunks.filter((hunk) =>
+        renderableChunkKeys.has(hunk.chunkId.key),
+    );
 }
 
 export function getReviewHunksForChunk(
@@ -803,6 +1059,7 @@ export function validateReviewProjection(
             id: "review_projection_matches_spans",
             message:
                 "ReviewProjection no longer matches the canonical pending spans for this TrackedFile.",
+            subject: "projection",
         });
     }
 
@@ -811,8 +1068,96 @@ export function validateReviewProjection(
             id: "review_hunk_ids_stable_within_version",
             message:
                 "ReviewHunk ids are not stable for the current trackedVersion.",
+            subject: "projection",
         });
     }
 
+    if (!reviewProjectionWithinCurrentDoc(file, projection)) {
+        violations.push({
+            id: "review_projection_within_current_doc",
+            message:
+                "ReviewProjection contains hunks or chunks outside the current document line range.",
+            subject: "projection",
+        });
+    }
+
+    Object.entries(projection.diagnostics.hunkInvariantIdsByKey).forEach(
+        ([hunkKey, invariantIds]) => {
+            invariantIds.forEach((id) => {
+                violations.push({
+                    id,
+                    message: getReviewProjectionInvariantMessage(id, "hunk"),
+                    subject: "hunk",
+                    entityKey: hunkKey,
+                });
+            });
+        },
+    );
+
+    Object.entries(projection.diagnostics.chunkInvariantIdsByKey).forEach(
+        ([chunkKey, invariantIds]) => {
+            invariantIds.forEach((id) => {
+                violations.push({
+                    id,
+                    message: getReviewProjectionInvariantMessage(id, "chunk"),
+                    subject: "chunk",
+                    entityKey: chunkKey,
+                });
+            });
+        },
+    );
+
     return violations;
+}
+
+function reviewProjectionWithinCurrentDoc(
+    file: TrackedFile,
+    projection: ReviewProjection,
+): boolean {
+    const docLines = deriveCurrentDocLineCount(file.currentText);
+
+    const hunksWithinBounds = projection.hunks.every((hunk) =>
+        isLineRangeWithinCurrentDoc(
+            hunk.visualStartLine,
+            hunk.visualEndLine,
+            docLines,
+        ),
+    );
+    if (!hunksWithinBounds) {
+        return false;
+    }
+
+    return projection.chunks.every((chunk) =>
+        isLineRangeWithinCurrentDoc(chunk.startLine, chunk.endLine, docLines),
+    );
+}
+
+function getReviewProjectionInvariantMessage(
+    id: ReviewProjectionInvariantId,
+    subject: "projection" | "hunk" | "chunk",
+): string {
+    switch (id) {
+        case "review_hunk_member_spans_non_empty":
+            return "ReviewHunk must contain at least one member span.";
+        case "review_hunk_line_range_ordered":
+            return "ReviewHunk visual line range must be ordered and non-negative.";
+        case "review_hunk_line_range_within_current_doc":
+            return "ReviewHunk visual line range must stay within the current document.";
+        case "review_chunk_hunk_ids_non_empty":
+            return "ReviewChunk must reference at least one ReviewHunk.";
+        case "review_chunk_line_range_ordered":
+            return "ReviewChunk line range must be ordered and non-negative.";
+        case "review_chunk_line_range_within_current_doc":
+            return "ReviewChunk line range must stay within the current document.";
+        case "review_chunk_covers_hunk_lines":
+            return "ReviewChunk line range must cover every member ReviewHunk line range.";
+        case "review_projection_matches_spans":
+            return "ReviewProjection no longer matches the canonical pending spans for this TrackedFile.";
+        case "review_hunk_ids_stable_within_version":
+            return "ReviewHunk ids are not stable for the current trackedVersion.";
+        case "review_projection_within_current_doc":
+            return `ReviewProjection contains ${subject}s outside the current document line range.`;
+        default:
+            return "ReviewProjection invariant violation.";
+    }
 }

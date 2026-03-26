@@ -10,17 +10,15 @@ export const mergeViewTheme = EditorView.baseTheme({
             transition: "background-color 160ms ease, box-shadow 160ms ease",
         },
 
-    /* ── Inline changed lines (blue gutter + tint) ─────────── */
+    /* ── Inline changed lines (green gutter + tint, same as inserts) */
     "&[data-merge-enabled='true'] .cm-inlineChangedLine": {
-        backgroundColor:
-            "color-mix(in srgb, var(--diff-update) 8%, transparent)",
-        boxShadow: "inset 3px 0 0 0 var(--diff-update)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 8%, transparent)",
+        boxShadow: "inset 3px 0 0 0 var(--diff-add)",
     },
 
     /* ── Inline changed text highlight ─────────────────────── */
     "&[data-merge-enabled='true'] .cm-changedText": {
-        backgroundColor:
-            "color-mix(in srgb, var(--diff-update) 20%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 20%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
     },

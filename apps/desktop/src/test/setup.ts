@@ -439,6 +439,8 @@ let useSettingsStore: typeof import("../app/store/settingsStore").useSettingsSto
 let useThemeStore: typeof import("../app/store/themeStore").useThemeStore;
 let useVaultStore: typeof import("../app/store/vaultStore").useVaultStore;
 let useCommandStore: typeof import("../features/command-palette/store/commandStore").useCommandStore;
+let resetChatStore: typeof import("../features/ai/store/chatStore").resetChatStore;
+let resetChatTabsStore: typeof import("../features/ai/store/chatTabsStore").resetChatTabsStore;
 
 Object.defineProperty(globalThis, "__clipboardMock", {
     value: {
@@ -488,6 +490,9 @@ beforeEach(async () => {
     ({ useVaultStore } = await import("../app/store/vaultStore"));
     ({ useCommandStore } =
         await import("../features/command-palette/store/commandStore"));
+    ({ resetChatStore } = await import("../features/ai/store/chatStore"));
+    ({ resetChatTabsStore } =
+        await import("../features/ai/store/chatTabsStore"));
 
     useEditorStore.setState({
         tabs: [],
@@ -545,6 +550,9 @@ beforeEach(async () => {
         commands: new Map(),
         activeModal: null,
     });
+
+    resetChatStore();
+    resetChatTabsStore();
 });
 
 afterEach(() => {

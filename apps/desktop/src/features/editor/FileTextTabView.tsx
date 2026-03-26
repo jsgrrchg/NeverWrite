@@ -26,6 +26,7 @@ import {
 } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useThemeStore } from "../../app/store/themeStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import {
     baseTheme,
     getEditorFontFamily,
@@ -39,6 +40,8 @@ import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { loadCodeLanguage } from "./codeLanguage";
 import { searchTheme } from "./extensions/searchTheme";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
+import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
+import { subscribeEditorReviewSync } from "./editorReviewSync";
 
 type SavedVaultFileDetail = {
     relative_path: string;
@@ -84,6 +87,7 @@ export function FileTextTabView() {
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const vaultPath = useVaultStore((state) => state.vaultPath);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;
@@ -91,6 +95,9 @@ export function FileTextTabView() {
         ? resolveTrackedFileMatchForPaths(
               [tab.path, tab.relativePath],
               sessionsById,
+              {
+                  vaultPath,
+              },
           ).match
         : null;
 
@@ -566,6 +573,12 @@ export function FileTextTabView() {
         });
         return unsub;
     }, []);
+
+    useEffect(() => {
+        return subscribeEditorReviewSync(() =>
+            resolveEditorTargetForOpenTab(tabRef.current),
+        );
+    }, [tab?.id, tab?.path, tab?.relativePath]);
 
     useEffect(() => {
         const currentTab = tabRef.current;

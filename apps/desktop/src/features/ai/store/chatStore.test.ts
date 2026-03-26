@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useEditorStore } from "../../../app/store/editorStore";
+import {
+    isFileTab,
+    isNoteTab,
+    useEditorStore,
+} from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
 import type {
@@ -24,6 +28,8 @@ import {
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
 import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
+import { resolveEditorTargetForOpenTab } from "../../editor/editorTargetResolver";
+import { subscribeEditorReviewSync } from "../../editor/editorReviewSync";
 
 const invokeMock = vi.mocked(invoke);
 const AI_PREFS_KEY = "vaultai.ai.preferences";
@@ -822,6 +828,169 @@ describe("chatStore", () => {
             oldCycleTracked == null ||
                 Object.keys(oldCycleTracked).length === 0,
         ).toBe(true);
+    });
+
+    it("reloads an open markdown note when agent diffs are consolidated", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "old line",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+        const stopSync = subscribeEditorReviewSync(() =>
+            resolveEditorTargetForOpenTab(
+                (() => {
+                    const activeTab =
+                        useEditorStore
+                            .getState()
+                            .tabs.find(
+                                (tab) =>
+                                    tab.id ===
+                                    useEditorStore.getState().activeTabId,
+                            ) ?? null;
+                    return activeTab && isNoteTab(activeTab) ? activeTab : null;
+                })(),
+            ),
+        );
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-open-note-sync",
+            title: "Edit current note",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/notes/current.md",
+            summary: "Updated current.md",
+            diffs: [
+                {
+                    path: "/vault/notes/current.md",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const editorState = useEditorStore.getState();
+        const tab = editorState.tabs[0];
+        expect(tab).toMatchObject({
+            noteId: "notes/current",
+            content: "new line",
+        });
+        expect(editorState._pendingForceReloads.has("notes/current")).toBe(
+            true,
+        );
+        expect(editorState._noteReloadMetadata["notes/current"]).toMatchObject({
+            origin: "agent",
+            revision: 0,
+            contentHash: null,
+        });
+        stopSync();
+    });
+
+    it("reloads an open text file tab when agent diffs are consolidated", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "file",
+                    relativePath: "src/watcher.rs",
+                    path: "/vault/src/watcher.rs",
+                    title: "watcher.rs",
+                    content: "old line",
+                    mimeType: "text/rust",
+                    viewer: "text",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+        const stopSync = subscribeEditorReviewSync(() =>
+            resolveEditorTargetForOpenTab(
+                (() => {
+                    const activeTab =
+                        useEditorStore
+                            .getState()
+                            .tabs.find(
+                                (tab) =>
+                                    tab.id ===
+                                    useEditorStore.getState().activeTabId,
+                            ) ?? null;
+                    return activeTab && isFileTab(activeTab) ? activeTab : null;
+                })(),
+            ),
+        );
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-open-file-sync",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const editorState = useEditorStore.getState();
+        const tab = editorState.tabs[0];
+        expect(tab).toMatchObject({
+            kind: "file",
+            relativePath: "src/watcher.rs",
+            content: "new line",
+        });
+        expect(editorState._pendingForceFileReloads.has("src/watcher.rs")).toBe(
+            true,
+        );
+        stopSync();
     });
 
     it("clears the auth error banner when setup status becomes ready again", async () => {
@@ -6599,5 +6768,68 @@ describe("chatStore", () => {
         const [inlineTracked] = getVisibleBuffer(inlineSession.sessionId);
 
         expect(panelTracked).toEqual(inlineTracked);
+    });
+
+    it("ignores session updates from another vault for an existing session", () => {
+        useVaultStore.setState({ vaultPath: "/vault-a", notes: [] });
+
+        useChatStore.getState().upsertSession(
+            {
+                sessionId: "shared-session",
+                historySessionId: "shared-session",
+                runtimeId: "codex-acp",
+                modelId: "test-model",
+                modeId: "default",
+                status: "idle",
+                messages: [
+                    {
+                        id: "local-message",
+                        role: "assistant",
+                        kind: "text",
+                        content: "local",
+                        timestamp: 1,
+                    },
+                ],
+                attachments: [],
+                models: [],
+                modes: [],
+                configOptions: [],
+            },
+            true,
+        );
+
+        useChatStore.getState().upsertSession({
+            sessionId: "shared-session",
+            historySessionId: "shared-session",
+            vaultPath: "/vault-b",
+            runtimeId: "codex-acp",
+            modelId: "test-model",
+            modeId: "default",
+            status: "idle",
+            messages: [
+                {
+                    id: "foreign-message",
+                    role: "assistant",
+                    kind: "text",
+                    content: "foreign",
+                    timestamp: 2,
+                },
+            ],
+            attachments: [],
+            models: [],
+            modes: [],
+            configOptions: [],
+        });
+
+        const session =
+            useChatStore.getState().sessionsById["shared-session"] ?? null;
+
+        expect(session?.vaultPath).toBe("/vault-a");
+        expect(session?.messages).toEqual([
+            expect.objectContaining({
+                id: "local-message",
+                content: "local",
+            }),
+        ]);
     });
 });

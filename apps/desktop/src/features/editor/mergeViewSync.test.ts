@@ -8,6 +8,7 @@ import { fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import type { AIChatSession } from "../ai/types";
+import { useVaultStore } from "../../app/store/vaultStore";
 import {
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
@@ -15,6 +16,7 @@ import {
     setTrackedFilesForWorkCycle,
 } from "../ai/store/actionLogModel";
 import { useChatStore } from "../ai/store/chatStore";
+import { useEditorStore } from "../../app/store/editorStore";
 import {
     mergeViewCompartment,
     readMergeViewRuntimeState,
@@ -22,6 +24,24 @@ import {
 import { isMergeDecisionStale, syncMergeViewForPaths } from "./mergeViewSync";
 
 function mountView(doc: string) {
+    useEditorStore.setState({
+        tabs: [
+            {
+                id: "tab-1",
+                kind: "note",
+                noteId: "notes/current",
+                title: "Current",
+                content: doc,
+                history: [],
+                historyIndex: 0,
+            },
+        ],
+        activeTabId: "tab-1",
+        activationHistory: ["tab-1"],
+        tabNavigationHistory: ["tab-1"],
+        tabNavigationIndex: 0,
+    });
+
     const parent = document.createElement("div");
     document.body.appendChild(parent);
     const state = EditorState.create({
@@ -35,6 +55,13 @@ function mountView(doc: string) {
         destroy() {
             view.destroy();
             parent.remove();
+            useEditorStore.setState({
+                tabs: [],
+                activeTabId: null,
+                activationHistory: [],
+                tabNavigationHistory: [],
+                tabNavigationIndex: -1,
+            });
         },
     };
 }
@@ -71,6 +98,7 @@ function createSession(
     sessionId: string,
     workCycleId: string,
     files: TrackedFile[],
+    vaultPath: string | null = null,
 ): AIChatSession {
     let actionLog = emptyActionLogState();
     if (files.length > 0) {
@@ -84,6 +112,7 @@ function createSession(
     return {
         sessionId,
         historySessionId: sessionId,
+        vaultPath,
         status: "idle",
         activeWorkCycleId: workCycleId,
         visibleWorkCycleId: workCycleId,
@@ -154,27 +183,72 @@ describe("mergeViewSync", () => {
     it("activates merge with a tracked file", () => {
         const { view, destroy } = mountView("alpHa");
         const path = "notes/current.md";
-        const session = createSession("session-1", "wc-1", [
-            createTrackedFile(path, "alpha", "alpHa"),
-        ]);
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const session = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
 
         syncMergeViewForPaths(view, [path], {
             [session.sessionId]: session,
         });
 
         expect(getChunks(view.state)?.chunks.length).toBe(1);
-        expect(readMergeViewRuntimeState(view.state)?.sessionId).toBe(
-            "session-1",
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: true,
+            inlineState: "projection_ready",
+            sessionId: "session-1",
+            targetId: "notes/current",
+            targetKind: "note",
+            trackedVersion: 1,
+            transitionReason: "none",
+        });
+        destroy();
+    });
+
+    it("ignores tracked files from other vaults even when relative paths collide", () => {
+        const { view, destroy } = mountView("alpHa");
+        const path = "notes/current.md";
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const foreignSession = createSession(
+            "session-foreign",
+            "wc-foreign",
+            [createTrackedFile(path, "wrong", "alpHa")],
+            "/vault-b",
         );
+        const localSession = createSession(
+            "session-local",
+            "wc-local",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
+
+        syncMergeViewForPaths(view, [path], {
+            [foreignSession.sessionId]: foreignSession,
+            [localSession.sessionId]: localSession,
+        });
+
+        expect(getOriginalDoc(view.state).toString()).toBe("alpha");
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: true,
+            sessionId: "session-local",
+            trackedVersion: 1,
+        });
         destroy();
     });
 
     it("deactivates merge in preview mode", () => {
         const { view, destroy } = mountView("alpHa");
         const path = "notes/current.md";
-        const session = createSession("session-1", "wc-1", [
-            createTrackedFile(path, "alpha", "alpHa"),
-        ]);
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const session = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
 
         syncMergeViewForPaths(view, [path], {
             [session.sessionId]: session,
@@ -189,21 +263,82 @@ describe("mergeViewSync", () => {
         );
 
         expect(getChunks(view.state)).toBeNull();
-        expect(readMergeViewRuntimeState(view.state)?.enabled).toBe(false);
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: false,
+            inlineState: "disabled",
+            targetId: null,
+            targetKind: null,
+            transitionReason: "preview_mode",
+        });
+        destroy();
+    });
+
+    it("waits for the active editor target before mounting merge inline", () => {
+        const { view, destroy } = mountView("alpHa");
+        const path = "notes/current.md";
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const session = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-2",
+                    kind: "note",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "alpHa",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-2",
+            activationHistory: ["tab-2"],
+            tabNavigationHistory: ["tab-2"],
+            tabNavigationIndex: 0,
+        });
+
+        syncMergeViewForPaths(view, [path], {
+            [session.sessionId]: session,
+        });
+
+        expect(getChunks(view.state)).toBeNull();
+        expect(view.dom.dataset.mergeTransitioning).toBe("true");
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: false,
+            inlineState: "waiting_for_editor_target",
+            sessionId: "session-1",
+            identityKey: path,
+            targetId: "notes/current",
+            targetKind: "note",
+            trackedVersion: 1,
+            transitionReason: "target_not_active",
+        });
+
         destroy();
     });
 
     it("reconfigures metadata when the review state changes", () => {
         const { view, destroy } = mountView("alpHa");
         const path = "notes/current.md";
-        const session = createSession("session-1", "wc-1", [
-            createTrackedFile(path, "alpha", "alpHa"),
-        ]);
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const session = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
         const pendingFile = createTrackedFile(path, "alpha", "alpHa");
         pendingFile.reviewState = "pending";
-        const pendingSession = createSession("session-1", "wc-1", [
-            pendingFile,
-        ]);
+        const pendingSession = createSession(
+            "session-1",
+            "wc-1",
+            [pendingFile],
+            "/vault-a",
+        );
 
         syncMergeViewForPaths(view, [path], {
             [session.sessionId]: session,
@@ -221,12 +356,19 @@ describe("mergeViewSync", () => {
     it("updates the original document without dropping the merge extension", () => {
         const { view, destroy } = mountView("alpHa");
         const path = "notes/current.md";
-        const firstSession = createSession("session-1", "wc-1", [
-            createTrackedFile(path, "alpha", "alpHa"),
-        ]);
-        const secondSession = createSession("session-1", "wc-1", [
-            createTrackedFile(path, "alpaa", "alpHa"),
-        ]);
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const firstSession = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
+        const secondSession = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpaa", "alpHa")],
+            "/vault-a",
+        );
 
         syncMergeViewForPaths(view, [path], {
             [firstSession.sessionId]: firstSession,
@@ -346,7 +488,7 @@ describe("mergeViewSync", () => {
         }
     });
 
-    it("keeps inline decisions active while merge view is transitioning out of sync", () => {
+    it("suppresses inline decisions while merge view is transitioning out of sync", () => {
         vi.useFakeTimers();
         const originalState = useChatStore.getState();
         const resolveReviewHunks = vi.fn();
@@ -378,15 +520,9 @@ describe("mergeViewSync", () => {
             });
 
             expect(view.dom.dataset.mergeTransitioning).toBe("true");
-
-            const staleAccept = view.dom.querySelector(
-                '[data-review-decision="accept"]',
-            ) as HTMLButtonElement | null;
-            expect(staleAccept).not.toBeNull();
-            if (staleAccept) {
-                fireEvent.mouseDown(staleAccept);
-            }
-            expect(resolveReviewHunks).toHaveBeenCalledTimes(1);
+            expect(
+                view.dom.querySelector('[data-review-decision="accept"]'),
+            ).toBeNull();
 
             view.dispatch({
                 changes: {
@@ -409,7 +545,7 @@ describe("mergeViewSync", () => {
             if (freshAccept) {
                 fireEvent.mouseDown(freshAccept);
             }
-            expect(resolveReviewHunks).toHaveBeenCalledTimes(2);
+            expect(resolveReviewHunks).toHaveBeenCalledTimes(1);
 
             destroy();
         } finally {
@@ -418,7 +554,7 @@ describe("mergeViewSync", () => {
         }
     });
 
-    it("renders merge controls even when the initial sync starts stale", () => {
+    it("waits for the editor doc before rendering merge controls", () => {
         const path = "notes/current.md";
         const { view, destroy } = mountView("alpha\nbeta\n");
         const session = createSession("session-1", "wc-1", [
@@ -429,8 +565,47 @@ describe("mergeViewSync", () => {
             [session.sessionId]: session,
         });
 
-        expect(readMergeViewRuntimeState(view.state)?.enabled).toBe(true);
         expect(view.dom.dataset.mergeTransitioning).toBe("true");
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: false,
+            inlineState: "waiting_for_editor_doc",
+            sessionId: "session-1",
+            identityKey: path,
+            targetId: "notes/current",
+            targetKind: "note",
+            trackedVersion: 1,
+            transitionReason: "editor_doc_stale",
+        });
+        expect(
+            view.dom.querySelector('[data-review-decision="accept"]'),
+        ).toBeNull();
+        expect(
+            view.dom.querySelector('[data-review-decision="reject"]'),
+        ).toBeNull();
+
+        view.dispatch({
+            changes: {
+                from: 0,
+                to: view.state.doc.length,
+                insert: "ALPHA\nbeta\n",
+            },
+        });
+
+        syncMergeViewForPaths(view, [path], {
+            [session.sessionId]: session,
+        });
+
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: true,
+            inlineState: "projection_ready",
+            sessionId: "session-1",
+            identityKey: path,
+            targetId: "notes/current",
+            targetKind: "note",
+            trackedVersion: 1,
+            transitionReason: "none",
+        });
+        expect(view.dom.dataset.mergeTransitioning).toBeUndefined();
         expect(
             view.dom.querySelector('[data-review-decision="accept"]'),
         ).not.toBeNull();
@@ -439,6 +614,41 @@ describe("mergeViewSync", () => {
         ).not.toBeNull();
 
         destroy();
+    });
+
+    it("cancels stale retries when a newer tracked version arrives", () => {
+        vi.useFakeTimers();
+        const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+        const path = "notes/current.md";
+        const { view, destroy } = mountView("alpha\nbeta\n");
+        const sessionV1 = createSession("session-1", "wc-1", [
+            createTrackedFile(path, "alpha\nbeta\n", "ALPHA\nbeta\n", {
+                version: 1,
+            }),
+        ]);
+
+        try {
+            syncMergeViewForPaths(view, [path], {
+                [sessionV1.sessionId]: sessionV1,
+            });
+            expect(clearTimeoutSpy).not.toHaveBeenCalled();
+
+            const sessionV2 = createSession("session-1", "wc-1", [
+                createTrackedFile(path, "alpha\nbeta\n", "ALPHA\nBETA\n", {
+                    version: 2,
+                }),
+            ]);
+
+            syncMergeViewForPaths(view, [path], {
+                [sessionV2.sessionId]: sessionV2,
+            });
+
+            expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+        } finally {
+            destroy();
+            clearTimeoutSpy.mockRestore();
+            vi.useRealTimers();
+        }
     });
 
     it("refreshes inline controls when the tracked file changes without changing presentation flags", () => {

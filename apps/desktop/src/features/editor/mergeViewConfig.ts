@@ -4,6 +4,7 @@ import type {
     ChangePresentationLevel,
     FileChangePresentation,
 } from "./changePresentationModel";
+import type { MergeInlineState } from "./extensions/mergeViewDiff";
 
 export interface MergePresentationFlags {
     highlightChanges: boolean;
@@ -19,6 +20,7 @@ export interface MergeStructuralConfig {
     sessionId: string | null;
     identityKey: string | null;
     trackedVersion: number | null;
+    inlineState: MergeInlineState;
     reviewState: ReviewState;
     level: ChangePresentationLevel;
     statusKind: string | null;
@@ -51,6 +53,7 @@ export function buildMergeStructuralSignature(config: MergeStructuralConfig) {
         config.sessionId,
         config.identityKey,
         config.trackedVersion,
+        config.inlineState,
         config.reviewState,
         config.level,
         config.statusKind,

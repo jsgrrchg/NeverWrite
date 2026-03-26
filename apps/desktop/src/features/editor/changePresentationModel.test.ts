@@ -38,14 +38,18 @@ function replaceLines(
     lineCount: number,
     replacements: Record<number, string>,
 ): string {
-    return Array.from({ length: lineCount }, (_, index) =>
-        replacements[index] ?? `line-${index}`,
+    return Array.from(
+        { length: lineCount },
+        (_, index) => replacements[index] ?? `line-${index}`,
     ).join("\n");
 }
 
 function buildMarkers(diffBase: string, currentText: string) {
     return deriveMarkersFromChunks(
-        Chunk.build(Text.of(diffBase.split("\n")), Text.of(currentText.split("\n"))),
+        Chunk.build(
+            Text.of(diffBase.split("\n")),
+            Text.of(currentText.split("\n")),
+        ),
         Text.of(currentText.split("\n")),
         "finalized",
     );
@@ -143,11 +147,11 @@ describe("changePresentationModel", () => {
         expect(markers[0]?.endLine).toBe(3);
     });
 
-    it("derives modify markers from merge chunks", () => {
+    it("derives add markers from merge chunks for modified lines", () => {
         const markers = buildMarkers("alpha\nbeta", "alpha\nBETA");
 
         expect(markers).toHaveLength(1);
-        expect(markers[0]?.kind).toBe("modify");
+        expect(markers[0]?.kind).toBe("add");
         expect(markers[0]?.heightRatio).toBeGreaterThan(0);
     });
 

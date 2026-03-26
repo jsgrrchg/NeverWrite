@@ -30,11 +30,7 @@ import {
     aiUpdateSetup,
     aiRegisterFileBaseline,
 } from "../api";
-import {
-    isFileTab,
-    isNoteTab,
-    useEditorStore,
-} from "../../../app/store/editorStore";
+import { isNoteTab, useEditorStore } from "../../../app/store/editorStore";
 import {
     useVaultStore,
     type VaultNoteChange,
@@ -74,6 +70,12 @@ import {
     expandReviewHunksToOverlapClosure,
     type ReviewHunkId,
 } from "../diff/reviewProjection";
+import {
+    type EditorTarget,
+    resolveEditorTargetForTrackedPath,
+    resolveFileTargetForPath,
+    resolveNoteTargetForPath,
+} from "../../editor/editorTargetResolver";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
     buildSelectionLabel,
@@ -1498,96 +1500,18 @@ function setActionLogUndo(
     };
 }
 
-function normalizeTrackedPath(path: string) {
-    return path.replace(/\\/g, "/");
-}
-
-function stripMarkdownExtension(path: string) {
-    return path.toLowerCase().endsWith(".md") ? path.slice(0, -3) : path;
-}
-
-function toVaultRelativePath(
-    path: string,
-    vaultPath: string | null,
-): string | null {
-    const normalizedPath = normalizeTrackedPath(path);
-    if (!normalizedPath.startsWith("/")) {
-        return normalizedPath;
-    }
-
-    if (!vaultPath) {
-        return null;
-    }
-
-    const normalizedVaultPath = normalizeTrackedPath(vaultPath).replace(
-        /\/+$/,
-        "",
-    );
-    const prefix = `${normalizedVaultPath}/`;
-    if (!normalizedPath.startsWith(prefix)) {
-        return null;
-    }
-
-    return normalizedPath.slice(prefix.length);
-}
-
-function resolveMarkdownNoteId(path: string): string | null {
-    const normalizedPath = normalizeTrackedPath(path);
-    if (!normalizedPath.toLowerCase().endsWith(".md")) return null;
-
-    const { tabs } = useEditorStore.getState();
-    const openTab = tabs.find(
-        (tab) =>
-            isNoteTab(tab) &&
-            normalizeTrackedPath(tab.noteId) === normalizedPath,
-    );
-    if (openTab && isNoteTab(openTab)) {
-        return openTab.noteId;
-    }
-
-    const { notes, vaultPath } = useVaultStore.getState();
-    const exactNote = notes.find(
-        (note) => normalizeTrackedPath(note.path) === normalizedPath,
-    );
-    if (exactNote) {
-        return exactNote.id;
-    }
-
-    if (vaultPath) {
-        const normalizedVaultPath = normalizeTrackedPath(vaultPath).replace(
-            /\/+$/,
-            "",
-        );
-        const prefix = `${normalizedVaultPath}/`;
-        if (normalizedPath.startsWith(prefix)) {
-            return stripMarkdownExtension(normalizedPath.slice(prefix.length));
-        }
-    }
-
-    return stripMarkdownExtension(normalizedPath);
-}
-
 async function readTrackedFileLiveText(
     tracked: TrackedFile,
 ): Promise<string | null | undefined> {
-    const normalizedPath = normalizeTrackedPath(tracked.path);
-    const { tabs } = useEditorStore.getState();
-
-    const noteId = resolveMarkdownNoteId(tracked.path);
-    if (noteId) {
-        const openNoteTab = tabs.find(
-            (tab) =>
-                isNoteTab(tab) &&
-                normalizeTrackedPath(tab.noteId) ===
-                    normalizeTrackedPath(noteId),
-        );
-        if (openNoteTab && isNoteTab(openNoteTab)) {
-            return openNoteTab.content;
+    const noteTarget = resolveNoteTargetForPath(tracked.path);
+    if (noteTarget) {
+        if (noteTarget.openTab) {
+            return noteTarget.openTab.content;
         }
 
         try {
             const detail = await vaultInvoke<{ content: string }>("read_note", {
-                noteId,
+                noteId: noteTarget.noteId,
             });
             return detail.content;
         } catch {
@@ -1596,33 +1520,26 @@ async function readTrackedFileLiveText(
         }
     }
 
-    const openFileTab = tabs.find(
-        (tab) =>
-            isFileTab(tab) && normalizeTrackedPath(tab.path) === normalizedPath,
-    );
-    if (openFileTab && isFileTab(openFileTab)) {
-        return openFileTab.content;
+    const fileTarget = resolveFileTargetForPath(tracked.path);
+    if (fileTarget) {
+        if (fileTarget.openTab) {
+            return fileTarget.openTab.content;
+        }
+
+        try {
+            const detail = await vaultInvoke<{ content: string }>(
+                "read_vault_file",
+                {
+                    relativePath: fileTarget.relativePath,
+                },
+            );
+            return detail.content;
+        } catch {
+            return null;
+        }
     }
 
-    const relativePath = toVaultRelativePath(
-        tracked.path,
-        useVaultStore.getState().vaultPath,
-    );
-    if (!relativePath) {
-        return null;
-    }
-
-    try {
-        const detail = await vaultInvoke<{ content: string }>(
-            "read_vault_file",
-            {
-                relativePath,
-            },
-        );
-        return detail.content;
-    } catch {
-        return null;
-    }
+    return null;
 }
 
 /**
@@ -1668,28 +1585,35 @@ async function executeRestoreAction(
  * After a reject/undo writes content to disk, force-reload the open editor tab
  * so CodeMirror reflects the new content immediately.
  */
+function forceReloadResolvedEditorTarget(
+    target: EditorTarget | null,
+    content: string,
+    change?: VaultNoteChange | null,
+) {
+    if (!target?.openTab) {
+        return;
+    }
+
+    useEditorStore.getState().forceReloadEditorTarget(target, {
+        content,
+        title: target.openTab.title ?? target.absolutePath,
+        origin: change?.origin ?? "agent",
+        opId: change?.op_id ?? null,
+        revision: change?.revision ?? 0,
+        contentHash: change?.content_hash ?? null,
+    });
+}
+
 function reloadOpenEditorContent(
     path: string,
     content: string,
     change?: VaultNoteChange | null,
 ) {
-    const noteId =
-        resolveMarkdownNoteId(path) ??
-        stripMarkdownExtension(normalizeTrackedPath(path));
-    if (!noteId) return;
-
-    const { tabs } = useEditorStore.getState();
-    const openTab = tabs.find((t) => isNoteTab(t) && t.noteId === noteId);
-    if (openTab) {
-        useEditorStore.getState().forceReloadNoteContent(noteId, {
-            content,
-            title: (openTab as { title?: string }).title ?? noteId,
-            origin: change?.origin ?? "agent",
-            opId: change?.op_id ?? null,
-            revision: change?.revision ?? 0,
-            contentHash: change?.content_hash ?? null,
-        });
-    }
+    forceReloadResolvedEditorTarget(
+        resolveEditorTargetForTrackedPath(path),
+        content,
+        change,
+    );
 }
 
 /**
@@ -1705,9 +1629,7 @@ function reloadEditorAfterRestore(
         action.kind === "write" && tracked.originPath !== tracked.path
             ? tracked.originPath
             : tracked.path;
-    const noteId =
-        resolveMarkdownNoteId(restoredPath) ??
-        stripMarkdownExtension(normalizeTrackedPath(restoredPath));
+    const noteId = resolveNoteTargetForPath(restoredPath)?.noteId ?? null;
     if (action.kind === "skip") {
         return;
     }
@@ -1789,6 +1711,7 @@ function applyUserEditToTrackedFileInSession(
 function createPersistedSession(
     history: PersistedSessionHistory,
     runtimes: AIRuntimeDescriptor[],
+    vaultPath: string | null,
 ): AIChatSession | null {
     const runtime =
         (history.runtime_id
@@ -1802,6 +1725,7 @@ function createPersistedSession(
     return {
         sessionId: `persisted:${history.session_id}`,
         historySessionId: history.session_id,
+        vaultPath,
         runtimeId,
         modelId: history.model_id,
         modeId: history.mode_id,
@@ -1825,6 +1749,31 @@ function createPersistedSession(
         resumeContextPending: true,
         runtimeState: "persisted_only",
     };
+}
+
+function stampSessionVaultPath(
+    session: AIChatSession,
+    vaultPath: string | null,
+): AIChatSession {
+    if (session.vaultPath === vaultPath) {
+        return session;
+    }
+
+    return {
+        ...session,
+        vaultPath,
+    };
+}
+
+function sessionMatchesVaultPath(
+    session: AIChatSession | undefined,
+    vaultPath: string | null,
+) {
+    if (!session) {
+        return false;
+    }
+
+    return (session.vaultPath ?? null) === vaultPath;
 }
 
 function withUniqueAttachment(
@@ -1851,6 +1800,7 @@ function mergeSession(
         return {
             ...incoming,
             historySessionId: incoming.historySessionId ?? incoming.sessionId,
+            vaultPath: incoming.vaultPath ?? null,
             isPersistedSession: incoming.isPersistedSession ?? false,
             resumeContextPending: incoming.resumeContextPending ?? false,
             activeWorkCycleId: incoming.activeWorkCycleId ?? null,
@@ -1880,6 +1830,7 @@ function mergeSession(
         ...incoming,
         historySessionId:
             existing.historySessionId ?? incoming.historySessionId,
+        vaultPath: incoming.vaultPath ?? existing.vaultPath ?? null,
         isPersistedSession:
             incoming.isPersistedSession ?? existing.isPersistedSession,
         resumeContextPending:
@@ -2708,9 +2659,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         const nextSessionsById = sessions.reduce<
                             Record<string, AIChatSession>
                         >((accumulator, session) => {
+                            const scopedSession = stampSessionVaultPath(
+                                session,
+                                vaultPath,
+                            );
                             const existing =
-                                state.sessionsById[session.sessionId];
-                            const merged = mergeSession(existing, session);
+                                state.sessionsById[scopedSession.sessionId];
+                            const merged = mergeSession(
+                                existing,
+                                scopedSession,
+                            );
                             const persisted = persistedBySessionId.get(
                                 merged.historySessionId,
                             );
@@ -2720,7 +2678,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                     restoreMessagesFromHistory(persisted);
                             }
 
-                            accumulator[session.sessionId] = merged;
+                            accumulator[scopedSession.sessionId] = merged;
                             return accumulator;
                         }, {});
 
@@ -2736,6 +2694,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             const restored = createPersistedSession(
                                 history,
                                 hydratedRuntimes,
+                                vaultPath,
                             );
                             if (!restored) continue;
                             nextSessionsById[restored.sessionId] = restored;
@@ -3021,17 +2980,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
         upsertSession: (session, activate = false) => {
             let shouldDrainQueue = false;
             set((state) => {
-                const existing = state.sessionsById[session.sessionId];
-                const isKnown = state.sessionOrder.includes(session.sessionId);
+                const currentVaultPath = useVaultStore.getState().vaultPath;
+                const scopedSession = stampSessionVaultPath(
+                    session,
+                    currentVaultPath,
+                );
+                const existing = state.sessionsById[scopedSession.sessionId];
+                const isKnown = state.sessionOrder.includes(
+                    scopedSession.sessionId,
+                );
 
-                // Ignore sessions from other vaults — only update known sessions
-                // or explicitly activated ones (e.g. just created by this window).
+                if (
+                    !activate &&
+                    ((existing &&
+                        !sessionMatchesVaultPath(existing, currentVaultPath)) ||
+                        !sessionMatchesVaultPath(
+                            scopedSession,
+                            currentVaultPath,
+                        ))
+                ) {
+                    return state;
+                }
+
+                // Ignore unexpected sessions unless explicitly activated by
+                // this vault/window lifecycle.
                 if (!isKnown && !activate) return state;
 
-                const nextRuntimes = session.isPersistedSession
+                const nextRuntimes = scopedSession.isPersistedSession
                     ? state.runtimes
-                    : hydrateRuntimesFromSessions(state.runtimes, [session]);
-                const nextSession = mergeSession(existing, session);
+                    : hydrateRuntimesFromSessions(state.runtimes, [
+                          scopedSession,
+                      ]);
+                const nextSession = mergeSession(existing, scopedSession);
                 shouldDrainQueue =
                     nextSession.status === "idle" &&
                     existing?.status !== "idle" &&
@@ -3041,29 +3021,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     runtimes: nextRuntimes,
                     sessionsById: {
                         ...state.sessionsById,
-                        [session.sessionId]: nextSession,
+                        [scopedSession.sessionId]: nextSession,
                     },
                     sessionOrder: activate
                         ? touchSessionOrder(
                               state.sessionOrder,
-                              session.sessionId,
+                              scopedSession.sessionId,
                           )
                         : state.sessionOrder,
                     activeSessionId:
                         activate || !state.activeSessionId
-                            ? session.sessionId
+                            ? scopedSession.sessionId
                             : state.activeSessionId,
                     selectedRuntimeId:
                         activate || !state.activeSessionId
                             ? nextSession.runtimeId
                             : state.selectedRuntimeId,
                     composerPartsBySessionId: state.composerPartsBySessionId[
-                        session.sessionId
+                        scopedSession.sessionId
                     ]
                         ? state.composerPartsBySessionId
                         : {
                               ...state.composerPartsBySessionId,
-                              [session.sessionId]: createEmptyComposerParts(),
+                              [scopedSession.sessionId]:
+                                  createEmptyComposerParts(),
                           },
                 };
             });

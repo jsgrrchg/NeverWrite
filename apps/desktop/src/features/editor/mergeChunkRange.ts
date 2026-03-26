@@ -1,7 +1,7 @@
 import type { Text } from "@codemirror/state";
 import type { Chunk } from "@codemirror/merge";
 
-export type MergeChunkKind = "add" | "modify" | "delete";
+export type MergeChunkKind = "add" | "delete";
 
 // Visual-only mapping for rails and presentation. Review decisions must come
 // from ReviewProjection, never from CodeMirror chunk coordinates.
@@ -16,13 +16,10 @@ export function clampDocPos(doc: Text, pos: number) {
 }
 
 export function getChunkKind(chunk: Chunk): MergeChunkKind {
-    if (chunk.changes.every((change) => change.fromA === change.toA)) {
-        return "add";
-    }
     if (chunk.changes.every((change) => change.fromB === change.toB)) {
         return "delete";
     }
-    return "modify";
+    return "add";
 }
 
 export function getChunkMarkerKey(chunk: Chunk, index: number) {

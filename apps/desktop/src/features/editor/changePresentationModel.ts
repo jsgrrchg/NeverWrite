@@ -21,7 +21,7 @@ export type ChangePresentationLevel =
     | "large"
     | "very-large";
 
-export type ChangeRailMarkerKind = "add" | "modify" | "delete";
+export type ChangeRailMarkerKind = "add" | "delete";
 
 export interface ChangeRailMarker {
     key: string;

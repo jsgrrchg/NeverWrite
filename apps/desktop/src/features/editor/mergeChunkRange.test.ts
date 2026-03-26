@@ -39,7 +39,7 @@ describe("mergeChunkRange", () => {
         const doc = Text.of("alpha\nBETA\nGAMMA".split("\n"));
         const chunk = buildChunk("alpha\nbeta\ngamma", "alpha\nBETA\nGAMMA");
 
-        expect(getChunkKind(chunk)).toBe("modify");
+        expect(getChunkKind(chunk)).toBe("add");
         expect(getChunkLineRangeInDocB(chunk, doc)).toEqual({
             startLine: 1,
             endLine: 3,

@@ -119,6 +119,7 @@ describe("mergeViewConfig", () => {
     it("includes merge-critical fields in the structural signature", () => {
         const a = buildMergeStructuralSignature({
             identityKey: "note.md",
+            inlineState: "ready",
             level: "medium",
             mode: "source",
             reviewState: "finalized",
@@ -129,6 +130,7 @@ describe("mergeViewConfig", () => {
         });
         const b = buildMergeStructuralSignature({
             identityKey: "note.md",
+            inlineState: "ready",
             level: "large",
             mode: "source",
             reviewState: "finalized",
@@ -144,6 +146,7 @@ describe("mergeViewConfig", () => {
     it("includes tracked version in the structural signature", () => {
         const a = buildMergeStructuralSignature({
             identityKey: "note.md",
+            inlineState: "ready",
             level: "medium",
             mode: "source",
             reviewState: "finalized",
@@ -154,6 +157,7 @@ describe("mergeViewConfig", () => {
         });
         const b = buildMergeStructuralSignature({
             identityKey: "note.md",
+            inlineState: "ready",
             level: "medium",
             mode: "source",
             reviewState: "finalized",
