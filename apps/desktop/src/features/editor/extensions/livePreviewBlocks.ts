@@ -745,10 +745,11 @@ const EMBED_MAX_LINES = 6;
 
 /**
  * Append inline-formatted text to a parent element using DOM nodes (no innerHTML).
- * Handles `code` and [[wikilinks|label]].
+ * Handles **bold**, *italic*, `code`, and [[wikilinks|label]].
  */
 function appendFormattedInline(parent: HTMLElement, text: string): void {
-    const re = /(`(.+?)`|\[\[([^\]|]+?)(?:\|([^\]]+))?\]\])/g;
+    const re =
+        /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[\[([^\]|]+?)(?:\|([^\]]+))?\]\])/g;
     let last = 0;
     let m: RegExpExecArray | null;
 
@@ -759,13 +760,21 @@ function appendFormattedInline(parent: HTMLElement, text: string): void {
             );
         }
         if (m[2]) {
-            const el = document.createElement("code");
+            const el = document.createElement("strong");
             el.textContent = m[2];
             parent.appendChild(el);
         } else if (m[3]) {
+            const el = document.createElement("em");
+            el.textContent = m[3];
+            parent.appendChild(el);
+        } else if (m[4]) {
+            const el = document.createElement("code");
+            el.textContent = m[4];
+            parent.appendChild(el);
+        } else if (m[5]) {
             const el = document.createElement("span");
             el.className = "cm-note-embed-wikilink";
-            el.textContent = m[4] ?? m[3];
+            el.textContent = m[6] ?? m[5];
             parent.appendChild(el);
         }
         last = m.index + m[0].length;
