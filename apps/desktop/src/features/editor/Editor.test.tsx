@@ -1192,6 +1192,103 @@ describe("Editor", () => {
         coordsSpy.mockRestore();
     });
 
+    it("clears residual DOM selection while dragging the editor scrollbar", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: Array.from(
+                    { length: 40 },
+                    (_, index) => `Line ${index + 1}`,
+                ).join("\n"),
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        const firstLine = view.contentDOM.querySelector(".cm-line");
+        expect(firstLine).toBeInstanceOf(HTMLElement);
+        const textNode = firstLine?.firstChild;
+        expect(textNode).not.toBeNull();
+
+        const selection = document.getSelection();
+        const range = document.createRange();
+        range.setStart(textNode!, 0);
+        range.setEnd(textNode!, 4);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+
+        expect(selection?.isCollapsed).toBe(false);
+
+        Object.defineProperty(view.scrollDOM, "clientWidth", {
+            configurable: true,
+            value: 280,
+        });
+        Object.defineProperty(view.scrollDOM, "offsetWidth", {
+            configurable: true,
+            value: 296,
+        });
+        Object.defineProperty(view.scrollDOM, "clientHeight", {
+            configurable: true,
+            value: 140,
+        });
+        Object.defineProperty(view.scrollDOM, "offsetHeight", {
+            configurable: true,
+            value: 156,
+        });
+        Object.defineProperty(view.scrollDOM, "scrollHeight", {
+            configurable: true,
+            value: 1200,
+        });
+        Object.defineProperty(view.scrollDOM, "scrollWidth", {
+            configurable: true,
+            value: 280,
+        });
+        vi.spyOn(view.scrollDOM, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 296,
+            bottom: 156,
+            width: 296,
+            height: 156,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        await act(async () => {
+            fireEvent.mouseDown(view.scrollDOM, {
+                button: 0,
+                clientX: 292,
+                clientY: 24,
+            });
+        });
+
+        expect(view.dom.dataset.scrollbarDragging).toBe("true");
+        expect(document.getSelection()?.rangeCount ?? 0).toBe(0);
+
+        await act(async () => {
+            fireEvent.mouseUp(document, { button: 0 });
+        });
+
+        expect(view.dom.dataset.scrollbarDragging).toBeUndefined();
+
+        vi.spyOn(view, "posAtCoords").mockReturnValue(48);
+
+        await act(async () => {
+            fireEvent.mouseDown(firstLine as HTMLElement, {
+                button: 0,
+                clientX: 80,
+                clientY: 24,
+            });
+        });
+
+        expect(view.state.selection.main.anchor).toBe(48);
+        expect(view.state.selection.main.head).toBe(48);
+    });
+
     it("does not crash when CodeMirror throws during context-menu coordinate lookup", async () => {
         const warnSpy = vi
             .spyOn(console, "warn")

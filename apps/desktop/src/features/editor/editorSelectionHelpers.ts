@@ -1,11 +1,18 @@
 import type { EditorView } from "@codemirror/view";
 
-export function clearEditorDomSelection(view: EditorView | null) {
+type ClearEditorDomSelectionOptions = {
+    includeCollapsed?: boolean;
+};
+
+export function clearEditorDomSelection(
+    view: EditorView | null,
+    options?: ClearEditorDomSelectionOptions,
+) {
     if (!view) return;
 
     const selection = view.dom.ownerDocument.getSelection();
     if (!selection || selection.rangeCount === 0) return;
-    if (selection.isCollapsed) return;
+    if (selection.isCollapsed && !options?.includeCollapsed) return;
 
     const anchorNode = selection.anchorNode;
     const focusNode = selection.focusNode;

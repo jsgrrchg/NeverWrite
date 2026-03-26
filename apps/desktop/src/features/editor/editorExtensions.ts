@@ -71,6 +71,11 @@ export const baseTheme = EditorView.theme({
     ".cm-line": {
         padding: "0 2px",
     },
+    '&[data-scrollbar-dragging="true"] .cm-content, &[data-scrollbar-dragging="true"] .cm-content *':
+        {
+            userSelect: "none",
+            WebkitUserSelect: "none",
+        },
     ".cm-gutters": {
         display: "none",
         backgroundColor: "transparent",
