@@ -452,7 +452,7 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
-    it("keeps bold markers hidden when the caret is outside the token", () => {
+    it("keeps bold markers visible when bold live preview is disabled", () => {
         const doc = "before **bold** after";
         const { plugin, parent, view } = createView(
             doc,
@@ -461,20 +461,18 @@ describe("createInlineLivePreviewPlugin", () => {
 
         const decorations = collectDecorations(view, plugin);
 
-        expect(
-            decorations.filter(
-                (deco) =>
-                    deco.className === "cm-lp-hidden-inline" &&
-                    ((deco.from === 7 && deco.to === 9) ||
-                        (deco.from === 13 && deco.to === 15)),
-            ),
-        ).toHaveLength(2);
+        expect(hasHiddenRange(decorations, 7, 9, "cm-lp-hidden-inline")).toBe(
+            false,
+        );
+        expect(hasHiddenRange(decorations, 13, 15, "cm-lp-hidden-inline")).toBe(
+            false,
+        );
 
         view.destroy();
         parent.remove();
     });
 
-    it("reveals both bold delimiters when the caret is inside the token", () => {
+    it("keeps bold markers visible when the caret is inside the token", () => {
         const doc = "before **bold** after";
         const { plugin, parent, view } = createView(
             doc,
@@ -629,7 +627,7 @@ describe("createInlineLivePreviewPlugin", () => {
     });
 
     it("switches the active inline token when moving within the same line", () => {
-        const doc = "**bold** and ==mark==";
+        const doc = "==bold== and ==mark==";
         const { plugin, parent, view } = createView(
             doc,
             EditorSelection.cursor(3),
@@ -702,7 +700,7 @@ describe("createInlineLivePreviewPlugin", () => {
     it("rebuilds inline decorations when selection moves within the same line", () => {
         const perfMeasureMock = vi.mocked(perfMeasure);
         const { parent, view } = createView(
-            "before **bold** after",
+            "before ==mark== after",
             EditorSelection.cursor(0),
         );
 
@@ -725,7 +723,7 @@ describe("createInlineLivePreviewPlugin", () => {
     it("skips inline rebuild when the active token does not change", () => {
         const perfMeasureMock = vi.mocked(perfMeasure);
         const { parent, view } = createView(
-            "before **bold** after",
+            "before ==mark== after",
             EditorSelection.cursor(10),
         );
 

@@ -13,8 +13,8 @@ export const changeRailHunksFacet = Facet.define<
 });
 
 // ── Constants ──────────────────────────────────────────────────
-const RAIL_WIDTH = 10;
-const MARKER_MIN_HEIGHT = 4;
+const RAIL_WIDTH = 3;
+const MARKER_MIN_HEIGHT = 3;
 
 // ── ViewPlugin ─────────────────────────────────────────────────
 const changeRailPlugin = ViewPlugin.fromClass(
@@ -94,7 +94,7 @@ const changeRailTheme = EditorView.baseTheme({
     ".cm-change-rail": {
         position: "absolute",
         top: "0",
-        right: "22px",
+        right: "3px",
         bottom: "0",
         width: `${RAIL_WIDTH}px`,
         zIndex: "4",
