@@ -168,13 +168,15 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edit 1 file")).toBeInTheDocument();
+        expect(screen.getByText("Edited watcher.md")).toBeInTheDocument();
         expect(
-            screen.getByRole("button", { name: "Open File" }),
+            screen.getByRole("button", { name: "Open" }),
         ).toBeInTheDocument();
         expect(screen.queryByText("Reject")).not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.md/i }));
+        fireEvent.click(
+            screen.getByRole("button", { name: /Edited watcher\.md/i }),
+        );
 
         expect(screen.getByText(/old line/)).toBeInTheDocument();
         expect(screen.getByText(/new line/)).toBeInTheDocument();
@@ -297,9 +299,9 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edit 1 file")).toBeInTheDocument();
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
         expect(
-            screen.queryByRole("button", { name: "Open File" }),
+            screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();
     });
 
@@ -333,7 +335,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
         expect(screen.getByText("watcher.rs")).toBeInTheDocument();
         expect(
-            screen.queryByRole("button", { name: "Open File" }),
+            screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();
     });
 
@@ -354,7 +356,7 @@ describe("AIChatMessageItem tool diffs", () => {
 
         expect(screen.getByText("watcher.rs")).toBeInTheDocument();
         expect(
-            screen.queryByRole("button", { name: "Open File" }),
+            screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
     });
@@ -394,7 +396,7 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edit 1 file")).toBeInTheDocument();
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
         expect(
             screen.getByRole("button", { name: "Reject" }),
         ).toBeInTheDocument();
@@ -402,7 +404,7 @@ describe("AIChatMessageItem tool diffs", () => {
             screen.getByRole("button", { name: "Allow once" }),
         ).toBeInTheDocument();
         expect(
-            screen.queryByRole("button", { name: "Open File" }),
+            screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();
     });
 
@@ -417,10 +419,12 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        expect(screen.getByText("Edit 1 file")).toBeInTheDocument();
+        expect(screen.getByText("Edited final.md")).toBeInTheDocument();
         expect(screen.getByText("moved from draft.md")).toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: /final.md/i }));
+        fireEvent.click(
+            screen.getByRole("button", { name: /Edited final\.md/i }),
+        );
 
         expect(
             screen.queryByTestId("diff-content:/vault/archive/final.md"),
@@ -440,7 +444,9 @@ describe("AIChatMessageItem tool diffs", () => {
 
         expect(screen.getByText("partial")).toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: /deleted.md/i }));
+        fireEvent.click(
+            screen.getByRole("button", { name: /Edited deleted\.md/i }),
+        );
 
         expect(
             screen.getByText("(partial preview — delete snapshot unavailable)"),
@@ -478,10 +484,12 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getAllByText("+~1")).toHaveLength(2);
-        expect(screen.getAllByText("-~1")).toHaveLength(2);
+        expect(screen.getByText("+~1")).toBeInTheDocument();
+        expect(screen.getByText("-~1")).toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: /giant.md/i }));
+        fireEvent.click(
+            screen.getByRole("button", { name: /Edited giant\.md/i }),
+        );
 
         expect(screen.getByText("shared 1199")).toBeInTheDocument();
         expect(screen.getByText(/large file preview/i)).toBeInTheDocument();
