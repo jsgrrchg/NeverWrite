@@ -2029,62 +2029,41 @@ function hasPersistedHistoryContent(history: PersistedSessionHistory) {
     return history.messages.length > 0;
 }
 
-// ---------------------------------------------------------------------------
-// Stale-streaming safety net
-// ---------------------------------------------------------------------------
-// When the backend's `message_completed` event fires too early (before the
-// agent actually finishes) or never fires at all, the session stays stuck in
-// "streaming".  We schedule a debounced check after every streaming event.
-// If no new events arrive within STALE_STREAMING_MS, and there is no
-// genuinely active work, the session is forced back to "idle".
-// ---------------------------------------------------------------------------
-// Safety net: if the backend dies and never sends message-completed,
-// force idle after a long silence so the UI doesn't stay stuck forever.
-const STALE_STREAMING_MS = 120_000;
-const _staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _queueDrainLocks = new Set<string>();
 
-function scheduleStaleStreamingCheck(sessionId: string) {
-    clearStaleStreamingCheck(sessionId);
-    _staleTimers.set(
-        sessionId,
-        setTimeout(() => {
-            _staleTimers.delete(sessionId);
-            const staleAt = Date.now();
-            useChatStore.setState((s) => {
-                const sess = s.sessionsById[sessionId];
-                if (!sess || sess.status !== "streaming") return s;
-                const nextSession = finalizeActionLogForWorkCycle({
-                    ...sess,
-                    status: "idle",
-                    messages: stampElapsedOnTurnStarted(
-                        sess.messages.map((m) =>
-                            m.inProgress ? { ...m, inProgress: false } : m,
-                        ),
-                        staleAt,
-                    ),
-                });
-                return {
-                    sessionsById: {
-                        ...s.sessionsById,
-                        [sessionId]: nextSession,
-                    },
-                };
-            });
+function scheduleStaleStreamingCheck(_sessionId: string) {}
 
-            const updated = useChatStore.getState().sessionsById[sessionId];
-            if (updated) persistSession(updated);
-            void useChatStore.getState().tryDrainQueue(sessionId);
-        }, STALE_STREAMING_MS),
-    );
+function clearStaleStreamingCheck(_sessionId: string) {}
+
+function markSessionStreamingIfLive(session: AIChatSession): AIChatSession {
+    if (session.runtimeState != null && session.runtimeState !== "live") {
+        return session;
+    }
+
+    if (
+        session.status === "streaming" ||
+        session.status === "waiting_permission" ||
+        session.status === "waiting_user_input"
+    ) {
+        return session;
+    }
+
+    return {
+        ...session,
+        status: "streaming",
+    };
 }
 
-function clearStaleStreamingCheck(sessionId: string) {
-    const timer = _staleTimers.get(sessionId);
-    if (timer) {
-        clearTimeout(timer);
-        _staleTimers.delete(sessionId);
-    }
+function toolActivityKeepsSessionStreaming(status: string) {
+    return status === "pending" || status === "in_progress";
+}
+
+function statusEventKeepsSessionStreaming(status: string) {
+    return status === "pending" || status === "in_progress";
+}
+
+function planUpdateKeepsSessionStreaming(payload: AIPlanUpdatePayload) {
+    return payload.entries.some((entry) => entry.status === "in_progress");
 }
 
 // ---------------------------------------------------------------------------
@@ -3333,6 +3312,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         applyMessageDelta: ({ session_id, message_id, delta }) => {
             scheduleStaleStreamingCheck(session_id);
+            set((state) => {
+                const session = state.sessionsById[session_id];
+                if (!session) return state;
+                const nextSession = markSessionStreamingIfLive(session);
+                if (nextSession === session) return state;
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [session_id]: nextSession,
+                    },
+                };
+            });
             bufferMessageDelta(session_id, message_id, delta);
         },
 
@@ -3419,6 +3410,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         applyThinkingDelta: ({ session_id, message_id, delta }) => {
             scheduleStaleStreamingCheck(session_id);
+            set((state) => {
+                const session = state.sessionsById[session_id];
+                if (!session) return state;
+                const nextSession = markSessionStreamingIfLive(session);
+                if (nextSession === session) return state;
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [session_id]: nextSession,
+                    },
+                };
+            });
             bufferThinkingDelta(session_id, message_id, delta);
         },
 
@@ -3460,7 +3463,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
                 if (!session) return state;
-                const nextSession = ensureSessionWorkCycle(session);
+                const baseSession = ensureSessionWorkCycle(session);
+                const nextSession = toolActivityKeepsSessionStreaming(
+                    payload.status,
+                )
+                    ? markSessionStreamingIfLive(baseSession)
+                    : baseSession;
                 workCycleId = nextSession.activeWorkCycleId;
                 const shouldConsolidate =
                     payload.status === "completed" &&
@@ -3541,7 +3549,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
                 if (!session) return state;
-                const nextSession = ensureSessionWorkCycle(session);
+                const baseSession = ensureSessionWorkCycle(session);
+                const nextSession = statusEventKeepsSessionStreaming(
+                    payload.status,
+                )
+                    ? markSessionStreamingIfLive(baseSession)
+                    : baseSession;
 
                 const messageId = `status:${payload.event_id}`;
                 const nextMessage = {
@@ -3584,7 +3597,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
                 if (!session) return state;
-                const nextSession = ensureSessionWorkCycle(session);
+                const baseSession = ensureSessionWorkCycle(session);
+                const nextSession = planUpdateKeepsSessionStreaming(payload)
+                    ? markSessionStreamingIfLive(baseSession)
+                    : baseSession;
 
                 const nextMessage = {
                     ...createPlanMessage(payload),
