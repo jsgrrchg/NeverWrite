@@ -36,7 +36,10 @@ import {
     selectionTouchesRange,
 } from "./selectionActivity";
 import { parseMarkdownListItem } from "../markdownLists";
-import { FRONTMATTER_RE } from "../noteTitleHelpers";
+import {
+    FRONTMATTER_RE,
+    getLeadingContentCollapseRanges,
+} from "../noteTitleHelpers";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfCount,
@@ -421,25 +424,25 @@ function getLeadingHeadingHideTo(
 
 function applyFrontmatterHiding(context: BuildContext) {
     const docText = context.state.doc.sliceString(0, context.state.doc.length);
-    const fmMatch = docText.match(FRONTMATTER_RE);
-    if (!fmMatch) return;
+    const frontmatterRange = getLeadingContentCollapseRanges(docText).find(
+        (range) => range.from === 0,
+    );
+    if (!frontmatterRange) return;
 
-    const fmFrom = 0;
-    let fmTo = fmMatch[0].length;
-
-    // Extend past trailing blank line (like getLeadingHeadingHideTo)
-    const fmEndLine = context.state.doc.lineAt(fmTo > 0 ? fmTo - 1 : 0);
-    const nextLineNumber = fmEndLine.number + 1;
-    if (nextLineNumber <= context.state.doc.lines) {
-        const nextLine = context.state.doc.line(nextLineNumber);
-        if (nextLine.text.trim().length === 0) {
-            fmTo = nextLine.to;
-        }
-    }
-
-    registerRevealSensitiveRange(context, "line", fmFrom, fmTo);
-    if (!selectionTouchesLine(context.state, fmFrom, fmTo)) {
-        hideRange(context, fmFrom, fmTo);
+    registerRevealSensitiveRange(
+        context,
+        "line",
+        frontmatterRange.from,
+        frontmatterRange.to,
+    );
+    if (
+        !selectionTouchesLine(
+            context.state,
+            frontmatterRange.from,
+            frontmatterRange.to,
+        )
+    ) {
+        hideRange(context, frontmatterRange.from, frontmatterRange.to);
     }
 }
 
@@ -1765,51 +1768,18 @@ function selectionOnLine(state: EditorState, from: number, to: number) {
 
 function buildCollapseDecorations(state: EditorState): DecorationSet {
     const builder = new RangeSetBuilder<Decoration>();
-    const docText = state.doc.sliceString(0, Math.min(state.doc.length, 2000));
+    const docText = state.doc.sliceString(0, state.doc.length);
 
-    let contentStart = 0;
-
-    // Collapse frontmatter block
-    const fmMatch = docText.match(FRONTMATTER_RE);
-    if (fmMatch) {
-        let fmTo = fmMatch[0].length;
-
-        // Extend past trailing blank line
-        const fmEndLine = state.doc.lineAt(fmTo > 0 ? fmTo - 1 : 0);
-        const nextNum = fmEndLine.number + 1;
-        if (nextNum <= state.doc.lines) {
-            const nextLine = state.doc.line(nextNum);
-            if (nextLine.text.trim().length === 0) {
-                fmTo = nextLine.to;
-            }
-        }
-
-        if (!selectionOnLine(state, 0, fmTo)) {
-            builder.add(0, fmTo, Decoration.replace({ block: true }));
-        }
-        contentStart = fmTo;
-    }
-
-    // Collapse leading H1 (after optional frontmatter)
-    const afterFm = state.doc.sliceString(contentStart, contentStart + 500);
-    const h1Match = afterFm.match(/^(\s*)(# .+)/);
-    if (h1Match) {
-        const h1From = contentStart + h1Match[1].length;
-        const h1LineEnd = contentStart + h1Match[1].length + h1Match[2].length;
-        let h1To = h1LineEnd;
-
-        // Extend past trailing blank line
-        const h1Line = state.doc.lineAt(h1LineEnd);
-        const nextNum = h1Line.number + 1;
-        if (nextNum <= state.doc.lines) {
-            const nextLine = state.doc.line(nextNum);
-            if (nextLine.text.trim().length === 0) {
-                h1To = nextLine.to;
-            }
-        }
-
-        if (!selectionOnLine(state, h1From, h1To) && h1From < h1To) {
-            builder.add(h1From, h1To, Decoration.replace({ block: true }));
+    for (const range of getLeadingContentCollapseRanges(docText)) {
+        if (
+            !selectionOnLine(state, range.from, range.to) &&
+            range.from < range.to
+        ) {
+            builder.add(
+                range.from,
+                range.to,
+                Decoration.replace({ block: true }),
+            );
         }
     }
 

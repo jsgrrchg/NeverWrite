@@ -6,6 +6,90 @@ import {
 
 export const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/;
 
+export type LeadingContentCollapseRange = {
+    from: number;
+    to: number;
+};
+
+function getLineEndOffset(body: string, from: number) {
+    const nextNewline = body.indexOf("\n", from);
+    if (nextNewline === -1) {
+        return body.length;
+    }
+    return nextNewline > from && body[nextNewline - 1] === "\r"
+        ? nextNewline - 1
+        : nextNewline;
+}
+
+function getNextLineStartOffset(body: string, from: number) {
+    if (from >= body.length) {
+        return body.length;
+    }
+    if (body[from] === "\r" && body[from + 1] === "\n") {
+        return from + 2;
+    }
+    if (body[from] === "\n") {
+        return from + 1;
+    }
+    return from;
+}
+
+function extendPastTrailingBlankLine(body: string, to: number) {
+    if (to >= body.length) {
+        return body.length;
+    }
+
+    const nextLineStart = getNextLineStartOffset(body, to);
+    const nextLineEnd = getLineEndOffset(body, nextLineStart);
+    const nextLine = body.slice(nextLineStart, nextLineEnd);
+    return nextLine.trim().length === 0 ? nextLineEnd : to;
+}
+
+export function getLeadingContentCollapseRanges(
+    body: string,
+): LeadingContentCollapseRange[] {
+    const ranges: LeadingContentCollapseRange[] = [];
+    let contentStart = 0;
+
+    const frontmatterMatch = body.match(FRONTMATTER_RE);
+    if (frontmatterMatch) {
+        const frontmatterTo = extendPastTrailingBlankLine(
+            body,
+            frontmatterMatch[0].length,
+        );
+        ranges.push({ from: 0, to: frontmatterTo });
+        contentStart = frontmatterTo;
+    }
+
+    const afterFrontmatter = body.slice(contentStart, contentStart + 500);
+    const headingMatch = afterFrontmatter.match(/^(\s*)(# .+)/);
+    if (headingMatch) {
+        const headingFrom = contentStart + headingMatch[1].length;
+        const headingTo = extendPastTrailingBlankLine(
+            body,
+            contentStart + headingMatch[0].length,
+        );
+        if (headingFrom < headingTo) {
+            ranges.push({ from: headingFrom, to: headingTo });
+        }
+    }
+
+    return ranges;
+}
+
+export function remapPositionPastLeadingContentCollapse(
+    body: string,
+    position: number,
+) {
+    for (const range of getLeadingContentCollapseRanges(body)) {
+        if (position >= range.from && position < range.to) {
+            return range.to;
+        }
+    }
+
+    return position;
+}
+
 export function getNoteLocation(noteId: string) {
     const parts = noteId.split("/").filter(Boolean);
     return {

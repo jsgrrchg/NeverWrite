@@ -69,6 +69,7 @@ import {
     FRONTMATTER_RE,
     getNoteLocation,
     deriveDisplayedTitle,
+    remapPositionPastLeadingContentCollapse,
     upsertFrontmatterTitle,
     replaceOrInsertLeadingHeading,
 } from "./noteTitleHelpers";
@@ -181,7 +182,10 @@ type ReloadedNoteMetadata = {
 type TabScrollPosition = {
     top: number;
     left: number;
+    anchorPos: number | null;
+    anchorOffsetTop: number;
 };
+type EditorMode = "source" | "preview";
 interface EditorProps {
     emptyStateMessage?: string;
 }
@@ -194,6 +198,18 @@ function isRecoverableCoordinateLookupError(error: unknown) {
         (error.message.includes("No tile at position") ||
             error.message.includes("Cannot destructure property 'tile'"))
     );
+}
+
+function getEditorMode(livePreviewEnabled: boolean): EditorMode {
+    return livePreviewEnabled ? "preview" : "source";
+}
+
+function getScrollPositionKey(noteId: string, mode: EditorMode) {
+    return `${noteId}::${mode}`;
+}
+
+function getAlternateEditorMode(mode: EditorMode): EditorMode {
+    return mode === "preview" ? "source" : "preview";
 }
 
 export function Editor({
@@ -226,6 +242,9 @@ export function Editor({
     const tabStatesRef = useRef<Map<string, EditorState>>(new Map());
     const tabScrollPositionsRef = useRef<Map<string, TabScrollPosition>>(
         new Map(),
+    );
+    const livePreviewModeRef = useRef<EditorMode>(
+        getEditorMode(useSettingsStore.getState().livePreviewEnabled),
     );
     const prevTabIdRef = useRef<string | null>(null);
     const prevNoteIdRef = useRef<string | null>(null);
@@ -452,38 +471,6 @@ export function Editor({
             serializePersistedContent(tabId, body) !==
             lastSavedContentByTabId.current.get(tabId),
         [serializePersistedContent],
-    );
-
-    const saveTabScrollPosition = useCallback(
-        (tabId: string, view: EditorView | null) => {
-            if (!view) return;
-            tabScrollPositionsRef.current.set(tabId, {
-                top: view.scrollDOM.scrollTop,
-                left: view.scrollDOM.scrollLeft,
-            });
-        },
-        [],
-    );
-
-    const restoreTabScrollPosition = useCallback(
-        (tabId: string, view: EditorView | null) => {
-            if (!view) return;
-
-            const position = tabScrollPositionsRef.current.get(tabId);
-            if (restoreScrollFrameRef.current !== null) {
-                cancelAnimationFrame(restoreScrollFrameRef.current);
-                restoreScrollFrameRef.current = null;
-            }
-
-            restoreScrollFrameRef.current = requestAnimationFrame(() => {
-                if (viewRef.current !== view) return;
-
-                view.scrollDOM.scrollTop = position?.top ?? 0;
-                view.scrollDOM.scrollLeft = position?.left ?? 0;
-                restoreScrollFrameRef.current = null;
-            });
-        },
-        [],
     );
 
     const saveNow = useCallback(
@@ -1002,6 +989,132 @@ export function Editor({
             }
         },
         [handleRecoverableCoordinateLookupError],
+    );
+
+    const captureViewportAnchor = useCallback((view: EditorView) => {
+        const scrollRect = view.scrollDOM.getBoundingClientRect();
+        const contentRect = view.contentDOM.getBoundingClientRect();
+        const headerRect = scrollHeaderRef.current?.getBoundingClientRect();
+        const minX = scrollRect.left + 1;
+        const maxX = Math.max(minX, scrollRect.right - 8);
+        const minY = scrollRect.top + 1;
+        const maxY = Math.max(minY, scrollRect.bottom - 8);
+        const x = Math.min(
+            Math.max(contentRect.left + 24, scrollRect.left + 8),
+            maxX,
+        );
+        const y = Math.min(
+            Math.max(
+                minY,
+                Math.max(scrollRect.top + 8, (headerRect?.bottom ?? 0) + 8),
+            ),
+            maxY,
+        );
+        let pos = view.viewport.from;
+
+        try {
+            pos = view.posAtCoords({ x, y }) ?? view.viewport.from;
+        } catch {
+            pos = view.viewport.from;
+        }
+
+        return {
+            pos,
+            offsetTop: y - scrollRect.top,
+        };
+    }, []);
+
+    const restoreScrollAnchor = useCallback(
+        (
+            view: EditorView,
+            position: TabScrollPosition | undefined,
+            mode: EditorMode,
+        ) => {
+            if (!position) {
+                view.scrollDOM.scrollTop = 0;
+                view.scrollDOM.scrollLeft = 0;
+                return;
+            }
+
+            const rawDoc = view.state.doc.toString();
+            const anchorPos =
+                position.anchorPos == null
+                    ? null
+                    : mode === "preview"
+                      ? remapPositionPastLeadingContentCollapse(
+                            rawDoc,
+                            position.anchorPos,
+                        )
+                      : position.anchorPos;
+
+            if (anchorPos != null) {
+                const clampedPos = Math.max(
+                    0,
+                    Math.min(anchorPos, view.state.doc.length),
+                );
+                const coords =
+                    safeCoordsAtPos(view, clampedPos, 1) ??
+                    safeCoordsAtPos(view, clampedPos, -1);
+                if (coords) {
+                    const scrollRect = view.scrollDOM.getBoundingClientRect();
+                    const delta =
+                        coords.top - scrollRect.top - position.anchorOffsetTop;
+                    view.scrollDOM.scrollTop = Math.max(
+                        0,
+                        view.scrollDOM.scrollTop + delta,
+                    );
+                    view.scrollDOM.scrollLeft = position.left;
+                    return;
+                }
+            }
+
+            view.scrollDOM.scrollTop = position.top;
+            view.scrollDOM.scrollLeft = position.left;
+        },
+        [safeCoordsAtPos],
+    );
+
+    const saveTabScrollPosition = useCallback(
+        (tabId: string, view: EditorView | null, mode: EditorMode) => {
+            if (!view) return;
+            const anchor = captureViewportAnchor(view);
+            tabScrollPositionsRef.current.set(
+                getScrollPositionKey(tabId, mode),
+                {
+                    top: view.scrollDOM.scrollTop,
+                    left: view.scrollDOM.scrollLeft,
+                    anchorPos: anchor.pos,
+                    anchorOffsetTop: anchor.offsetTop,
+                },
+            );
+        },
+        [captureViewportAnchor],
+    );
+
+    const restoreTabScrollPosition = useCallback(
+        (tabId: string, view: EditorView | null, mode: EditorMode) => {
+            if (!view) return;
+
+            const position =
+                tabScrollPositionsRef.current.get(
+                    getScrollPositionKey(tabId, mode),
+                ) ??
+                tabScrollPositionsRef.current.get(
+                    getScrollPositionKey(tabId, getAlternateEditorMode(mode)),
+                );
+            if (restoreScrollFrameRef.current !== null) {
+                cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
+
+            restoreScrollFrameRef.current = requestAnimationFrame(() => {
+                if (viewRef.current !== view) return;
+
+                restoreScrollAnchor(view, position, mode);
+                restoreScrollFrameRef.current = null;
+            });
+        },
+        [restoreScrollAnchor],
     );
 
     const updateSelectionToolbar = useCallback(
@@ -2263,8 +2376,11 @@ export function Editor({
 
         // Save previous note's EditorState and viewport position (keyed by noteId)
         if (prevNoteId && (tabChanged || noteChanged)) {
+            const currentMode = getEditorMode(
+                useSettingsStore.getState().livePreviewEnabled,
+            );
             tabStatesRef.current.set(prevNoteId, currentView.state);
-            saveTabScrollPosition(prevNoteId, currentView);
+            saveTabScrollPosition(prevNoteId, currentView, currentMode);
         }
         if (
             prevNoteId &&
@@ -2313,7 +2429,11 @@ export function Editor({
             attachScrollHeader(view);
         }
 
-        restoreTabScrollPosition(activeNoteId, view);
+        restoreTabScrollPosition(
+            activeNoteId,
+            view,
+            getEditorMode(useSettingsStore.getState().livePreviewEnabled),
+        );
         updateSelectionToolbar(view);
         updateWikilinkSuggester(view);
 
@@ -2461,7 +2581,16 @@ export function Editor({
 
     // Reconfigure live preview when vault metadata or the setting changes
     useEffect(() => {
-        viewRef.current?.dispatch({
+        const view = viewRef.current;
+        const nextMode = getEditorMode(livePreviewEnabled);
+        const previousMode = livePreviewModeRef.current;
+        const didModeChange = previousMode !== nextMode;
+
+        if (view && activeNoteId && didModeChange) {
+            saveTabScrollPosition(activeNoteId, view, previousMode);
+        }
+
+        view?.dispatch({
             effects: [
                 livePreviewCompartment.reconfigure(
                     getLivePreviewExtension(
@@ -2471,10 +2600,17 @@ export function Editor({
                 ),
             ],
         });
+        if (view && activeNoteId && didModeChange) {
+            restoreTabScrollPosition(activeNoteId, view, nextMode);
+        }
+        livePreviewModeRef.current = nextMode;
         scheduleMergeViewSync();
     }, [
+        activeNoteId,
         handleOpenLinkContextMenu,
         livePreviewEnabled,
+        restoreTabScrollPosition,
+        saveTabScrollPosition,
         scheduleMergeViewSync,
         vaultPath,
     ]);
