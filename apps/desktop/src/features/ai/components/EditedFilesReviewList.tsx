@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
 import {
@@ -94,7 +93,7 @@ function FullRow({
         hunkIds: ReviewHunkId[],
     ) => void;
 }) {
-    const { file, tone, summary, canOpen, canReject, stats } = item;
+    const { file, tone, summary, canReject, stats } = item;
     const compactPath = getCompactPath(file.path);
 
     return (
@@ -228,75 +227,45 @@ function FullRow({
 
                 {/* Inline action buttons */}
                 <div className="flex shrink-0 items-center gap-1">
-                    {canOpen ? (
-                        <button
-                            type="button"
-                            title="Open File"
-                            onClick={() =>
-                                void openAiEditedFileByAbsolutePath(file.path)
-                            }
-                            className="review-action-btn shrink-0 rounded-md p-1"
-                            style={getNeutralButtonStyle()}
-                        >
-                            <svg
-                                width="13"
-                                height="13"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            >
-                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                <polyline points="15 3 21 3 21 9" />
-                                <line x1="10" y1="14" x2="21" y2="3" />
-                            </svg>
-                        </button>
-                    ) : null}
                     <button
                         type="button"
-                        title="Keep"
-                        onClick={onKeep}
-                        className="review-action-btn shrink-0 rounded-md p-1"
-                        style={getAccentButtonStyle()}
+                        title="Open File"
+                        onClick={() =>
+                            void openAiEditedFileByAbsolutePath(file.path)
+                        }
+                        className="review-action-btn shrink-0 rounded-md px-2 py-1"
+                        style={getNeutralButtonStyle()}
                     >
-                        <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2.2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <polyline points="20 6 9 17 4 12" />
-                        </svg>
+                        <span style={{ fontSize: "0.78em", fontWeight: 600 }}>
+                            Open
+                        </span>
                     </button>
                     {canReject ? (
                         <button
                             type="button"
                             title="Reject"
                             onClick={onReject}
-                            className="review-action-btn shrink-0 rounded-md p-1"
+                            className="review-action-btn shrink-0 rounded-md px-2 py-1"
                             style={getDangerButtonStyle()}
                         >
-                            <svg
-                                width="13"
-                                height="13"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2.2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                            <span
+                                style={{ fontSize: "0.78em", fontWeight: 600 }}
                             >
-                                <line x1="18" y1="6" x2="6" y2="18" />
-                                <line x1="6" y1="6" x2="18" y2="18" />
-                            </svg>
+                                Reject
+                            </span>
                         </button>
                     ) : null}
+                    <button
+                        type="button"
+                        title="Accept"
+                        onClick={onKeep}
+                        className="review-action-btn shrink-0 rounded-md px-2 py-1"
+                        style={getAccentButtonStyle()}
+                    >
+                        <span style={{ fontSize: "0.78em", fontWeight: 600 }}>
+                            Accept
+                        </span>
+                    </button>
                 </div>
             </div>
 
@@ -322,34 +291,14 @@ function FullRow({
 
 function CompactRow({
     item,
-    diffZoom,
     onKeep,
     onReject,
-    onResolveHunks,
-    onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
-    diffZoom: number;
     onKeep: () => void;
     onReject: () => void;
-    onResolveHunks: (mergedText: string) => void;
-    onResolveReviewHunks?: (
-        decision: "accepted" | "rejected",
-        trackedVersion: number,
-        hunkIds: ReviewHunkId[],
-    ) => void;
 }) {
-    const [expanded, setExpanded] = useState(false);
-    const {
-        file,
-        tone,
-        canOpen,
-        canReject,
-        canResolveHunks,
-        diff,
-        stats,
-        reviewProjection,
-    } = item;
+    const { file, tone, canOpen, canReject, stats } = item;
 
     return (
         <div
@@ -449,49 +398,6 @@ function CompactRow({
                         <line x1="10" y1="14" x2="21" y2="3" />
                     </svg>
                 </button>
-                {/* Review Diff — diff/code icon */}
-                <button
-                    type="button"
-                    title={expanded ? "Hide Diff" : "Review Diff"}
-                    onClick={() => setExpanded((value) => !value)}
-                    className="review-action-btn shrink-0 rounded-md p-1"
-                    style={getNeutralButtonStyle()}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <polyline points="16 18 22 12 16 6" />
-                        <polyline points="8 6 2 12 8 18" />
-                    </svg>
-                </button>
-                {/* Keep — checkmark icon */}
-                <button
-                    type="button"
-                    title="Keep"
-                    onClick={onKeep}
-                    className="review-action-btn shrink-0 rounded-md p-1"
-                    style={getAccentButtonStyle()}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                </button>
                 {/* Reject — X icon */}
                 {canReject ? (
                     <button
@@ -516,32 +422,28 @@ function CompactRow({
                         </svg>
                     </button>
                 ) : null}
+                {/* Keep — checkmark icon */}
+                <button
+                    type="button"
+                    title="Keep"
+                    onClick={onKeep}
+                    className="review-action-btn shrink-0 rounded-md p-1"
+                    style={getAccentButtonStyle()}
+                >
+                    <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                </button>
             </div>
-            <EditedFileDiffPreview
-                diff={diff}
-                expanded={expanded}
-                diffZoom={diffZoom}
-                file={file}
-                reviewHunks={reviewProjection.hunks}
-                onKeep={onKeep}
-                onReject={onReject}
-                onResolveHunks={
-                    canResolveHunks
-                        ? (_, mergedText) => onResolveHunks(mergedText)
-                        : undefined
-                }
-                onResolveReviewHunks={
-                    canResolveHunks && onResolveReviewHunks
-                        ? (_, decision, trackedVersion, hunkIds) =>
-                              onResolveReviewHunks(
-                                  decision,
-                                  trackedVersion,
-                                  hunkIds,
-                              )
-                        : undefined
-                }
-                testId={`edited-buffer-diff:${file.identityKey}`}
-            />
         </div>
     );
 }
@@ -583,23 +485,8 @@ export function EditedFilesReviewList({
                     <CompactRow
                         key={item.file.identityKey}
                         item={item}
-                        diffZoom={diffZoom}
                         onKeep={() => onKeepItem?.(item.file.identityKey)}
                         onReject={() => onRejectItem(item.file.identityKey)}
-                        onResolveHunks={(mergedText) =>
-                            onResolveHunks?.(item.file.identityKey, mergedText)
-                        }
-                        onResolveReviewHunks={
-                            onResolveReviewHunks
-                                ? (decision, trackedVersion, hunkIds) =>
-                                      onResolveReviewHunks(
-                                          item.file.identityKey,
-                                          decision,
-                                          trackedVersion,
-                                          hunkIds,
-                                      )
-                                : undefined
-                        }
                     />
                 ))}
             </>
