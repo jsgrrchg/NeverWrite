@@ -191,6 +191,7 @@ interface EditorProps {
 }
 
 const MERGE_SYNC_FOCUS_DEBOUNCE_MS = 120;
+const NATIVE_SCROLLBAR_HIT_SLOP_PX = 18;
 
 function isRecoverableCoordinateLookupError(error: unknown) {
     return (
@@ -212,6 +213,58 @@ function getAlternateEditorMode(mode: EditorMode): EditorMode {
     return mode === "preview" ? "source" : "preview";
 }
 
+function getEventTargetElement(target: EventTarget | null) {
+    if (target instanceof HTMLElement) return target;
+    return target instanceof Node ? target.parentElement : null;
+}
+
+function setScrollbarDragState(view: EditorView, dragging: boolean) {
+    if (dragging) {
+        view.dom.dataset.scrollbarDragging = "true";
+        return;
+    }
+
+    delete view.dom.dataset.scrollbarDragging;
+}
+
+function isNativeScrollbarMouseDown(view: EditorView, event: MouseEvent) {
+    if (event.button !== 0) return false;
+
+    const scrollDOM = view.scrollDOM;
+    if (event.target !== scrollDOM) return false;
+
+    const rect = scrollDOM.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    const verticalScrollable = scrollDOM.scrollHeight > scrollDOM.clientHeight;
+    const horizontalScrollable = scrollDOM.scrollWidth > scrollDOM.clientWidth;
+    if (!verticalScrollable && !horizontalScrollable) return false;
+
+    const verticalHitWidth = Math.max(
+        NATIVE_SCROLLBAR_HIT_SLOP_PX,
+        scrollDOM.offsetWidth - scrollDOM.clientWidth,
+    );
+    const horizontalHitHeight = Math.max(
+        NATIVE_SCROLLBAR_HIT_SLOP_PX,
+        scrollDOM.offsetHeight - scrollDOM.clientHeight,
+    );
+
+    const onVerticalScrollbar =
+        verticalScrollable &&
+        event.clientX >= rect.right - verticalHitWidth &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+    const onHorizontalScrollbar =
+        horizontalScrollable &&
+        event.clientY >= rect.bottom - horizontalHitHeight &&
+        event.clientY <= rect.bottom &&
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right;
+
+    return onVerticalScrollbar || onHorizontalScrollbar;
+}
+
 export function Editor({
     emptyStateMessage = "Open a note from the left panel",
 }: EditorProps) {
@@ -229,6 +282,9 @@ export function Editor({
     );
     const restoreScrollFrameRef = useRef<number | null>(null);
     const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
+    const scrollbarDragCleanupRef = useRef<(() => void) | null>(null);
+    const pendingScrollbarReanchorRef = useRef(false);
+    const suppressNextScrollbarReanchorClickRef = useRef(false);
     const mergeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
         null,
     );
@@ -1116,6 +1172,17 @@ export function Editor({
         },
         [restoreScrollAnchor],
     );
+
+    const clearScrollbarDragSession = useCallback((view: EditorView | null) => {
+        scrollbarDragCleanupRef.current?.();
+        scrollbarDragCleanupRef.current = null;
+        if (!view) return;
+        setScrollbarDragState(view, false);
+        clearEditorDomSelection(view, {
+            includeCollapsed: true,
+        });
+        syncSelectionLayerVisibility(view);
+    }, []);
 
     const updateSelectionToolbar = useCallback(
         (view: EditorView | null) => {
@@ -2214,6 +2281,9 @@ export function Editor({
 
             selectionToolbarCleanupRef.current?.();
             selectionToolbarCleanupRef.current = null;
+            pendingScrollbarReanchorRef.current = false;
+            suppressNextScrollbarReanchorClickRef.current = false;
+            clearScrollbarDragSession(previousView);
             clearEditorDomSelection(previousView);
             previousView?.destroy();
 
@@ -2230,11 +2300,132 @@ export function Editor({
             }
 
             const handleScrollOrResize = () => {
+                if (scrollbarDragCleanupRef.current) {
+                    clearEditorDomSelection(nextView);
+                    syncSelectionLayerVisibility(nextView);
+                }
                 updateSelectionToolbar(nextView);
                 updateWikilinkSuggester(nextView);
             };
             const handleNativeContextMenu = (event: MouseEvent) => {
                 void handleEditorContextMenu(event);
+            };
+            const handlePostScrollbarReanchorClick = (event: MouseEvent) => {
+                if (!suppressNextScrollbarReanchorClickRef.current) return;
+                suppressNextScrollbarReanchorClickRef.current = false;
+                event.preventDefault();
+                event.stopPropagation();
+            };
+            const handlePostScrollbarReanchorMouseDown = (
+                event: MouseEvent,
+            ) => {
+                if (!pendingScrollbarReanchorRef.current) return;
+                if (event.button !== 0) return;
+                if (isNativeScrollbarMouseDown(nextView, event)) return;
+
+                const target = getEventTargetElement(event.target);
+                if (!target || !nextView.contentDOM.contains(target)) return;
+                if (
+                    target.closest(EDITOR_INTERACTIVE_PREVIEW_SELECTOR) ||
+                    target.closest("[data-source-from][data-source-to]")
+                ) {
+                    pendingScrollbarReanchorRef.current = false;
+                    return;
+                }
+
+                const pos = safePosAtCoords(nextView, {
+                    x: event.clientX,
+                    y: event.clientY,
+                });
+                if (pos == null) {
+                    pendingScrollbarReanchorRef.current = false;
+                    return;
+                }
+
+                pendingScrollbarReanchorRef.current = false;
+                suppressNextScrollbarReanchorClickRef.current = true;
+                event.preventDefault();
+                event.stopPropagation();
+                nextView.dispatch({ selection: { anchor: pos } });
+                clearEditorDomSelection(nextView, {
+                    includeCollapsed: true,
+                });
+                try {
+                    nextView.contentDOM.focus({ preventScroll: true });
+                } catch {
+                    nextView.focus();
+                }
+                clearEditorDomSelection(nextView, {
+                    includeCollapsed: true,
+                });
+                updateSelectionToolbar(nextView);
+                updateWikilinkSuggester(nextView);
+            };
+            const handleScrollbarMouseDown = (event: MouseEvent) => {
+                if (!isNativeScrollbarMouseDown(nextView, event)) return;
+
+                pendingScrollbarReanchorRef.current = false;
+                suppressNextScrollbarReanchorClickRef.current = false;
+                clearScrollbarDragSession(nextView);
+                setScrollbarDragState(nextView, true);
+                clearEditorDomSelection(nextView, {
+                    includeCollapsed: true,
+                });
+                syncSelectionLayerVisibility(nextView);
+
+                const ownerDocument = nextView.dom.ownerDocument;
+                const handleSelectStart = (selectionEvent: Event) => {
+                    selectionEvent.preventDefault();
+                };
+                const handleSelectionChange = () => {
+                    clearEditorDomSelection(nextView);
+                    syncSelectionLayerVisibility(nextView);
+                };
+                const finishScrollbarDrag = () => {
+                    pendingScrollbarReanchorRef.current = true;
+                    clearScrollbarDragSession(nextView);
+                };
+
+                ownerDocument.addEventListener(
+                    "selectstart",
+                    handleSelectStart,
+                    true,
+                );
+                ownerDocument.addEventListener(
+                    "selectionchange",
+                    handleSelectionChange,
+                );
+                ownerDocument.addEventListener("mouseup", finishScrollbarDrag, {
+                    capture: true,
+                    once: true,
+                });
+                ownerDocument.defaultView?.addEventListener(
+                    "blur",
+                    finishScrollbarDrag,
+                    { once: true },
+                );
+
+                scrollbarDragCleanupRef.current = () => {
+                    ownerDocument.removeEventListener(
+                        "selectstart",
+                        handleSelectStart,
+                        true,
+                    );
+                    ownerDocument.removeEventListener(
+                        "selectionchange",
+                        handleSelectionChange,
+                    );
+                    ownerDocument.removeEventListener(
+                        "mouseup",
+                        finishScrollbarDrag,
+                        true,
+                    );
+                    ownerDocument.defaultView?.removeEventListener(
+                        "blur",
+                        finishScrollbarDrag,
+                    );
+                    setScrollbarDragState(nextView, false);
+                };
             };
 
             nextView.scrollDOM.addEventListener(
@@ -2250,10 +2441,41 @@ export function Editor({
                 handleNativeContextMenu,
                 true,
             );
+            nextView.dom.addEventListener(
+                "click",
+                handlePostScrollbarReanchorClick,
+                true,
+            );
+            nextView.dom.addEventListener(
+                "mousedown",
+                handlePostScrollbarReanchorMouseDown,
+                true,
+            );
+            nextView.scrollDOM.addEventListener(
+                "mousedown",
+                handleScrollbarMouseDown,
+            );
             selectionToolbarCleanupRef.current = () => {
+                clearScrollbarDragSession(nextView);
+                pendingScrollbarReanchorRef.current = false;
+                suppressNextScrollbarReanchorClickRef.current = false;
                 nextView.scrollDOM.removeEventListener(
                     "scroll",
                     handleScrollOrResize,
+                );
+                nextView.dom.removeEventListener(
+                    "click",
+                    handlePostScrollbarReanchorClick,
+                    true,
+                );
+                nextView.dom.removeEventListener(
+                    "mousedown",
+                    handlePostScrollbarReanchorMouseDown,
+                    true,
+                );
+                nextView.scrollDOM.removeEventListener(
+                    "mousedown",
+                    handleScrollbarMouseDown,
                 );
                 window.removeEventListener("resize", handleScrollOrResize);
                 nextView.dom.removeEventListener(
@@ -2269,7 +2491,9 @@ export function Editor({
         },
         [
             attachScrollHeader,
+            clearScrollbarDragSession,
             handleEditorContextMenu,
+            safePosAtCoords,
             updateSelectionToolbar,
             updateWikilinkSuggester,
         ],
