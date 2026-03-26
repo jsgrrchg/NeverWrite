@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildTabFileDragDetail } from "./tabDragAttachments";
-import type { FileTab, NoteTab, PdfTab, ReviewTab } from "../../app/store/editorStore";
+import type {
+    FileTab,
+    NoteTab,
+    PdfTab,
+    ReviewTab,
+} from "../../app/store/editorStore";
 
 describe("buildTabFileDragDetail", () => {
     it("builds a note mention payload for note tabs", () => {
@@ -24,6 +29,42 @@ describe("buildTabFileDragDetail", () => {
                     id: "notes/daily.md",
                     title: "Daily",
                     path: "notes/daily.md",
+                },
+            ],
+        });
+    });
+
+    it("prefers a resolved absolute note path when available", () => {
+        const tab: NoteTab = {
+            id: "note-1",
+            noteId: "notes/daily.md",
+            title: "Daily",
+            content: "",
+            history: [],
+            historyIndex: 0,
+        };
+
+        expect(
+            buildTabFileDragDetail(
+                tab,
+                "move",
+                { clientX: 24, clientY: 48 },
+                {
+                    resolveNotePath: (noteId) =>
+                        noteId === "notes/daily.md"
+                            ? "/vault/notes/daily.md"
+                            : null,
+                },
+            ),
+        ).toEqual({
+            phase: "move",
+            x: 24,
+            y: 48,
+            notes: [
+                {
+                    id: "notes/daily.md",
+                    title: "Daily",
+                    path: "/vault/notes/daily.md",
                 },
             ],
         });
