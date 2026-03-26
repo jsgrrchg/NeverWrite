@@ -30,15 +30,20 @@ export function deriveDisplayedTitle(
     body: string,
     fallback: string,
 ) {
-    const fmTitle = frontmatterRaw
-        ? parseFrontmatterRaw(frontmatterRaw).find(
-              (entry) => entry.key === "title",
-          )?.value
+    // When frontmatterRaw is provided explicitly, use it.
+    // Otherwise try to extract frontmatter from the body itself
+    // (source mode keeps frontmatter inline in the editor).
+    const rawSource = frontmatterRaw ?? body.match(FRONTMATTER_RE)?.[0] ?? null;
+    const fmTitle = rawSource
+        ? parseFrontmatterRaw(rawSource).find((entry) => entry.key === "title")
+              ?.value
         : null;
     if (typeof fmTitle === "string" && fmTitle.trim()) {
         return fmTitle.trim();
     }
-    return extractFirstHeading(body) ?? fallback;
+    // Strip frontmatter before looking for a heading
+    const contentBody = body.replace(FRONTMATTER_RE, "");
+    return extractFirstHeading(contentBody) ?? fallback;
 }
 
 export function upsertFrontmatterTitle(raw: string, title: string): string {

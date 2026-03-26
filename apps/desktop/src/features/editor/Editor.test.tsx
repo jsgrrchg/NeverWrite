@@ -440,15 +440,21 @@ describe("Editor", () => {
             useCommandStore.getState().commands.get("editor:heading-0"),
         ).toBeDefined();
 
+        // Position cursor on the "Body heading" line (after frontmatter)
+        const bodyOffset = view.state.doc.toString().indexOf("Body heading");
         await act(async () => {
-            view.dispatch({ selection: { anchor: 0 } });
+            view.dispatch({ selection: { anchor: bodyOffset } });
             useCommandStore.getState().execute("editor:heading-1");
             await flushPromises();
         });
 
-        expect(view.state.doc.toString()).toBe("# Body heading\nBody");
+        expect(view.state.doc.toString()).toBe(
+            "---\ntitle: Frontmatter title\n---\n# Body heading\nBody",
+        );
+        // Only the editable title textarea shows "Frontmatter title"
+        // (FrontmatterPanel is disabled in source mode)
         expect(screen.getAllByDisplayValue("Frontmatter title")).toHaveLength(
-            2,
+            1,
         );
         expect(useEditorStore.getState().tabs[0]?.title).toBe(
             "Frontmatter title",
@@ -1276,8 +1282,10 @@ describe("Editor", () => {
             });
         });
 
+        // Only the editable title textarea shows "Renamed externally"
+        // (FrontmatterPanel is disabled in source mode)
         expect(screen.getAllByDisplayValue("Renamed externally")).toHaveLength(
-            2,
+            1,
         );
     });
 
@@ -1317,6 +1325,7 @@ describe("Editor", () => {
                 title: "Current",
                 content: "Restored body",
             });
+            await vi.runOnlyPendingTimersAsync();
             await flushPromises();
         });
 
