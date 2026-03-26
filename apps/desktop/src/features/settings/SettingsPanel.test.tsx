@@ -138,7 +138,7 @@ describe("SettingsPanel", () => {
                 },
                 {
                     path: "/home/user/notes/Work 2026",
-                    name: "GEO 2026",
+                    name: "Work 2026",
                 },
             ]),
         );
@@ -158,13 +158,13 @@ describe("SettingsPanel", () => {
         });
         expect(screen.getByText("2/2")).toBeInTheDocument();
         expect(screen.getByText("VaultAI")).toBeInTheDocument();
-        expect(screen.getByText("GEO 2026")).toBeInTheDocument();
+        expect(screen.getByText("Work 2026")).toBeInTheDocument();
 
         fireEvent.change(search, { target: { value: "geo" } });
 
         expect(screen.getByText("1/2")).toBeInTheDocument();
         expect(screen.queryByText("VaultAI")).not.toBeInTheDocument();
-        expect(screen.getByText("GEO 2026")).toBeInTheDocument();
+        expect(screen.getByText("Work 2026")).toBeInTheDocument();
 
         fireEvent.change(search, { target: { value: "missing" } });
 
