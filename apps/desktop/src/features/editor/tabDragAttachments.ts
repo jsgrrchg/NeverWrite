@@ -17,6 +17,10 @@ interface TabDragCoordinates {
     clientY: number;
 }
 
+interface BuildTabFileDragDetailOptions {
+    resolveNotePath?: (noteId: string) => string | null;
+}
+
 function buildDraggedFiles(tab: Tab): FileTreeDraggedFile[] | null {
     if (isPdfTab(tab)) {
         return [
@@ -55,8 +59,11 @@ export function buildTabFileDragDetail(
     tab: Tab,
     phase: FileTreeNoteDragPhase,
     coords: TabDragCoordinates,
+    options: BuildTabFileDragDetailOptions = {},
 ): FileTreeNoteDragDetail | null {
     if (isNoteTab(tab)) {
+        const resolvedPath =
+            options.resolveNotePath?.(tab.noteId) ?? tab.noteId;
         return {
             phase,
             x: coords.clientX,
@@ -65,7 +72,7 @@ export function buildTabFileDragDetail(
                 {
                     id: tab.noteId,
                     title: tab.title,
-                    path: tab.noteId,
+                    path: resolvedPath,
                 },
             ],
         };
