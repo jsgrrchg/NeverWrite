@@ -16,6 +16,10 @@ describe("shortcut registry formatting", () => {
             "Ctrl+O",
         );
         expect(formatShortcutAction("open_settings", "windows")).toBe("Ctrl+,");
+        expect(formatShortcutAction("reopen_closed_tab", "macos")).toBe("⌘⇧T");
+        expect(formatShortcutAction("reopen_closed_tab", "windows")).toBe(
+            "Ctrl+Shift+T",
+        );
     });
 
     it("builds Settings entries from the same registry for Windows", () => {
@@ -141,5 +145,25 @@ describe("shortcut registry matching", () => {
         expect(matchesShortcutAction(aliasEvent, "previous_tab", "macos")).toBe(
             true,
         );
+    });
+
+    it("matches reopen closed tab on both platforms", () => {
+        const macEvent = new KeyboardEvent("keydown", {
+            key: "T",
+            metaKey: true,
+            shiftKey: true,
+        });
+        const windowsEvent = new KeyboardEvent("keydown", {
+            key: "t",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        expect(
+            matchesShortcutAction(macEvent, "reopen_closed_tab", "macos"),
+        ).toBe(true);
+        expect(
+            matchesShortcutAction(windowsEvent, "reopen_closed_tab", "windows"),
+        ).toBe(true);
     });
 });

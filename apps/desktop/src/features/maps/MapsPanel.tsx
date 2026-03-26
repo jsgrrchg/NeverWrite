@@ -156,7 +156,7 @@ export function MapsPanel() {
         const openTab = tabs.find(
             (t) => isMapTab(t) && t.filePath === map.path,
         );
-        if (openTab) closeTab(openTab.id);
+        if (openTab) closeTab(openTab.id, { reason: "delete" });
     };
 
     return (

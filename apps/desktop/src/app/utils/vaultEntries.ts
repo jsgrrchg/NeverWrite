@@ -401,6 +401,6 @@ export function closeOpenTabsForVaultPath(path: string) {
     );
 
     for (const tab of matchingTabs) {
-        closeTab(tab.id);
+        closeTab(tab.id, { reason: "cleanup" });
     }
 }

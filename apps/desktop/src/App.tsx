@@ -469,6 +469,8 @@ function useRegisterCommands(
         const newNoteShortcut = getShortcutDefinition("new_note");
         const closeTabShortcut = getShortcutDefinition("close_tab");
         const newTabShortcut = getShortcutDefinition("new_tab");
+        const reopenClosedTabShortcut =
+            getShortcutDefinition("reopen_closed_tab");
         const toggleSidebarShortcut = getShortcutDefinition(
             "toggle_left_sidebar",
         );
@@ -482,6 +484,8 @@ function useRegisterCommands(
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             useEditorStore.getState().activeTabId !== null;
+        const hasRecentlyClosedTab = () =>
+            useEditorStore.getState().recentlyClosedTabs.length > 0;
         const developerModeEnabled = () =>
             developerCommandsEnabled &&
             useSettingsStore.getState().developerModeEnabled &&
@@ -598,6 +602,18 @@ function useRegisterCommands(
             category: newTabShortcut.category,
             when: hasVault,
             execute: openEmptyTab,
+        });
+
+        register({
+            id: "editor:reopen-closed-tab",
+            label: reopenClosedTabShortcut.label,
+            shortcut: formatShortcutAction(
+                reopenClosedTabShortcut.id,
+                platform,
+            ),
+            category: reopenClosedTabShortcut.category,
+            when: hasRecentlyClosedTab,
+            execute: () => useEditorStore.getState().reopenLastClosedTab(),
         });
 
         register({
@@ -782,6 +798,12 @@ function useGlobalShortcuts(openSettings: () => void) {
             if (matchesShortcutAction(e, "close_tab", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("editor:close-tab");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "reopen_closed_tab", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("editor:reopen-closed-tab");
                 return;
             }
 
