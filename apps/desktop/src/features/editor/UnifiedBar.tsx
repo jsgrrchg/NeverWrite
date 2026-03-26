@@ -773,7 +773,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             if (windowMode === "main" && tabId === activeTabId) {
                 const activeTab = currentTabs.find((tab) => tab.id === tabId);
-                if (activeTab && isNoteTab(activeTab)) {
+                if (
+                    activeTab &&
+                    isNoteTab(activeTab) &&
+                    activeTab.noteId !== ""
+                ) {
                     window.dispatchEvent(
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );
@@ -1580,11 +1584,18 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                     <span className="flex-1 truncate text-[12.5px] font-medium">
                                                         {fileTreeShowExtensions &&
                                                         isNoteTab(tab)
-                                                            ? (tab.noteId
-                                                                  .split("/")
-                                                                  .pop() ??
-                                                                  tab.title) +
-                                                              ".md"
+                                                            ? `${
+                                                                  tab.noteId
+                                                                      .split(
+                                                                          "/",
+                                                                      )
+                                                                      .pop() ||
+                                                                  tab.title
+                                                              }${
+                                                                  tab.noteId
+                                                                      ? ".md"
+                                                                      : ""
+                                                              }`
                                                             : tab.title}
                                                     </span>
                                                     <button
