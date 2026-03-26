@@ -14,7 +14,10 @@ vi.mock("../../../app/utils/perfInstrumentation", () => ({
 
 import { perfMeasure } from "../../../app/utils/perfInstrumentation";
 import { linkReferenceField } from "./livePreviewHelpers";
-import { createInlineLivePreviewPlugin } from "./livePreviewInline";
+import {
+    createInlineLivePreviewPlugin,
+    createLeadingContentCollapseField,
+} from "./livePreviewInline";
 
 type DecorationInfo = {
     from: number;
@@ -23,6 +26,7 @@ type DecorationInfo = {
     style: string;
     attributes: Record<string, string>;
     hasWidget: boolean;
+    isReplace: boolean;
 };
 
 function readAttributes(deco: Decoration): Record<string, string> {
@@ -63,6 +67,10 @@ function collectDecorations(
                 style: readStyle(deco),
                 attributes: readAttributes(deco),
                 hasWidget: "widget" in deco.spec && deco.spec.widget != null,
+                isReplace:
+                    deco.spec !== undefined &&
+                    !("class" in deco.spec) &&
+                    from !== to,
             });
         },
     );
@@ -80,6 +88,16 @@ function hasHiddenRange(
             deco.className === className &&
             deco.from === from &&
             deco.to === to,
+    );
+}
+
+function hasReplaceRange(
+    decorations: DecorationInfo[],
+    from: number,
+    minTo: number,
+) {
+    return decorations.some(
+        (deco) => deco.isReplace && deco.from === from && deco.to >= minTo,
     );
 }
 
@@ -780,6 +798,127 @@ describe("createInlineLivePreviewPlugin", () => {
             expect.any(Number),
             expect.any(Object),
         );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("collapses frontmatter block when cursor is outside it", () => {
+        const collapseField = createLeadingContentCollapseField();
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const doc = "---\ntitle: Hello\n---\n\nBody text";
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(doc.indexOf("Body")),
+                extensions: [
+                    markdown({ base: markdownLanguage }),
+                    collapseField,
+                ],
+            }),
+            parent,
+        });
+
+        const decos: Array<{ from: number; to: number }> = [];
+        view.state
+            .field(collapseField)
+            .between(0, view.state.doc.length, (from, to) => {
+                decos.push({ from, to });
+            });
+
+        expect(decos.some((d) => d.from === 0 && d.to >= 20)).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("reveals frontmatter when cursor is inside it", () => {
+        const collapseField = createLeadingContentCollapseField();
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const doc = "---\ntitle: Hello\n---\n\nBody text";
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(doc.indexOf("title")),
+                extensions: [
+                    markdown({ base: markdownLanguage }),
+                    collapseField,
+                ],
+            }),
+            parent,
+        });
+
+        const decos: Array<{ from: number; to: number }> = [];
+        view.state
+            .field(collapseField)
+            .between(0, view.state.doc.length, (from, to) => {
+                decos.push({ from, to });
+            });
+
+        expect(decos.some((d) => d.from === 0 && d.to >= 20)).toBe(false);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("collapses leading H1 after frontmatter in live preview", () => {
+        const collapseField = createLeadingContentCollapseField();
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const doc = "---\ntitle: Hello\n---\n\n# Hello\n\nBody text";
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(doc.indexOf("Body")),
+                extensions: [
+                    markdown({ base: markdownLanguage }),
+                    collapseField,
+                ],
+            }),
+            parent,
+        });
+
+        const decos: Array<{ from: number; to: number }> = [];
+        view.state
+            .field(collapseField)
+            .between(0, view.state.doc.length, (from, to) => {
+                decos.push({ from, to });
+            });
+
+        const h1From = doc.indexOf("# Hello");
+        expect(decos.some((d) => d.from === h1From)).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("collapses leading H1 without frontmatter", () => {
+        const collapseField = createLeadingContentCollapseField();
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const doc = "# Hello\n\nBody text";
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(doc.indexOf("Body")),
+                extensions: [
+                    markdown({ base: markdownLanguage }),
+                    collapseField,
+                ],
+            }),
+            parent,
+        });
+
+        const decos: Array<{ from: number; to: number }> = [];
+        view.state
+            .field(collapseField)
+            .between(0, view.state.doc.length, (from, to) => {
+                decos.push({ from, to });
+            });
+
+        expect(decos.some((d) => d.from === 0 && d.to >= 7)).toBe(true);
 
         view.destroy();
         parent.remove();

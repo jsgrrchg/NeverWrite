@@ -36,6 +36,7 @@ import {
     selectionTouchesRange,
 } from "./selectionActivity";
 import { parseMarkdownListItem } from "../markdownLists";
+import { FRONTMATTER_RE } from "../noteTitleHelpers";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfCount,
@@ -396,7 +397,9 @@ function applyListContinuationLines(
 }
 
 function isLeadingDocumentHeading(state: EditorState, from: number): boolean {
-    return state.doc.sliceString(0, from).trim().length === 0;
+    const before = state.doc.sliceString(0, from);
+    const withoutFrontmatter = before.replace(FRONTMATTER_RE, "");
+    return withoutFrontmatter.trim().length === 0;
 }
 
 function getLeadingHeadingHideTo(
@@ -415,6 +418,30 @@ function getLeadingHeadingHideTo(
     }
 
     return headingLine.to;
+}
+
+function applyFrontmatterHiding(context: BuildContext) {
+    const docText = context.state.doc.sliceString(0, context.state.doc.length);
+    const fmMatch = docText.match(FRONTMATTER_RE);
+    if (!fmMatch) return;
+
+    const fmFrom = 0;
+    let fmTo = fmMatch[0].length;
+
+    // Extend past trailing blank line (like getLeadingHeadingHideTo)
+    const fmEndLine = context.state.doc.lineAt(fmTo > 0 ? fmTo - 1 : 0);
+    const nextLineNumber = fmEndLine.number + 1;
+    if (nextLineNumber <= context.state.doc.lines) {
+        const nextLine = context.state.doc.line(nextLineNumber);
+        if (nextLine.text.trim().length === 0) {
+            fmTo = nextLine.to;
+        }
+    }
+
+    registerRevealSensitiveRange(context, "line", fmFrom, fmTo);
+    if (!selectionTouchesLine(context.state, fmFrom, fmTo)) {
+        hideRange(context, fmFrom, fmTo);
+    }
 }
 
 function pushDeco(
@@ -1543,6 +1570,7 @@ function buildInlineDecorations(
         revealSensitiveRangeKeys: new Set<string>(),
     };
 
+    applyFrontmatterHiding(context);
     applyNodeRules(context);
     applyLooseListFallback(context);
     applyExtendedTaskFallback(context);
@@ -1771,4 +1799,84 @@ export function createInlineLivePreviewPlugin() {
         },
         { decorations: (value) => value.decorations },
     );
+}
+
+/* ── StateField: collapse frontmatter + leading H1 ────────────── */
+
+function selectionOnLine(state: EditorState, from: number, to: number) {
+    return state.selection.ranges.some((range) => {
+        const rangeFrom = state.doc.lineAt(range.from).from;
+        const rangeTo = state.doc.lineAt(range.to).to;
+        return rangeFrom <= to && rangeTo >= from;
+    });
+}
+
+function buildCollapseDecorations(state: EditorState): DecorationSet {
+    const builder = new RangeSetBuilder<Decoration>();
+    const docText = state.doc.sliceString(0, Math.min(state.doc.length, 2000));
+
+    let contentStart = 0;
+
+    // Collapse frontmatter block
+    const fmMatch = docText.match(FRONTMATTER_RE);
+    if (fmMatch) {
+        let fmTo = fmMatch[0].length;
+
+        // Extend past trailing blank line
+        const fmEndLine = state.doc.lineAt(fmTo > 0 ? fmTo - 1 : 0);
+        const nextNum = fmEndLine.number + 1;
+        if (nextNum <= state.doc.lines) {
+            const nextLine = state.doc.line(nextNum);
+            if (nextLine.text.trim().length === 0) {
+                fmTo = nextLine.to;
+            }
+        }
+
+        if (!selectionOnLine(state, 0, fmTo)) {
+            builder.add(0, fmTo, Decoration.replace({ block: true }));
+        }
+        contentStart = fmTo;
+    }
+
+    // Collapse leading H1 (after optional frontmatter)
+    const afterFm = state.doc.sliceString(contentStart, contentStart + 500);
+    const h1Match = afterFm.match(/^(\s*)(# .+)/);
+    if (h1Match) {
+        const h1From = contentStart + h1Match[1].length;
+        const h1LineEnd = contentStart + h1Match[1].length + h1Match[2].length;
+        let h1To = h1LineEnd;
+
+        // Extend past trailing blank line
+        const h1Line = state.doc.lineAt(h1LineEnd);
+        const nextNum = h1Line.number + 1;
+        if (nextNum <= state.doc.lines) {
+            const nextLine = state.doc.line(nextNum);
+            if (nextLine.text.trim().length === 0) {
+                h1To = nextLine.to;
+            }
+        }
+
+        if (!selectionOnLine(state, h1From, h1To) && h1From < h1To) {
+            builder.add(h1From, h1To, Decoration.replace({ block: true }));
+        }
+    }
+
+    return builder.finish();
+}
+
+export function createLeadingContentCollapseField() {
+    return StateField.define<DecorationSet>({
+        create(state) {
+            return buildCollapseDecorations(state);
+        },
+        update(decos, tr) {
+            if (!tr.docChanged && !tr.selection) {
+                return decos;
+            }
+            return buildCollapseDecorations(tr.state);
+        },
+        provide(field) {
+            return EditorView.decorations.from(field);
+        },
+    });
 }
