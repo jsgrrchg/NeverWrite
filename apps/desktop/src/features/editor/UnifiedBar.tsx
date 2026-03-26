@@ -585,7 +585,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             if (!coords) return;
 
-            const detail = buildTabFileDragDetail(tab, phase, coords);
+            const detail = buildTabFileDragDetail(tab, phase, coords, {
+                resolveNotePath: (noteId) =>
+                    useVaultStore
+                        .getState()
+                        .notes.find((note) => note.id === noteId)?.path ?? null,
+            });
             if (detail) {
                 emitFileTreeNoteDrag({
                     ...detail,
@@ -670,10 +675,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             if (!tab) return true;
 
             const canAttachAsFile =
-                buildTabFileDragDetail(tab, "end", {
-                    clientX: coords.clientX,
-                    clientY: coords.clientY,
-                }) !== null;
+                buildTabFileDragDetail(
+                    tab,
+                    "end",
+                    {
+                        clientX: coords.clientX,
+                        clientY: coords.clientY,
+                    },
+                    {
+                        resolveNotePath: (noteId) =>
+                            useVaultStore
+                                .getState()
+                                .notes.find((note) => note.id === noteId)
+                                ?.path ?? null,
+                    },
+                ) !== null;
             if (!canAttachAsFile) {
                 return true;
             }
