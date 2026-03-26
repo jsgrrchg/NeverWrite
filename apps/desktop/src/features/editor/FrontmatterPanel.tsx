@@ -1080,6 +1080,10 @@ function AddPropertyComposer({
     );
 }
 
+/**
+ * Legacy FrontmatterPanel with its own header and collapse toggle.
+ * Kept for backward compatibility; new code should use FrontmatterBody instead.
+ */
 export function FrontmatterPanel({
     raw,
     onChange,
@@ -1271,6 +1275,108 @@ export function FrontmatterPanel({
                             },
                         ];
                     })()}
+                />
+            )}
+        </div>
+    );
+}
+
+/**
+ * Headless frontmatter body — externally controlled, no collapse toggle.
+ * Used by MarkdownNoteHeader to render properties below the toolbar.
+ */
+export function FrontmatterBody({
+    raw,
+    onChange,
+}: {
+    raw: string | null;
+    onChange: (nextRaw: string | null) => void;
+}) {
+    const editorFontSize = useSettingsStore((s) => s.editorFontSize);
+    const [contextMenu, setContextMenu] = useState<ContextMenuState<{
+        kind: "entry";
+        key: string;
+        value: FrontmatterValue;
+    }> | null>(null);
+
+    const labelFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
+    const valueFontSize = Math.max(11, editorFontSize - 2);
+    const pillFontSize = Math.max(10, Math.round(editorFontSize * 0.78));
+
+    const entries = useMemo(() => (raw ? parseFrontmatterRaw(raw) : []), [raw]);
+
+    const handleEntryChange = (key: string, nextValue: FrontmatterValue) => {
+        onChange(serializeFrontmatterRaw(updateEntry(entries, key, nextValue)));
+    };
+
+    const handleAddProperty = (key: string, value: FrontmatterValue) => {
+        onChange(serializeFrontmatterRaw([...entries, { key, value }]));
+    };
+
+    return (
+        <div
+            style={{
+                borderRadius: 10,
+                border: "1px solid var(--border)",
+                background:
+                    "color-mix(in srgb, var(--bg-secondary) 88%, transparent)",
+                overflow: "visible",
+            }}
+        >
+            {entries.map(({ key, value }) => (
+                <PropertyRow
+                    key={key}
+                    name={key}
+                    value={value}
+                    labelFontSize={labelFontSize}
+                    valueFontSize={valueFontSize}
+                    pillFontSize={pillFontSize}
+                    onChange={(nextValue) => handleEntryChange(key, nextValue)}
+                    onContextMenu={(event) => {
+                        event.preventDefault();
+                        setContextMenu({
+                            x: event.clientX,
+                            y: event.clientY,
+                            payload: { kind: "entry", key, value },
+                        });
+                    }}
+                />
+            ))}
+            <AddPropertyComposer
+                fontSize={valueFontSize}
+                onAdd={handleAddProperty}
+            />
+            {contextMenu && (
+                <ContextMenu
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Copy Value",
+                            action: () => {
+                                const { value } = contextMenu.payload;
+                                void navigator.clipboard.writeText(
+                                    Array.isArray(value)
+                                        ? value.join(", ")
+                                        : (value ?? "").toString(),
+                                );
+                            },
+                        },
+                        {
+                            label: "Delete Property",
+                            action: () => {
+                                const { key } = contextMenu.payload;
+                                onChange(
+                                    serializeFrontmatterRaw(
+                                        entries.filter(
+                                            (entry) => entry.key !== key,
+                                        ),
+                                    ),
+                                );
+                            },
+                            danger: true,
+                        },
+                    ]}
                 />
             )}
         </div>

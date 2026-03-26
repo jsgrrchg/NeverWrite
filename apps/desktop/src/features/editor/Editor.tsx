@@ -61,6 +61,7 @@ import {
     removeConfiguredTab,
 } from "./markdownLists";
 import {
+    FRONTMATTER_RE,
     getNoteLocation,
     deriveDisplayedTitle,
     upsertFrontmatterTitle,
@@ -76,7 +77,7 @@ import {
     resolveWikilinksBatch,
 } from "./wikilinkResolution";
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
-import { MetaBadge, EditableNoteTitle } from "./EditorHeader";
+import { MarkdownNoteHeader } from "./MarkdownNoteHeader";
 import { LinkContextMenu } from "./LinkContextMenu";
 import {
     EmbedContextMenu,
@@ -231,6 +232,7 @@ export function Editor({
         null,
     );
     const [editableTitle, setEditableTitle] = useState("");
+    const [propertiesExpanded, setPropertiesExpanded] = useState(false);
     const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
     const [linkContextMenu, setLinkContextMenu] =
         useState<LinkContextMenuState | null>(null);
@@ -608,6 +610,7 @@ export function Editor({
     const applyFrontmatterChange = useCallback(
         (nextFrontmatter: string | null) => {
             const tab = activeTabRef.current;
+            const view = viewRef.current;
             if (!tab) return;
 
             if (nextFrontmatter) {
@@ -616,6 +619,20 @@ export function Editor({
                 frontmatterByTabId.current.delete(tab.noteId);
             }
 
+            // Sync the editor document: replace/insert/remove frontmatter block.
+            if (view) {
+                const doc = view.state.doc.toString();
+                const fmMatch = doc.match(FRONTMATTER_RE);
+                const oldEnd = fmMatch ? fmMatch[0].length : 0;
+                const insert = nextFrontmatter ?? "";
+                if (insert !== doc.slice(0, oldEnd)) {
+                    view.dispatch({
+                        changes: { from: 0, to: oldEnd, insert },
+                    });
+                }
+            }
+
+            // After dispatch, getCurrentBody() returns the updated doc.
             const body = getCurrentBody();
             const nextTitle = deriveDisplayedTitle(
                 nextFrontmatter,
@@ -693,6 +710,122 @@ export function Editor({
             updateTabTitle,
         ],
     );
+
+    const handleTitleContextMenu = useCallback(
+        async (event: React.MouseEvent<HTMLTextAreaElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setEditorContextMenu(null);
+            setLinkContextMenu(null);
+            setEmbedContextMenu(null);
+            setSelectionToolbar(null);
+            const target = event.currentTarget;
+            const selectionStart = target.selectionStart ?? 0;
+            const selectionEnd = target.selectionEnd ?? 0;
+            const hasSelection = selectionEnd > selectionStart;
+            const wordRange = findTextInputWordRange(
+                target.value,
+                selectionStart,
+                selectionEnd,
+            );
+            const wordText = wordRange
+                ? target.value.slice(wordRange.from, wordRange.to).trim()
+                : null;
+            let spellingSuggestions: string[] = [];
+            let spellingCorrect: boolean | null = null;
+            let grammarDiagnostics: SpellcheckGrammarContextDiagnostic[] = [];
+
+            if (
+                titleSpellcheckEnabled &&
+                wordText &&
+                isSpellcheckCandidate(wordText)
+            ) {
+                try {
+                    const response = await loadSpellcheckSuggestions(
+                        wordText,
+                        titleSpellcheckLanguage ?? spellcheckPrimaryLanguage,
+                    );
+                    spellingSuggestions = response.suggestions;
+                    spellingCorrect = response.correct;
+                } catch (error) {
+                    console.error(
+                        "Error loading title spellcheck suggestions:",
+                        error,
+                    );
+                }
+            }
+
+            if (grammarCheckEnabled && target.value.trim().length > 0) {
+                try {
+                    const diagnostics = await loadGrammarDiagnostics(
+                        target.value,
+                        spellcheckPrimaryLanguage,
+                    );
+                    const grammarSelectionStart = selectionStart;
+                    const grammarSelectionEnd = hasSelection
+                        ? selectionEnd
+                        : selectionStart;
+
+                    grammarDiagnostics = diagnostics
+                        .filter((diagnostic) =>
+                            hasSelection
+                                ? diagnostic.start_utf16 <
+                                      grammarSelectionEnd &&
+                                  diagnostic.end_utf16 > grammarSelectionStart
+                                : grammarSelectionStart >=
+                                      diagnostic.start_utf16 &&
+                                  grammarSelectionStart <= diagnostic.end_utf16,
+                        )
+                        .map((diagnostic) => ({
+                            message: diagnostic.message,
+                            replacements: diagnostic.replacements,
+                            range: {
+                                from: diagnostic.start_utf16,
+                                to: diagnostic.end_utf16,
+                            },
+                        }));
+                } catch (error) {
+                    console.error(
+                        "Error loading title grammar suggestions:",
+                        error,
+                    );
+                }
+            }
+
+            setTitleContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                payload: {
+                    hasSelection,
+                    spellingWord: wordText,
+                    spellingCorrect,
+                    wordRange,
+                    spellingSuggestions,
+                    secondaryLanguage: spellcheckSecondaryLanguage,
+                    secondaryLanguageCandidates:
+                        getSecondaryLanguageCandidates(),
+                    grammarDiagnostics,
+                },
+            });
+        },
+        [
+            grammarCheckEnabled,
+            spellcheckPrimaryLanguage,
+            spellcheckSecondaryLanguage,
+            titleSpellcheckEnabled,
+            titleSpellcheckLanguage,
+        ],
+    );
+
+    const handleSearchClick = useCallback(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        if (searchPanelOpen(view.state)) {
+            closeSearchPanel(view);
+        } else {
+            openSearchPanel(view);
+        }
+    }, []);
 
     const syncDerivedTitle = useCallback(
         (body: string, tab: NoteTab | null = activeTabRef.current) => {
@@ -2979,150 +3112,20 @@ export function Editor({
             {scrollHeaderRef.current &&
                 activeTabInfo &&
                 createPortal(
-                    <div
-                        style={{
-                            maxWidth: "var(--editor-content-width)",
-                            margin: "0 auto",
-                            padding: "40px clamp(24px, 5vw, 56px) 20px",
-                            boxSizing: "border-box",
-                        }}
-                    >
-                        {activeLocation.parent && (
-                            <div
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                    flexWrap: "wrap",
-                                    marginBottom: 14,
-                                }}
-                            >
-                                <MetaBadge label={activeLocation.parent} />
-                            </div>
-                        )}
-                        <EditableNoteTitle
-                            value={editableTitle}
-                            onChange={applyTitleChange}
-                            textareaRef={titleInputRef}
-                            onContextMenu={async (event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                setEditorContextMenu(null);
-                                setLinkContextMenu(null);
-                                setEmbedContextMenu(null);
-                                setSelectionToolbar(null);
-                                const target = event.currentTarget;
-                                const selectionStart =
-                                    target.selectionStart ?? 0;
-                                const selectionEnd = target.selectionEnd ?? 0;
-                                const hasSelection =
-                                    selectionEnd > selectionStart;
-                                const wordRange = findTextInputWordRange(
-                                    target.value,
-                                    selectionStart,
-                                    selectionEnd,
-                                );
-                                const wordText = wordRange
-                                    ? target.value
-                                          .slice(wordRange.from, wordRange.to)
-                                          .trim()
-                                    : null;
-                                let spellingSuggestions: string[] = [];
-                                let spellingCorrect: boolean | null = null;
-                                let grammarDiagnostics: SpellcheckGrammarContextDiagnostic[] =
-                                    [];
-
-                                if (
-                                    titleSpellcheckEnabled &&
-                                    wordText &&
-                                    isSpellcheckCandidate(wordText)
-                                ) {
-                                    try {
-                                        const response =
-                                            await loadSpellcheckSuggestions(
-                                                wordText,
-                                                titleSpellcheckLanguage ??
-                                                    spellcheckPrimaryLanguage,
-                                            );
-                                        spellingSuggestions =
-                                            response.suggestions;
-                                        spellingCorrect = response.correct;
-                                    } catch (error) {
-                                        console.error(
-                                            "Error loading title spellcheck suggestions:",
-                                            error,
-                                        );
-                                    }
-                                }
-
-                                if (
-                                    grammarCheckEnabled &&
-                                    target.value.trim().length > 0
-                                ) {
-                                    try {
-                                        const diagnostics =
-                                            await loadGrammarDiagnostics(
-                                                target.value,
-                                                spellcheckPrimaryLanguage,
-                                            );
-                                        const grammarSelectionStart =
-                                            selectionStart;
-                                        const grammarSelectionEnd = hasSelection
-                                            ? selectionEnd
-                                            : selectionStart;
-
-                                        grammarDiagnostics = diagnostics
-                                            .filter((diagnostic) =>
-                                                hasSelection
-                                                    ? diagnostic.start_utf16 <
-                                                          grammarSelectionEnd &&
-                                                      diagnostic.end_utf16 >
-                                                          grammarSelectionStart
-                                                    : grammarSelectionStart >=
-                                                          diagnostic.start_utf16 &&
-                                                      grammarSelectionStart <=
-                                                          diagnostic.end_utf16,
-                                            )
-                                            .map((diagnostic) => ({
-                                                message: diagnostic.message,
-                                                replacements:
-                                                    diagnostic.replacements,
-                                                range: {
-                                                    from: diagnostic.start_utf16,
-                                                    to: diagnostic.end_utf16,
-                                                },
-                                            }));
-                                    } catch (error) {
-                                        console.error(
-                                            "Error loading title grammar suggestions:",
-                                            error,
-                                        );
-                                    }
-                                }
-
-                                setTitleContextMenu({
-                                    x: event.clientX,
-                                    y: event.clientY,
-                                    payload: {
-                                        hasSelection,
-                                        spellingWord: wordText,
-                                        spellingCorrect,
-                                        wordRange,
-                                        spellingSuggestions,
-                                        secondaryLanguage:
-                                            spellcheckSecondaryLanguage,
-                                        secondaryLanguageCandidates:
-                                            getSecondaryLanguageCandidates(),
-                                        grammarDiagnostics,
-                                    },
-                                });
-                            }}
-                        />
-                        {/* FrontmatterPanel disabled in source mode —
-                            frontmatter is shown as raw text in the editor
-                            to keep document aligned with TrackedFile for
-                            inline diff / merge view. */}
-                    </div>,
+                    <MarkdownNoteHeader
+                        editableTitle={editableTitle}
+                        onTitleChange={applyTitleChange}
+                        titleInputRef={titleInputRef}
+                        onTitleContextMenu={handleTitleContextMenu}
+                        locationParent={activeLocation.parent}
+                        frontmatterRaw={activeFrontmatter}
+                        onFrontmatterChange={applyFrontmatterChange}
+                        propertiesExpanded={propertiesExpanded}
+                        onToggleProperties={() =>
+                            setPropertiesExpanded((prev) => !prev)
+                        }
+                        onSearchClick={handleSearchClick}
+                    />,
                     scrollHeaderRef.current,
                 )}
             {linkContextMenu &&
