@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveDisplayedTitle } from "./noteTitleHelpers";
+import {
+    deriveDisplayedTitle,
+    getLeadingContentCollapseRanges,
+    remapPositionPastLeadingContentCollapse,
+} from "./noteTitleHelpers";
 
 describe("deriveDisplayedTitle", () => {
     it("uses the leading H1 when there is no frontmatter title", () => {
@@ -21,5 +25,22 @@ describe("deriveDisplayedTitle", () => {
                 "Fallback",
             ),
         ).toBe("Frontmatter Title");
+    });
+
+    it("computes the leading frontmatter and H1 collapse ranges", () => {
+        const body = "---\ntitle: Hello\n---\n\n# Hello\n\nBody text";
+
+        expect(getLeadingContentCollapseRanges(body)).toEqual([
+            { from: 0, to: 21 },
+            { from: 22, to: 30 },
+        ]);
+    });
+
+    it("remaps positions inside collapsed leading content to the next visible offset", () => {
+        const body = "---\ntitle: Hello\n---\n\n# Hello\n\nBody text";
+
+        expect(remapPositionPastLeadingContentCollapse(body, 5)).toBe(21);
+        expect(remapPositionPastLeadingContentCollapse(body, 25)).toBe(30);
+        expect(remapPositionPastLeadingContentCollapse(body, 35)).toBe(35);
     });
 });
