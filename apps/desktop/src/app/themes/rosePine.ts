@@ -11,6 +11,7 @@ export const rosePineTheme: ThemePalette = {
         textSecondary: "#9893a5",
         border: "#dfd8cf",
         accent: "#d7827e",
+        iconMuted: "#9893a5",
         shadowSoft: "0 18px 48px rgba(87, 82, 121, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const rosePineTheme: ThemePalette = {
         textSecondary: "#908caa",
         border: "#2a2740",
         accent: "#ebbcba",
+        iconMuted: "#7e79a0",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

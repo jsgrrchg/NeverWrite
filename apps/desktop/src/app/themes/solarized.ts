@@ -11,6 +11,7 @@ export const solarizedTheme: ThemePalette = {
         textSecondary: "#586e75",
         border: "#d3c6a6",
         accent: "#268bd2",
+        iconMuted: "#586e75",
         shadowSoft: "0 18px 48px rgba(7, 54, 66, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const solarizedTheme: ThemePalette = {
         textSecondary: "#93a1a1",
         border: "#11505e",
         accent: "#2aa198",
+        iconMuted: "#839496",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.40)",
     },
 };

@@ -11,6 +11,7 @@ export const kanagawaTheme: ThemePalette = {
         textSecondary: "#8a8980",
         border: "#d5cea3",
         accent: "#4d699b",
+        iconMuted: "#8a8980",
         shadowSoft: "0 18px 48px rgba(84, 84, 100, 0.10)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const kanagawaTheme: ThemePalette = {
         textSecondary: "#727169",
         border: "#363646",
         accent: "#7E9CD8",
+        iconMuted: "#838275",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

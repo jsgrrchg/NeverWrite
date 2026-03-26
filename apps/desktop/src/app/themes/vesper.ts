@@ -11,6 +11,7 @@ export const vesperTheme: ThemePalette = {
         textSecondary: "#7e7e7e",
         border: "#e0dbd3",
         accent: "#c87830",
+        iconMuted: "#7e7e7e",
         shadowSoft: "0 18px 48px rgba(26, 26, 26, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const vesperTheme: ThemePalette = {
         textSecondary: "#a0a0a0",
         border: "#282828",
         accent: "#ffc799",
+        iconMuted: "#909090",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.45)",
     },
 };

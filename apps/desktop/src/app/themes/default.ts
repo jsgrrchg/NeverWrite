@@ -11,6 +11,7 @@ export const defaultTheme: ThemePalette = {
         textSecondary: "#737373",
         border: "#e5e5e5",
         accent: "#6366f1",
+        iconMuted: "#737373",
         shadowSoft: "0 18px 48px rgba(15, 23, 42, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const defaultTheme: ThemePalette = {
         textSecondary: "#8a8a8a",
         border: "#383838",
         accent: "#818cf8",
+        iconMuted: "#9a9a9a",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.28)",
     },
 };

@@ -11,6 +11,7 @@ export const codexTheme: ThemePalette = {
         textSecondary: "#6e6e80",
         border: "#e5e5ea",
         accent: "#10a37f",
+        iconMuted: "#6e6e80",
         shadowSoft: "0 18px 48px rgba(0, 0, 0, 0.06)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const codexTheme: ThemePalette = {
         textSecondary: "#8e8ea0",
         border: "#3c3c41",
         accent: "#10a37f",
+        iconMuted: "#8e8ea0",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

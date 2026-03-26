@@ -11,6 +11,7 @@ export const synthwave84Theme: ThemePalette = {
         textSecondary: "#695d85",
         border: "#dbd2ec",
         accent: "#d946a8",
+        iconMuted: "#695d85",
         shadowSoft: "0 18px 48px rgba(42, 33, 57, 0.10)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const synthwave84Theme: ThemePalette = {
         textSecondary: "#848bbd",
         border: "#34294f",
         accent: "#ff7edb",
+        iconMuted: "#7a73a6",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.40)",
     },
 };

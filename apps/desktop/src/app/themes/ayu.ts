@@ -11,6 +11,7 @@ export const ayuTheme: ThemePalette = {
         textSecondary: "#828e9f",
         border: "#e8eaed",
         accent: "#f29718",
+        iconMuted: "#828e9f",
         shadowSoft: "0 18px 48px rgba(92, 97, 102, 0.08)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const ayuTheme: ThemePalette = {
         textSecondary: "#5a6378",
         border: "#1b1f29",
         accent: "#e6b450",
+        iconMuted: "#6b7a90",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

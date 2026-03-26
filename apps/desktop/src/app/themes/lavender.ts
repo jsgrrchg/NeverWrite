@@ -11,6 +11,7 @@ export const lavenderTheme: ThemePalette = {
         textSecondary: "#7c6f96",
         border: "#ddd4ec",
         accent: "#8b5cf6",
+        iconMuted: "#7c6f96",
         shadowSoft: "0 18px 48px rgba(26, 21, 37, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const lavenderTheme: ThemePalette = {
         textSecondary: "#9b90ad",
         border: "#352e42",
         accent: "#a78bfa",
+        iconMuted: "#8d82a3",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.32)",
     },
 };

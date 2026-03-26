@@ -11,6 +11,7 @@ export const amberTheme: ThemePalette = {
         textSecondary: "#8a7a60",
         border: "#e2d6c1",
         accent: "#d97706",
+        iconMuted: "#8a7a60",
         shadowSoft: "0 18px 48px rgba(28, 20, 8, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const amberTheme: ThemePalette = {
         textSecondary: "#a89e8a",
         border: "#3a3528",
         accent: "#f59e0b",
+        iconMuted: "#9e9278",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.30)",
     },
 };

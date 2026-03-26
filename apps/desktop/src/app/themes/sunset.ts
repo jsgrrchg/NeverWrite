@@ -11,6 +11,7 @@ export const sunsetTheme: ThemePalette = {
         textSecondary: "#8c6e5a",
         border: "#e6d4c4",
         accent: "#ea580c",
+        iconMuted: "#8c6e5a",
         shadowSoft: "0 18px 48px rgba(33, 21, 14, 0.07)",
     },
     dark: {
@@ -22,6 +23,7 @@ export const sunsetTheme: ThemePalette = {
         textSecondary: "#a8917e",
         border: "#3c3028",
         accent: "#fb923c",
+        iconMuted: "#9e8774",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.32)",
     },
 };
