@@ -3195,7 +3195,11 @@ export function FileTree() {
         renameGuardRef.current = true;
         try {
             setRenamingNoteId(null);
-            await renameNote(note.id, newName);
+            const parentPath = getParentPath(note.id);
+            const nextNotePath = parentPath
+                ? `${parentPath}/${newName}`
+                : newName;
+            await renameNote(note.id, nextNotePath);
         } finally {
             renameGuardRef.current = false;
         }

@@ -454,6 +454,53 @@ describe("FileTree", () => {
         ]);
     });
 
+    it("keeps a renamed note inside its original folder", async () => {
+        const user = userEvent.setup();
+        const renameNote = vi
+            .fn()
+            .mockImplementation(async (_noteId: string, newPath: string) => ({
+                id: newPath,
+                path: `/vault/${newPath}.md`,
+                title: newPath.split("/").pop() ?? newPath,
+            }));
+
+        useVaultStore.setState({ renameNote });
+        setVaultNotes([
+            {
+                id: "plans/alpha",
+                path: "/vault/plans/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "tab-alpha",
+                noteId: "plans/alpha",
+                title: "Alpha",
+                content: "Alpha",
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "plans");
+
+        fireEvent.contextMenu(getNoteRow("Alpha"));
+        await user.click(await screen.findByText("Rename"));
+
+        const input = screen.getByDisplayValue("Alpha");
+        fireEvent.change(input, { target: { value: "Beta" } });
+        fireEvent.blur(input);
+
+        await waitFor(() => {
+            expect(renameNote).toHaveBeenCalledWith(
+                "plans/alpha",
+                "plans/Beta",
+            );
+        });
+    });
+
     it("moves all selected notes from the context menu with a plural label", async () => {
         const user = userEvent.setup();
         const renameNote = vi
