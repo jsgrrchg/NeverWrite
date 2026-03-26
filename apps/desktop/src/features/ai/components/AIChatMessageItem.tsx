@@ -1426,6 +1426,28 @@ function ChangeReviewPanel({
         : "Edit";
     const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
+    const isSingleFile = diffs.length === 1;
+    const singleDiff = isSingleFile ? diffs[0] : null;
+    const singleFilename = singleDiff
+        ? getFileNameFromPath(singleDiff.path)
+        : null;
+    const singleFileStats = singleDiff
+        ? computeFileDiffStats(singleDiff)
+        : null;
+    const singleFileStatusLabel = singleDiff
+        ? singleDiff.kind === "add"
+            ? "new file"
+            : singleDiff.kind === "delete"
+              ? "deleted"
+              : singleDiff.kind === "move"
+                ? singleDiff.previous_path
+                    ? `moved from ${getFileNameFromPath(singleDiff.previous_path)}`
+                    : "moved"
+                : "modified"
+        : null;
+    const displayStats =
+        isSingleFile && singleFileStats ? singleFileStats : stats;
+    const [singleDiffExpanded, setSingleDiffExpanded] = useState(false);
     return (
         <div
             className="min-w-0 max-w-full overflow-hidden rounded-lg"
@@ -1437,12 +1459,55 @@ function ChangeReviewPanel({
             {/* Summary bar */}
             <div
                 className="flex items-center gap-2 px-3 py-2"
+                role={isSingleFile ? "button" : undefined}
+                tabIndex={isSingleFile ? 0 : undefined}
+                onClick={
+                    isSingleFile
+                        ? () => setSingleDiffExpanded((p) => !p)
+                        : undefined
+                }
+                onKeyDown={
+                    isSingleFile
+                        ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setSingleDiffExpanded((p) => !p);
+                              }
+                          }
+                        : undefined
+                }
                 style={{
                     borderBottom: `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`,
+                    cursor: isSingleFile ? "pointer" : undefined,
                 }}
             >
+                {/* Chevron for single-file expand/collapse */}
+                {isSingleFile && (
+                    <svg
+                        width="8"
+                        height="8"
+                        viewBox="0 0 8 8"
+                        fill="none"
+                        stroke="var(--text-secondary)"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        className="shrink-0"
+                        style={{
+                            display: "block",
+                            transform: singleDiffExpanded
+                                ? "rotate(90deg)"
+                                : "rotate(0deg)",
+                            transition: "transform 0.15s ease",
+                        }}
+                    >
+                        <path d="M2 1.5L5.5 4L2 6.5" />
+                    </svg>
+                )}
                 {isToolMessage ? (
-                    <span className="shrink-0" style={{ color: accent }}>
+                    <span
+                        className="flex shrink-0 items-center"
+                        style={{ color: accent }}
+                    >
                         <ToolIcon kind={toolKind} />
                     </span>
                 ) : (
@@ -1462,39 +1527,113 @@ function ChangeReviewPanel({
                         <circle cx="7" cy="10" r="0.5" fill={accent} />
                     </svg>
                 )}
+                {isSingleFile ? (
+                    <div
+                        className="flex min-w-0 items-center gap-1.5"
+                        style={{
+                            overflow: "hidden",
+                            maskImage:
+                                "linear-gradient(to right, black calc(100% - 12px), transparent)",
+                            WebkitMaskImage:
+                                "linear-gradient(to right, black calc(100% - 12px), transparent)",
+                        }}
+                    >
+                        <span
+                            className="whitespace-nowrap"
+                            style={{
+                                overflowX: "auto",
+                                scrollbarWidth: "none",
+                                color: "var(--text-primary)",
+                                fontWeight: 600,
+                                fontSize: "0.83em",
+                            }}
+                        >
+                            {`${actionLabel}${actionLabel.endsWith("e") ? "d" : "ed"} ${singleFilename}`}
+                        </span>
+                        {singleFileStatusLabel &&
+                            singleFileStatusLabel !== "modified" && (
+                                <span
+                                    className="shrink-0 whitespace-nowrap"
+                                    style={{
+                                        color: "var(--text-secondary)",
+                                        fontSize: "0.74em",
+                                        opacity: 0.6,
+                                    }}
+                                >
+                                    {singleFileStatusLabel}
+                                </span>
+                            )}
+                        {singleDiff?.reversible === false && (
+                            <span
+                                className="shrink-0 rounded-full px-1.5 py-0.5 whitespace-nowrap"
+                                style={{
+                                    fontSize: "0.68em",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.04em",
+                                    color: "#b45309",
+                                    backgroundColor:
+                                        "color-mix(in srgb, #f59e0b 14%, transparent)",
+                                }}
+                            >
+                                partial
+                            </span>
+                        )}
+                    </div>
+                ) : (
+                    <>
+                        <span
+                            style={{
+                                color: "var(--text-primary)",
+                                fontWeight: 600,
+                                fontSize: "0.83em",
+                            }}
+                        >
+                            {actionLabel} {fileCount} {fileWord}
+                        </span>
+                        <span
+                            style={{
+                                color: "var(--text-secondary)",
+                                fontSize: "0.78em",
+                                opacity: 0.7,
+                            }}
+                        >
+                            ·
+                        </span>
+                    </>
+                )}
                 <span
                     style={{
-                        color: "var(--text-primary)",
-                        fontWeight: 600,
-                        fontSize: "0.83em",
-                    }}
-                >
-                    {actionLabel} {fileCount} {fileWord}
-                </span>
-                <span
-                    style={{
-                        color: "var(--text-secondary)",
+                        display: "flex",
+                        gap: 6,
                         fontSize: "0.78em",
-                        opacity: 0.7,
+                        flexShrink: 0,
                     }}
                 >
-                    ·
-                </span>
-                <span style={{ display: "flex", gap: 6, fontSize: "0.78em" }}>
-                    {stats.additions > 0 && (
+                    {displayStats.additions > 0 && (
                         <span style={{ color: "#16a34a", fontWeight: 500 }}>
                             +
-                            {formatDiffStat(stats.additions, stats.approximate)}
+                            {formatDiffStat(
+                                displayStats.additions,
+                                displayStats.approximate,
+                            )}
                         </span>
                     )}
-                    {stats.deletions > 0 && (
+                    {displayStats.deletions > 0 && (
                         <span style={{ color: "#dc2626", fontWeight: 500 }}>
                             -
-                            {formatDiffStat(stats.deletions, stats.approximate)}
+                            {formatDiffStat(
+                                displayStats.deletions,
+                                displayStats.approximate,
+                            )}
                         </span>
                     )}
                 </span>
-                <div className="ml-auto flex items-center gap-1.5">
+                <div
+                    className="ml-auto flex items-center gap-1.5"
+                    onClick={
+                        isSingleFile ? (e) => e.stopPropagation() : undefined
+                    }
+                >
                     <div
                         className="flex items-center rounded-md"
                         style={{
@@ -1570,19 +1709,36 @@ function ChangeReviewPanel({
                                 cursor: "pointer",
                             }}
                         >
-                            Open File
+                            Open
                         </button>
                     ) : null}
                 </div>
             </div>
 
-            {/* File list with expandable diffs */}
-            <ChangeReviewFileList
-                diffs={diffs}
-                accent={accent}
-                diffZoom={editDiffZoom}
-                lineWrapping={lineWrapping}
-            />
+            {/* Single-file inline diff preview */}
+            {isSingleFile && singleDiff && singleDiffExpanded && (
+                <ResizableDiffContainer accent={accent}>
+                    <EditedFileDiffPreview
+                        diff={singleDiff}
+                        expanded={singleDiffExpanded}
+                        diffZoom={editDiffZoom}
+                        lineWrapping={lineWrapping}
+                        testId={`diff-content:${singleDiff.path}`}
+                        showWhenEmpty={false}
+                        compactLineNumbers
+                    />
+                </ResizableDiffContainer>
+            )}
+
+            {/* File list with expandable diffs (multi-file only) */}
+            {!isSingleFile && (
+                <ChangeReviewFileList
+                    diffs={diffs}
+                    accent={accent}
+                    diffZoom={editDiffZoom}
+                    lineWrapping={lineWrapping}
+                />
+            )}
 
             {/* Actions */}
             {message.permissionRequestId &&
