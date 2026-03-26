@@ -6,6 +6,7 @@ describe("settingsStore developer mode", () => {
     it("defaults developerModeEnabled to false", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
     });
 
     it("persists developerModeEnabled per vault", () => {
@@ -15,11 +16,13 @@ describe("settingsStore developer mode", () => {
         useSettingsStore
             .getState()
             .setSetting("developerTerminalEnabled", false);
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
 
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(
             false,
         );
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(
             JSON.parse(
                 localStorage.getItem("vaultai:settings:/vaults/devtools") ?? "",
@@ -28,6 +31,7 @@ describe("settingsStore developer mode", () => {
             state: {
                 developerModeEnabled: true,
                 developerTerminalEnabled: false,
+                inlineReviewEnabled: false,
             },
         });
     });
@@ -65,6 +69,7 @@ describe("settingsStore developer mode", () => {
             .getState()
             .setSetting("spellcheckSecondaryLanguage", "en-US");
         useSettingsStore.getState().setSetting("developerModeEnabled", true);
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
 
         useVaultStore.setState({ vaultPath: "/vaults/two" });
 
@@ -75,6 +80,7 @@ describe("settingsStore developer mode", () => {
             null,
         );
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
 
         useSettingsStore
             .getState()
@@ -89,6 +95,7 @@ describe("settingsStore developer mode", () => {
             "en-US",
         );
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
     });
 
     it("migrates legacy global spellcheck settings into existing vault settings", () => {

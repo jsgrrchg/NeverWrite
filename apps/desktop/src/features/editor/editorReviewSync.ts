@@ -3,6 +3,7 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import type { AIChatSession } from "../ai/types";
 import type { EditorTarget } from "./editorTargetResolver";
+import { shouldSyncTrackedEditorReviewTarget } from "./editorReviewGate";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 
 function getTargetCandidatePaths(target: EditorTarget): string[] {
@@ -27,6 +28,10 @@ export function syncTrackedEditorReviewTarget(
     target: EditorTarget | null,
     sessionsById: Record<string, AIChatSession>,
 ): boolean {
+    if (!shouldSyncTrackedEditorReviewTarget()) {
+        return false;
+    }
+
     if (!target?.openTab) {
         return false;
     }
