@@ -1,6 +1,7 @@
 import { act, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore, isReviewTab } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent, setVaultEntries } from "../../../test/test-utils";
 import { AIReviewView } from "./AIReviewView";
@@ -131,6 +132,7 @@ describe("multi-session review integration", () => {
             notes: [],
             entries: [],
         });
+        useSettingsStore.setState({ lineWrapping: true });
     });
 
     it("mounts review, panel and auto-open with two active sessions while switching between review tabs", async () => {
@@ -273,5 +275,54 @@ describe("multi-session review integration", () => {
         expect(firstA.map((file) => file.path)).toEqual(["/vault/notes/a.md"]);
         expect(firstB.map((file) => file.path)).toEqual(["/vault/notes/b.md"]);
         expect(secondA).toBe(firstA);
+    });
+
+    it("disables line wrapping inside pending review diffs when editor line wrapping is disabled", async () => {
+        useSettingsStore.setState({ lineWrapping: false });
+        setVaultEntries([
+            {
+                id: "notes/a.md",
+                path: "/vault/notes/a.md",
+                relative_path: "notes/a.md",
+                title: "a.md",
+                file_name: "a.md",
+                extension: "md",
+                kind: "note",
+                modified_at: 0,
+                created_at: 0,
+                size: 10,
+                mime_type: "text/markdown",
+            },
+        ]);
+
+        const sessionA = createSession("session-a", [
+            createTrackedFile("/vault/notes/a.md", 10),
+        ]);
+
+        renderComponent(<MultiSessionReviewHarness />);
+
+        await act(async () => {
+            useChatStore.setState((state) => ({
+                ...state,
+                runtimes,
+                activeSessionId: sessionA.sessionId,
+                sessionsById: {
+                    [sessionA.sessionId]: sessionA,
+                },
+            }));
+        });
+
+        await act(async () => {
+            setReviewTabActive(sessionA.sessionId);
+        });
+
+        const diffPreview = screen
+            .getByText("new line 10")
+            .closest("[data-testid]");
+        expect(diffPreview).not.toBeNull();
+        expect(diffPreview).toHaveAttribute("data-line-wrapping", "false");
+        expect(diffPreview).toHaveStyle({
+            overflowX: "auto",
+        });
     });
 });

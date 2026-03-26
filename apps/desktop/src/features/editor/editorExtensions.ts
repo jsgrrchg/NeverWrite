@@ -30,9 +30,17 @@ export type LinkContextMenuState = {
     noteTarget: string | null;
 };
 
-const editorHorizontalInset =
+export const editorReadingHorizontalInset =
     "max(clamp(24px, 5vw, 56px), calc((100% - var(--editor-content-width)) / 2))";
+export const editorCodeHorizontalInset = "clamp(16px, 2vw, 24px)";
+const editorHorizontalInset = `var(--editor-horizontal-inset, ${editorReadingHorizontalInset})`;
 const editorLineNumberGutterWidth = "44px";
+
+export function getEditorHorizontalInset(lineWrapping: boolean) {
+    return lineWrapping
+        ? editorReadingHorizontalInset
+        : editorCodeHorizontalInset;
+}
 
 export const baseTheme = EditorView.theme({
     "&": {

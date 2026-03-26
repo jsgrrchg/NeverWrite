@@ -21,6 +21,7 @@ function FullRowActions({
     item,
     expanded,
     diffZoom,
+    lineWrapping,
     onKeep,
     onReject,
     onResolveHunks,
@@ -29,6 +30,7 @@ function FullRowActions({
     item: ReviewFileItem;
     expanded: boolean;
     diffZoom: number;
+    lineWrapping: boolean;
     onKeep: () => void;
     onReject: () => void;
     onResolveHunks: (mergedText: string) => void;
@@ -45,6 +47,7 @@ function FullRowActions({
             diff={diff}
             expanded={expanded}
             diffZoom={diffZoom}
+            lineWrapping={lineWrapping}
             compactLineNumbers
             file={file}
             reviewHunks={reviewProjection.hunks}
@@ -74,6 +77,7 @@ function FullRow({
     item,
     expanded,
     diffZoom,
+    lineWrapping,
     onToggle,
     onKeep,
     onReject,
@@ -83,6 +87,7 @@ function FullRow({
     item: ReviewFileItem;
     expanded: boolean;
     diffZoom: number;
+    lineWrapping: boolean;
     onToggle: () => void;
     onKeep: () => void;
     onReject: () => void;
@@ -282,6 +287,7 @@ function FullRow({
                     item={item}
                     expanded={expanded}
                     diffZoom={diffZoom}
+                    lineWrapping={lineWrapping}
                     onKeep={onKeep}
                     onReject={onReject}
                     onResolveHunks={onResolveHunks}
@@ -463,6 +469,7 @@ export function EditedFilesReviewList({
     items,
     variant,
     diffZoom,
+    lineWrapping,
     expandedKeys,
     onToggleItem,
     onKeepItem,
@@ -473,6 +480,7 @@ export function EditedFilesReviewList({
     items: ReviewFileItem[];
     variant: "full" | "compact";
     diffZoom: number;
+    lineWrapping: boolean;
     expandedKeys?: Set<string>;
     onToggleItem?: (identityKey: string) => void;
     onKeepItem?: (identityKey: string) => void;
@@ -508,6 +516,7 @@ export function EditedFilesReviewList({
                     item={item}
                     expanded={expandedKeys?.has(item.file.identityKey) ?? false}
                     diffZoom={diffZoom}
+                    lineWrapping={lineWrapping}
                     onToggle={() => onToggleItem?.(item.file.identityKey)}
                     onKeep={() => onKeepItem?.(item.file.identityKey)}
                     onReject={() => onRejectItem(item.file.identityKey)}

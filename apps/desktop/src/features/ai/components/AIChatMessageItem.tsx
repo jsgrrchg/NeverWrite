@@ -32,6 +32,7 @@ import {
     openChatNoteByAbsolutePath,
     openChatNoteByReference,
 } from "../chatNoteNavigation";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
 interface UserMentionContextMenuPayload {
@@ -1190,12 +1191,14 @@ function ChangeReviewFileRow({
     expanded,
     onToggle,
     diffZoom,
+    lineWrapping,
 }: {
     diff: AIFileDiff;
     accent: string;
     expanded: boolean;
     onToggle: () => void;
     diffZoom: number;
+    lineWrapping: boolean;
 }) {
     const filename = getFileNameFromPath(diff.path);
     const previousFilename = diff.previous_path
@@ -1314,6 +1317,7 @@ function ChangeReviewFileRow({
                         diff={diff}
                         expanded={expanded}
                         diffZoom={diffZoom}
+                        lineWrapping={lineWrapping}
                         testId={`diff-content:${diff.path}`}
                         showWhenEmpty={false}
                         compactLineNumbers
@@ -1328,10 +1332,12 @@ function ChangeReviewFileList({
     diffs,
     accent,
     diffZoom,
+    lineWrapping,
 }: {
     diffs: AIFileDiff[];
     accent: string;
     diffZoom: number;
+    lineWrapping: boolean;
 }) {
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -1344,6 +1350,7 @@ function ChangeReviewFileList({
                         diff={diff}
                         accent={accent}
                         diffZoom={diffZoom}
+                        lineWrapping={lineWrapping}
                         expanded={expanded[diff.path] ?? false}
                         onToggle={() =>
                             setExpanded((prev) => ({
@@ -1381,6 +1388,7 @@ function ChangeReviewPanel({
     const diffs = message.diffs ?? [];
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
+    const lineWrapping = useSettingsStore((state) => state.lineWrapping);
     const notes = useVaultStore((state) => state.notes);
     const toolKind = String(message.meta?.tool ?? "");
     const isToolMessage = message.kind === "tool";
@@ -1573,6 +1581,7 @@ function ChangeReviewPanel({
                 diffs={diffs}
                 accent={accent}
                 diffZoom={editDiffZoom}
+                lineWrapping={lineWrapping}
             />
 
             {/* Actions */}

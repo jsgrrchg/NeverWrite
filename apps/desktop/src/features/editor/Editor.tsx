@@ -106,6 +106,7 @@ import {
     getWrappingExtension,
     getSpellcheckExtension,
     getEditorFontFamily,
+    getEditorHorizontalInset,
 } from "./editorExtensions";
 import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
@@ -2836,8 +2837,8 @@ export function Editor({
         scheduleMergeViewSync();
     }, [
         activeNoteId,
-        inlineReviewEnabled,
         handleOpenLinkContextMenu,
+        inlineReviewEnabled,
         livePreviewEnabled,
         restoreTabScrollPosition,
         saveTabScrollPosition,
@@ -3275,6 +3276,7 @@ export function Editor({
         "--editor-font-family": getEditorFontFamily(editorFontFamily),
         "--text-input-line-height": String(editorLineHeight / 100),
         "--editor-content-width": `${editorContentWidth}px`,
+        "--editor-horizontal-inset": getEditorHorizontalInset(lineWrapping),
     } as CSSProperties;
 
     const activeLocation = activeTabInfo
@@ -3533,6 +3535,7 @@ export function Editor({
                 createPortal(
                     <MarkdownNoteHeader
                         editableTitle={editableTitle}
+                        lineWrapping={lineWrapping}
                         onTitleChange={applyTitleChange}
                         titleInputRef={titleInputRef}
                         onTitleContextMenu={handleTitleContextMenu}

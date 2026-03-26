@@ -280,6 +280,41 @@ describe("Editor", () => {
         );
     });
 
+    it("uses a left-aligned content inset when line wrapping is disabled in both preview modes", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "First line\nSecond line",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("lineWrapping", false);
+        });
+
+        const shell = document.querySelector(".editor-shell") as HTMLElement;
+        expect(shell).not.toBeNull();
+        expect(shell.style.getPropertyValue("--editor-horizontal-inset")).toBe(
+            "clamp(16px, 2vw, 24px)",
+        );
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        });
+
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "false",
+        );
+        expect(shell.style.getPropertyValue("--editor-horizontal-inset")).toBe(
+            "clamp(16px, 2vw, 24px)",
+        );
+    });
+
     it("does not underline markdown headings in source mode", async () => {
         setEditorTabs([
             {

@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import {
     renderComponent,
     setEditorTabs,
@@ -57,6 +58,7 @@ function createDiffMessage(
 beforeEach(() => {
     localStorage.clear();
     resetChatStore();
+    useSettingsStore.setState({ lineWrapping: true });
 });
 
 describe("AIChatMessageItem plan message", () => {
@@ -176,6 +178,52 @@ describe("AIChatMessageItem tool diffs", () => {
 
         expect(screen.getByText(/old line/)).toBeInTheDocument();
         expect(screen.getByText(/new line/)).toBeInTheDocument();
+    });
+
+    it("disables line wrapping inside edit file diffs when editor line wrapping is disabled", () => {
+        useSettingsStore.setState({ lineWrapping: false });
+        setVaultNotes([
+            {
+                id: "watcher-note",
+                path: "/vault/notes/watcher.md",
+                title: "watcher",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderMessage({
+            id: "tool:no-wrap",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit watcher",
+            content: "Updated watcher.md",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: "/vault/notes/watcher.md",
+                    kind: "update",
+                    old_text: "const example = oldValue;",
+                    new_text:
+                        "const example = newVeryLongValueWithoutWrapping;",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/notes/watcher.md",
+            },
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: /watcher.md/i }));
+
+        const diffPreview = screen.getByTestId(
+            "diff-content:/vault/notes/watcher.md",
+        );
+        expect(diffPreview).toHaveAttribute("data-line-wrapping", "false");
+        expect(diffPreview).toHaveStyle({
+            overflowX: "auto",
+        });
     });
 
     it("renders exact hunk gutters when diff metadata is available", () => {
