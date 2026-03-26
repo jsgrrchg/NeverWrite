@@ -883,7 +883,10 @@ export function Editor({
             });
         },
         [
+            getSecondaryLanguageCandidates,
             grammarCheckEnabled,
+            loadGrammarDiagnostics,
+            loadSpellcheckSuggestions,
             spellcheckPrimaryLanguage,
             spellcheckSecondaryLanguage,
             titleSpellcheckEnabled,

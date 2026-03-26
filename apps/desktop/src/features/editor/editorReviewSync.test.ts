@@ -84,6 +84,8 @@ describe("editorReviewSync", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "old body",
+                history: [],
+                historyIndex: 0,
             },
         };
         const sessionsById = buildTrackedSessions(
@@ -115,6 +117,8 @@ describe("editorReviewSync", () => {
                 noteId: "notes/current",
                 title: "Current",
                 content: "old body",
+                history: [],
+                historyIndex: 0,
             },
         };
         const sessionsById = buildTrackedSessions(

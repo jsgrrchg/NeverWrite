@@ -836,7 +836,7 @@ export function PlanMessage({
                                 }}
                             >
                                 <span
-                                    className="mt-[3px] inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
+                                    className="mt-0.75 inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
                                     style={{
                                         backgroundColor: isCompleted
                                             ? "#84cc16"

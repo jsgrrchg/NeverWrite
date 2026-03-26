@@ -42,6 +42,7 @@ describe("DiffLineView", () => {
             <DiffLineView
                 line={{
                     type: "add",
+                    prefix: "+ ",
                     text: "const example = newVeryLongValueWithoutWrapping;",
                     newLineNumber: 12,
                 }}
@@ -66,6 +67,7 @@ describe("DiffLineView", () => {
             <DiffLineView
                 line={{
                     type: "add",
+                    prefix: "+ ",
                     text: "const example = wrapped;",
                     newLineNumber: 7,
                 }}
