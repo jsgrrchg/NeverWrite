@@ -241,7 +241,7 @@ export function AIChatTabs({
                                 opacity: isDragging ? 0.7 : 1,
                                 position: "relative",
                                 zIndex: isDragging ? 2 : 1,
-                                cursor: isDragging ? "grabbing" : "grab",
+                                cursor: isDragging ? "grabbing" : "pointer",
                             }}
                             onMouseEnter={(e) => {
                                 if (isActive) return;
