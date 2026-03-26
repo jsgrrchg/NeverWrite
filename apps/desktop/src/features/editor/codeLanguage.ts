@@ -1,4 +1,9 @@
 import type { Extension } from "@codemirror/state";
+import {
+    Language,
+    LanguageDescription,
+    LanguageSupport,
+} from "@codemirror/language";
 
 type LanguageKey =
     | "clojure"
@@ -44,6 +49,62 @@ type LanguageKey =
     | "yaml";
 
 const languageCache = new Map<LanguageKey, Promise<Extension | null>>();
+
+const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
+    clojure: ["clojure", "clj", "cljs"],
+    cmake: ["cmake"],
+    css: ["css", "scss", "less"],
+    d: ["d"],
+    diff: ["diff", "patch"],
+    dockerfile: ["dockerfile", "docker"],
+    erlang: ["erlang", "erl", "elixir", "ex", "exs"],
+    go: ["go", "golang"],
+    groovy: ["groovy"],
+    haskell: ["haskell", "hs"],
+    html: ["html"],
+    java: ["java", "kotlin", "kt", "kts", "scala"],
+    javascript: ["javascript", "js", "node", "nodejs", "mjs", "cjs"],
+    "javascript-jsx": ["jsx"],
+    json: ["json", "jsonc"],
+    julia: ["julia", "jl"],
+    lua: ["lua"],
+    makefile: ["make", "makefile", "mk"],
+    pascal: ["pascal", "delphi"],
+    perl: ["perl", "pl"],
+    powershell: ["powershell", "ps1", "ps", "pwsh"],
+    properties: ["properties", "ini", "cfg", "conf", "dotenv", "env"],
+    protobuf: ["protobuf", "proto"],
+    python: ["python", "py"],
+    r: ["r"],
+    ruby: ["ruby", "rb"],
+    rust: ["rust", "rs"],
+    sass: ["sass"],
+    shell: ["shell", "sh", "bash", "zsh", "fish", "shellscript"],
+    sql: ["sql"],
+    stex: ["tex", "latex"],
+    stylus: ["stylus", "styl"],
+    swift: ["swift"],
+    tcl: ["tcl"],
+    toml: ["toml"],
+    typescript: ["typescript", "ts"],
+    "typescript-jsx": ["tsx"],
+    vb: ["vb", "vbnet", "csharp", "c#", "cs"],
+    wast: ["wast", "wat", "wasm"],
+    xml: ["xml", "svg", "xhtml"],
+    yaml: ["yaml", "yml"],
+};
+
+const markdownFenceAliasToKey = new Map<string, LanguageKey>();
+const markdownLanguageDescriptions = new Map<
+    LanguageKey,
+    LanguageDescription
+>();
+
+for (const key of Object.keys(markdownFenceAliases) as LanguageKey[]) {
+    for (const alias of markdownFenceAliases[key]) {
+        markdownFenceAliasToKey.set(alias.toLowerCase(), key);
+    }
+}
 
 function getPathExtension(path: string) {
     const fileName = path.split("/").pop() ?? path;
@@ -511,6 +572,74 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
         default:
             return Promise.resolve(null);
     }
+}
+
+async function loadLanguageSupportByKey(
+    key: LanguageKey,
+): Promise<LanguageSupport | null> {
+    const extension = await loadLanguageByKey(key);
+    if (extension instanceof LanguageSupport) {
+        return extension;
+    }
+    if (extension instanceof Language) {
+        return new LanguageSupport(extension);
+    }
+    return null;
+}
+
+function extractFenceLanguageToken(info: string): string | null {
+    const trimmed = info.trim().toLowerCase();
+    if (!trimmed) return null;
+
+    const braceLanguageMatch = trimmed.match(
+        /(?:^|[\s{])(?:language-|\.)?([a-z0-9+#_-]+)(?=[\s},]|$)/,
+    );
+    const rawToken = braceLanguageMatch?.[1] ?? trimmed.split(/\s+/, 1)[0];
+    if (!rawToken) return null;
+
+    const normalized = rawToken
+        .replace(/^[{[(<.'"]+/, "")
+        .replace(/[>\])}',";:]+$/, "")
+        .replace(/^language-/, "")
+        .replace(/^\./, "");
+
+    return normalized || null;
+}
+
+export function resolveMarkdownCodeLanguageKey(
+    info: string,
+): LanguageKey | null {
+    const token = extractFenceLanguageToken(info);
+    if (!token) return null;
+    return markdownFenceAliasToKey.get(token) ?? null;
+}
+
+export function resolveMarkdownCodeLanguage(
+    info: string,
+): LanguageDescription | null {
+    const key = resolveMarkdownCodeLanguageKey(info);
+    if (!key) return null;
+
+    const cached = markdownLanguageDescriptions.get(key);
+    if (cached) {
+        return cached;
+    }
+
+    const description = LanguageDescription.of({
+        name: key,
+        alias: markdownFenceAliases[key],
+        load: async () => {
+            const support = await loadLanguageSupportByKey(key);
+            if (!support) {
+                throw new Error(
+                    `Language support '${key}' is unavailable for Markdown fenced code`,
+                );
+            }
+            return support;
+        },
+    });
+    markdownLanguageDescriptions.set(key, description);
+    return description;
 }
 
 export function loadCodeLanguage(

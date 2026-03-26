@@ -110,6 +110,7 @@ import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
 import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
 import { subscribeEditorReviewSync } from "./editorReviewSync";
+import { resolveMarkdownCodeLanguage } from "./codeLanguage";
 import {
     activateWikilinkSuggesterAnnotation,
     markdownAutopairExtension,
@@ -1788,7 +1789,10 @@ export function Editor({
                 doc,
                 extensions: [
                     history(),
-                    markdown({ base: markdownLanguage }),
+                    markdown({
+                        base: markdownLanguage,
+                        codeLanguages: resolveMarkdownCodeLanguage,
+                    }),
                     baseTheme,
                     syntaxCompartment.of(
                         getSyntaxExtension(useThemeStore.getState().isDark),

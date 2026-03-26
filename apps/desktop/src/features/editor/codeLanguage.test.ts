@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadCodeLanguage, resolveCodeLanguageKey } from "./codeLanguage";
+import {
+    loadCodeLanguage,
+    resolveCodeLanguageKey,
+    resolveMarkdownCodeLanguage,
+    resolveMarkdownCodeLanguageKey,
+} from "./codeLanguage";
 
 describe("codeLanguage", () => {
     it("maps supported file extensions to explicit language keys", () => {
@@ -105,6 +110,32 @@ describe("codeLanguage", () => {
                 "application/octet-stream",
             ),
         ).toBe(null);
+    });
+
+    it("maps fenced code info strings to supported language keys", () => {
+        expect(resolveMarkdownCodeLanguageKey("rust")).toBe("rust");
+        expect(resolveMarkdownCodeLanguageKey("rs")).toBe("rust");
+        expect(resolveMarkdownCodeLanguageKey("typescript")).toBe("typescript");
+        expect(resolveMarkdownCodeLanguageKey("tsx")).toBe("typescript-jsx");
+        expect(resolveMarkdownCodeLanguageKey("bash")).toBe("shell");
+        expect(resolveMarkdownCodeLanguageKey("yml")).toBe("yaml");
+        expect(resolveMarkdownCodeLanguageKey("{.python}")).toBe("python");
+        expect(resolveMarkdownCodeLanguageKey("language-json")).toBe("json");
+        expect(resolveMarkdownCodeLanguageKey("rust linenums")).toBe("rust");
+        expect(resolveMarkdownCodeLanguageKey("unknown")).toBe(null);
+    });
+
+    it("builds lazy Markdown language descriptions for fenced code", async () => {
+        const rust = resolveMarkdownCodeLanguage("rust");
+        const bash = resolveMarkdownCodeLanguage("bash");
+        const unknown = resolveMarkdownCodeLanguage("plaintext");
+
+        expect(rust).not.toBeNull();
+        expect(bash).not.toBeNull();
+        expect(unknown).toBeNull();
+
+        await expect(rust?.load()).resolves.toBeDefined();
+        await expect(bash?.load()).resolves.toBeDefined();
     });
 
     it("loads modern and legacy CodeMirror languages on demand", async () => {

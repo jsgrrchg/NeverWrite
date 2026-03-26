@@ -67,13 +67,10 @@ function countMatches(
     let current = 0;
     const sel = view.state.selection.main.from;
 
-    while (!cursor.next().done) {
+    for (let next = cursor.next(); !next.done; next = cursor.next()) {
+        const match = next.value;
         total++;
-        if (
-            cursor.value.from <= sel &&
-            cursor.value.to >= sel &&
-            current === 0
-        ) {
+        if (match.from <= sel && match.to >= sel && current === 0) {
             current = total;
         }
     }
