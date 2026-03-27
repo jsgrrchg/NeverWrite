@@ -7,6 +7,8 @@ import type {
 
 const CLIPPER_SETTINGS_STORAGE_KEY = "clipperSettings";
 const MAX_HISTORY_ITEMS = 50;
+const DEFAULT_TEMPLATE_BODY = "{{content}}";
+const LEGACY_DEFAULT_TEMPLATE_BODY = "# {{title}}\n\n{{content}}";
 
 function createTemplateId(): string {
     return crypto.randomUUID();
@@ -28,7 +30,7 @@ export function createDefaultClipperSettings(): ClipperSettings {
         activeVaultIndex: 0,
         clipSelectedOnly: false,
         useClipboard: false,
-        defaultTemplate: "# {{title}}\n\n{{content}}",
+        defaultTemplate: DEFAULT_TEMPLATE_BODY,
         recentTags: [],
         recentFoldersByVault: {},
         templates: [],
@@ -169,7 +171,10 @@ export function normalizeClipperSettings(
         clipSelectedOnly: Boolean(value?.clipSelectedOnly),
         useClipboard: Boolean(value?.useClipboard),
         defaultTemplate:
-            value?.defaultTemplate?.trim() || fallback.defaultTemplate,
+            !value?.defaultTemplate?.trim() ||
+            value.defaultTemplate.trim() === LEGACY_DEFAULT_TEMPLATE_BODY
+                ? DEFAULT_TEMPLATE_BODY
+                : value.defaultTemplate.trim(),
         recentTags: normalizeList(value?.recentTags, 20),
         recentFoldersByVault:
             value?.recentFoldersByVault &&

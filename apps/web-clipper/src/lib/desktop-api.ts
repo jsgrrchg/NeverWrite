@@ -20,8 +20,8 @@ export interface DesktopClipSaveInput extends DesktopLookupInput {
     title: string;
     content: string;
     folder: string;
-    tags: string[];
-    sourceUrl: string;
+    tags?: string[];
+    sourceUrl?: string;
 }
 
 export interface DesktopClipSaveResponse {
