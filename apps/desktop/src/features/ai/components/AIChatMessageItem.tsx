@@ -397,11 +397,15 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
           : toolKind === "move"
             ? "Moved"
             : "Updated";
+    const displayLabel =
+        shortTarget ??
+        (toolKind === "edit" && isInProgress ? "Writing" : message.title) ??
+        actionLabel;
 
     // Detail: show summary/content if it provides extra info beyond filename
     const detail =
         message.content &&
-        message.content !== shortTarget &&
+        message.content !== displayLabel &&
         message.content !== (message.title ?? toolKind)
             ? message.content
             : null;
@@ -517,7 +521,7 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                             : undefined
                     }
                 >
-                    {shortTarget ?? message.title ?? actionLabel}
+                    {displayLabel}
                 </span>
 
                 {/* Status */}
