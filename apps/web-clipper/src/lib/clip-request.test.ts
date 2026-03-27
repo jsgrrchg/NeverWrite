@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createClipRequestDraft, INLINE_PAYLOAD_MAX_BYTES } from "./clip-request";
+import {
+    createClipRequestDraft,
+    INLINE_PAYLOAD_MAX_BYTES,
+} from "./clip-request";
 import { createClipDeepLink } from "./deep-link";
 
 const clipData = {
@@ -29,7 +32,9 @@ describe("createClipRequestDraft", () => {
             clipData,
             contentMarkdown: "Short note",
             title: "Short note",
-            vault: "Personal",
+            vault: "/vaults/personal",
+            vaultPathHint: "/vaults/personal",
+            vaultNameHint: "Personal",
             folder: "Inbox",
         });
 
@@ -40,7 +45,9 @@ describe("createClipRequestDraft", () => {
 
         const deepLink = createClipDeepLink(draft.payload);
         expect(deepLink).toContain("mode=inline");
-        expect(deepLink).toContain("vault=Personal");
+        expect(deepLink).toContain("vault=%2Fvaults%2Fpersonal");
+        expect(deepLink).toContain("vaultPathHint=%2Fvaults%2Fpersonal");
+        expect(deepLink).toContain("vaultNameHint=Personal");
         expect(deepLink).toContain("folder=Inbox");
     });
 
@@ -50,7 +57,9 @@ describe("createClipRequestDraft", () => {
             clipData,
             contentMarkdown,
             title: "Large note",
-            vault: "Personal",
+            vault: "/vaults/personal",
+            vaultPathHint: "/vaults/personal",
+            vaultNameHint: "Personal",
         });
 
         expect(draft.payload.mode).toBe("clipboard");
@@ -68,11 +77,28 @@ describe("createClipRequestDraft", () => {
             clipData,
             contentMarkdown: "Short note",
             title: "Short note",
-            vault: "Personal",
+            vault: "/vaults/personal",
+            vaultPathHint: "/vaults/personal",
+            vaultNameHint: "Personal",
             preferClipboard: true,
         });
 
         expect(draft.payload.mode).toBe("clipboard");
         expect(draft.clipboardMarkdown).toBe("Short note");
+    });
+
+    it("keeps legacy vault populated with a usable identity", () => {
+        const draft = createClipRequestDraft({
+            clipData,
+            contentMarkdown: "Short note",
+            title: "Short note",
+            vault: "/vaults/personal",
+            vaultPathHint: "/vaults/personal",
+            vaultNameHint: "Personal",
+        });
+
+        expect(draft.payload.vault).toBe("/vaults/personal");
+        expect(draft.payload.vaultPathHint).toBe("/vaults/personal");
+        expect(draft.payload.vaultNameHint).toBe("Personal");
     });
 });

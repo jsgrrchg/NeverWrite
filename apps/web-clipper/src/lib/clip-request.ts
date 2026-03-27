@@ -10,6 +10,8 @@ export interface ClipRequestInput {
     contentMarkdown: string;
     title: string;
     vault: string;
+    vaultPathHint?: string;
+    vaultNameHint?: string;
     folder?: string;
     preferClipboard?: boolean;
 }
@@ -19,6 +21,8 @@ export interface ClipRequestPayload {
     createdAt: string;
     source: typeof CLIP_REQUEST_SOURCE;
     vault: string;
+    vaultPathHint?: string;
+    vaultNameHint?: string;
     folder: string;
     title: string;
     url: string;
@@ -45,6 +49,8 @@ export function createClipRequestDraft({
     contentMarkdown,
     title,
     vault,
+    vaultPathHint,
+    vaultNameHint,
     folder = "",
     preferClipboard = false,
 }: ClipRequestInput): ClipRequestDraft {
@@ -63,6 +69,8 @@ export function createClipRequestDraft({
                 createdAt,
                 source: CLIP_REQUEST_SOURCE,
                 vault,
+                vaultPathHint,
+                vaultNameHint,
                 folder,
                 title: normalizedTitle,
                 url: clipData.metadata.url,
@@ -79,6 +87,8 @@ export function createClipRequestDraft({
             createdAt,
             source: CLIP_REQUEST_SOURCE,
             vault,
+            vaultPathHint,
+            vaultNameHint,
             folder,
             title: normalizedTitle,
             url: clipData.metadata.url,
