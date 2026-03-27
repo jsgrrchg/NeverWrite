@@ -378,16 +378,30 @@ export function Editor({
         wikilinkSuggesterRef.current = wikilinkSuggester;
     }, [wikilinkSuggester]);
 
+    const syncFrontmatterFromContent = useCallback(
+        (tabId: string, content: string) => {
+            const nextFrontmatter = content.match(FRONTMATTER_RE)?.[0] ?? null;
+            if (nextFrontmatter) {
+                frontmatterByTabId.current.set(tabId, nextFrontmatter);
+            } else {
+                frontmatterByTabId.current.delete(tabId);
+            }
+            return nextFrontmatter;
+        },
+        [],
+    );
+
     // Extract and strip frontmatter from content. Stores the raw block in the ref.
     // Returns the body (content after the frontmatter block).
     const stripFrontmatter = useCallback(
-        (_tabId: string, content: string): string => {
+        (tabId: string, content: string): string => {
+            syncFrontmatterFromContent(tabId, content);
             // Source mode: frontmatter stays in the editor as raw text.
             // This keeps the editor document aligned with TrackedFile.currentText
             // so that the inline diff / merge view works correctly.
             return content;
         },
-        [],
+        [syncFrontmatterFromContent],
     );
 
     const activeTabId = useEditorStore((s) => s.activeTabId);
@@ -2232,13 +2246,18 @@ export function Editor({
                         // Capture the immutable doc reference — defer toString()
                         // to the debounce callbacks instead of on every keystroke.
                         const doc = update.state.doc;
+                        const content = doc.toString();
+                        const nextFrontmatter = syncFrontmatterFromContent(
+                            tab.noteId,
+                            content,
+                        );
                         if (contentUpdateTimerRef.current)
                             clearTimeout(contentUpdateTimerRef.current);
                         contentUpdateTimerRef.current = setTimeout(() => {
-                            const content = doc.toString();
                             updateTabContent(tab.id, content);
                         }, 300);
-                        syncDerivedTitle(doc.toString(), tab);
+                        setActiveFrontmatter(nextFrontmatter);
+                        syncDerivedTitle(content, tab);
                         scheduleSaveRef.current(tab.id, doc);
                     }),
                     userEditNotifier(
@@ -2296,6 +2315,7 @@ export function Editor({
             applyHeadingCommand,
             copySelectedText,
             cutSelectedText,
+            syncFrontmatterFromContent,
             syncDerivedTitle,
             updateTabContent,
         ],
