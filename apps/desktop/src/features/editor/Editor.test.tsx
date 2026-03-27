@@ -36,6 +36,14 @@ function getEditorView() {
     return view!;
 }
 
+async function flushEditorViewUpdates() {
+    await flushPromises();
+    await act(async () => {
+        vi.runOnlyPendingTimers();
+    });
+    await flushPromises();
+}
+
 function seedTrackedDiff(
     targetPath: string,
     diffBase: string,
@@ -451,6 +459,125 @@ describe("Editor", () => {
             "data-live-preview",
             "true",
         );
+    });
+
+    it("projects the latest source scroll position back into live preview", async () => {
+        vi.useFakeTimers();
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Line 1\nLine 2\nLine 3",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        vi.spyOn(EditorView.prototype, "posAtCoords").mockReturnValue(24);
+        vi.spyOn(EditorView.prototype, "coordsAtPos").mockReturnValue(null);
+
+        await flushEditorViewUpdates();
+
+        let view = getEditorView();
+        view.scrollDOM.scrollTop = 120;
+        view.scrollDOM.scrollLeft = 16;
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        });
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "false",
+        );
+        expect(view.scrollDOM.scrollTop).toBe(120);
+        expect(view.scrollDOM.scrollLeft).toBe(16);
+
+        view.scrollDOM.scrollTop = 420;
+        view.scrollDOM.scrollLeft = 24;
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", true);
+        });
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "true",
+        );
+        expect(view.scrollDOM.scrollTop).toBe(420);
+        expect(view.scrollDOM.scrollLeft).toBe(24);
+    });
+
+    it("restores the latest source-derived scroll position when returning to a tab in live preview", async () => {
+        vi.useFakeTimers();
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Current body",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+
+        renderComponent(<Editor />);
+
+        vi.spyOn(EditorView.prototype, "posAtCoords").mockReturnValue(24);
+        vi.spyOn(EditorView.prototype, "coordsAtPos").mockReturnValue(null);
+
+        await flushEditorViewUpdates();
+
+        let view = getEditorView();
+        view.scrollDOM.scrollTop = 100;
+        view.scrollDOM.scrollLeft = 5;
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        });
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        view.scrollDOM.scrollTop = 300;
+        view.scrollDOM.scrollLeft = 11;
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+        });
+        await flushEditorViewUpdates();
+
+        expect(getEditorView().state.doc.toString()).toBe("Other body");
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("livePreviewEnabled", true);
+        });
+        await flushEditorViewUpdates();
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-1");
+        });
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        expect(view.state.doc.toString()).toBe("Current body");
+        expect(document.querySelector(".cm-editor")).toHaveAttribute(
+            "data-live-preview",
+            "true",
+        );
+        expect(view.scrollDOM.scrollTop).toBe(300);
+        expect(view.scrollDOM.scrollLeft).toBe(11);
     });
 
     it("does not activate merge view when inline review is disabled", async () => {

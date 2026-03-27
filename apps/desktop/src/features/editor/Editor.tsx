@@ -212,14 +212,6 @@ function getEditorMode(livePreviewEnabled: boolean): EditorMode {
     return livePreviewEnabled ? "preview" : "source";
 }
 
-function getScrollPositionKey(noteId: string, mode: EditorMode) {
-    return `${noteId}::${mode}`;
-}
-
-function getAlternateEditorMode(mode: EditorMode): EditorMode {
-    return mode === "preview" ? "source" : "preview";
-}
-
 function getEventTargetElement(target: EventTarget | null) {
     if (target instanceof HTMLElement) return target;
     return target instanceof Node ? target.parentElement : null;
@@ -1220,18 +1212,15 @@ export function Editor({
     );
 
     const saveTabScrollPosition = useCallback(
-        (tabId: string, view: EditorView | null, mode: EditorMode) => {
+        (tabId: string, view: EditorView | null) => {
             if (!view) return;
             const anchor = captureViewportAnchor(view);
-            tabScrollPositionsRef.current.set(
-                getScrollPositionKey(tabId, mode),
-                {
-                    top: view.scrollDOM.scrollTop,
-                    left: view.scrollDOM.scrollLeft,
-                    anchorPos: anchor.pos,
-                    anchorOffsetTop: anchor.offsetTop,
-                },
-            );
+            tabScrollPositionsRef.current.set(tabId, {
+                top: view.scrollDOM.scrollTop,
+                left: view.scrollDOM.scrollLeft,
+                anchorPos: anchor.pos,
+                anchorOffsetTop: anchor.offsetTop,
+            });
         },
         [captureViewportAnchor],
     );
@@ -1240,13 +1229,7 @@ export function Editor({
         (tabId: string, view: EditorView | null, mode: EditorMode) => {
             if (!view) return;
 
-            const position =
-                tabScrollPositionsRef.current.get(
-                    getScrollPositionKey(tabId, mode),
-                ) ??
-                tabScrollPositionsRef.current.get(
-                    getScrollPositionKey(tabId, getAlternateEditorMode(mode)),
-                );
+            const position = tabScrollPositionsRef.current.get(tabId);
             if (restoreScrollFrameRef.current !== null) {
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
@@ -2650,11 +2633,8 @@ export function Editor({
 
         // Save previous note's EditorState and viewport position (keyed by noteId)
         if (prevNoteId && (tabChanged || noteChanged)) {
-            const currentMode = getEditorMode(
-                useSettingsStore.getState().livePreviewEnabled,
-            );
             tabStatesRef.current.set(prevNoteId, currentView.state);
-            saveTabScrollPosition(prevNoteId, currentView, currentMode);
+            saveTabScrollPosition(prevNoteId, currentView);
         }
         if (
             prevNoteId &&
@@ -2861,7 +2841,7 @@ export function Editor({
         const didModeChange = previousMode !== nextMode;
 
         if (view && activeNoteId && didModeChange) {
-            saveTabScrollPosition(activeNoteId, view, previousMode);
+            saveTabScrollPosition(activeNoteId, view);
         }
 
         view?.dispatch({
