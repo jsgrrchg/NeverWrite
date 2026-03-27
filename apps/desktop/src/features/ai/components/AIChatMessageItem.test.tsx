@@ -361,6 +361,42 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
     });
 
+    it("shows Writing for active edit cards without a target path", () => {
+        renderMessage({
+            id: "tool:writing",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit file",
+            content: "Edit file",
+            timestamp: Date.now(),
+            meta: {
+                tool: "edit",
+                status: "in_progress",
+            },
+        });
+
+        expect(screen.getByText("Writing")).toBeInTheDocument();
+        expect(screen.queryByText("Edit file")).not.toBeInTheDocument();
+    });
+
+    it("falls back to the tool title after an untargeted edit finishes", () => {
+        renderMessage({
+            id: "tool:writing-complete",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit file",
+            content: "Edit file",
+            timestamp: Date.now(),
+            meta: {
+                tool: "edit",
+                status: "completed",
+            },
+        });
+
+        expect(screen.getByText("Edit file")).toBeInTheDocument();
+        expect(screen.queryByText("Writing")).not.toBeInTheDocument();
+    });
+
     it("preserves permission actions for permission messages with diffs", () => {
         renderMessage({
             id: "permission:1",
