@@ -27,8 +27,10 @@ struct SaveClipRequest {
     content: String,
     folder: String,
     #[allow(dead_code)]
+    #[serde(default)]
     tags: Vec<String>,
     #[allow(dead_code)]
+    #[serde(default)]
     source_url: String,
     vault_path_hint: Option<String>,
     vault_name_hint: Option<String>,

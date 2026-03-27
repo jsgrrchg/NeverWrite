@@ -29,6 +29,7 @@ import {
     renderClipTemplate,
     resolveClipTemplate,
 } from "../../lib/template-engine";
+import { buildClipMarkdown } from "../../lib/clip-markdown";
 import type { ClipperSettings } from "../../lib/types";
 import ClipForm, { type ClipContentMode } from "./components/ClipForm";
 import HistoryPage from "./components/HistoryPage";
@@ -63,49 +64,6 @@ function extractErrorMessage(error: unknown): string {
     return "The clipper could not complete the requested action.";
 }
 
-function buildMetadataLines(clipData: ClipData, tags: string): string[] {
-    const lines = [
-        `Source: ${clipData.metadata.url}`,
-        `Domain: ${clipData.metadata.domain}`,
-    ];
-
-    if (clipData.metadata.author) {
-        lines.push(`Author: ${clipData.metadata.author}`);
-    }
-
-    if (clipData.metadata.published) {
-        lines.push(`Published: ${clipData.metadata.published}`);
-    }
-
-    if (clipData.metadata.description) {
-        lines.push(`Description: ${clipData.metadata.description}`);
-    }
-
-    if (tags.trim()) {
-        lines.push(`Tags: ${tags.trim()}`);
-    }
-
-    return lines;
-}
-
-function buildClipBody(
-    clipData: ClipData,
-    contentMode: ClipContentMode,
-): string {
-    switch (contentMode) {
-        case "selection":
-            return clipData.selection?.markdown || clipData.content.markdown;
-        case "url-only":
-            return [
-                `[Open source](${clipData.metadata.url})`,
-                "",
-                clipData.metadata.description ||
-                    "Bookmark-only clip. Full content disabled for this capture.",
-            ].join("\n");
-        default:
-            return clipData.content.markdown;
-    }
-}
 
 function buildMarkdownPreview(
     clipData: ClipData,
@@ -115,22 +73,17 @@ function buildMarkdownPreview(
     contentMode: ClipContentMode,
     templateBody: string,
 ): string {
-    const header = [`# ${title || clipData.metadata.title}`, ""];
-    const metadataLines = buildMetadataLines(clipData, tags.join(", "));
-
-    if (metadataLines.length > 0) {
-        header.push(...metadataLines, "");
-    }
-
-    const body = buildClipBody(clipData, contentMode);
-    const composed = [...header, body].join("\n").trim();
-
     return renderClipTemplate(templateBody, {
         clipData,
         title,
         tags,
         folder,
-        content: composed,
+        content: buildClipMarkdown({
+            clipData,
+            title,
+            tags,
+            contentMode,
+        }),
     }).trim();
 }
 

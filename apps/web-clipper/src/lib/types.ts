@@ -1,5 +1,6 @@
-import type { ClipContentMode } from "../entrypoints/clip-window/components/ClipForm";
 import type { ClipMetadata } from "./clipper-contract";
+
+export type ClipContentMode = "full-page" | "selection" | "url-only";
 
 export interface VaultConfig {
     id: string;
