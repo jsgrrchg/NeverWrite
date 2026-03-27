@@ -845,6 +845,67 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("keeps frontmatter collapsed on initial open with the default cursor at doc start", () => {
+        const collapseField = createLeadingContentCollapseField();
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const doc = "---\ntitle: Hello\n---\n\nBody text";
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(0),
+                extensions: [
+                    markdown({ base: markdownLanguage }),
+                    collapseField,
+                ],
+            }),
+            parent,
+        });
+
+        const decos: Array<{ from: number; to: number }> = [];
+        view.state
+            .field(collapseField)
+            .between(0, view.state.doc.length, (from, to) => {
+                decos.push({ from, to });
+            });
+
+        expect(decos.some((d) => d.from === 0 && d.to >= 20)).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("treats a cursor at the collapsed boundary as outside the hidden block", () => {
+        const collapseField = createLeadingContentCollapseField();
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const doc = "---\ntitle: Hello\n---\n\nBody text";
+        const frontmatterEnd = doc.indexOf("Body") - 1;
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(frontmatterEnd),
+                extensions: [
+                    markdown({ base: markdownLanguage }),
+                    collapseField,
+                ],
+            }),
+            parent,
+        });
+
+        const decos: Array<{ from: number; to: number }> = [];
+        view.state
+            .field(collapseField)
+            .between(0, view.state.doc.length, (from, to) => {
+                decos.push({ from, to });
+            });
+
+        expect(decos.some((d) => d.from === 0 && d.to >= 20)).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("collapses leading H1 after frontmatter in live preview", () => {
         const collapseField = createLeadingContentCollapseField();
         const parent = document.createElement("div");

@@ -1760,9 +1760,19 @@ export function createInlineLivePreviewPlugin() {
 
 function selectionOnLine(state: EditorState, from: number, to: number) {
     return state.selection.ranges.some((range) => {
+        if (
+            from === 0 &&
+            range.empty &&
+            range.from === 0 &&
+            range.to === 0 &&
+            state.selection.ranges.length === 1
+        ) {
+            return false;
+        }
+
         const rangeFrom = state.doc.lineAt(range.from).from;
         const rangeTo = state.doc.lineAt(range.to).to;
-        return rangeFrom <= to && rangeTo >= from;
+        return rangeFrom < to && rangeTo > from;
     });
 }
 
