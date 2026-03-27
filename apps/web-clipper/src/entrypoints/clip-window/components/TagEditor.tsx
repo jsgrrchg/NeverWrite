@@ -34,8 +34,8 @@ export function TagEditor({ tags, suggestions, onChange }: TagEditorProps) {
                     onClick={() => removeTag(tag)}
                     className={`inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition ${
                         index === 0
-                            ? "bg-[#6366F120] text-accent"
-                            : "bg-[#FFFFFF10] text-fg-muted"
+                            ? "bg-accent/[0.12] text-accent"
+                            : "bg-fg/[0.06] text-fg-muted"
                     }`}
                 >
                     {tag}

@@ -35,7 +35,7 @@ export function VaultSelector({
                 {activeLabel}
             </span>
             {options.length > 1 && (
-                <span className="rounded-sm bg-[#FFFFFF08] px-1.5 py-0.5 text-[10px] text-fg-dim">
+                <span className="rounded-sm bg-fg/[0.04] px-1.5 py-0.5 text-[10px] text-fg-dim">
                     {options.length} vaults
                 </span>
             )}
