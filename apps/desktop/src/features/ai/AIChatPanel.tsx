@@ -30,7 +30,6 @@ import {
     listenToAiUserInputRequest,
 } from "./api";
 import {
-    buildSelectionLabel,
     type AIRuntimeConnectionState,
     type AIComposerPart,
     type QueuedChatMessage,
@@ -252,7 +251,6 @@ export function AIChatPanel() {
         );
         return tab && isNoteTab(tab) ? tab.noteId : null;
     });
-    const currentSelection = useEditorStore((state) => state.currentSelection);
     const activeTab = activeTabId
         ? (tabs.find((tab) => tab.id === activeTabId) ?? null)
         : null;
@@ -381,26 +379,6 @@ export function AIChatPanel() {
                   ? {
                         id: `auto:current_note:${activeNote.id}`,
                         label: activeNote.title,
-                        path: activeNote.path,
-                        removable: false,
-                    }
-                  : null,
-              activeNote &&
-              currentSelection &&
-              currentSelection.noteId === activeNote.id &&
-              currentSelection.text.trim() &&
-              !currentSession?.attachments.some(
-                  (attachment) =>
-                      attachment.type === "selection" &&
-                      attachment.noteId === currentSelection.noteId,
-              )
-                  ? {
-                        id: `auto:selection:${currentSelection.noteId}`,
-                        label: buildSelectionLabel(
-                            currentSelection.text,
-                            currentSelection.startLine,
-                            currentSelection.endLine,
-                        ),
                         path: activeNote.path,
                         removable: false,
                     }

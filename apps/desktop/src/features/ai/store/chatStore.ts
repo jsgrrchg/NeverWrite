@@ -883,7 +883,7 @@ function hasManualAttachment(
 function getAutoContextAttachments(baseAttachments: AIChatAttachment[]) {
     if (!useChatStore.getState().autoContextEnabled) return [];
 
-    const { tabs, activeTabId, currentSelection } = useEditorStore.getState();
+    const { tabs, activeTabId } = useEditorStore.getState();
     const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
     const activeNoteId =
         activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
@@ -902,33 +902,6 @@ function getAutoContextAttachments(baseAttachments: AIChatAttachment[]) {
         autoAttachments.push({
             ...createAttachment("current_note", activeNote),
             id: `auto:current_note:${activeNote.id}`,
-        });
-    }
-
-    if (
-        currentSelection &&
-        currentSelection.text.trim() &&
-        activeNote &&
-        currentSelection.noteId === activeNote.id &&
-        !hasManualAttachment(
-            baseAttachments,
-            "selection",
-            currentSelection.noteId,
-        )
-    ) {
-        autoAttachments.push({
-            id: `auto:selection:${currentSelection.noteId}`,
-            type: "selection",
-            noteId: currentSelection.noteId,
-            label: buildSelectionLabel(
-                currentSelection.text,
-                currentSelection.startLine,
-                currentSelection.endLine,
-            ),
-            path: activeNote.path,
-            content: currentSelection.text,
-            startLine: currentSelection.startLine,
-            endLine: currentSelection.endLine,
         });
     }
 

@@ -616,6 +616,79 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
     });
 
+    it("shows the active note auto-context without rendering a selection pill", () => {
+        const session = createSession("session-a", "First conversation");
+
+        useVaultStore.setState({
+            notes: [
+                {
+                    id: "notes/tasks",
+                    title: "TAREAS",
+                    path: "/vault/TAREAS.md",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "note-tab",
+                    kind: "note",
+                    noteId: "notes/tasks",
+                    title: "TAREAS",
+                    content: "- [ ] Win bug",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "note-tab",
+            activationHistory: ["note-tab"],
+            tabNavigationHistory: ["note-tab"],
+            tabNavigationIndex: 0,
+            currentSelection: {
+                noteId: "notes/tasks",
+                path: "/vault/TAREAS.md",
+                text: "- [ ] Win bug",
+                from: 0,
+                to: 13,
+                startLine: 11,
+                endLine: 19,
+            },
+        });
+        useChatStore.setState((state) => ({
+            ...state,
+            autoContextEnabled: true,
+            runtimeConnection: { status: "ready", message: null },
+            setupStatus: {
+                runtimeId: "codex-acp",
+                binaryReady: true,
+                binarySource: "bundled",
+                authReady: true,
+                authMethods: [],
+                onboardingRequired: false,
+            },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: session.sessionId }],
+            activeTabId: "tab-a",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        expect(screen.getByText("TAREAS")).toBeTruthy();
+        expect(screen.queryByText(/\(11:19\)/)).toBeNull();
+    });
+
     it("routes composer edits to the visible tab session when tab and active session diverge", () => {
         const sessionA = createSession("session-a", "First conversation");
         const sessionB = createSession("session-b", "Second conversation");
