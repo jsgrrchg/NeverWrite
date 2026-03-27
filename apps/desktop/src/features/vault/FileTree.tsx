@@ -89,6 +89,13 @@ const TREE_CONTENT_BOX_STYLE = {
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
+const TREE_STICKY_CHROME_STYLE = {
+    left: -TREE_VIEWPORT_SIDE_PADDING_PX,
+    width: `calc(100% + ${TREE_VIEWPORT_SIDE_PADDING_PX * 2}px)`,
+    minWidth: `calc(100% + ${TREE_VIEWPORT_SIDE_PADDING_PX * 2}px)`,
+    boxSizing: "border-box" as const,
+    overflow: "hidden" as const,
+};
 const TREE_ROW_BOX_STYLE = {
     width: "max-content",
     minWidth: "100%",
@@ -1544,7 +1551,6 @@ export function FileTree() {
     // Virtualization state
     const [viewportHeight, setViewportHeight] = useState(600);
     const [scrollTop, setScrollTop] = useState(0);
-    const [scrollLeft, setScrollLeft] = useState(0);
 
     const activeTreePath = useMemo(() => {
         if (activeNoteId) return activeNoteId;
@@ -1775,7 +1781,6 @@ export function FileTree() {
         const syncViewportMetrics = () => {
             setViewportHeight(el.clientHeight);
             setScrollTop(el.scrollTop);
-            setScrollLeft(el.scrollLeft);
         };
 
         syncViewportMetrics();
@@ -1834,7 +1839,6 @@ export function FileTree() {
             const el = treeScrollRef.current;
             if (!el) return;
             setScrollTop(el.scrollTop);
-            setScrollLeft(el.scrollLeft);
         });
     }, []);
 
@@ -4216,9 +4220,7 @@ export function FileTree() {
                                         style={{
                                             position: "absolute",
                                             top,
-                                            left: 0,
-                                            transform: `translateX(${-scrollLeft}px)`,
-                                            ...TREE_CONTENT_BOX_STYLE,
+                                            ...TREE_STICKY_CHROME_STYLE,
                                             zIndex: 20 - row.depth,
                                         }}
                                     >
