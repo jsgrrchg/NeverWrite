@@ -1,5 +1,21 @@
 import type { AIComposerPart } from "./types";
 
+/**
+ * Strip pill serialization markers from text, returning a clean readable string.
+ * Useful for displaying content in compact UI areas (queue summaries, chat titles).
+ */
+export function cleanPillMarkers(text: string): string {
+    return text
+        .replace(/\[@📁 ([^\]]+)\]/g, "$1")
+        .replace(/\[@([^\]]+)\]/g, "$1")
+        .replace(/\[Screenshot ([^\]]+)\]/g, "Screenshot $1")
+        .replace(/\[📎 ([^\]]+)\]/g, "$1")
+        .replace(/@fetch\b/g, "")
+        .replace(/\/plan\b/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+}
+
 interface SerializeComposerPartsForAIOptions {
     vaultPath?: string | null;
 }

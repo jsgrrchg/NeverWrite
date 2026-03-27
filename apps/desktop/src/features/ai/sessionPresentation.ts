@@ -1,3 +1,4 @@
+import { cleanPillMarkers } from "./composerParts";
 import type {
     AIChatMessage,
     AIChatSession,
@@ -28,7 +29,7 @@ export function getSessionTitle(session: AIChatSession) {
     );
 
     if (!firstUserText) return "New chat";
-    return truncateText(firstUserText.content, 42);
+    return truncateText(cleanPillMarkers(firstUserText.content), 42);
 }
 
 export function getSessionPreview(session: AIChatSession) {
