@@ -45,67 +45,83 @@ export function MarkdownNoteHeader({
             data-editor-note-header="true"
             data-line-wrapping={String(lineWrapping)}
             style={{
-                maxWidth: lineWrapping ? "var(--editor-content-width)" : "none",
-                margin: lineWrapping ? "0 auto" : "0",
+                width: "100%",
                 padding: "40px var(--editor-horizontal-inset) 0",
                 boxSizing: "border-box",
             }}
         >
-            {/* Location breadcrumb */}
-            {locationParent && (
+            <div
+                data-editor-note-header-inner="true"
+                style={{
+                    width: lineWrapping
+                        ? "min(100%, var(--editor-content-width))"
+                        : "100%",
+                    maxWidth: lineWrapping
+                        ? "var(--editor-content-width)"
+                        : "none",
+                    minWidth: 0,
+                    margin: lineWrapping ? "0 auto" : "0",
+                }}
+            >
+                {/* Location breadcrumb */}
+                {locationParent && (
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            flexWrap: "wrap",
+                            minWidth: 0,
+                            marginBottom: 14,
+                        }}
+                    >
+                        <MetaBadge label={locationParent} />
+                    </div>
+                )}
+
+                {/* Title row */}
+                <EditableNoteTitle
+                    value={editableTitle}
+                    onChange={onTitleChange}
+                    textareaRef={titleInputRef}
+                    onContextMenu={onTitleContextMenu}
+                />
+
+                {/* Toolbar: Properties toggle + Search */}
                 <div
                     style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 8,
+                        gap: 4,
                         flexWrap: "wrap",
-                        marginBottom: 14,
+                        minWidth: 0,
+                        marginTop: 12,
+                        marginBottom: 8,
                     }}
                 >
-                    <MetaBadge label={locationParent} />
-                </div>
-            )}
-
-            {/* Title row */}
-            <EditableNoteTitle
-                value={editableTitle}
-                onChange={onTitleChange}
-                textareaRef={titleInputRef}
-                onContextMenu={onTitleContextMenu}
-            />
-
-            {/* Toolbar: Properties toggle + Search */}
-            <div
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                    marginTop: 12,
-                    marginBottom: 8,
-                }}
-            >
-                <ToolbarButton
-                    label="Properties"
-                    icon={<PropertiesIcon />}
-                    active={propertiesExpanded}
-                    onClick={onToggleProperties}
-                />
-                <ToolbarButton
-                    label="Search"
-                    icon={<SearchIcon />}
-                    onClick={onSearchClick}
-                />
-            </div>
-
-            {/* Properties body (expanded below toolbar) */}
-            {propertiesExpanded && (
-                <div style={{ marginBottom: 8 }}>
-                    <FrontmatterBody
-                        raw={frontmatterRaw}
-                        onChange={onFrontmatterChange}
+                    <ToolbarButton
+                        label="Properties"
+                        icon={<PropertiesIcon />}
+                        active={propertiesExpanded}
+                        onClick={onToggleProperties}
+                    />
+                    <ToolbarButton
+                        label="Search"
+                        icon={<SearchIcon />}
+                        onClick={onSearchClick}
                     />
                 </div>
-            )}
+
+                {/* Properties body (expanded below toolbar) */}
+                {propertiesExpanded && (
+                    <div style={{ minWidth: 0, marginBottom: 8 }}>
+                        <FrontmatterBody
+                            raw={frontmatterRaw}
+                            onChange={onFrontmatterChange}
+                        />
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

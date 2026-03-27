@@ -35,6 +35,7 @@ export function MetaBadge({
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 6,
+                maxWidth: "100%",
                 height: 28,
                 padding: "0 11px",
                 borderRadius: 999,
@@ -99,6 +100,8 @@ export function EditableNoteTitle({
             onContextMenu={onContextMenu}
             style={{
                 width: "100%",
+                minWidth: 0,
+                display: "block",
                 resize: "none",
                 overflow: "hidden",
                 background: "transparent",
