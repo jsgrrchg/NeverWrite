@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { cleanPillMarkers } from "../composerParts";
 import type { QueuedChatMessage } from "../types";
 
 interface QueuedMessagesPanelProps {
@@ -12,8 +13,7 @@ interface QueuedMessagesPanelProps {
 }
 
 function summarizeContent(content: string) {
-    const normalized = content.replace(/\s+/g, " ").trim();
-    return normalized || "Untitled message";
+    return cleanPillMarkers(content) || "Untitled message";
 }
 
 function getQueueTitle(count: number) {
