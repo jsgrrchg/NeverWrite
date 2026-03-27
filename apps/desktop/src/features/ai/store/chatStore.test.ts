@@ -693,7 +693,7 @@ describe("chatStore", () => {
 
     it("starts a new local work cycle when sending a message", async () => {
         await useChatStore.getState().initialize();
-        invokeMock.mockImplementation(async (command) => {
+        invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_send_message") {
                 return {
                     ...sessionPayload,
@@ -701,7 +701,7 @@ describe("chatStore", () => {
                 };
             }
 
-            return sessionPayload;
+            return defaultInvokeImplementation(command, args);
         });
 
         const activeSessionId = getActiveSessionId();
@@ -778,6 +778,85 @@ describe("chatStore", () => {
         expect(sendCall?.[1]).toMatchObject({
             content:
                 "Review /vault/notes/spec.md and /vault/docs with /vault/notes/spec.md:3-4 plus /vault/docs/guide.md",
+        });
+    });
+
+    it("keeps active note auto-context without auto-attaching the current selection", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "note-tab",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "- [ ] Win bug",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "note-tab",
+            activationHistory: ["note-tab"],
+            tabNavigationHistory: ["note-tab"],
+            tabNavigationIndex: 0,
+            currentSelection: {
+                noteId: "notes/current",
+                path: "/vault/notes/current.md",
+                text: "- [ ] Win bug",
+                from: 0,
+                to: 13,
+                startLine: 11,
+                endLine: 11,
+            },
+        });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts(createTextParts("Check this"));
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+
+        expect(queuedMessage).toMatchObject({
+            attachments: [
+                expect.objectContaining({
+                    type: "current_note",
+                    noteId: "notes/current",
+                    label: "Current",
+                }),
+            ],
+        });
+        expect(queuedMessage).not.toMatchObject({
+            attachments: expect.arrayContaining([
+                expect.objectContaining({
+                    type: "selection",
+                    noteId: "notes/current",
+                }),
+            ]),
         });
     });
 
