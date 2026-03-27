@@ -8,7 +8,13 @@ import {
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { redo, undo } from "@codemirror/commands";
 import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
-import { search, searchKeymap } from "@codemirror/search";
+import {
+    search,
+    searchKeymap,
+    openSearchPanel,
+    closeSearchPanel,
+    searchPanelOpen,
+} from "@codemirror/search";
 import {
     EditorView,
     drawSelection,
@@ -358,6 +364,16 @@ export function FileTextTabView() {
                     search({ top: true }),
                     searchTheme,
                     keymap.of([
+                        {
+                            key: "Mod-f",
+                            run: (view) => {
+                                if (searchPanelOpen(view.state)) {
+                                    closeSearchPanel(view);
+                                    return true;
+                                }
+                                return openSearchPanel(view);
+                            },
+                        },
                         ...searchKeymap,
                         {
                             key: "Mod-l",
