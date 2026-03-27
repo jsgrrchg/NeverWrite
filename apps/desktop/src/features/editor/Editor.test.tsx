@@ -317,6 +317,66 @@ describe("Editor", () => {
         );
     });
 
+    it("hydrates properties from frontmatter already present in the note", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Frontmatter title",
+                content:
+                    "---\ntitle: Frontmatter title\ntags:\n  - project\n  - planning\n---\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Properties" }));
+        });
+
+        expect(screen.getByText("tags")).toBeInTheDocument();
+        expect(screen.getAllByText("project").length).toBeGreaterThan(0);
+        expect(screen.getAllByText("planning").length).toBeGreaterThan(0);
+        expect(screen.getAllByDisplayValue("Frontmatter title")).toHaveLength(
+            2,
+        );
+    });
+
+    it("keeps properties in sync when frontmatter is edited in the document", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Frontmatter title",
+                content: "---\ntitle: Frontmatter title\n---\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Properties" }));
+        });
+
+        const view = getEditorView();
+        const titleFrom = view.state.doc
+            .toString()
+            .indexOf("Frontmatter title");
+        const titleTo = titleFrom + "Frontmatter title".length;
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: titleFrom,
+                    to: titleTo,
+                    insert: "Updated title",
+                },
+            });
+        });
+
+        expect(screen.getAllByDisplayValue("Updated title")).toHaveLength(2);
+    });
+
     it("does not underline markdown headings in source mode", async () => {
         setEditorTabs([
             {
