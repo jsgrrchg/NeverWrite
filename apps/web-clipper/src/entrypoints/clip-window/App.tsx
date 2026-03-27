@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     DesktopApiError,
     fetchDesktopContext,
@@ -30,40 +30,35 @@ import {
     resolveClipTemplate,
 } from "../../lib/template-engine";
 import { buildClipMarkdown } from "../../lib/clip-markdown";
-import type { ClipperSettings } from "../../lib/types";
-import ClipForm, { type ClipContentMode } from "./components/ClipForm";
-import HistoryPage from "./components/HistoryPage";
-import MarkdownPreview from "./components/MarkdownPreview";
+import type { ClipperSettings, ClipContentMode } from "../../lib/types";
+import FolderSelector from "./components/FolderSelector";
 import SaveButton, { type SaveButtonStatus } from "./components/SaveButton";
 import SettingsPage from "./components/SettingsPage";
+import TagEditor from "./components/TagEditor";
+import UrlField from "./components/UrlField";
 import VaultSelector from "./components/VaultSelector";
 
 type ExtractionStatus = "loading" | "ready" | "error";
 type SendStatus = SaveButtonStatus;
-type ClipperView = "clip" | "settings" | "history";
-type ClipperSurface = "window" | "sidepanel";
+type ClipperView = "clip" | "settings";
+
+interface AppProps {
+    surface?: "window" | "sidepanel" | "popup";
+}
 
 function readSourceTabIdFromLocation(): number | null {
     const rawValue = new URLSearchParams(window.location.search).get(
         CLIPPER_SOURCE_TAB_QUERY_PARAM,
     );
-
-    if (!rawValue) {
-        return null;
-    }
-
+    if (!rawValue) return null;
     const parsed = Number.parseInt(rawValue, 10);
     return Number.isFinite(parsed) ? parsed : null;
 }
 
 function extractErrorMessage(error: unknown): string {
-    if (error instanceof Error && error.message) {
-        return error.message;
-    }
-
+    if (error instanceof Error && error.message) return error.message;
     return "The clipper could not complete the requested action.";
 }
-
 
 function buildMarkdownPreview(
     clipData: ClipData,
@@ -72,6 +67,7 @@ function buildMarkdownPreview(
     folder: string,
     contentMode: ClipContentMode,
     templateBody: string,
+    notes?: string,
 ): string {
     return renderClipTemplate(templateBody, {
         clipData,
@@ -82,136 +78,46 @@ function buildMarkdownPreview(
             clipData,
             title,
             tags,
+            notes,
             contentMode,
         }),
     }).trim();
 }
 
-interface SettingsButtonProps {
-    onClick: () => void;
-}
-
-function SettingsButton({ onClick }: SettingsButtonProps) {
-    return (
-        <button
-            type="button"
-            aria-label="Open clipper settings"
-            onClick={onClick}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-[10px] border border-edge bg-surface-alt text-fg-muted transition hover:border-accent/35 hover:text-fg"
-        >
-            <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                className="h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M12 3.75a2.25 2.25 0 0 1 2.19 1.73l.15.65a1.8 1.8 0 0 0 1.36 1.33l.68.17a2.25 2.25 0 0 1 1.45 3.22l-.34.59a1.8 1.8 0 0 0 0 1.79l.34.59a2.25 2.25 0 0 1-1.45 3.22l-.68.17a1.8 1.8 0 0 0-1.36 1.33l-.15.65a2.25 2.25 0 0 1-4.38 0l-.15-.65a1.8 1.8 0 0 0-1.36-1.33l-.68-.17a2.25 2.25 0 0 1-1.45-3.22l.34-.59a1.8 1.8 0 0 0 0-1.79l-.34-.59a2.25 2.25 0 0 1 1.45-3.22l.68-.17a1.8 1.8 0 0 0 1.36-1.33l.15-.65A2.25 2.25 0 0 1 12 3.75Z" />
-                <circle cx="12" cy="12" r="3.25" />
-            </svg>
-        </button>
-    );
-}
-
-function LoadingState() {
-    return (
-        <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-xl border border-edge bg-surface-alt p-6">
-                <div className="h-5 w-32 animate-pulse rounded-full bg-surface-hover" />
-                <div className="mt-4 h-12 animate-pulse rounded-[10px] bg-surface-raised" />
-                <div className="mt-4 h-12 animate-pulse rounded-[10px] bg-surface-raised" />
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <div className="h-28 animate-pulse rounded-[10px] bg-surface-raised" />
-                    <div className="h-28 animate-pulse rounded-[10px] bg-surface-raised" />
-                    <div className="h-28 animate-pulse rounded-[10px] bg-surface-raised" />
-                </div>
-            </div>
-            <div className="rounded-xl border border-edge bg-surface-alt p-6">
-                <div className="h-5 w-40 animate-pulse rounded-full bg-surface-hover" />
-                <div className="mt-4 h-[360px] animate-pulse rounded-[10px] bg-surface-raised" />
-            </div>
-        </div>
-    );
-}
-
-interface ErrorStateProps {
-    errorMessage: string;
-    onRetry: () => void;
-}
-
-function ErrorState({ errorMessage, onRetry }: ErrorStateProps) {
-    return (
-        <div className="rounded-xl border border-rose-400/25 bg-rose-400/10 p-6 shadow-soft">
-            <p className="text-xs font-semibold uppercase tracking-wider text-rose-100/80">
-                Extraction failed
-            </p>
-            <h2 className="mt-3 text-2xl font-semibold text-fg">
-                The clipper could not read the source tab.
-            </h2>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-rose-50/90">
-                {errorMessage}
-            </p>
-            <div className="mt-6 flex flex-wrap gap-3">
-                <button
-                    type="button"
-                    onClick={onRetry}
-                    className="inline-flex h-11 items-center justify-center rounded-[10px] border border-rose-400/30 bg-rose-400/12 px-4 text-sm font-semibold text-fg transition hover:bg-rose-400/18"
-                >
-                    Retry extraction
-                </button>
-                <p className="self-center text-xs leading-6 text-rose-50/80">
-                    Restricted pages like browser settings or internal tabs
-                    cannot be clipped with a normal content script.
-                </p>
-            </div>
-        </div>
-    );
-}
-
-interface AppProps {
-    surface?: ClipperSurface;
-}
-
-export function App({ surface = "window" }: AppProps) {
+export function App(_props: AppProps) {
     const [locationSourceTabId] = useState<number | null>(() =>
         readSourceTabIdFromLocation(),
     );
     const [sourceTabId, setSourceTabId] = useState<number | null>(null);
     const [sourceTabResolved, setSourceTabResolved] = useState(false);
     const [settings, setSettings] = useState<ClipperSettings | null>(null);
-    const [settingsDraft, setSettingsDraft] = useState<ClipperSettings | null>(
-        null,
-    );
-    const [settingsSaveLabel, setSettingsSaveLabel] = useState("Save settings");
     const [view, setView] = useState<ClipperView>("clip");
     const [status, setStatus] = useState<ExtractionStatus>("loading");
     const [errorMessage, setErrorMessage] = useState("");
     const [clipData, setClipData] = useState<ClipData | null>(null);
-    const [contentMode, setContentMode] =
-        useState<ClipContentMode>("full-page");
     const [title, setTitle] = useState("");
     const [tags, setTags] = useState<string[]>([]);
+    const [notes, setNotes] = useState("");
     const [folder, setFolder] = useState("");
     const [sendStatus, setSendStatus] = useState<SendStatus>("idle");
     const [sendMessage, setSendMessage] = useState("");
     const [lastDeepLink, setLastDeepLink] = useState("");
     const [desktopApiAvailable, setDesktopApiAvailable] = useState(false);
-    const [desktopStatus, setDesktopStatus] = useState(
-        "Desktop API unavailable",
-    );
     const [desktopFolders, setDesktopFolders] = useState<string[]>([]);
     const [desktopTags, setDesktopTags] = useState<string[]>([]);
-    const [desktopThemes, setDesktopThemes] = useState<
-        Array<{ id: string; label: string }>
-    >([]);
 
+    const activeVault = settings?.vaults[settings.activeVaultIndex] ?? null;
+
+    const contentMode: ClipContentMode = useMemo(() => {
+        if (clipData?.selection && settings?.clipSelectedOnly)
+            return "selection";
+        return "full-page";
+    }, [clipData?.selection, settings?.clipSelectedOnly]);
+
+    // --- Source tab resolution ---
     useEffect(() => {
         let cancelled = false;
-
-        async function resolveSourceTabId() {
+        async function resolve() {
             if (typeof locationSourceTabId === "number") {
                 if (!cancelled) {
                     setSourceTabId(locationSourceTabId);
@@ -219,99 +125,64 @@ export function App({ surface = "window" }: AppProps) {
                 }
                 return;
             }
-
             try {
                 const [activeTab] = await browser.tabs.query({
                     active: true,
                     lastFocusedWindow: true,
                 });
-
-                if (!cancelled) {
-                    setSourceTabId(activeTab?.id ?? null);
-                }
+                if (!cancelled) setSourceTabId(activeTab?.id ?? null);
             } catch {
-                if (!cancelled) {
-                    setSourceTabId(null);
-                }
+                if (!cancelled) setSourceTabId(null);
             } finally {
-                if (!cancelled) {
-                    setSourceTabResolved(true);
-                }
+                if (!cancelled) setSourceTabResolved(true);
             }
         }
-
-        void resolveSourceTabId();
-
+        void resolve();
         return () => {
             cancelled = true;
         };
     }, [locationSourceTabId]);
 
+    // --- Settings load ---
     useEffect(() => {
         let cancelled = false;
-
-        async function initSettings() {
+        async function init() {
             try {
                 const loaded = await loadClipperSettings();
-                if (cancelled) {
-                    return;
-                }
-
-                setSettings(loaded);
-                setSettingsDraft(loaded);
+                if (!cancelled) setSettings(loaded);
             } catch {
-                if (cancelled) {
-                    return;
-                }
-
-                const fallback = createDefaultClipperSettings();
-                setSettings(fallback);
-                setSettingsDraft(fallback);
+                if (!cancelled) setSettings(createDefaultClipperSettings());
             }
         }
-
-        void initSettings();
-
+        void init();
         return () => {
             cancelled = true;
         };
     }, []);
 
-    const activeVault = settings?.vaults[settings.activeVaultIndex] ?? null;
-    const selectionOnly =
-        Boolean(settings?.clipSelectedOnly) && Boolean(clipData?.selection);
-
-    async function persistSettings(nextSettings: ClipperSettings) {
-        const saved = await saveClipperSettings(nextSettings);
-        setSettings(saved);
-        setSettingsDraft(saved);
-    }
-
+    // --- Clip extraction ---
     async function loadClipData() {
-        if (!sourceTabResolved) {
-            return;
-        }
+        if (!sourceTabResolved) return;
 
-        let targetSourceTabId = sourceTabId;
-
+        let targetTabId = sourceTabId;
         if (locationSourceTabId == null) {
             try {
                 const [activeTab] = await browser.tabs.query({
                     active: true,
                     lastFocusedWindow: true,
                 });
-                targetSourceTabId = activeTab?.id ?? null;
-                setSourceTabId(targetSourceTabId);
+                targetTabId = activeTab?.id ?? null;
+                setSourceTabId(targetTabId);
             } catch {
-                targetSourceTabId = null;
+                targetTabId = null;
                 setSourceTabId(null);
             }
         }
 
-        if (targetSourceTabId == null) {
+        if (targetTabId == null) {
             setStatus("error");
             setErrorMessage(
-                "No source tab was attached to this clip window. Re-open the clipper from the page you want to capture.",
+                "No source tab attached. Re-open the clipper from the page you want to capture.",
             );
             return;
         }
@@ -319,24 +190,18 @@ export function App({ surface = "window" }: AppProps) {
         try {
             setStatus("loading");
             setErrorMessage("");
-
             const response = (await browser.tabs.sendMessage(
-                targetSourceTabId,
+                targetTabId,
                 createClipperExtractMessage(),
             )) as ClipperExtractResponse | undefined;
 
-            if (!response) {
+            if (!response)
                 throw new Error("The source tab did not return any clip data.");
-            }
-
-            if (!response.ok) {
-                throw new Error(response.error);
-            }
+            if (!response.ok) throw new Error(response.error);
 
             setClipData(response.data);
             setTitle(response.data.metadata.title);
             setTags(parseTagInput(response.data.metadata.domain));
-            setContentMode(response.data.selection ? "selection" : "full-page");
             setSendStatus("idle");
             setSendMessage("");
             setLastDeepLink("");
@@ -351,67 +216,41 @@ export function App({ surface = "window" }: AppProps) {
         void loadClipData();
     }, [sourceTabId, sourceTabResolved]);
 
-    useEffect(() => {
-        if (selectionOnly) {
-            setContentMode("selection");
-        }
-    }, [selectionOnly]);
-
+    // --- Folder default ---
     useEffect(() => {
         setFolder(activeVault?.defaultFolder ?? "");
     }, [activeVault?.defaultFolder, activeVault?.id]);
 
+    // --- Desktop autocomplete ---
     useEffect(() => {
         let cancelled = false;
-
-        async function loadDesktopAutocomplete() {
-            if (!activeVault) {
-                return;
-            }
-
+        async function load() {
+            if (!activeVault) return;
             try {
-                const context = await fetchDesktopContext({
+                const ctx = await fetchDesktopContext({
                     vaultPathHint: activeVault.path,
                     vaultNameHint: activeVault.name,
                 });
-                if (cancelled) {
-                    return;
-                }
-
-                setDesktopApiAvailable(context.available);
-                setDesktopStatus(context.statusMessage);
-                setDesktopFolders(context.folders);
-                setDesktopTags(context.tags);
-                setDesktopThemes(context.themes);
+                if (cancelled) return;
+                setDesktopApiAvailable(ctx.available);
+                setDesktopFolders(ctx.folders);
+                setDesktopTags(ctx.tags);
             } catch (error) {
-                if (cancelled) {
-                    return;
-                }
-
+                if (cancelled) return;
                 setDesktopApiAvailable(false);
-                setDesktopStatus(
-                    error instanceof DesktopApiError
-                        ? error.message
-                        : "Desktop API unavailable",
-                );
                 setDesktopFolders([]);
                 setDesktopTags([]);
-                setDesktopThemes([]);
             }
         }
-
-        void loadDesktopAutocomplete();
-
+        void load();
         return () => {
             cancelled = true;
         };
     }, [activeVault?.id, activeVault?.name, activeVault?.path]);
 
+    // --- Suggestions ---
     const tagSuggestions = useMemo(() => {
-        if (!settings) {
-            return [];
-        }
-
+        if (!settings) return [];
         return mergeRecentValues(
             [...settings.recentTags, ...desktopTags],
             [
@@ -424,10 +263,7 @@ export function App({ surface = "window" }: AppProps) {
     }, [clipData, desktopTags, settings]);
 
     const folderSuggestions = useMemo(() => {
-        if (!settings || !activeVault) {
-            return [];
-        }
-
+        if (!settings || !activeVault) return [];
         return mergeRecentValues(
             [
                 activeVault.defaultFolder,
@@ -440,6 +276,7 @@ export function App({ surface = "window" }: AppProps) {
         );
     }, [activeVault, desktopFolders, settings]);
 
+    // --- Template & preview ---
     const resolvedTemplate =
         clipData === null || settings === null || activeVault === null
             ? null
@@ -460,95 +297,59 @@ export function App({ surface = "window" }: AppProps) {
                   folder,
                   contentMode,
                   resolvedTemplate.body,
+                  notes,
               );
-    const deferredPreviewMarkdown = useDeferredValue(previewMarkdown);
-
-    const settingsResolvedTemplate =
-        clipData === null || settingsDraft === null || activeVault === null
-            ? null
-            : resolveClipTemplate({
-                  templates: settingsDraft.templates,
-                  defaultTemplate: settingsDraft.defaultTemplate,
-                  vaultId: activeVault.id,
-                  domain: clipData.metadata.domain,
-              });
-
-    const settingsPreviewMarkdown =
-        clipData === null || settingsResolvedTemplate === null
-            ? ""
-            : buildMarkdownPreview(
-                  clipData,
-                  title,
-                  tags,
-                  folder,
-                  contentMode,
-                  settingsResolvedTemplate.body,
-              );
-    const deferredSettingsPreviewMarkdown = useDeferredValue(
-        settingsPreviewMarkdown,
-    );
-
     const vaultOptions =
-        settings?.vaults.map((vault) => ({
-            value: vault.id,
-            label: vault.name,
-        })) ?? [];
+        settings?.vaults.map((v) => ({ value: v.id, label: v.name })) ?? [];
 
-    async function handleActiveVaultChange(vaultId: string) {
-        if (!settings) {
-            return;
+    // --- Enter to save ---
+    useEffect(() => {
+        function onKeyDown(e: KeyboardEvent) {
+            if (
+                e.key === "Enter" &&
+                !e.metaKey &&
+                !e.ctrlKey &&
+                view === "clip" &&
+                status === "ready" &&
+                sendStatus !== "sending"
+            ) {
+                const tag = (e.target as HTMLElement)?.tagName;
+                if (tag === "TEXTAREA") return;
+                e.preventDefault();
+                void handleSave();
+            }
         }
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    });
 
-        const nextIndex = settings.vaults.findIndex(
-            (vault) => vault.id === vaultId,
-        );
-        if (nextIndex < 0) {
-            return;
-        }
+    // --- Handlers ---
+    async function persistSettings(next: ClipperSettings) {
+        const saved = await saveClipperSettings(next);
+        setSettings(saved);
+    }
 
-        await persistSettings({
-            ...settings,
-            activeVaultIndex: nextIndex,
-        });
+    async function handleVaultChange(vaultId: string) {
+        if (!settings) return;
+        const idx = settings.vaults.findIndex((v) => v.id === vaultId);
+        if (idx < 0) return;
+        await persistSettings({ ...settings, activeVaultIndex: idx });
     }
 
     function handleOpenSettings() {
-        setSettingsDraft(settings);
-        setSettingsSaveLabel("Save settings");
         setView("settings");
     }
 
-    function handleCloseSettings() {
-        setSettingsDraft(settings);
-        setSettingsSaveLabel("Save settings");
-        setView("clip");
-    }
-
-    async function handleSaveSettings() {
-        if (!settingsDraft) {
-            return;
-        }
-
-        setSettingsSaveLabel("Saving...");
+    async function handleCloseSettings() {
         try {
-            await persistSettings(settingsDraft);
-            setSettingsSaveLabel("Saved");
+            if (settings) await persistSettings(settings);
+        } finally {
             setView("clip");
-        } catch (error) {
-            setSettingsSaveLabel("Retry save");
-            setSendMessage(extractErrorMessage(error));
         }
     }
 
-    async function handleSendToVaultAi() {
-        if (
-            clipData === null ||
-            settings === null ||
-            activeVault === null ||
-            resolvedTemplate === null
-        ) {
-            return;
-        }
+    async function handleSave() {
+        if (!clipData || !settings || !activeVault || !resolvedTemplate) return;
 
         if (sendStatus === "sent" && lastDeepLink && !desktopApiAvailable) {
             openDeepLink(lastDeepLink);
@@ -561,7 +362,6 @@ export function App({ surface = "window" }: AppProps) {
             const normalizedFolder = normalizeFolderHint(folder);
             const normalizedTitle = title.trim() || clipData.metadata.title;
             const requestId = crypto.randomUUID();
-
             const nextSettings = recordClipperUsage(settings, {
                 vaultId: activeVault.id,
                 folder,
@@ -580,7 +380,7 @@ export function App({ surface = "window" }: AppProps) {
                     vaultNameHint: activeVault.name,
                 });
 
-                const persistedSettings = recordClipHistory(nextSettings, {
+                const persisted = recordClipHistory(nextSettings, {
                     requestId,
                     clipData,
                     markdown: previewMarkdown,
@@ -594,12 +394,12 @@ export function App({ surface = "window" }: AppProps) {
                     vaultName: activeVault.name,
                     templateId: resolvedTemplate.id,
                 });
-                setSettings(persistedSettings);
-                setSettingsDraft(persistedSettings);
-                void saveClipperSettings(persistedSettings);
+                setSettings(persisted);
+                void saveClipperSettings(persisted);
                 setLastDeepLink("");
                 setSendStatus("sent");
                 setSendMessage(response.message);
+                setTimeout(() => window.close(), 600);
                 return;
             } catch (error) {
                 if (error instanceof DesktopApiError && !error.isUnavailable) {
@@ -621,7 +421,7 @@ export function App({ surface = "window" }: AppProps) {
                     await writeClipboardText(draft.clipboardMarkdown);
                 }
 
-                const persistedSettings = recordClipHistory(nextSettings, {
+                const persisted = recordClipHistory(nextSettings, {
                     requestId: draft.payload.requestId,
                     clipData,
                     markdown: previewMarkdown,
@@ -638,9 +438,8 @@ export function App({ surface = "window" }: AppProps) {
                     vaultName: activeVault.name,
                     templateId: resolvedTemplate.id,
                 });
-                setSettings(persistedSettings);
-                setSettingsDraft(persistedSettings);
-                void saveClipperSettings(persistedSettings);
+                setSettings(persisted);
+                void saveClipperSettings(persisted);
 
                 const deepLink = createClipDeepLink(draft.payload);
                 setLastDeepLink(deepLink);
@@ -649,9 +448,10 @@ export function App({ surface = "window" }: AppProps) {
                 setSendStatus("sent");
                 setSendMessage(
                     draft.payload.mode === "clipboard"
-                        ? "Desktop API unavailable. Prepared clipboard bridge handoff instead."
-                        : "Desktop API unavailable. Prepared deep link handoff instead.",
+                        ? "Prepared clipboard bridge handoff."
+                        : "Prepared deep link handoff.",
                 );
+                setTimeout(() => window.close(), 600);
             }
         } catch (error) {
             setSendStatus("error");
@@ -659,305 +459,223 @@ export function App({ surface = "window" }: AppProps) {
         }
     }
 
-    return (
-        <main className="min-h-screen bg-surface text-fg">
-            <div
-                className={`mx-auto flex min-h-screen w-full flex-col gap-8 px-6 py-6 ${
-                    surface === "sidepanel" ? "max-w-[860px]" : "max-w-[1400px]"
-                }`}
-            >
-                <header className="clipper-fade-up flex flex-wrap items-start justify-between gap-5">
-                    <div className="space-y-3">
-                        <p className="text-xs font-semibold uppercase tracking-wider text-accent">
-                            {surface === "sidepanel"
-                                ? "VaultAI Side Panel"
-                                : "VaultAI Web Clipper"}
-                        </p>
-                        <div className="space-y-2">
-                            <h1 className="text-4xl font-semibold tracking-tight text-fg">
-                                {surface === "sidepanel"
-                                    ? "Review clips without leaving the page."
-                                    : "Capture, review, and refine before you save."}
-                            </h1>
-                            <p className="max-w-3xl text-sm leading-7 text-fg-muted">
-                                {surface === "sidepanel"
-                                    ? "The same clipper workflow, pinned into Chrome's side panel so you can keep the source page visible while editing."
-                                    : "This standalone window loads data from the original browser tab, lets you switch between full page, selection, or URL-only capture, and previews the Markdown that will flow into VaultAI."}
-                            </p>
-                        </div>
-                    </div>
+    // --- Render ---
+    const isLoading =
+        settings === null || !sourceTabResolved || status === "loading";
 
-                    <div className="flex flex-wrap items-center gap-3">
-                        <div className="rounded-[10px] border border-edge bg-surface-alt px-4 py-3 text-right shadow-soft">
-                            <div className="text-xs uppercase tracking-wider text-fg-muted">
-                                Source tab
-                            </div>
-                            <div className="mt-1 text-sm font-medium text-fg">
-                                {sourceTabId === null
-                                    ? "Unavailable"
-                                    : `#${sourceTabId}`}
-                            </div>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={() => setView("history")}
-                            className="inline-flex h-11 items-center justify-center rounded-[10px] border border-edge bg-surface-alt px-4 text-sm font-semibold text-fg transition hover:bg-surface-hover"
-                        >
-                            History
-                        </button>
+    return (
+        <main className="flex h-screen flex-col bg-surface text-fg">
+            <div className="h-px bg-edge" />
+
+            {view === "settings" && settings !== null && (
+                <>
+                    <SettingsPage settings={settings} onChange={setSettings} />
+                    <div className="h-px bg-edge" />
+                    <footer className="flex h-10 shrink-0 items-center bg-surface-alt px-2.5">
                         <button
                             type="button"
                             onClick={() => {
-                                void loadClipData();
+                                void handleCloseSettings();
                             }}
-                            className="inline-flex h-11 items-center justify-center rounded-[10px] border border-edge bg-surface-alt px-4 text-sm font-semibold text-fg transition hover:border-accent/35 hover:bg-surface-hover"
+                            className="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[11px] font-medium text-fg-muted transition hover:text-fg"
                         >
-                            Reload extraction
-                        </button>
-                    </div>
-                </header>
-
-                {(settings === null ||
-                    !sourceTabResolved ||
-                    status === "loading") && <LoadingState />}
-
-                {settings !== null &&
-                    view === "settings" &&
-                    settingsDraft !== null && (
-                        <SettingsPage
-                            settings={settingsDraft}
-                            onChange={setSettingsDraft}
-                            onClose={handleCloseSettings}
-                            onSave={() => {
-                                void handleSaveSettings();
-                            }}
-                            saveStateLabel={settingsSaveLabel}
-                            templatePreview={deferredSettingsPreviewMarkdown}
-                            vaultOptions={vaultOptions}
-                        />
-                    )}
-
-                {settings !== null && view === "history" && (
-                    <HistoryPage
-                        history={settings.clipHistory}
-                        onBack={() => setView("clip")}
-                        onReuse={(entry) => {
-                            setClipData({
-                                metadata: entry.metadata,
-                                content: {
-                                    html: "",
-                                    markdown: entry.markdown,
-                                    wordCount: entry.markdown
-                                        .trim()
-                                        .split(/\s+/).length,
-                                },
-                                selection: null,
-                                extractedAt: entry.createdAt,
-                            });
-                            setTitle(entry.title);
-                            setTags(entry.tags);
-                            setFolder(entry.folder);
-                            setContentMode(entry.contentMode);
-                            setSendStatus("idle");
-                            setSendMessage("");
-                            setLastDeepLink("");
-                            setStatus("ready");
-                            setView("clip");
-                        }}
-                        onDelete={(entryId) => {
-                            if (!settings) {
-                                return;
-                            }
-
-                            const nextSettings = {
-                                ...settings,
-                                clipHistory: settings.clipHistory.filter(
-                                    (entry) => entry.id !== entryId,
-                                ),
-                            };
-                            setSettings(nextSettings);
-                            setSettingsDraft(nextSettings);
-                            void saveClipperSettings(nextSettings);
-                        }}
-                    />
-                )}
-
-                {settings !== null && view === "clip" && status === "error" && (
-                    <ErrorState
-                        errorMessage={errorMessage}
-                        onRetry={() => {
-                            void loadClipData();
-                        }}
-                    />
-                )}
-
-                {settings !== null &&
-                    view === "clip" &&
-                    status === "ready" &&
-                    clipData !== null && (
-                        <>
-                            <section
-                                className={`grid gap-6 ${
-                                    surface === "sidepanel"
-                                        ? "xl:grid-cols-1"
-                                        : "lg:grid-cols-[1.1fr_0.9fr]"
-                                }`}
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
                             >
-                                <div className="grid gap-6">
-                                    <section className="clipper-fade-up rounded-xl border border-edge bg-surface-alt p-6 shadow-soft">
-                                        <div className="flex flex-wrap items-start justify-between gap-4">
-                                            <div className="space-y-2">
-                                                <p className="text-xs font-semibold uppercase tracking-wider text-accent">
-                                                    Source
-                                                </p>
-                                                <h2 className="text-xl font-semibold text-fg">
-                                                    {clipData.metadata.title}
-                                                </h2>
-                                            </div>
-                                            <a
-                                                href={clipData.metadata.url}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="inline-flex h-10 items-center justify-center rounded-[10px] border border-edge bg-surface-alt px-4 text-sm font-medium text-fg-muted transition hover:border-accent/35 hover:text-fg"
-                                            >
-                                                Open source
-                                            </a>
-                                        </div>
+                                <path d="m15 18-6-6 6-6" />
+                            </svg>
+                            Back
+                        </button>
+                    </footer>
+                </>
+            )}
 
-                                        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                            <div className="rounded-[10px] border border-edge bg-surface-raised p-4">
-                                                <div className="text-xs uppercase tracking-wider text-fg-muted">
-                                                    Domain
-                                                </div>
-                                                <div className="mt-2 text-sm font-medium text-fg">
-                                                    {clipData.metadata.domain ||
-                                                        "Unknown"}
-                                                </div>
-                                            </div>
-                                            <div className="rounded-[10px] border border-edge bg-surface-raised p-4">
-                                                <div className="text-xs uppercase tracking-wider text-fg-muted">
-                                                    Author
-                                                </div>
-                                                <div className="mt-2 text-sm font-medium text-fg">
-                                                    {clipData.metadata.author ||
-                                                        "Unknown"}
-                                                </div>
-                                            </div>
-                                            <div className="rounded-[10px] border border-edge bg-surface-raised p-4">
-                                                <div className="text-xs uppercase tracking-wider text-fg-muted">
-                                                    Published
-                                                </div>
-                                                <div className="mt-2 text-sm font-medium text-fg">
-                                                    {clipData.metadata
-                                                        .published || "Unknown"}
-                                                </div>
-                                            </div>
-                                            <div className="rounded-[10px] border border-edge bg-surface-raised p-4">
-                                                <div className="text-xs uppercase tracking-wider text-fg-muted">
-                                                    Words
-                                                </div>
-                                                <div className="mt-2 text-sm font-medium text-fg">
-                                                    {clipData.content.wordCount}
-                                                </div>
-                                            </div>
-                                        </div>
+            {view === "clip" && (
+                <>
+                    <div className="flex-1 overflow-y-auto">
+                        {isLoading && (
+                            <div className="flex flex-col gap-2.5 px-3 pt-3">
+                                <div className="h-2.5 w-14 animate-pulse rounded bg-surface-hover" />
+                                <div className="h-7 animate-pulse rounded-md bg-surface-raised" />
+                                <div className="h-2.5 w-14 animate-pulse rounded bg-surface-hover" />
+                                <div className="h-24 animate-pulse rounded-md bg-surface-raised" />
+                                <div className="h-2.5 w-14 animate-pulse rounded bg-surface-hover" />
+                                <div className="h-7 animate-pulse rounded-md bg-surface-raised" />
+                            </div>
+                        )}
 
-                                        {clipData.metadata.description && (
-                                            <p className="mt-5 text-sm leading-7 text-fg-muted">
-                                                {clipData.metadata.description}
-                                            </p>
-                                        )}
-                                    </section>
-
-                                    <ClipForm
-                                        clipData={clipData}
-                                        contentMode={contentMode}
-                                        selectionOnly={selectionOnly}
-                                        onContentModeChange={setContentMode}
-                                        title={title}
-                                        onTitleChange={setTitle}
-                                        tags={tags}
-                                        tagSuggestions={tagSuggestions}
-                                        onTagsChange={setTags}
-                                        folder={folder}
-                                        folderSuggestions={folderSuggestions}
-                                        onFolderChange={setFolder}
-                                    />
-                                </div>
-
-                                <MarkdownPreview
-                                    contentMode={contentMode}
-                                    markdown={deferredPreviewMarkdown}
-                                />
-                            </section>
-
-                            <footer className="clipper-fade-up flex flex-wrap items-center justify-between gap-4 rounded-xl border border-edge bg-surface-alt px-6 py-5 shadow-soft">
-                                <div className="flex flex-wrap items-center gap-4">
-                                    <VaultSelector
-                                        value={activeVault?.id ?? ""}
-                                        options={vaultOptions}
-                                        onChange={(value) => {
-                                            void handleActiveVaultChange(value);
-                                        }}
-                                    />
-                                    <SettingsButton
-                                        onClick={handleOpenSettings}
-                                    />
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-4">
-                                    <div className="max-w-lg text-right">
-                                        <p className="text-xs leading-6 text-fg-muted">
-                                            `vault` and `folder` are sent only
-                                            as hints. The desktop app must
-                                            revalidate the final target before
-                                            writing anything to disk.
-                                        </p>
-                                        <p className="mt-1 text-xs leading-6 text-fg-muted">
-                                            Folder hint:{" "}
-                                            {normalizeFolderHint(folder) ||
-                                                "None"}{" "}
-                                            · Transport:{" "}
-                                            {settings.useClipboard
-                                                ? "clipboard preferred"
-                                                : "desktop API when available"}
-                                        </p>
-                                        <p className="mt-1 text-xs leading-6 text-fg-muted">
-                                            Template:{" "}
-                                            {resolvedTemplate?.name ??
-                                                "Default"}{" "}
-                                            · Desktop: {desktopStatus} · Themes:{" "}
-                                            {desktopThemes.length}
-                                        </p>
-                                        {sendMessage && (
-                                            <p
-                                                className={`mt-2 text-xs leading-6 ${
-                                                    sendStatus === "error"
-                                                        ? "text-rose-200"
-                                                        : "text-accent"
-                                                }`}
-                                            >
-                                                {sendMessage}
-                                            </p>
-                                        )}
-                                        {lastDeepLink && (
-                                            <p className="mt-2 truncate text-[11px] leading-6 text-fg-muted">
-                                                {lastDeepLink}
-                                            </p>
-                                        )}
-                                    </div>
-                                    <SaveButton
-                                        disabled={sendStatus === "sending"}
-                                        status={sendStatus}
+                        {!isLoading && status === "error" && (
+                            <div className="flex flex-col gap-2.5 px-3 pt-3">
+                                <div className="rounded-md border border-danger/30 bg-danger/10 p-2.5">
+                                    <p className="text-[11px] font-semibold text-danger">
+                                        Extraction failed
+                                    </p>
+                                    <p className="mt-1 text-[10px] leading-relaxed text-fg-muted">
+                                        {errorMessage}
+                                    </p>
+                                    <button
+                                        type="button"
                                         onClick={() => {
-                                            void handleSendToVaultAi();
+                                            void loadClipData();
                                         }}
-                                    />
+                                        className="mt-1.5 inline-flex h-6 items-center rounded-md border border-danger/30 px-2.5 text-[10px] font-medium text-danger transition hover:bg-danger/10"
+                                    >
+                                        Retry
+                                    </button>
                                 </div>
-                            </footer>
-                        </>
-                    )}
-            </div>
+                            </div>
+                        )}
+
+                        {!isLoading &&
+                            status === "ready" &&
+                            clipData !== null && (
+                                <div className="flex flex-col gap-2.5 px-3 pb-3 pt-3">
+                                    <div>
+                                        <label className="clip-label">
+                                            Title
+                                        </label>
+                                        <input
+                                            value={title}
+                                            onChange={(e) =>
+                                                setTitle(e.target.value)
+                                            }
+                                            className="mt-1 h-7 w-full rounded-md border border-edge bg-surface-raised px-2.5 text-[11px] font-medium text-fg outline-none placeholder:text-fg-dim focus:border-accent/50"
+                                            placeholder="Note title"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="clip-label">
+                                            Notes
+                                        </label>
+                                        <textarea
+                                            value={notes}
+                                            onChange={(e) =>
+                                                setNotes(e.target.value)
+                                            }
+                                            className="mt-1 h-24 w-full resize-none rounded-md border border-edge bg-surface-raised px-2.5 py-2 text-[11px] text-fg outline-none placeholder:text-fg-dim focus:border-accent/50"
+                                            placeholder="Add personal notes to this clip..."
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="clip-label">
+                                            URL
+                                        </label>
+                                        <div className="mt-1">
+                                            <UrlField
+                                                url={clipData.metadata.url}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="clip-label">
+                                            Tags
+                                        </label>
+                                        <div className="mt-1">
+                                            <TagEditor
+                                                tags={tags}
+                                                suggestions={tagSuggestions}
+                                                onChange={setTags}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="clip-label">
+                                            Vault
+                                        </label>
+                                        <div className="mt-1 flex gap-1.5">
+                                            <VaultSelector
+                                                value={activeVault?.id ?? ""}
+                                                options={vaultOptions}
+                                                onChange={(v) => {
+                                                    void handleVaultChange(v);
+                                                }}
+                                            />
+                                            <FolderSelector
+                                                value={folder}
+                                                suggestions={folderSuggestions}
+                                                onChange={setFolder}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {sendMessage && (
+                                        <p
+                                            className={`text-[10px] leading-relaxed ${sendStatus === "error" ? "text-danger" : "text-accent"}`}
+                                        >
+                                            {sendMessage}
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+                    </div>
+
+                    <div className="h-px bg-edge" />
+
+                    <footer className="flex h-10 shrink-0 items-center gap-1.5 bg-surface-alt px-2.5">
+                        <button
+                            type="button"
+                            aria-label="Open settings"
+                            onClick={handleOpenSettings}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-muted transition hover:text-fg"
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                                <circle cx="12" cy="12" r="3" />
+                            </svg>
+                        </button>
+
+                        {desktopApiAvailable ? (
+                            <div className="inline-flex items-center gap-1 rounded-md bg-success/15 px-2 py-1">
+                                <div className="h-1.5 w-1.5 rounded-full bg-success" />
+                                <span className="text-[10px] font-medium text-success">
+                                    Connected
+                                </span>
+                            </div>
+                        ) : (
+                            <div className="inline-flex items-center gap-1 rounded-md bg-fg-dim/10 px-2 py-1">
+                                <div className="h-1.5 w-1.5 rounded-full bg-fg-dim" />
+                                <span className="text-[10px] font-medium text-fg-dim">
+                                    Offline
+                                </span>
+                            </div>
+                        )}
+
+                        <div className="flex-1" />
+
+                        <SaveButton
+                            disabled={
+                                sendStatus === "sending" ||
+                                status !== "ready" ||
+                                clipData === null
+                            }
+                            status={sendStatus}
+                            onClick={() => {
+                                void handleSave();
+                            }}
+                        />
+                    </footer>
+                </>
+            )}
         </main>
     );
 }

@@ -9,45 +9,60 @@ export function VaultSelector({
     options,
     onChange,
 }: VaultSelectorProps) {
+    const activeLabel =
+        options.find((o) => o.value === value)?.label ?? "Select vault";
+
     return (
-        <div className="grid min-w-[280px] gap-3">
-            <div className="flex flex-wrap gap-2">
-                {options.slice(0, 4).map((option) => {
-                    const isActive = option.value === value;
-
-                    return (
-                        <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => onChange(option.value)}
-                            className={`inline-flex h-9 items-center justify-center rounded-full border px-3 text-xs font-semibold transition ${
-                                isActive
-                                    ? "border-accent/35 bg-accent/15 text-fg"
-                                    : "border-edge bg-surface-raised text-fg-muted hover:border-accent/25 hover:text-fg"
-                            }`}
-                        >
-                            {option.label}
-                        </button>
-                    );
-                })}
-            </div>
-
-            <label className="grid gap-2">
-                <span className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
-                    Vault
+        <div className="relative flex h-7 flex-1 items-center gap-1.5 rounded-md border border-edge bg-surface-raised px-2.5">
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 text-accent"
+            >
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <path d="M7 3v18" />
+                <path d="M3 7.5h4" />
+                <path d="M3 12h18" />
+                <path d="M3 16.5h4" />
+            </svg>
+            <span className="flex-1 truncate text-[11px] font-medium text-fg">
+                {activeLabel}
+            </span>
+            {options.length > 1 && (
+                <span className="rounded-sm bg-[#FFFFFF08] px-1.5 py-0.5 text-[10px] text-fg-dim">
+                    {options.length} vaults
                 </span>
-                <select
-                    value={value}
-                    onChange={(event) => onChange(event.target.value)}
-                    className="h-11 rounded-[10px] border border-edge bg-surface-alt px-4 text-sm text-fg outline-none transition focus:border-accent/60"
-                >
-                    {options.map((option) => (
-                        <option key={option.value} value={option.value}>
-                            {option.label}
-                        </option>
-                    ))}
-                </select>
-            </label>
+            )}
+            <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 text-fg-dim"
+            >
+                <path d="m6 9 6 6 6-6" />
+            </svg>
+            <select
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                className="absolute inset-0 cursor-pointer opacity-0"
+            >
+                {options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                        {option.label}
+                    </option>
+                ))}
+            </select>
         </div>
     );
 }

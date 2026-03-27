@@ -1,35 +1,40 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap");
 @import "tailwindcss";
 
 @config "../../../tailwind.config.ts";
 
 @theme {
-    --color-surface: #1c1c1c;
-    --color-surface-alt: #252525;
-    --color-surface-hover: #2e2e2e;
-    --color-surface-raised: #232323;
-    --color-fg: #e8e8e8;
-    --color-fg-muted: #8a8a8a;
-    --color-edge: #383838;
-    --color-accent: #818cf8;
-    --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
+    --color-surface: #0b0b0e;
+    --color-surface-alt: #111114;
+    --color-surface-hover: #16161a;
+    --color-surface-raised: #16161a;
+    --color-fg: #fafaf9;
+    --color-fg-muted: #6b6b70;
+    --color-fg-dim: #4a4a50;
+    --color-edge: #2a2a2e;
+    --color-accent: #6366f1;
+    --color-success: #28c840;
+    --color-danger: #e85a4f;
+    --shadow-soft: 0 8px 24px rgba(99, 102, 241, 0.2);
 }
 
 :root {
     color-scheme: dark;
     font-family:
+        "DM Sans",
         system-ui,
         -apple-system,
         sans-serif;
 
-    /* VaultAI design tokens — dark theme preset */
-    --bg-primary: #1c1c1c;
-    --bg-secondary: #252525;
-    --bg-tertiary: #2e2e2e;
-    --bg-elevated: #232323;
-    --text-primary: #e8e8e8;
-    --text-secondary: #8a8a8a;
-    --border: #383838;
-    --accent: #818cf8;
+    --bg-primary: #0b0b0e;
+    --bg-secondary: #111114;
+    --bg-tertiary: #16161a;
+    --bg-elevated: #16161a;
+    --text-primary: #fafaf9;
+    --text-secondary: #6b6b70;
+    --text-tertiary: #4a4a50;
+    --border: #2a2a2e;
+    --accent: #6366f1;
 
     background: var(--bg-primary);
 }
@@ -42,8 +47,8 @@ body,
 }
 
 body {
-    min-width: 900px;
-    min-height: 640px;
+    min-width: 383px;
+    min-height: 585px;
     color: var(--text-primary);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -59,18 +64,28 @@ input[type="checkbox"] {
     accent-color: var(--accent);
 }
 
+.clip-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: #4a4a50;
+    margin-bottom: 4px;
+}
+
 .clipper-fade-up {
     animation: clipper-fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .clipper-markdown {
-    color: var(--text-primary);
-    font-size: 0.95rem;
-    line-height: 1.85;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
 }
 
 .clipper-markdown > * + * {
-    margin-top: 1rem;
+    margin-top: 0.5rem;
 }
 
 .clipper-markdown h1,
@@ -83,21 +98,21 @@ input[type="checkbox"] {
 }
 
 .clipper-markdown h1 {
-    font-size: 1.875rem;
+    font-size: 14px;
 }
 
 .clipper-markdown h2 {
-    font-size: 1.375rem;
+    font-size: 13px;
 }
 
 .clipper-markdown h3 {
-    font-size: 1.125rem;
+    font-size: 12px;
 }
 
 .clipper-markdown p,
 .clipper-markdown li,
 .clipper-markdown blockquote {
-    color: color-mix(in srgb, var(--text-primary) 82%, transparent);
+    color: var(--text-secondary);
 }
 
 .clipper-markdown a {
@@ -111,31 +126,31 @@ input[type="checkbox"] {
 
 .clipper-markdown ul,
 .clipper-markdown ol {
-    padding-left: 1.25rem;
-}
-
-.clipper-markdown li + li {
-    margin-top: 0.35rem;
-}
-
-.clipper-markdown blockquote {
-    margin: 1.25rem 0;
-    border-left: 3px solid color-mix(in srgb, var(--accent) 40%, transparent);
     padding-left: 1rem;
 }
 
+.clipper-markdown li + li {
+    margin-top: 0.2rem;
+}
+
+.clipper-markdown blockquote {
+    margin: 0.5rem 0;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    padding-left: 0.75rem;
+}
+
 .clipper-markdown code {
-    border-radius: 6px;
+    border-radius: 4px;
     background: var(--bg-tertiary);
-    padding: 0.12rem 0.4rem;
-    font-size: 0.85em;
+    padding: 0.1rem 0.3rem;
+    font-size: 0.9em;
 }
 
 .clipper-markdown pre {
     overflow: auto;
-    border-radius: 10px;
+    border-radius: 6px;
     background: var(--bg-secondary);
-    padding: 1rem;
+    padding: 0.5rem;
 }
 
 .clipper-markdown pre code {
@@ -147,14 +162,15 @@ input[type="checkbox"] {
     width: 100%;
     border-collapse: collapse;
     overflow: hidden;
-    border-radius: 10px;
+    border-radius: 6px;
 }
 
 .clipper-markdown th,
 .clipper-markdown td {
     border: 1px solid var(--border);
-    padding: 0.6rem 0.75rem;
+    padding: 0.3rem 0.5rem;
     text-align: left;
+    font-size: 11px;
 }
 
 .clipper-markdown th {
@@ -165,7 +181,7 @@ input[type="checkbox"] {
 @keyframes clipper-fade-up {
     from {
         opacity: 0;
-        transform: translateY(12px);
+        transform: translateY(8px);
     }
 
     to {
