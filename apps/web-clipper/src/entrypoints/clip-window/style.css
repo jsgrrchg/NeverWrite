@@ -3,6 +3,8 @@
 
 @config "../../../tailwind.config.ts";
 
+/* ── Design tokens (dark by default) ─────────────────────────── */
+
 @theme {
     --color-surface: #0b0b0e;
     --color-surface-alt: #111114;
@@ -19,25 +21,47 @@
 }
 
 :root {
-    color-scheme: dark;
+    color-scheme: light dark;
     font-family:
         "DM Sans",
         system-ui,
         -apple-system,
         sans-serif;
 
-    --bg-primary: #0b0b0e;
-    --bg-secondary: #111114;
-    --bg-tertiary: #16161a;
-    --bg-elevated: #16161a;
-    --text-primary: #fafaf9;
-    --text-secondary: #6b6b70;
-    --text-tertiary: #4a4a50;
-    --border: #2a2a2e;
-    --accent: #6366f1;
+    /* Legacy aliases consumed by .clipper-markdown styles */
+    --bg-primary: var(--color-surface);
+    --bg-secondary: var(--color-surface-alt);
+    --bg-tertiary: var(--color-surface-raised);
+    --bg-elevated: var(--color-surface-raised);
+    --text-primary: var(--color-fg);
+    --text-secondary: var(--color-fg-muted);
+    --text-tertiary: var(--color-fg-dim);
+    --border: var(--color-edge);
+    --accent: var(--color-accent);
 
-    background: var(--bg-primary);
+    background: var(--color-surface);
 }
+
+/* ── Light mode ──────────────────────────────────────────────── */
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --color-surface: #ffffff;
+        --color-surface-alt: #f7f7f8;
+        --color-surface-hover: #ededf0;
+        --color-surface-raised: #f2f2f4;
+        --color-fg: #1a1a1e;
+        --color-fg-muted: #6e6e73;
+        --color-fg-dim: #a0a0a5;
+        --color-edge: #d8d8dc;
+        --color-accent: #5b5ef0;
+        --color-success: #22a834;
+        --color-danger: #dc3545;
+        --shadow-soft: 0 8px 24px rgba(91, 94, 240, 0.12);
+    }
+}
+
+/* ── Base ─────────────────────────────────────────────────────── */
 
 html,
 body,
@@ -70,13 +94,15 @@ input[type="checkbox"] {
     font-weight: 600;
     letter-spacing: 0.8px;
     text-transform: uppercase;
-    color: #4a4a50;
+    color: var(--color-fg-dim);
     margin-bottom: 4px;
 }
 
 .clipper-fade-up {
     animation: clipper-fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
+
+/* ── Markdown preview ────────────────────────────────────────── */
 
 .clipper-markdown {
     color: var(--text-secondary);

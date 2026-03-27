@@ -29,7 +29,7 @@ export function SaveButton({
             type="button"
             disabled={disabled}
             onClick={onClick}
-            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-xs font-semibold text-white shadow-[0_8px_24px_#6366F133] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-xs font-semibold text-white shadow-soft transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
         >
             <svg
                 width="12"
