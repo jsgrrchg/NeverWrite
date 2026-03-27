@@ -18,32 +18,65 @@ function renderHeader(lineWrapping: boolean) {
         />,
     );
 
-    return document.querySelector(
-        '[data-editor-note-header="true"]',
-    ) as HTMLElement | null;
+    return {
+        outer: document.querySelector(
+            '[data-editor-note-header="true"]',
+        ) as HTMLElement | null,
+        inner: document.querySelector(
+            '[data-editor-note-header-inner="true"]',
+        ) as HTMLElement | null,
+    };
 }
 
 describe("MarkdownNoteHeader", () => {
     it("keeps the centered reading layout when line wrapping is enabled", () => {
-        const header = renderHeader(true);
-        expect(header).not.toBeNull();
-        expect(header).toHaveAttribute("data-line-wrapping", "true");
-        expect(header).toHaveStyle({
+        const { outer, inner } = renderHeader(true);
+        expect(outer).not.toBeNull();
+        expect(inner).not.toBeNull();
+        expect(outer).toHaveAttribute("data-line-wrapping", "true");
+        expect(outer).toHaveStyle({
+            width: "100%",
+            padding: "40px var(--editor-horizontal-inset) 0",
+        });
+        expect(inner).toHaveStyle({
+            width: "min(100%, var(--editor-content-width))",
             maxWidth: "var(--editor-content-width)",
             margin: "0 auto",
-            padding: "40px var(--editor-horizontal-inset) 0",
+            minWidth: "0",
         });
         expect(screen.getByDisplayValue("Example note")).toBeInTheDocument();
     });
 
     it("switches to a left-aligned layout when line wrapping is disabled", () => {
-        const header = renderHeader(false);
-        expect(header).not.toBeNull();
-        expect(header).toHaveAttribute("data-line-wrapping", "false");
-        expect(header).toHaveStyle({
+        const { outer, inner } = renderHeader(false);
+        expect(outer).not.toBeNull();
+        expect(inner).not.toBeNull();
+        expect(outer).toHaveAttribute("data-line-wrapping", "false");
+        expect(outer).toHaveStyle({
+            width: "100%",
+            padding: "40px var(--editor-horizontal-inset) 0",
+        });
+        expect(inner).toHaveStyle({
+            width: "100%",
             maxWidth: "none",
             margin: "0px",
-            padding: "40px var(--editor-horizontal-inset) 0",
+            minWidth: "0",
+        });
+    });
+
+    it("allows the secondary toolbar actions to wrap instead of collapsing the header width", () => {
+        renderHeader(true);
+
+        const propertiesButton = screen.getByRole("button", {
+            name: "Properties",
+        });
+        const toolbar = propertiesButton.parentElement;
+
+        expect(toolbar).not.toBeNull();
+        expect(toolbar).toHaveStyle({
+            display: "flex",
+            flexWrap: "wrap",
+            minWidth: "0",
         });
     });
 });
