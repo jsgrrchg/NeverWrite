@@ -249,6 +249,50 @@ describe("FileTabView", () => {
         });
     });
 
+    it("toggles the in-file search panel on repeated Command+F in text files", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/config.toml",
+                title: "config.toml",
+                path: "/vault/src/config.toml",
+                mimeType: "application/toml",
+                viewer: "text",
+                content: 'name = "VaultAI"',
+            },
+        ]);
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        const findBinding = view!.state
+            .facet(keymap)
+            .flat()
+            .find((binding) => binding.key === "Mod-f");
+
+        expect(findBinding).toBeDefined();
+
+        await act(async () => {
+            view!.focus();
+            expect(findBinding?.run?.(view!)).toBe(true);
+            await Promise.resolve();
+        });
+        expect(document.querySelector(".cm-panels")).not.toBeNull();
+
+        await act(async () => {
+            expect(findBinding?.run?.(view!)).toBe(true);
+            await Promise.resolve();
+        });
+        expect(document.querySelector(".cm-panels")).toBeNull();
+    });
+
     it("supports Command plus and minus to adjust font size for text files", async () => {
         setVaultEntries([]);
         setEditorTabs([
