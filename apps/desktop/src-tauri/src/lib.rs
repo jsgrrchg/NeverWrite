@@ -143,9 +143,55 @@ impl VaultInstance {
 
 struct AppState {
     vaults: HashMap<String, VaultInstance>,
+    window_vault_routes: HashMap<String, WindowVaultRoute>,
     write_tracker: WriteTracker,
     next_job_id: u64,
     next_change_op_id: u64,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            vaults: HashMap::new(),
+            window_vault_routes: HashMap::new(),
+            write_tracker: WriteTracker::new(),
+            next_job_id: 0,
+            next_change_op_id: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowRouteKind {
+    Main,
+    Note,
+    Settings,
+    Ghost,
+    Unknown,
+}
+
+impl WindowRouteKind {
+    fn from_window_mode(window_mode: &str) -> Self {
+        match window_mode {
+            "main" => Self::Main,
+            "note" => Self::Note,
+            "settings" => Self::Settings,
+            "ghost" => Self::Ghost,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn can_receive_web_clipper_clip(self) -> bool {
+        matches!(self, Self::Main)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WindowVaultRoute {
+    label: String,
+    vault_path: Option<String>,
+    window_kind: WindowRouteKind,
+    last_seen_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -584,6 +630,43 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn window_route_label_rank(label: &str) -> u8 {
+    if label == "main" {
+        0
+    } else {
+        1
+    }
+}
+
+fn prune_stale_window_vault_routes(app: &AppHandle, state: &mut AppState) {
+    state
+        .window_vault_routes
+        .retain(|label, _| app.get_webview_window(label).is_some());
+}
+
+fn select_web_clipper_target_window_label(state: &AppState, vault_path: &str) -> Option<String> {
+    let mut candidates = state
+        .window_vault_routes
+        .values()
+        .filter(|route| {
+            route.window_kind.can_receive_web_clipper_clip()
+                && route.vault_path.as_deref() == Some(vault_path)
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .last_seen_ms
+            .cmp(&left.last_seen_ms)
+            .then_with(|| {
+                window_route_label_rank(&left.label).cmp(&window_route_label_rank(&right.label))
+            })
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    candidates.first().map(|route| route.label.clone())
 }
 
 fn get_file_times(path: &std::path::Path) -> (u64, u64) {
@@ -4117,12 +4200,44 @@ fn traffic_light_position_for_version(version: u32) -> (f64, f64) {
 }
 
 pub(crate) const WEB_CLIPPER_CLIP_SAVED_EVENT: &str = "vaultai:web-clipper/clip-saved";
+pub(crate) const WEB_CLIPPER_ROUTE_CLIP_EVENT: &str = "vaultai:web-clipper/route-clip";
+
+#[tauri::command]
+fn register_window_vault_route(
+    label: String,
+    window_mode: String,
+    vault_path: Option<String>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut state = lock!(state)?;
+    state.window_vault_routes.insert(
+        label.clone(),
+        WindowVaultRoute {
+            label,
+            vault_path,
+            window_kind: WindowRouteKind::from_window_mode(&window_mode),
+            last_seen_ms: now_ms(),
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn unregister_window_vault_route(
+    label: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut state = lock!(state)?;
+    state.window_vault_routes.remove(&label);
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WebClipperSavedPayload {
     request_id: String,
     vault_path: String,
+    target_window_label: Option<String>,
     note_id: String,
     title: String,
     relative_path: String,
@@ -4213,7 +4328,7 @@ fn sanitize_web_clipper_title(title: &str) -> String {
         .trim()
         .chars()
         .map(|character| match character {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => ' ',
             value if value.is_control() => ' ',
             value => value,
         })
@@ -4221,11 +4336,9 @@ fn sanitize_web_clipper_title(title: &str) -> String {
         .replace('.', " ")
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join("-");
+        .join(" ");
 
     sanitized
-        .trim_matches('-')
-        .to_string()
         .chars()
         .take(96)
         .collect::<String>()
@@ -4344,6 +4457,7 @@ pub(crate) fn web_clipper_save_note(
 ) -> Result<WebClipperSavedPayload, String> {
     let state = app.state::<Mutex<AppState>>();
     let mut guard = lock!(state)?;
+    prune_stale_window_vault_routes(app, &mut guard);
     let vault_key = resolve_web_clipper_vault_key(&guard, vault_path_hint, vault_name_hint)?;
     let write_tracker = guard.write_tracker.clone();
     let op_id = next_change_op_id(&mut guard, VAULT_CHANGE_ORIGIN_EXTERNAL);
@@ -4393,9 +4507,11 @@ pub(crate) fn web_clipper_save_note(
         Ok(())
     })?;
 
+    let target_window_label = select_web_clipper_target_window_label(&guard, &vault_key);
     let payload = WebClipperSavedPayload {
         request_id,
         vault_path: vault_key.clone(),
+        target_window_label: target_window_label.clone(),
         note_id: note.id.0.clone(),
         title: note.title.clone(),
         relative_path,
@@ -4404,7 +4520,11 @@ pub(crate) fn web_clipper_save_note(
 
     drop(guard);
     emit_vault_note_change(app, "web_clipper_save", change);
-    let _ = app.emit(WEB_CLIPPER_CLIP_SAVED_EVENT, payload.clone());
+    if let Some(label) = target_window_label {
+        let _ = app.emit_to(label, WEB_CLIPPER_CLIP_SAVED_EVENT, payload.clone());
+    } else if app.get_webview_window("main").is_some() {
+        let _ = app.emit_to("main", WEB_CLIPPER_ROUTE_CLIP_EVENT, payload.clone());
+    }
     Ok(payload)
 }
 
@@ -4412,12 +4532,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(Mutex::new(AppState {
-            vaults: HashMap::new(),
-            write_tracker: WriteTracker::new(),
-            next_job_id: 0,
-            next_change_op_id: 0,
-        }))
+        .manage(Mutex::new(AppState::new()))
         .manage(Mutex::new(ai::AiManager::new()))
         .manage(ai::auth_terminal::AiAuthTerminalManager::new())
         .manage(devtools::DevTerminalManager::new())
@@ -4451,6 +4566,8 @@ pub fn run() {
             start_open_vault,
             get_vault_open_state,
             cancel_open_vault,
+            register_window_vault_route,
+            unregister_window_vault_route,
             list_notes,
             get_graph_revision,
             list_vault_entries,
@@ -4696,6 +4813,121 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_web_clipper_title_preserves_spaces() {
+        assert_eq!(
+            sanitize_web_clipper_title("  Donald Trump's Greenland plan  "),
+            "Donald Trump's Greenland plan"
+        );
+        assert_eq!(
+            sanitize_web_clipper_title("Roadmap: Q2/Q3 update"),
+            "Roadmap Q2 Q3 update"
+        );
+    }
+
+    #[test]
+    fn build_web_clipper_relative_note_path_keeps_spaces_in_filename() {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-web-clipper-path-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let vault = Vault::open(dir.clone()).unwrap();
+        let relative_path =
+            build_web_clipper_relative_note_path(&vault, "Clips", "Donald Trump's Greenland plan")
+                .unwrap();
+
+        assert_eq!(relative_path, "Clips/Donald Trump's Greenland plan.md");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn select_web_clipper_target_window_label_prefers_latest_matching_window() {
+        let mut state = AppState::new();
+        state.window_vault_routes.insert(
+            "vault-b".to_string(),
+            WindowVaultRoute {
+                label: "vault-b".to_string(),
+                vault_path: Some("/vaults/shared".to_string()),
+                window_kind: WindowRouteKind::Main,
+                last_seen_ms: 10,
+            },
+        );
+        state.window_vault_routes.insert(
+            "vault-a".to_string(),
+            WindowVaultRoute {
+                label: "vault-a".to_string(),
+                vault_path: Some("/vaults/shared".to_string()),
+                window_kind: WindowRouteKind::Main,
+                last_seen_ms: 20,
+            },
+        );
+
+        assert_eq!(
+            select_web_clipper_target_window_label(&state, "/vaults/shared"),
+            Some("vault-a".to_string())
+        );
+    }
+
+    #[test]
+    fn select_web_clipper_target_window_label_prefers_main_label_on_tie() {
+        let mut state = AppState::new();
+        state.window_vault_routes.insert(
+            "vault-z".to_string(),
+            WindowVaultRoute {
+                label: "vault-z".to_string(),
+                vault_path: Some("/vaults/shared".to_string()),
+                window_kind: WindowRouteKind::Main,
+                last_seen_ms: 20,
+            },
+        );
+        state.window_vault_routes.insert(
+            "main".to_string(),
+            WindowVaultRoute {
+                label: "main".to_string(),
+                vault_path: Some("/vaults/shared".to_string()),
+                window_kind: WindowRouteKind::Main,
+                last_seen_ms: 20,
+            },
+        );
+
+        assert_eq!(
+            select_web_clipper_target_window_label(&state, "/vaults/shared"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn select_web_clipper_target_window_label_ignores_non_main_and_mismatched_routes() {
+        let mut state = AppState::new();
+        state.window_vault_routes.insert(
+            "note-window".to_string(),
+            WindowVaultRoute {
+                label: "note-window".to_string(),
+                vault_path: Some("/vaults/shared".to_string()),
+                window_kind: WindowRouteKind::Note,
+                last_seen_ms: 50,
+            },
+        );
+        state.window_vault_routes.insert(
+            "main".to_string(),
+            WindowVaultRoute {
+                label: "main".to_string(),
+                vault_path: Some("/vaults/other".to_string()),
+                window_kind: WindowRouteKind::Main,
+                last_seen_ms: 100,
+            },
+        );
+
+        assert_eq!(
+            select_web_clipper_target_window_label(&state, "/vaults/shared"),
+            None
+        );
+    }
+
+    #[test]
     fn compute_tracked_file_patches_returns_line_and_text_ranges() {
         let patches = compute_tracked_file_patches(vec![ComputeLineDiffInput {
             old_text: "alpha".to_string(),
@@ -4732,12 +4964,7 @@ mod tests {
 
     #[test]
     fn next_change_op_id_is_monotonic_and_origin_prefixed() {
-        let mut state = AppState {
-            vaults: HashMap::new(),
-            write_tracker: WriteTracker::new(),
-            next_job_id: 0,
-            next_change_op_id: 0,
-        };
+        let mut state = AppState::new();
 
         assert_eq!(next_change_op_id(&mut state, "user"), "user-0");
         assert_eq!(next_change_op_id(&mut state, "external"), "external-1");
