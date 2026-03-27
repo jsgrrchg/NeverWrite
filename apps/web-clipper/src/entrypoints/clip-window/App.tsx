@@ -412,7 +412,10 @@ export function App(_props: AppProps) {
                     clipData,
                     contentMarkdown: previewMarkdown,
                     title: normalizedTitle,
-                    vault: activeVault.id,
+                    vault:
+                        activeVault.path || activeVault.name || activeVault.id,
+                    vaultPathHint: activeVault.path || undefined,
+                    vaultNameHint: activeVault.name || undefined,
                     folder: normalizedFolder,
                     preferClipboard: settings.useClipboard,
                 });

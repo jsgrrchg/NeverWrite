@@ -7,6 +7,12 @@ export function createClipDeepLink(payload: ClipRequestPayload): string {
     params.set("createdAt", payload.createdAt);
     params.set("source", payload.source);
     params.set("vault", payload.vault);
+    if (payload.vaultPathHint) {
+        params.set("vaultPathHint", payload.vaultPathHint);
+    }
+    if (payload.vaultNameHint) {
+        params.set("vaultNameHint", payload.vaultNameHint);
+    }
     params.set("folder", payload.folder);
     params.set("title", payload.title);
     params.set("url", payload.url);
