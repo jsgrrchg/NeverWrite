@@ -13,14 +13,13 @@ export default defineConfig({
     manifest: {
         name: "VaultAI Web Clipper",
         short_name: "VaultAI Clipper",
-        description:
-            "Clip web content into VaultAI using a dedicated extension window.",
-        permissions: ["contextMenus"],
+        description: "Clip web content directly into your VaultAI vault.",
+        permissions: ["contextMenus", "storage"],
         action: {
             default_title: "Open VaultAI Web Clipper",
         },
         commands: {
-            "open-clipper": {
+            _execute_action: {
                 suggested_key: {
                     default: "Ctrl+Shift+S",
                     mac: "Command+Shift+S",

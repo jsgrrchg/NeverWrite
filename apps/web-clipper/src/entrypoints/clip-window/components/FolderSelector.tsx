@@ -14,42 +14,47 @@ export function FolderSelector({
     const listId = "folder-hints";
 
     return (
-        <div className="grid gap-3">
-            <label className="grid gap-2">
-                <span className="text-sm font-medium text-fg">
-                    Destination folder
-                </span>
-                <input
-                    value={value}
-                    list={listId}
-                    onChange={(event) =>
-                        onChange(normalizeFolderHint(event.target.value))
-                    }
-                    placeholder="Clips/Web"
-                    className="h-11 rounded-[10px] border border-edge bg-surface-raised px-4 text-sm text-fg outline-none transition focus:border-accent/60"
-                />
-            </label>
-
+        <div className="relative flex h-7 flex-1 items-center gap-1.5 rounded-md border border-edge bg-surface-raised px-2.5">
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 text-[#FFB547]"
+            >
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+            <input
+                value={value}
+                list={listId}
+                onChange={(event) =>
+                    onChange(normalizeFolderHint(event.target.value))
+                }
+                placeholder="folder"
+                className="min-w-0 flex-1 truncate bg-transparent text-[11px] font-medium text-fg outline-none placeholder:text-fg-dim"
+            />
+            <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 text-fg-dim"
+            >
+                <path d="m6 9 6 6 6-6" />
+            </svg>
             <datalist id={listId}>
                 {suggestions.map((folder) => (
                     <option key={folder} value={folder} />
                 ))}
             </datalist>
-
-            {suggestions.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                    {suggestions.slice(0, 8).map((folder) => (
-                        <button
-                            key={folder}
-                            type="button"
-                            onClick={() => onChange(folder)}
-                            className="inline-flex items-center rounded-full border border-edge bg-surface-raised px-3 py-1 text-xs font-medium text-fg-muted transition hover:border-accent/35 hover:text-fg"
-                        >
-                            {folder}
-                        </button>
-                    ))}
-                </div>
-            )}
         </div>
     );
 }

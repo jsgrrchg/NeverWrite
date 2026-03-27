@@ -9,13 +9,13 @@ interface SaveButtonProps {
 function buttonLabel(status: SaveButtonStatus): string {
     switch (status) {
         case "sending":
-            return "Sending to VaultAI...";
+            return "Saving...";
         case "sent":
-            return "Continue in VaultAI";
+            return "Saved";
         case "error":
-            return "Retry VaultAI Handoff";
+            return "Retry";
         default:
-            return "Save to VaultAI";
+            return "Save";
     }
 }
 
@@ -29,8 +29,22 @@ export function SaveButton({
             type="button"
             disabled={disabled}
             onClick={onClick}
-            className="inline-flex h-11 items-center justify-center rounded-[10px] border border-accent/30 bg-accent/15 px-5 text-sm font-semibold text-fg transition hover:bg-accent/22 disabled:cursor-not-allowed disabled:border-edge disabled:bg-surface-raised disabled:text-fg-muted"
+            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-xs font-semibold text-white shadow-[0_8px_24px_#6366F133] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
         >
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+                <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+                <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+            </svg>
             {buttonLabel(status)}
         </button>
     );

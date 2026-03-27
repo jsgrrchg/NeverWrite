@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { parseTagInput } from "../../../lib/clipper-preferences";
 
 interface TagEditorProps {
@@ -9,20 +9,6 @@ interface TagEditorProps {
 
 export function TagEditor({ tags, suggestions, onChange }: TagEditorProps) {
     const [draft, setDraft] = useState("");
-
-    const filteredSuggestions = useMemo(() => {
-        const normalizedDraft = draft.trim().toLowerCase();
-        const currentKeys = new Set(tags.map((tag) => tag.toLowerCase()));
-
-        return suggestions.filter((suggestion) => {
-            const key = suggestion.toLowerCase();
-            if (currentKeys.has(key)) {
-                return false;
-            }
-
-            return !normalizedDraft || key.includes(normalizedDraft);
-        });
-    }, [draft, suggestions, tags]);
 
     function commitDraft(value: string) {
         const nextTags = parseTagInput(value);
@@ -40,59 +26,56 @@ export function TagEditor({ tags, suggestions, onChange }: TagEditorProps) {
     }
 
     return (
-        <div className="grid gap-3">
-            <div className="flex min-h-11 flex-wrap gap-2 rounded-[10px] border border-edge bg-surface-raised px-3 py-3 transition focus-within:border-accent/60">
-                {tags.map((tag) => (
-                    <button
-                        key={tag}
-                        type="button"
-                        onClick={() => removeTag(tag)}
-                        className="inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/12 px-3 py-1 text-xs font-medium text-fg transition hover:bg-accent/18"
-                    >
-                        <span>{tag}</span>
-                        <span aria-hidden="true" className="text-fg-muted">
-                            ×
-                        </span>
-                    </button>
-                ))}
-                <input
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onBlur={() => commitDraft(draft)}
-                    onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === ",") {
-                            event.preventDefault();
-                            commitDraft(draft);
-                        }
-
-                        if (
-                            event.key === "Backspace" &&
-                            !draft &&
-                            tags.length > 0
-                        ) {
-                            removeTag(tags[tags.length - 1]);
-                        }
-                    }}
-                    placeholder={
-                        tags.length === 0 ? "Add tags" : "Add another tag"
+        <div className="flex flex-wrap items-center gap-1 rounded-md border border-edge bg-surface-raised px-2.5 py-1.5">
+            {tags.map((tag, index) => (
+                <button
+                    key={tag}
+                    type="button"
+                    onClick={() => removeTag(tag)}
+                    className={`inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition ${
+                        index === 0
+                            ? "bg-[#6366F120] text-accent"
+                            : "bg-[#FFFFFF10] text-fg-muted"
+                    }`}
+                >
+                    {tag}
+                </button>
+            ))}
+            <input
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onBlur={() => commitDraft(draft)}
+                onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === ",") {
+                        event.preventDefault();
+                        commitDraft(draft);
                     }
-                    className="min-w-[180px] flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted"
-                />
-            </div>
 
-            {filteredSuggestions.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                    {filteredSuggestions.slice(0, 8).map((suggestion) => (
-                        <button
-                            key={suggestion}
-                            type="button"
-                            onClick={() => commitDraft(suggestion)}
-                            className="inline-flex items-center rounded-full border border-edge bg-surface-raised px-3 py-1 text-xs font-medium text-fg-muted transition hover:border-accent/35 hover:text-fg"
-                        >
-                            {suggestion}
-                        </button>
-                    ))}
-                </div>
+                    if (
+                        event.key === "Backspace" &&
+                        !draft &&
+                        tags.length > 0
+                    ) {
+                        removeTag(tags[tags.length - 1]);
+                    }
+                }}
+                list="tag-suggestions"
+                placeholder={tags.length === 0 ? "Add tag" : "+ Add tag"}
+                className="min-w-15 flex-1 bg-transparent text-[10px] text-fg-dim outline-none placeholder:text-fg-dim"
+            />
+            {suggestions.length > 0 && (
+                <datalist id="tag-suggestions">
+                    {suggestions
+                        .filter(
+                            (s) =>
+                                !tags
+                                    .map((t) => t.toLowerCase())
+                                    .includes(s.toLowerCase()),
+                        )
+                        .map((suggestion) => (
+                            <option key={suggestion} value={suggestion} />
+                        ))}
+                </datalist>
             )}
         </div>
     );
