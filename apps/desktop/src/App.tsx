@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { perfCount } from "./app/utils/perfInstrumentation";
@@ -27,8 +28,6 @@ import { SearchView } from "./features/search/SearchView";
 import { PdfTabView } from "./features/pdf/PdfTabView";
 import { MapsPanel } from "./features/maps/MapsPanel";
 import { BookmarksPanel } from "./features/bookmarks/BookmarksPanel";
-import ClipNotification from "./features/clip/ClipNotification";
-import { useClipImportStore } from "./features/clip/clipImportStore";
 import { useBookmarkStore } from "./app/store/bookmarkStore";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
@@ -53,6 +52,7 @@ import {
 import { bootstrapDetachedWindow } from "./app/detachedWindowBootstrap";
 import {
     buildWindowSessionEntry,
+    readWindowSessionSnapshot,
     refreshWindowSessionSnapshot,
     restoreWindowSession,
     writeWindowSessionEntry,
@@ -116,10 +116,22 @@ function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
 interface WebClipperSavedPayload {
     requestId: string;
     vaultPath: string;
+    targetWindowLabel: string | null;
     noteId: string;
     title: string;
     relativePath: string;
     content: string;
+}
+
+const WEB_CLIPPER_CLIP_SAVED_EVENT = "vaultai:web-clipper/clip-saved";
+const WEB_CLIPPER_ROUTE_CLIP_EVENT = "vaultai:web-clipper/route-clip";
+const WEB_CLIPPER_ROUTE_POLL_MS = 100;
+const WEB_CLIPPER_ROUTE_TIMEOUT_MS = 10_000;
+
+function waitForWindowRoute(ms: number) {
+    return new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
 }
 
 function SidebarPanel({ view }: { view: SidebarView }) {
@@ -1113,6 +1125,101 @@ export default function App() {
         [vaultPath],
     );
 
+    const openWebClipperClip = useCallback(
+        (payload: WebClipperSavedPayload) => {
+            const currentWindowLabel = getCurrentWindowLabel();
+            const currentVaultPath = useVaultStore.getState().vaultPath;
+            if (
+                payload.targetWindowLabel !== null &&
+                payload.targetWindowLabel !== currentWindowLabel
+            ) {
+                return;
+            }
+            if (!currentVaultPath || currentVaultPath !== payload.vaultPath) {
+                return;
+            }
+
+            useEditorStore
+                .getState()
+                .openNote(payload.noteId, payload.title, payload.content);
+        },
+        [],
+    );
+
+    const routeWebClipperClip = useCallback(
+        async (payload: WebClipperSavedPayload) => {
+            if (getCurrentWindowLabel() !== "main") {
+                return;
+            }
+            if (useVaultStore.getState().vaultPath === payload.vaultPath) {
+                openWebClipperClip({
+                    ...payload,
+                    targetWindowLabel: getCurrentWindowLabel(),
+                });
+                return;
+            }
+
+            const currentWindowLabel = getCurrentWindowLabel();
+            let targetLabel =
+                readWindowSessionSnapshot().find(
+                    (entry) =>
+                        entry.kind === "vault" &&
+                        entry.vaultPath === payload.vaultPath,
+                )?.label ?? null;
+
+            if (!targetLabel) {
+                const existingLabels = new Set(
+                    (await getAllWebviewWindows()).map(
+                        (window) => window.label,
+                    ),
+                );
+
+                await openVaultWindow(payload.vaultPath);
+
+                const deadline = Date.now() + WEB_CLIPPER_ROUTE_TIMEOUT_MS;
+                while (Date.now() <= deadline) {
+                    const matchingEntry = readWindowSessionSnapshot().find(
+                        (entry) =>
+                            entry.kind === "vault" &&
+                            entry.vaultPath === payload.vaultPath &&
+                            !existingLabels.has(entry.label),
+                    );
+                    if (matchingEntry) {
+                        targetLabel = matchingEntry.label;
+                        break;
+                    }
+                    await waitForWindowRoute(WEB_CLIPPER_ROUTE_POLL_MS);
+                }
+            }
+
+            if (!targetLabel || targetLabel === currentWindowLabel) {
+                if (useVaultStore.getState().vaultPath === payload.vaultPath) {
+                    openWebClipperClip({
+                        ...payload,
+                        targetWindowLabel: currentWindowLabel,
+                    });
+                }
+                return;
+            }
+
+            const currentWindow = getCurrentWindow();
+            const targetWindow = (await getAllWebviewWindows()).find(
+                (window) => window.label === targetLabel,
+            );
+
+            await targetWindow?.setFocus?.();
+            await currentWindow.emitTo(
+                targetLabel,
+                WEB_CLIPPER_CLIP_SAVED_EVENT,
+                {
+                    ...payload,
+                    targetWindowLabel: targetLabel,
+                } satisfies WebClipperSavedPayload,
+            );
+        },
+        [openWebClipperClip],
+    );
+
     useRegisterCommands(openSearchPanel, openSettings, windowMode === "main");
     useGlobalShortcuts(openSettings);
     useDynamicScrollbars();
@@ -1392,6 +1499,32 @@ export default function App() {
             window.clearInterval(interval);
         };
     }, [activeTabId, tabs, vaultPath, windowMode, windowSessionReady]);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        const label = getCurrentWindowLabel();
+        const registerRoute = () => {
+            void invoke("register_window_vault_route", {
+                label,
+                windowMode,
+                vaultPath,
+            });
+        };
+        const unregisterRoute = () => {
+            void invoke("unregister_window_vault_route", { label });
+        };
+
+        registerRoute();
+        window.addEventListener("focus", registerRoute);
+        window.addEventListener("beforeunload", unregisterRoute);
+
+        return () => {
+            window.removeEventListener("focus", registerRoute);
+            window.removeEventListener("beforeunload", unregisterRoute);
+            unregisterRoute();
+        };
+    }, [vaultPath, windowMode]);
 
     useEffect(() => {
         if (windowMode === "settings") return;
@@ -1680,34 +1813,9 @@ export default function App() {
         let unlisten: (() => void) | undefined;
 
         void listen<WebClipperSavedPayload>(
-            "vaultai:web-clipper/clip-saved",
+            WEB_CLIPPER_CLIP_SAVED_EVENT,
             (event) => {
-                void (async () => {
-                    const currentVaultPath = useVaultStore.getState().vaultPath;
-                    if (
-                        event.payload.vaultPath &&
-                        currentVaultPath !== event.payload.vaultPath
-                    ) {
-                        await useVaultStore
-                            .getState()
-                            .openVault(event.payload.vaultPath);
-                    }
-
-                    useEditorStore
-                        .getState()
-                        .openNote(
-                            event.payload.noteId,
-                            event.payload.title,
-                            event.payload.content,
-                        );
-                    useClipImportStore.getState().showNotice({
-                        id: event.payload.requestId,
-                        title: event.payload.title,
-                        message:
-                            "Saved from the web clipper and opened in the editor.",
-                        relativePath: event.payload.relativePath,
-                    });
-                })();
+                openWebClipperClip(event.payload);
             },
         ).then((cleanup) => {
             unlisten = cleanup;
@@ -1718,7 +1826,28 @@ export default function App() {
                 void unlisten();
             }
         };
-    }, [windowMode]);
+    }, [openWebClipperClip, windowMode]);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        let unlisten: (() => void) | undefined;
+
+        void listen<WebClipperSavedPayload>(
+            WEB_CLIPPER_ROUTE_CLIP_EVENT,
+            (event) => {
+                void routeWebClipperClip(event.payload);
+            },
+        ).then((cleanup) => {
+            unlisten = cleanup;
+        });
+
+        return () => {
+            if (unlisten) {
+                void unlisten();
+            }
+        };
+    }, [routeWebClipperClip, windowMode]);
 
     if (windowMode === "ghost") {
         const title =
@@ -1767,7 +1896,6 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            <ClipNotification />
             <UnifiedBar windowMode="main" />
 
             <div className="relative flex-1 flex overflow-hidden">
