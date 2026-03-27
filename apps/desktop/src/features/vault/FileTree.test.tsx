@@ -125,7 +125,7 @@ describe("FileTree", () => {
         );
     });
 
-    it("keeps sticky folder layers aligned while the tree scrolls horizontally", async () => {
+    it("keeps sticky folder chrome fixed while the tree scrolls horizontally", async () => {
         const user = userEvent.setup();
 
         setVaultNotes([
@@ -178,10 +178,15 @@ describe("FileTree", () => {
             .closest("button");
         expect(stickyRootFolder).not.toBeNull();
         expect(stickyRootFolder?.parentElement).toHaveStyle({
-            width: "max-content",
-            minWidth: "100%",
-            transform: "translateX(-56px)",
+            left: "-4px",
+            width: "calc(100% + 8px)",
+            minWidth: "calc(100% + 8px)",
+            boxSizing: "border-box",
+            overflow: "hidden",
         });
+        expect(
+            stickyRootFolder?.parentElement?.getAttribute("style"),
+        ).not.toContain("translateX");
     });
 
     it("clamps scroll state safely when the viewport becomes much taller than the content", async () => {
