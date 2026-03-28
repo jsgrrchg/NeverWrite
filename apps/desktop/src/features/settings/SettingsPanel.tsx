@@ -14,6 +14,7 @@ import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { useThemeStore } from "../../app/store/themeStore";
 import { themes, type ThemeName } from "../../app/themes/index";
 import {
+    clearRecentVaults,
     useVaultStore,
     getRecentVaults,
     removeVaultFromList,
@@ -133,6 +134,12 @@ function SegmentedControl<T extends string | number>({
     );
 }
 
+type SelectFieldOption<T extends string | number | null> = {
+    value: T;
+    label: string;
+    group?: string;
+};
+
 function SelectField<T extends string | number | null>({
     value,
     options,
@@ -140,7 +147,7 @@ function SelectField<T extends string | number | null>({
     disabled,
 }: {
     value: T;
-    options: { value: T; label: string }[];
+    options: SelectFieldOption<T>[];
     onChange: (v: T) => void;
     disabled?: boolean;
 }) {
@@ -274,43 +281,68 @@ function SelectField<T extends string | number | null>({
                             overflowY: "auto",
                         }}
                     >
-                        {options.map((opt) => (
-                            <button
-                                key={String(opt.value)}
-                                type="button"
-                                onClick={() => {
-                                    onChange(opt.value);
-                                    setOpen(false);
-                                }}
-                                style={{
-                                    display: "block",
-                                    width: "100%",
-                                    textAlign: "left",
-                                    padding: "5px 10px",
-                                    fontSize: 12,
-                                    fontFamily: "inherit",
-                                    borderRadius: 4,
-                                    border: "none",
-                                    color:
-                                        opt.value === value
-                                            ? "var(--accent)"
-                                            : "var(--text-primary)",
-                                    backgroundColor: "transparent",
-                                    cursor: "pointer",
-                                    whiteSpace: "nowrap",
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor =
-                                        "var(--bg-tertiary)";
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor =
-                                        "transparent";
-                                }}
-                            >
-                                {opt.label}
-                            </button>
-                        ))}
+                        {options.map((opt, index) => {
+                            const previousGroup = options[index - 1]?.group;
+                            const showGroupLabel =
+                                opt.group != null &&
+                                opt.group !== previousGroup;
+
+                            return (
+                                <div key={String(opt.value)}>
+                                    {showGroupLabel ? (
+                                        <div
+                                            style={{
+                                                padding:
+                                                    index === 0
+                                                        ? "3px 10px 4px"
+                                                        : "9px 10px 4px",
+                                                fontSize: 10,
+                                                fontWeight: 700,
+                                                letterSpacing: "0.08em",
+                                                textTransform: "uppercase",
+                                                color: "var(--text-secondary)",
+                                            }}
+                                        >
+                                            {opt.group}
+                                        </div>
+                                    ) : null}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            onChange(opt.value);
+                                            setOpen(false);
+                                        }}
+                                        style={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            padding: "5px 10px",
+                                            fontSize: 12,
+                                            fontFamily: "inherit",
+                                            borderRadius: 4,
+                                            border: "none",
+                                            color:
+                                                opt.value === value
+                                                    ? "var(--accent)"
+                                                    : "var(--text-primary)",
+                                            backgroundColor: "transparent",
+                                            cursor: "pointer",
+                                            whiteSpace: "nowrap",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor =
+                                                "var(--bg-tertiary)";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor =
+                                                "transparent";
+                                        }}
+                                    >
+                                        {opt.label}
+                                    </button>
+                                </div>
+                            );
+                        })}
                     </div>,
                     document.body,
                 )}
@@ -1505,7 +1537,7 @@ function VaultSettings() {
     };
 
     const handleClearRecents = () => {
-        localStorage.removeItem("vaultai:recentVaults");
+        clearRecentVaults();
         setRecents([]);
         setRecentSearch("");
         setConfirmPath(null);
