@@ -238,12 +238,12 @@ export function BookmarksPanel() {
 
     // Active tab info for highlight
     const activeNoteId = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        const tab = s.tabs.find((t) => t?.id === s.activeTabId);
         return isNoteTab(tab) ? tab.noteId : null;
     });
     const activeEntryPath = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return isPdfTab(tab) || isFileTab(tab) ? tab.entryPath : null;
+        const tab = s.tabs.find((t) => t?.id === s.activeTabId);
+        return isPdfTab(tab) || isFileTab(tab) ? tab.path : null;
     });
 
     const m = useMemo(() => {

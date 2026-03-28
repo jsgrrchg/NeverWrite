@@ -282,9 +282,14 @@ export interface RecentlyClosedTab {
     index: number;
 }
 
-export function isNoteTab(tab: Tab): tab is NoteTab;
-export function isNoteTab(tab: TabInput): tab is NoteTabInput;
-export function isNoteTab(tab: Tab | TabInput): tab is NoteTab | NoteTabInput {
+export function isNoteTab(tab: Tab | null | undefined): tab is NoteTab;
+export function isNoteTab(
+    tab: TabInput | null | undefined,
+): tab is NoteTabInput;
+export function isNoteTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is NoteTab | NoteTabInput {
+    if (!tab) return false;
     return (
         tab.kind !== "pdf" &&
         tab.kind !== "file" &&
@@ -294,33 +299,50 @@ export function isNoteTab(tab: Tab | TabInput): tab is NoteTab | NoteTabInput {
     );
 }
 
-export function isPdfTab(tab: Tab): tab is PdfTab;
-export function isPdfTab(tab: TabInput): tab is PdfTabInput;
-export function isPdfTab(tab: Tab | TabInput): tab is PdfTab | PdfTabInput {
+export function isPdfTab(tab: Tab | null | undefined): tab is PdfTab;
+export function isPdfTab(tab: TabInput | null | undefined): tab is PdfTabInput;
+export function isPdfTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is PdfTab | PdfTabInput {
+    if (!tab) return false;
     return tab.kind === "pdf";
 }
 
-export function isFileTab(tab: Tab): tab is FileTab;
-export function isFileTab(tab: TabInput): tab is FileTabInput;
-export function isFileTab(tab: Tab | TabInput): tab is FileTab | FileTabInput {
+export function isFileTab(tab: Tab | null | undefined): tab is FileTab;
+export function isFileTab(
+    tab: TabInput | null | undefined,
+): tab is FileTabInput;
+export function isFileTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is FileTab | FileTabInput {
+    if (!tab) return false;
     return tab.kind === "file";
 }
 
-export function isReviewTab(tab: Tab): tab is ReviewTab;
-export function isReviewTab(tab: TabInput): tab is ReviewTab;
-export function isReviewTab(tab: Tab | TabInput): tab is ReviewTab {
+export function isReviewTab(tab: Tab | null | undefined): tab is ReviewTab;
+export function isReviewTab(tab: TabInput | null | undefined): tab is ReviewTab;
+export function isReviewTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is ReviewTab {
+    if (!tab) return false;
     return tab.kind === "ai-review";
 }
 
-export function isMapTab(tab: Tab): tab is MapTab;
-export function isMapTab(tab: TabInput): tab is MapTabInput;
-export function isMapTab(tab: Tab | TabInput): tab is MapTab | MapTabInput {
+export function isMapTab(tab: Tab | null | undefined): tab is MapTab;
+export function isMapTab(tab: TabInput | null | undefined): tab is MapTabInput;
+export function isMapTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is MapTab | MapTabInput {
+    if (!tab) return false;
     return tab.kind === "map";
 }
 
-export function isGraphTab(tab: Tab): tab is GraphTab;
-export function isGraphTab(tab: TabInput): tab is GraphTab;
-export function isGraphTab(tab: Tab | TabInput): tab is GraphTab {
+export function isGraphTab(tab: Tab | null | undefined): tab is GraphTab;
+export function isGraphTab(tab: TabInput | null | undefined): tab is GraphTab;
+export function isGraphTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is GraphTab {
+    if (!tab) return false;
     return tab.kind === "graph";
 }
 
