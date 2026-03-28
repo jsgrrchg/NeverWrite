@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use tauri::AppHandle;
 use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
 
-use super::{claude::ClaudeSetupInput, codex::CodexSetupInput};
+use super::{claude::ClaudeSetupInput, codex::CodexSetupInput, gemini::GeminiSetupInput};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AiRuntimeCapabilities {
@@ -20,6 +20,7 @@ pub struct AiRuntimeCapabilities {
 pub enum AiRuntimeSetupInput {
     Codex(CodexSetupInput),
     Claude(ClaudeSetupInput),
+    Gemini(GeminiSetupInput),
 }
 
 impl AiRuntimeSetupInput {
@@ -27,6 +28,7 @@ impl AiRuntimeSetupInput {
         match self {
             Self::Codex(input) => Ok(input),
             Self::Claude(_) => Err("Configuracion de Claude enviada a Codex.".to_string()),
+            Self::Gemini(_) => Err("Configuracion de Gemini enviada a Codex.".to_string()),
         }
     }
 
@@ -34,6 +36,15 @@ impl AiRuntimeSetupInput {
         match self {
             Self::Claude(input) => Ok(input),
             Self::Codex(_) => Err("Configuracion de Codex enviada a Claude.".to_string()),
+            Self::Gemini(_) => Err("Configuracion de Gemini enviada a Claude.".to_string()),
+        }
+    }
+
+    pub fn into_gemini(self) -> Result<GeminiSetupInput, String> {
+        match self {
+            Self::Gemini(input) => Ok(input),
+            Self::Codex(_) => Err("Configuracion de Codex enviada a Gemini.".to_string()),
+            Self::Claude(_) => Err("Configuracion de Claude enviada a Gemini.".to_string()),
         }
     }
 }

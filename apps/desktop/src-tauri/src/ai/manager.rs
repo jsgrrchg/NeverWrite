@@ -7,6 +7,7 @@ use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupSt
 use super::{
     claude::ClaudeRuntimeAdapter,
     codex::CodexRuntimeAdapter,
+    gemini::GeminiRuntimeAdapter,
     runtime::{merge_runtime_capabilities, AiRuntimeAdapter, AiRuntimeSetupInput},
 };
 
@@ -160,6 +161,7 @@ impl AiManager {
         let mut manager = Self::default();
         manager.register_runtime(Box::new(CodexRuntimeAdapter::default()));
         manager.register_runtime(Box::new(ClaudeRuntimeAdapter::default()));
+        manager.register_runtime(Box::new(GeminiRuntimeAdapter::default()));
         manager
     }
 

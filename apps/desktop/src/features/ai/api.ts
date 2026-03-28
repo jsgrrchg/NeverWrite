@@ -37,6 +37,7 @@ const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] = [
                 "attachments",
                 "permissions",
                 "reasoning",
+                "terminal_output",
                 "create_session",
                 "list_sessions",
                 "user_input",
@@ -62,6 +63,23 @@ const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] = [
                 "resume_session",
                 "list_sessions",
                 "prompt_queueing",
+            ],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
+    {
+        runtime: {
+            id: "gemini-acp",
+            name: "Gemini ACP",
+            description: "Gemini CLI running as a native ACP agent.",
+            capabilities: [
+                "attachments",
+                "permissions",
+                "plans",
+                "create_session",
+                "resume_session",
             ],
         },
         models: [],
@@ -233,6 +251,12 @@ export async function aiUpdateSetup(input: {
     customBinaryPath?: string;
     codexApiKey?: string;
     openaiApiKey?: string;
+    geminiApiKey?: string;
+    googleApiKey?: string;
+    googleCloudProject?: string;
+    googleCloudLocation?: string;
+    gatewayBaseUrl?: string;
+    gatewayHeaders?: string;
     anthropicBaseUrl?: string;
     anthropicCustomHeaders?: string;
     anthropicAuthToken?: string;
@@ -244,6 +268,12 @@ export async function aiUpdateSetup(input: {
                 custom_binary_path: input.customBinaryPath ?? null,
                 codex_api_key: input.codexApiKey ?? null,
                 openai_api_key: input.openaiApiKey ?? null,
+                gemini_api_key: input.geminiApiKey ?? null,
+                google_api_key: input.googleApiKey ?? null,
+                google_cloud_project: input.googleCloudProject ?? null,
+                google_cloud_location: input.googleCloudLocation ?? null,
+                gateway_base_url: input.gatewayBaseUrl ?? null,
+                gateway_headers: input.gatewayHeaders ?? null,
                 anthropic_base_url: input.anthropicBaseUrl ?? null,
                 anthropic_custom_headers: input.anthropicCustomHeaders ?? null,
                 anthropic_auth_token: input.anthropicAuthToken ?? null,

@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isNoteTab, useEditorStore } from "../../app/store/editorStore";
+import {
+    isNoteTab,
+    isReviewTab,
+    useEditorStore,
+} from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
 import type {
@@ -1299,12 +1303,17 @@ describe("AIChatPanel tabs lifecycle", () => {
         expect(screen.getByRole("button", { name: "Reject All" })).toBeTruthy();
         expect(screen.getByRole("button", { name: "Keep All" })).toBeTruthy();
 
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
 
         await waitFor(() => {
-            expect(
-                screen.getByTestId("edited-buffer-diff:/vault/src/watcher.rs"),
-            ).toBeTruthy();
+            const reviewTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === session.sessionId,
+                );
+            expect(reviewTab).toBeTruthy();
+            expect(useEditorStore.getState().activeTabId).toBe(reviewTab?.id);
         });
 
         fireEvent.click(screen.getByRole("button", { name: "Reject" }));
@@ -1320,7 +1329,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         expect(keepAllEditedFiles).toHaveBeenCalledWith(session.sessionId);
     });
 
-    it("disables Open File for unsupported entries while keeping Review Diff inline", async () => {
+    it("opens the dedicated review tab from Edits even for external files", async () => {
         const workCycleId = "cycle-unsupported";
         const session = createSession("session-b", "Unsupported edit", "idle", {
             visibleWorkCycleId: workCycleId,
@@ -1384,14 +1393,17 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
         expect(openFileButton).toBeEnabled();
 
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
 
         await waitFor(() => {
-            expect(
-                screen.getByTestId("edited-buffer-diff:/vault/tmp/result.txt"),
-            ).toBeTruthy();
-            expect(screen.getByText("beta")).toBeTruthy();
-            expect(screen.getByText("alpha")).toBeTruthy();
+            const reviewTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === session.sessionId,
+                );
+            expect(reviewTab).toBeTruthy();
+            expect(useEditorStore.getState().activeTabId).toBe(reviewTab?.id);
         });
     });
 });

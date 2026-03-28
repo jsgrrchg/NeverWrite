@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const CODEX_RUNTIME_ID: &str = "codex-acp";
 pub const CLAUDE_RUNTIME_ID: &str = "claude-acp";
+pub const GEMINI_RUNTIME_ID: &str = "gemini-acp";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

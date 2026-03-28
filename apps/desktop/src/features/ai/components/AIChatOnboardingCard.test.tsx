@@ -115,4 +115,72 @@ describe("AIChatOnboardingCard", () => {
             anthropicAuthToken: "",
         });
     });
+
+    it("shows Gemini-specific auth copy and submits a Gemini API key", () => {
+        const onAuthenticate = vi.fn();
+
+        renderComponent(
+            <AIChatOnboardingCard
+                runtime={{
+                    id: "gemini-acp",
+                    name: "Gemini ACP",
+                    description: "",
+                    capabilities: [],
+                }}
+                setupStatus={{
+                    runtimeId: "gemini-acp",
+                    binaryReady: true,
+                    binarySource: "env",
+                    authReady: false,
+                    authMethods: [
+                        {
+                            id: "login_with_google",
+                            name: "Log in with Google",
+                            description:
+                                "Open a Gemini sign-in terminal for Google account authentication.",
+                        },
+                        {
+                            id: "use_gemini",
+                            name: "Gemini API key",
+                            description:
+                                "Use a Gemini Developer API key stored only for VaultAI.",
+                        },
+                    ],
+                    onboardingRequired: true,
+                }}
+                onSaveSetup={vi.fn()}
+                onAuthenticate={onAuthenticate}
+            />,
+        );
+
+        expect(
+            screen.getByText(
+                "VaultAI will open a Gemini sign-in terminal inside the app.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByText("Gemini API key").closest("button") as HTMLElement,
+        );
+        fireEvent.change(screen.getByPlaceholderText("Gemini API key"), {
+            target: { value: "gemini-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and continue" }),
+        );
+
+        expect(onAuthenticate).toHaveBeenCalledWith({
+            runtimeId: "gemini-acp",
+            methodId: "use_gemini",
+            customBinaryPath: undefined,
+            openaiApiKey: undefined,
+            codexApiKey: undefined,
+            geminiApiKey: "gemini-secret",
+            gatewayBaseUrl: undefined,
+            gatewayHeaders: undefined,
+            anthropicBaseUrl: undefined,
+            anthropicCustomHeaders: undefined,
+            anthropicAuthToken: undefined,
+        });
+    });
 });

@@ -10,6 +10,9 @@ interface AIChatOnboardingCardProps {
     onSaveSetup: (input: {
         runtimeId?: string;
         customBinaryPath?: string;
+        geminiApiKey?: string;
+        gatewayBaseUrl?: string;
+        gatewayHeaders?: string;
         anthropicBaseUrl?: string;
         anthropicCustomHeaders?: string;
         anthropicAuthToken?: string;
@@ -20,6 +23,9 @@ interface AIChatOnboardingCardProps {
         customBinaryPath?: string;
         openaiApiKey?: string;
         codexApiKey?: string;
+        geminiApiKey?: string;
+        gatewayBaseUrl?: string;
+        gatewayHeaders?: string;
         anthropicBaseUrl?: string;
         anthropicCustomHeaders?: string;
         anthropicAuthToken?: string;
@@ -74,8 +80,10 @@ export function AIChatOnboardingCard({
     const runtimeName = runtime?.name ?? getRuntimeDisplayName(setupStatus);
     const isOpenAiApiKeyMethod = selectedMethod?.id === "openai-api-key";
     const isCodexApiKeyMethod = selectedMethod?.id === "codex-api-key";
+    const isGeminiApiKeyMethod = selectedMethod?.id === "use_gemini";
     const isGatewayMethod = selectedMethod?.id === "gateway";
-    const isApiKeyMethod = isOpenAiApiKeyMethod || isCodexApiKeyMethod;
+    const isApiKeyMethod =
+        isOpenAiApiKeyMethod || isCodexApiKeyMethod || isGeminiApiKeyMethod;
     const apiKeyPlaceholder = getApiKeyPlaceholder(selectedMethod?.id);
     const isSettingsMode = mode === "settings";
     const title = isSettingsMode
@@ -485,6 +493,15 @@ export function AIChatOnboardingCard({
                                 codexApiKey: isCodexApiKeyMethod
                                     ? apiKey || undefined
                                     : undefined,
+                                geminiApiKey: isGeminiApiKeyMethod
+                                    ? apiKey || undefined
+                                    : undefined,
+                                gatewayBaseUrl: isGatewayMethod
+                                    ? gatewayBaseUrl || undefined
+                                    : undefined,
+                                gatewayHeaders: isGatewayMethod
+                                    ? gatewayHeaders || undefined
+                                    : undefined,
                                 anthropicBaseUrl: isGatewayMethod
                                     ? gatewayBaseUrl || undefined
                                     : undefined,
@@ -544,6 +561,9 @@ function getRuntimeDisplayName(setupStatus: AIRuntimeSetupStatus) {
     if (setupStatus.runtimeId === "codex-acp") {
         return "Codex";
     }
+    if (setupStatus.runtimeId === "gemini-acp") {
+        return "Gemini";
+    }
     return setupStatus.runtimeId;
 }
 
@@ -553,6 +573,9 @@ function getApiKeyPlaceholder(methodId?: string) {
     }
     if (methodId === "openai-api-key") {
         return "OpenAI API key";
+    }
+    if (methodId === "use_gemini") {
+        return "Gemini API key";
     }
     return "API key";
 }
@@ -564,6 +587,9 @@ function getAuthMethodHelpText(methodId: string, runtimeName: string) {
     if (methodId === "claude-login") {
         return "VaultAI will open a limited sign-in terminal inside the app.";
     }
+    if (methodId === "login_with_google") {
+        return "VaultAI will open a Gemini sign-in terminal inside the app.";
+    }
     if (methodId === "gateway") {
         return `Configure a custom ${runtimeName} gateway for this app only.`;
     }
@@ -573,6 +599,9 @@ function getAuthMethodHelpText(methodId: string, runtimeName: string) {
     if (methodId === "openai-api-key") {
         return "Store an OpenAI API key locally for VaultAI only.";
     }
+    if (methodId === "use_gemini") {
+        return "Store a Gemini API key locally for VaultAI only.";
+    }
     return `Complete ${runtimeName} authentication in VaultAI.`;
 }
 
@@ -581,6 +610,9 @@ function getContinueLabel(methodId?: string) {
         return "Continue with ChatGPT";
     }
     if (methodId === "claude-login") {
+        return "Open sign-in terminal";
+    }
+    if (methodId === "login_with_google") {
         return "Open sign-in terminal";
     }
     return "Continue";

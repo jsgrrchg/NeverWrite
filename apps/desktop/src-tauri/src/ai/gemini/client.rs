@@ -27,24 +27,26 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio::sync::mpsc as tokio_mpsc;
 use vault_ai_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
-    AiRuntimeSessionSummary, CODEX_RUNTIME_ID,
+    AiRuntimeSessionSummary, GEMINI_RUNTIME_ID,
 };
 
 use crate::ai::emit::{
-    emit_message_completed, emit_message_delta, emit_message_started, emit_permission_request,
-    emit_plan_update, emit_runtime_connection, emit_session_error, emit_status_event,
-    emit_thinking_completed, emit_thinking_delta, emit_thinking_started, emit_tool_activity,
-    emit_user_input_request, AiFileDiffHunkPayload, AiFileDiffPayload, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
+    emit_available_commands_updated, emit_message_completed, emit_message_delta,
+    emit_message_started, emit_permission_request, emit_plan_update, emit_runtime_connection,
+    emit_session_error, emit_status_event, emit_thinking_completed, emit_thinking_delta,
+    emit_thinking_started, emit_tool_activity, AiAvailableCommandPayload,
+    AiAvailableCommandsPayload, AiFileDiffHunkPayload, AiFileDiffPayload,
+    AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
     AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
     AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
 
-use super::{process::CodexProcessSpec, setup::apply_auth_env};
+use super::{process::GeminiProcessSpec, setup::apply_auth_env};
 
 const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
 const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
 const VAULTAI_STATUS_EMPHASIS_KEY: &str = "vaultaiStatusEmphasis";
+#[allow(dead_code)]
 const VAULTAI_USER_INPUT_EVENT_TYPE: &str = "user_input_request";
 const VAULTAI_USER_INPUT_RESPONSE_PREFIX: &str = "__vaultai_user_input_response__:";
 const VAULTAI_PLAN_TITLE_KEY: &str = "vaultaiPlanTitle";
@@ -54,22 +56,23 @@ const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 
+#[allow(dead_code)]
 enum RuntimeCommand {
     CreateSession {
-        spec: CodexProcessSpec,
-        response_tx: mpsc::Sender<Result<CodexSessionState, String>>,
+        spec: GeminiProcessSpec,
+        response_tx: mpsc::Sender<Result<GeminiSessionState, String>>,
     },
     LoadSession {
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
         session_id: String,
-        response_tx: mpsc::Sender<Result<CodexSessionState, String>>,
+        response_tx: mpsc::Sender<Result<GeminiSessionState, String>>,
     },
     ListSessions {
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
         response_tx: mpsc::Sender<Result<Vec<AiRuntimeSessionSummary>, String>>,
     },
     Authenticate {
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
         method_id: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
@@ -366,16 +369,19 @@ impl PermissionState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PendingUserInput {
     session_id: String,
     turn_id: String,
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 struct UserInputState {
     pending: Arc<Mutex<HashMap<String, PendingUserInput>>>,
 }
 
+#[allow(dead_code)]
 impl UserInputState {
     fn register(&self, session_id: &str, request_id: String, turn_id: String) {
         if let Ok(mut guard) = self.pending.lock() {
@@ -412,12 +418,14 @@ impl UserInputState {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct RawUserInputQuestionOption {
     label: String,
     description: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct RawUserInputQuestion {
     id: String,
     header: String,
@@ -430,6 +438,7 @@ struct RawUserInputQuestion {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct RawUserInputRequest {
     request_id: String,
     turn_id: String,
@@ -437,17 +446,20 @@ struct RawUserInputRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 struct UserInputAnswerPayload {
     turn_id: String,
     response: UserInputResponsePayload,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 struct UserInputResponsePayload {
     answers: HashMap<String, UserInputAnswerValuePayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 struct UserInputAnswerValuePayload {
     answers: Vec<String>,
 }
@@ -484,11 +496,12 @@ struct VaultAiAcpClient {
     streaming: StreamingState,
     tools: ToolState,
     permissions: PermissionState,
+    #[allow(dead_code)]
     user_inputs: UserInputState,
 }
 
 #[derive(Debug, Clone)]
-pub struct CodexSessionState {
+pub struct GeminiSessionState {
     pub session_id: String,
     pub model_id: String,
     pub mode_id: String,
@@ -598,14 +611,7 @@ impl Client for VaultAiAcpClient {
                     emit_thinking_completed(&self.app, session_id.clone(), thinking_id);
                 }
                 let tool_call = self.tools.upsert_tool_call(&session_id, tool_call);
-                if let Some(payload) = map_user_input_request(&session_id, &tool_call) {
-                    self.user_inputs.register(
-                        &session_id,
-                        payload.request_id.clone(),
-                        payload.turn_id.clone(),
-                    );
-                    emit_user_input_request(&self.app, payload.into_emit_payload());
-                } else if let Some(payload) = map_status_event(&session_id, &tool_call) {
+                if let Some(payload) = map_status_event(&session_id, &tool_call) {
                     emit_status_event(&self.app, payload);
                 } else {
                     emit_tool_activity(
@@ -621,14 +627,7 @@ impl Client for VaultAiAcpClient {
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 if let Some(tool_call) = self.tools.apply_tool_update(&session_id, update) {
-                    if let Some(payload) = map_user_input_request(&session_id, &tool_call) {
-                        self.user_inputs.register(
-                            &session_id,
-                            payload.request_id.clone(),
-                            payload.turn_id.clone(),
-                        );
-                        emit_user_input_request(&self.app, payload.into_emit_payload());
-                    } else if let Some(payload) = map_status_event(&session_id, &tool_call) {
+                    if let Some(payload) = map_status_event(&session_id, &tool_call) {
                         emit_status_event(&self.app, payload);
                     } else {
                         emit_tool_activity(
@@ -646,6 +645,12 @@ impl Client for VaultAiAcpClient {
             SessionUpdate::Plan(plan) => {
                 emit_plan_update(&self.app, map_plan_update(&session_id, plan));
             }
+            SessionUpdate::AvailableCommandsUpdate(update) => {
+                emit_available_commands_updated(
+                    &self.app,
+                    map_available_commands_update(&session_id, update),
+                );
+            }
             _ => {}
         }
 
@@ -654,11 +659,11 @@ impl Client for VaultAiAcpClient {
 }
 
 #[derive(Debug, Clone)]
-pub struct CodexRuntimeHandle {
+pub struct GeminiRuntimeHandle {
     command_tx: tokio_mpsc::UnboundedSender<RuntimeCommand>,
 }
 
-impl CodexRuntimeHandle {
+impl GeminiRuntimeHandle {
     pub fn spawn(app: AppHandle) -> Self {
         let (command_tx, command_rx) = tokio_mpsc::unbounded_channel::<RuntimeCommand>();
 
@@ -687,7 +692,7 @@ impl CodexRuntimeHandle {
         Self { command_tx }
     }
 
-    pub fn create_session(&self, spec: CodexProcessSpec) -> Result<CodexSessionState, String> {
+    pub fn create_session(&self, spec: GeminiProcessSpec) -> Result<GeminiSessionState, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(RuntimeCommand::CreateSession { spec, response_tx })
@@ -697,9 +702,9 @@ impl CodexRuntimeHandle {
 
     pub fn load_session(
         &self,
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
         session_id: &str,
-    ) -> Result<CodexSessionState, String> {
+    ) -> Result<GeminiSessionState, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(RuntimeCommand::LoadSession {
@@ -711,9 +716,10 @@ impl CodexRuntimeHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
+    #[allow(dead_code)]
     pub fn list_sessions(
         &self,
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
     ) -> Result<Vec<AiRuntimeSessionSummary>, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
@@ -722,7 +728,7 @@ impl CodexRuntimeHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
-    pub fn authenticate(&self, spec: CodexProcessSpec, method_id: &str) -> Result<(), String> {
+    pub fn authenticate(&self, spec: GeminiProcessSpec, method_id: &str) -> Result<(), String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(RuntimeCommand::Authenticate {
@@ -845,6 +851,7 @@ impl CodexRuntimeHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
+    #[allow(dead_code)]
     pub fn respond_user_input(
         &self,
         session_id: &str,
@@ -1057,28 +1064,19 @@ impl RuntimeActor {
 
     async fn ensure_connection(
         &mut self,
-        spec: &CodexProcessSpec,
+        spec: &GeminiProcessSpec,
     ) -> Result<Rc<ClientSideConnection>, String> {
         self.poll_connection_health()?;
         if let Some(connection) = self.connection.as_ref() {
             return Ok(connection.clone());
         }
 
-        if !spec.binary_path.exists() {
-            return Err(format!(
-                "Codex ACP no esta compilado aun. Binario esperado en {}. Tambien puedes definir VAULTAI_CODEX_ACP_BIN.",
-                spec.binary_path.display()
-            ));
-        }
-
-        std::fs::create_dir_all(&spec.home_dir).map_err(|error| error.to_string())?;
-
-        let mut command = Command::new(&spec.binary_path);
+        let mut command = Command::new(&spec.program);
         command
+            .args(&spec.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .env("CODEX_HOME", &spec.home_dir);
+            .stderr(Stdio::null());
         apply_auth_env(&mut command, &spec.setup);
 
         if let Some(cwd) = spec.cwd.as_ref() {
@@ -1089,11 +1087,11 @@ impl RuntimeActor {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "Failed to acquire codex-acp stdin".to_string())?;
+            .ok_or_else(|| "Failed to acquire Gemini ACP stdin".to_string())?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "Failed to acquire codex-acp stdout".to_string())?;
+            .ok_or_else(|| "Failed to acquire Gemini ACP stdout".to_string())?;
 
         let client = Rc::new(VaultAiAcpClient {
             app: self.app.clone(),
@@ -1124,7 +1122,7 @@ impl RuntimeActor {
             emit_runtime_connection(
                 &app,
                 AiRuntimeConnectionPayload {
-                    runtime_id: CODEX_RUNTIME_ID.to_string(),
+                    runtime_id: GEMINI_RUNTIME_ID.to_string(),
                     status: "error".to_string(),
                     message: Some(message),
                 },
@@ -1137,7 +1135,7 @@ impl RuntimeActor {
         emit_runtime_connection(
             &self.app,
             AiRuntimeConnectionPayload {
-                runtime_id: CODEX_RUNTIME_ID.to_string(),
+                runtime_id: GEMINI_RUNTIME_ID.to_string(),
                 status: "ready".to_string(),
                 message: None,
             },
@@ -1148,7 +1146,7 @@ impl RuntimeActor {
 
     async fn ensure_initialized(
         &mut self,
-        spec: &CodexProcessSpec,
+        spec: &GeminiProcessSpec,
     ) -> Result<Rc<ClientSideConnection>, String> {
         let connection = self.ensure_connection(spec).await?;
         if self.initialized {
@@ -1159,11 +1157,7 @@ impl RuntimeActor {
             .client_capabilities(
                 ClientCapabilities::new()
                     .fs(FileSystemCapabilities::new())
-                    .terminal(false)
-                    .meta(Meta::from_iter([(
-                        "terminal_output".to_string(),
-                        serde_json::json!(true),
-                    )])),
+                    .terminal(false),
             )
             .client_info(
                 Implementation::new("vaultai", env!("CARGO_PKG_VERSION")).title("VaultAI"),
@@ -1180,8 +1174,8 @@ impl RuntimeActor {
 
     async fn create_session(
         &mut self,
-        spec: CodexProcessSpec,
-    ) -> Result<CodexSessionState, String> {
+        spec: GeminiProcessSpec,
+    ) -> Result<GeminiSessionState, String> {
         let cwd = spec
             .cwd
             .clone()
@@ -1205,7 +1199,7 @@ impl RuntimeActor {
             None => Default::default(),
         };
 
-        Ok(CodexSessionState {
+        Ok(GeminiSessionState {
             session_id: response.session_id.0.to_string(),
             model_id: current_model_id,
             mode_id: response
@@ -1226,9 +1220,9 @@ impl RuntimeActor {
 
     async fn load_session(
         &mut self,
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
         session_id: String,
-    ) -> Result<CodexSessionState, String> {
+    ) -> Result<GeminiSessionState, String> {
         let cwd = spec
             .cwd
             .clone()
@@ -1253,7 +1247,7 @@ impl RuntimeActor {
 
     async fn list_sessions(
         &mut self,
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
     ) -> Result<Vec<AiRuntimeSessionSummary>, String> {
         let connection = self.ensure_initialized(&spec).await?;
         let response = connection
@@ -1266,7 +1260,7 @@ impl RuntimeActor {
             .into_iter()
             .map(|session| AiRuntimeSessionSummary {
                 session_id: session.session_id.0.to_string(),
-                runtime_id: CODEX_RUNTIME_ID.to_string(),
+                runtime_id: GEMINI_RUNTIME_ID.to_string(),
                 cwd: Some(session.cwd.display().to_string()),
                 title: session.title,
                 updated_at: session.updated_at,
@@ -1276,12 +1270,14 @@ impl RuntimeActor {
 
     async fn authenticate(
         &mut self,
-        spec: CodexProcessSpec,
+        spec: GeminiProcessSpec,
         method_id: String,
     ) -> Result<(), String> {
         let connection = self.ensure_initialized(&spec).await?;
+        let request =
+            AuthenticateRequest::new(method_id.clone()).meta(auth_meta(&spec, &method_id));
         connection
-            .authenticate(AuthenticateRequest::new(method_id))
+            .authenticate(request)
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -1522,7 +1518,7 @@ fn map_loaded_session_state(
     models_state: Option<agent_client_protocol::SessionModelState>,
     modes_state: Option<agent_client_protocol::SessionModeState>,
     config_options: Option<Vec<agent_client_protocol::SessionConfigOption>>,
-) -> Result<CodexSessionState, String> {
+) -> Result<GeminiSessionState, String> {
     let current_model_id = models_state
         .as_ref()
         .map(|state| strip_effort_suffix(&state.current_model_id.0).to_string())
@@ -1534,7 +1530,7 @@ fn map_loaded_session_state(
         None => Default::default(),
     };
 
-    Ok(CodexSessionState {
+    Ok(GeminiSessionState {
         session_id,
         model_id: current_model_id,
         mode_id: modes_state
@@ -1551,7 +1547,42 @@ fn map_loaded_session_state(
     })
 }
 
+fn auth_meta(spec: &GeminiProcessSpec, method_id: &str) -> Option<Meta> {
+    let mut entries = Vec::new();
+
+    if method_id == "use_gemini" {
+        if let Some(api_key) = spec
+            .setup
+            .gemini_api_key
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            entries.push(("api-key".to_string(), serde_json::json!(api_key)));
+        }
+    }
+
+    if method_id == "gateway" {
+        if let Some(base_url) = spec
+            .setup
+            .gateway_base_url
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            entries.push((
+                "gateway".to_string(),
+                serde_json::json!({
+                    "baseUrl": base_url,
+                    "headers": spec.setup.gateway_headers.as_ref(),
+                }),
+            ));
+        }
+    }
+
+    (!entries.is_empty()).then(|| Meta::from_iter(entries))
+}
+
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ParsedUserInputRequest {
     session_id: String,
     request_id: String,
@@ -1560,6 +1591,7 @@ struct ParsedUserInputRequest {
     questions: Vec<AiUserInputQuestionPayload>,
 }
 
+#[allow(dead_code)]
 impl ParsedUserInputRequest {
     fn into_emit_payload(self) -> AiUserInputRequestPayload {
         AiUserInputRequestPayload {
@@ -1604,7 +1636,7 @@ fn map_session_models(state: agent_client_protocol::SessionModelState) -> Mapped
 
         models.push(AiModelOption {
             id: display_id,
-            runtime_id: CODEX_RUNTIME_ID.to_string(),
+            runtime_id: GEMINI_RUNTIME_ID.to_string(),
             name: strip_effort_suffix(&model.name).to_string(),
             description: model.description.unwrap_or_default(),
         });
@@ -1623,7 +1655,7 @@ fn map_session_modes(state: agent_client_protocol::SessionModeState) -> Vec<AiMo
         .into_iter()
         .map(|mode| AiModeOption {
             id: mode.id.0.to_string(),
-            runtime_id: CODEX_RUNTIME_ID.to_string(),
+            runtime_id: GEMINI_RUNTIME_ID.to_string(),
             name: mode.name,
             description: mode.description.unwrap_or_default(),
             disabled: false,
@@ -1651,7 +1683,7 @@ fn map_session_config_options(
 
             Some(AiConfigOption {
                 id: option.id.0.to_string(),
-                runtime_id: CODEX_RUNTIME_ID.to_string(),
+                runtime_id: GEMINI_RUNTIME_ID.to_string(),
                 category: match option.category {
                     Some(agent_client_protocol::SessionConfigOptionCategory::Mode) => {
                         AiConfigOptionCategory::Mode
@@ -1818,6 +1850,44 @@ fn map_plan_update(session_id: &str, plan: agent_client_protocol::Plan) -> AiPla
     }
 }
 
+fn map_available_commands_update(
+    session_id: &str,
+    update: agent_client_protocol::AvailableCommandsUpdate,
+) -> AiAvailableCommandsPayload {
+    AiAvailableCommandsPayload {
+        session_id: session_id.to_string(),
+        commands: update
+            .available_commands
+            .into_iter()
+            .map(|command| {
+                let label = if command.name.starts_with('/') {
+                    command.name.clone()
+                } else {
+                    format!("/{}", command.name)
+                };
+                let insert_text = if let Some(input) = command.input.as_ref() {
+                    match input {
+                        agent_client_protocol::AvailableCommandInput::Unstructured(input) => {
+                            format!("{label} {}", input.hint)
+                        }
+                        _ => format!("{label} "),
+                    }
+                } else {
+                    format!("{label} ")
+                };
+
+                AiAvailableCommandPayload {
+                    id: command.name.clone(),
+                    label,
+                    description: command.description,
+                    insert_text,
+                }
+            })
+            .collect(),
+    }
+}
+
+#[allow(dead_code)]
 fn map_user_input_request(
     session_id: &str,
     tool_call: &ToolCall,

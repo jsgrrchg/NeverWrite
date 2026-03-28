@@ -402,6 +402,12 @@ interface ChatStore {
         customBinaryPath?: string;
         codexApiKey?: string;
         openaiApiKey?: string;
+        geminiApiKey?: string;
+        googleApiKey?: string;
+        googleCloudProject?: string;
+        googleCloudLocation?: string;
+        gatewayBaseUrl?: string;
+        gatewayHeaders?: string;
         anthropicBaseUrl?: string;
         anthropicCustomHeaders?: string;
         anthropicAuthToken?: string;
@@ -412,6 +418,12 @@ interface ChatStore {
         customBinaryPath?: string;
         codexApiKey?: string;
         openaiApiKey?: string;
+        geminiApiKey?: string;
+        googleApiKey?: string;
+        googleCloudProject?: string;
+        googleCloudLocation?: string;
+        gatewayBaseUrl?: string;
+        gatewayHeaders?: string;
         anthropicBaseUrl?: string;
         anthropicCustomHeaders?: string;
         anthropicAuthToken?: string;
@@ -2897,6 +2909,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     input.customBinaryPath ||
                     input.codexApiKey ||
                     input.openaiApiKey ||
+                    input.geminiApiKey ||
+                    input.googleApiKey ||
+                    input.googleCloudProject ||
+                    input.googleCloudLocation ||
+                    input.gatewayBaseUrl ||
+                    input.gatewayHeaders ||
                     input.anthropicBaseUrl ||
                     input.anthropicCustomHeaders ||
                     input.anthropicAuthToken
@@ -2906,6 +2924,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         customBinaryPath: input.customBinaryPath,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
+                        geminiApiKey: input.geminiApiKey,
+                        googleApiKey: input.googleApiKey,
+                        googleCloudProject: input.googleCloudProject,
+                        googleCloudLocation: input.googleCloudLocation,
+                        gatewayBaseUrl: input.gatewayBaseUrl,
+                        gatewayHeaders: input.gatewayHeaders,
                         anthropicBaseUrl: input.anthropicBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,

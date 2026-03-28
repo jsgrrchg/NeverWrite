@@ -40,6 +40,7 @@ import { AIChatContextBar } from "./components/AIChatContextBar";
 import { EditedFilesBufferPanel } from "./components/EditedFilesBufferPanel";
 import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
+import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
 import { AIAuthTerminalModal } from "./components/AIAuthTerminalModal";
 import { QueuedMessagesPanel } from "./components/QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
@@ -440,6 +441,61 @@ export function AIChatPanel() {
         },
         [chatActions],
     );
+    const handleOnboardingSaveSetup = useCallback(
+        async (input: {
+            runtimeId?: string;
+            customBinaryPath?: string;
+            geminiApiKey?: string;
+            gatewayBaseUrl?: string;
+            gatewayHeaders?: string;
+            anthropicBaseUrl?: string;
+            anthropicCustomHeaders?: string;
+            anthropicAuthToken?: string;
+        }) => {
+            await chatActions.saveSetup(input);
+        },
+        [chatActions],
+    );
+    const handleOnboardingAuthenticate = useCallback(
+        async (input: {
+            runtimeId?: string;
+            methodId: string;
+            customBinaryPath?: string;
+            openaiApiKey?: string;
+            codexApiKey?: string;
+            geminiApiKey?: string;
+            gatewayBaseUrl?: string;
+            gatewayHeaders?: string;
+            anthropicBaseUrl?: string;
+            anthropicCustomHeaders?: string;
+            anthropicAuthToken?: string;
+        }) => {
+            const runtimeId = input.runtimeId ?? activeRuntimeId;
+            if (!runtimeId) return;
+
+            const runtime = runtimes.find(
+                (descriptor) => descriptor.runtime.id === runtimeId,
+            );
+            if (
+                (runtimeId === "claude-acp" &&
+                    input.methodId === "claude-login") ||
+                (runtimeId === "gemini-acp" &&
+                    input.methodId === "login_with_google")
+            ) {
+                setAuthTerminalRequest({
+                    runtimeId,
+                    runtimeName:
+                        runtime?.runtime.name.replace(/ ACP$/, "") ??
+                        (runtimeId === "claude-acp" ? "Claude" : "Gemini"),
+                    customBinaryPath: input.customBinaryPath,
+                });
+                return;
+            }
+
+            await chatActions.startAuth({ ...input, runtimeId });
+        },
+        [activeRuntimeId, chatActions, runtimes],
+    );
 
     useEffect(() => {
         if (!authTerminalRequest) return;
@@ -671,6 +727,14 @@ export function AIChatPanel() {
                 connection={activeConnection}
                 runtimeName={activeRuntime?.runtime.name.replace(/ ACP$/, "")}
             />
+            {activeSetupStatus?.onboardingRequired ? (
+                <AIChatOnboardingCard
+                    runtime={activeRuntime?.runtime ?? null}
+                    setupStatus={activeSetupStatus}
+                    onSaveSetup={handleOnboardingSaveSetup}
+                    onAuthenticate={handleOnboardingAuthenticate}
+                />
+            ) : null}
             {!composerExpanded && (
                 <AIChatMessageList
                     messages={currentSession?.messages ?? []}

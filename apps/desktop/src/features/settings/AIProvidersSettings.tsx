@@ -32,7 +32,9 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 function isApiKeyMethod(id?: string) {
-    return id === "openai-api-key" || id === "codex-api-key";
+    return (
+        id === "openai-api-key" || id === "codex-api-key" || id === "use_gemini"
+    );
 }
 
 function isGatewayMethod(id?: string) {
@@ -60,6 +62,10 @@ function getShortMethodDesc(id: string): string {
             return "Codex API key";
         case "gateway":
             return "Custom endpoint";
+        case "login_with_google":
+            return "Google sign-in";
+        case "use_gemini":
+            return "Gemini API key";
         default:
             return "";
     }
@@ -77,6 +83,10 @@ function getAuthHelpText(id: string): string {
             return "Store a Codex API key locally for VaultAI only.";
         case "gateway":
             return "Route requests through a custom gateway endpoint.";
+        case "login_with_google":
+            return "Opens a Gemini sign-in terminal inside the app.";
+        case "use_gemini":
+            return "Store a Gemini API key locally for VaultAI only.";
         default:
             return "Complete authentication to connect this provider.";
     }
@@ -85,6 +95,7 @@ function getAuthHelpText(id: string): string {
 function getApiKeyPlaceholder(id?: string): string {
     if (id === "codex-api-key") return "Codex API key";
     if (id === "openai-api-key") return "OpenAI API key";
+    if (id === "use_gemini") return "Gemini API key";
     return "API key";
 }
 
@@ -95,6 +106,7 @@ function getActionLabel(
     if (!methodId) return "Connect";
     if (methodId === "chatgpt") return "Continue with ChatGPT";
     if (methodId === "claude-login") return "Open sign-in terminal";
+    if (methodId === "login_with_google") return "Open sign-in terminal";
     if (isApiKeyMethod(methodId)) {
         return status.authReady && status.authMethod === methodId
             ? "Replace key"
@@ -146,6 +158,7 @@ function ProviderExpandedPanel({
         methodId: string;
         codexApiKey?: string;
         openaiApiKey?: string;
+        geminiApiKey?: string;
         anthropicBaseUrl?: string;
         anthropicCustomHeaders?: string;
         anthropicAuthToken?: string;
@@ -166,6 +179,7 @@ function ProviderExpandedPanel({
     const gatewaySelected = isGatewayMethod(selectedMethodId);
     const isOpenAi = selectedMethodId === "openai-api-key";
     const isCodex = selectedMethodId === "codex-api-key";
+    const isGemini = selectedMethodId === "use_gemini";
 
     const canSubmit =
         !saving &&
@@ -179,6 +193,7 @@ function ProviderExpandedPanel({
             methodId: selectedMethodId,
             openaiApiKey: isOpenAi ? apiKey || undefined : undefined,
             codexApiKey: isCodex ? apiKey || undefined : undefined,
+            geminiApiKey: isGemini ? apiKey || undefined : undefined,
             anthropicBaseUrl: gatewaySelected
                 ? gatewayUrl || undefined
                 : undefined,
@@ -477,6 +492,7 @@ export function AIProvidersSettings() {
             customBinaryPath?: string;
             codexApiKey?: string;
             openaiApiKey?: string;
+            geminiApiKey?: string;
             anthropicBaseUrl?: string;
             anthropicCustomHeaders?: string;
             anthropicAuthToken?: string;
@@ -486,13 +502,18 @@ export function AIProvidersSettings() {
             );
 
             if (
-                input.runtimeId === "claude-acp" &&
-                input.methodId === "claude-login"
+                (input.runtimeId === "claude-acp" &&
+                    input.methodId === "claude-login") ||
+                (input.runtimeId === "gemini-acp" &&
+                    input.methodId === "login_with_google")
             ) {
                 setAuthTerminalRequest({
                     runtimeId: input.runtimeId,
                     runtimeName:
-                        runtime?.runtime.name.replace(/ ACP$/, "") ?? "Claude",
+                        runtime?.runtime.name.replace(/ ACP$/, "") ??
+                        (input.runtimeId === "claude-acp"
+                            ? "Claude"
+                            : "Gemini"),
                     customBinaryPath: input.customBinaryPath,
                 });
                 return;
@@ -504,6 +525,7 @@ export function AIProvidersSettings() {
                     input.customBinaryPath !== undefined ||
                     input.codexApiKey !== undefined ||
                     input.openaiApiKey !== undefined ||
+                    input.geminiApiKey !== undefined ||
                     input.anthropicBaseUrl !== undefined ||
                     input.anthropicCustomHeaders !== undefined ||
                     input.anthropicAuthToken !== undefined
@@ -513,6 +535,7 @@ export function AIProvidersSettings() {
                         customBinaryPath: input.customBinaryPath,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
+                        geminiApiKey: input.geminiApiKey,
                         anthropicBaseUrl: input.anthropicBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
@@ -559,6 +582,7 @@ export function AIProvidersSettings() {
                     runtimeId,
                     codexApiKey: "",
                     openaiApiKey: "",
+                    geminiApiKey: "",
                     anthropicBaseUrl: "",
                     anthropicCustomHeaders: "",
                     anthropicAuthToken: "",
