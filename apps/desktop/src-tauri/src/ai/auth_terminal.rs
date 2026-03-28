@@ -14,10 +14,13 @@ use portable_pty::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
-use vault_ai_ai::CLAUDE_RUNTIME_ID;
+use vault_ai_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID};
 
 use super::claude::{
     save_setup_config as save_claude_setup_config, ClaudeRuntime, ClaudeSetupInput,
+};
+use super::gemini::{
+    save_setup_config as save_gemini_setup_config, GeminiRuntime, GeminiSetupInput,
 };
 
 const DEFAULT_COLS: u16 = 100;
@@ -532,6 +535,7 @@ fn resolve_auth_terminal_launch_config(
 ) -> Result<TerminalLaunchConfig, String> {
     match input.runtime_id.as_str() {
         CLAUDE_RUNTIME_ID => resolve_claude_launch_config(app, input),
+        GEMINI_RUNTIME_ID => resolve_gemini_launch_config(app, input),
         other => Err(format!(
             "Integrated auth terminal is not supported for runtime: {other}"
         )),
@@ -567,6 +571,41 @@ fn resolve_claude_launch_config(
         program,
         args,
         display_name: "Claude sign-in".to_string(),
+        cwd: resolve_terminal_cwd(input.vault_path.as_deref())?,
+    })
+}
+
+fn resolve_gemini_launch_config(
+    app: &AppHandle,
+    input: &AiAuthTerminalStartInput,
+) -> Result<TerminalLaunchConfig, String> {
+    if let Some(custom_binary_path) = input.custom_binary_path.clone() {
+        let _ = save_gemini_setup_config(
+            app,
+            GeminiSetupInput {
+                custom_binary_path: Some(custom_binary_path),
+                gemini_api_key: None,
+                google_api_key: None,
+                google_cloud_project: None,
+                google_cloud_location: None,
+                gateway_base_url: None,
+                gateway_headers: None,
+            },
+        )?;
+    }
+
+    let runtime = GeminiRuntime::default();
+    let resolved = runtime.resolved_binary(app)?;
+    let program = resolved
+        .program
+        .ok_or_else(|| "Gemini CLI is not configured.".to_string())?;
+    let args = resolved.args;
+
+    Ok(TerminalLaunchConfig {
+        runtime_id: GEMINI_RUNTIME_ID.to_string(),
+        program,
+        args,
+        display_name: "Gemini sign-in".to_string(),
         cwd: resolve_terminal_cwd(input.vault_path.as_deref())?,
     })
 }

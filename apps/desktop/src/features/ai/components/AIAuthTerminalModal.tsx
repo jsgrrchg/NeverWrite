@@ -54,6 +54,10 @@ function getErrorMessage(error: unknown) {
     return String(error);
 }
 
+function getRunningStatusLabel(runtimeName: string) {
+    return `Waiting for ${runtimeName} sign-in`;
+}
+
 export function AIAuthTerminalModal({
     open,
     runtimeId,
@@ -327,7 +331,7 @@ export function AIAuthTerminalModal({
                                 {snapshot.status === "starting"
                                     ? "Starting sign-in terminal"
                                     : snapshot.status === "running"
-                                      ? "Waiting for Claude sign-in"
+                                      ? getRunningStatusLabel(runtimeName)
                                       : snapshot.status === "exited"
                                         ? "Terminal closed"
                                         : "Terminal error"}

@@ -4,13 +4,14 @@ use serde::Deserialize;
 use tauri::{AppHandle, State};
 use vault_ai_ai::{
     AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession,
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
 };
 
 use super::{
     claude::ClaudeSetupInput,
     codex::CodexSetupInput,
     emit::{emit_session_created, emit_session_error, emit_session_updated},
+    gemini::GeminiSetupInput,
     manager::{AiAttachmentInput, AiManager},
     persistence::{self, PersistedSessionHistory},
     runtime::AiRuntimeSetupInput,
@@ -53,6 +54,12 @@ pub struct AiRuntimeSetupPayload {
     pub custom_binary_path: Option<String>,
     pub codex_api_key: Option<String>,
     pub openai_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub google_api_key: Option<String>,
+    pub google_cloud_project: Option<String>,
+    pub google_cloud_location: Option<String>,
+    pub gateway_base_url: Option<String>,
+    pub gateway_headers: Option<String>,
     pub anthropic_base_url: Option<String>,
     pub anthropic_custom_headers: Option<String>,
     pub anthropic_auth_token: Option<String>,
@@ -121,6 +128,15 @@ fn map_setup_input(
             anthropic_base_url: input.anthropic_base_url,
             anthropic_custom_headers: input.anthropic_custom_headers,
             anthropic_auth_token: input.anthropic_auth_token,
+        })),
+        GEMINI_RUNTIME_ID => Ok(AiRuntimeSetupInput::Gemini(GeminiSetupInput {
+            custom_binary_path: input.custom_binary_path,
+            gemini_api_key: input.gemini_api_key,
+            google_api_key: input.google_api_key,
+            google_cloud_project: input.google_cloud_project,
+            google_cloud_location: input.google_cloud_location,
+            gateway_base_url: input.gateway_base_url,
+            gateway_headers: input.gateway_headers,
         })),
         other => Err(format!("Runtime no soportado: {other}")),
     }

@@ -40,6 +40,7 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
         AiRuntimeCapabilities {
             create_session: true,
             list_sessions: true,
+            terminal_output: true,
             user_input: true,
             ..AiRuntimeCapabilities::default()
         }

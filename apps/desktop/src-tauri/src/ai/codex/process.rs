@@ -29,6 +29,7 @@ impl CodexRuntime {
                     "attachments".to_string(),
                     "permissions".to_string(),
                     "reasoning".to_string(),
+                    "terminal_output".to_string(),
                 ],
             },
             // Models, modes and config options are populated dynamically from the
