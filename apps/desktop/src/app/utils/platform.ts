@@ -8,6 +8,7 @@ export interface WindowChromeLayout {
 }
 
 export interface ManagedWindowChromeOptions {
+    decorations?: boolean;
     titleBarStyle?: "overlay";
     hiddenTitle?: boolean;
     trafficLightPosition?: { x: number; y: number };
@@ -94,11 +95,18 @@ export function getWindowChromeLayout(): WindowChromeLayout {
 }
 
 export function getManagedWindowChromeOptions(): ManagedWindowChromeOptions {
+    if (getDesktopPlatform() === "windows") {
+        return {
+            decorations: false,
+        };
+    }
+
     if (getDesktopPlatform() !== "macos") {
         return {};
     }
 
     return {
+        decorations: true,
         titleBarStyle: "overlay",
         hiddenTitle: true,
         trafficLightPosition: getTrafficLightPosition(),

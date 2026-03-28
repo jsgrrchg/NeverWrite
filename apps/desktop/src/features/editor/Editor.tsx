@@ -1917,6 +1917,65 @@ export function Editor({
                 },
             },
             {
+                id: "editor:search-in-note",
+                label: "Find in Note",
+                shortcut: platform === "macos" ? "⌘F" : "Ctrl+F",
+                execute: () => {
+                    handleSearchClick();
+                },
+            },
+            {
+                id: "editor:save-active-note",
+                label: "Save",
+                shortcut: platform === "macos" ? "⇧⌘S" : "Ctrl+Shift+S",
+                execute: () => {
+                    const tab = activeTabRef.current;
+                    if (!tab || !isNoteTab(tab)) return;
+                    const content =
+                        viewRef.current?.state.doc.toString() ?? tab.content;
+                    void saveNow(tab, content);
+                },
+            },
+            {
+                id: "editor:highlight-selection",
+                label: "Highlight",
+                shortcut: platform === "macos" ? "⇧⌘H" : "Ctrl+Shift+H",
+                execute: () => {
+                    const view = viewRef.current;
+                    if (!view) return;
+                    const transform = getSelectionTransform(
+                        view.state,
+                        "highlight",
+                    );
+                    if (!transform) return;
+                    view.dispatch({
+                        changes: transform.changes,
+                        selection: transform.selection,
+                        scrollIntoView: true,
+                        userEvent: transform.userEvent,
+                    });
+                    view.focus();
+                },
+            },
+            {
+                id: "editor:bold-selection",
+                label: "Bold",
+                shortcut: platform === "macos" ? "⌘B" : "Ctrl+B",
+                execute: () => {
+                    const view = viewRef.current;
+                    if (!view) return;
+                    const transform = getSelectionTransform(view.state, "bold");
+                    if (!transform) return;
+                    view.dispatch({
+                        changes: transform.changes,
+                        selection: transform.selection,
+                        scrollIntoView: true,
+                        userEvent: transform.userEvent,
+                    });
+                    view.focus();
+                },
+            },
+            {
                 id: "editor:blockquote",
                 label: "Toggle Blockquote",
                 execute: () => {
@@ -1965,7 +2024,9 @@ export function Editor({
         applyCodeBlockLanguageCommand,
         applyHeadingCommand,
         applyHorizontalRuleCommand,
+        handleSearchClick,
         registerCommand,
+        saveNow,
         unregisterCommand,
     ]);
 

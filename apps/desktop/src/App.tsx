@@ -72,11 +72,6 @@ import {
 import { useVaultStore, type VaultNoteChange } from "./app/store/vaultStore";
 import { useLayoutStore } from "./app/store/layoutStore";
 import { useSettingsStore } from "./app/store/settingsStore";
-import {
-    getYouTubeEmbedUrl,
-    OPEN_YOUTUBE_MODAL_EVENT,
-    type OpenYouTubeModalPayload,
-} from "./features/editor/youtube";
 import { formatShortcutAction } from "./app/shortcuts/format";
 import {
     matchesShortcutAction,
@@ -93,6 +88,7 @@ import {
 } from "./features/ai/store/chatTabsStore";
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
+import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
 
 function isTextLikeMimeType(mimeType: string | null | undefined) {
     if (!mimeType) return false;
@@ -127,6 +123,8 @@ const WEB_CLIPPER_CLIP_SAVED_EVENT = "vaultai:web-clipper/clip-saved";
 const WEB_CLIPPER_ROUTE_CLIP_EVENT = "vaultai:web-clipper/route-clip";
 const WEB_CLIPPER_ROUTE_POLL_MS = 100;
 const WEB_CLIPPER_ROUTE_TIMEOUT_MS = 10_000;
+const MENU_ACTION_EVENT = "menu-action";
+const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
 
 function waitForWindowRoute(ms: number) {
     return new Promise<void>((resolve) => {
@@ -178,6 +176,14 @@ function openEmptyTab() {
 function toggleLivePreviewSetting() {
     const { livePreviewEnabled, setSetting } = useSettingsStore.getState();
     setSetting("livePreviewEnabled", !livePreviewEnabled);
+}
+
+function adjustEditorFontSize(delta: number) {
+    const { editorFontSize, setSetting } = useSettingsStore.getState();
+    setSetting(
+        "editorFontSize",
+        Math.max(10, Math.min(24, editorFontSize + delta)),
+    );
 }
 
 function RightPanel() {
@@ -345,124 +351,6 @@ function OutlineRightPanel() {
     );
 }
 
-function YouTubeModalHost() {
-    const [video, setVideo] = useState<OpenYouTubeModalPayload | null>(null);
-
-    useEffect(() => {
-        const handleOpen = (event: Event) => {
-            const customEvent = event as CustomEvent<OpenYouTubeModalPayload>;
-            if (!customEvent.detail?.href) return;
-            setVideo(customEvent.detail);
-        };
-
-        window.addEventListener(OPEN_YOUTUBE_MODAL_EVENT, handleOpen);
-        return () =>
-            window.removeEventListener(OPEN_YOUTUBE_MODAL_EVENT, handleOpen);
-    }, []);
-
-    useEffect(() => {
-        if (!video) return;
-
-        const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                event.preventDefault();
-                setVideo(null);
-            }
-        };
-
-        window.addEventListener("keydown", handleKey, true);
-        return () => window.removeEventListener("keydown", handleKey, true);
-    }, [video]);
-
-    if (!video) return null;
-
-    const embedUrl = getYouTubeEmbedUrl(video.href);
-    if (!embedUrl) return null;
-
-    return (
-        <div
-            className="fixed inset-0 flex items-center justify-center p-6"
-            style={{
-                zIndex: 10000,
-                background: "rgb(0 0 0 / 0.66)",
-            }}
-            onClick={() => setVideo(null)}
-        >
-            <div
-                className="w-full max-w-5xl"
-                onClick={(event) => event.stopPropagation()}
-            >
-                <div
-                    style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        marginBottom: 10,
-                        color: "white",
-                    }}
-                >
-                    <div
-                        style={{
-                            fontSize: 14,
-                            fontWeight: 700,
-                            lineHeight: 1.35,
-                            paddingRight: 16,
-                        }}
-                    >
-                        {video.title}
-                    </div>
-                    <button
-                        type="button"
-                        onClick={() => setVideo(null)}
-                        style={{
-                            width: 34,
-                            height: 34,
-                            borderRadius: 999,
-                            border: "1px solid rgb(255 255 255 / 0.18)",
-                            background: "rgb(255 255 255 / 0.08)",
-                            color: "white",
-                            cursor: "pointer",
-                            fontSize: 18,
-                            lineHeight: 1,
-                        }}
-                        aria-label="Close video"
-                    >
-                        ×
-                    </button>
-                </div>
-                <div
-                    style={{
-                        position: "relative",
-                        width: "100%",
-                        aspectRatio: "16 / 9",
-                        borderRadius: 18,
-                        overflow: "hidden",
-                        border: "1px solid rgb(255 255 255 / 0.08)",
-                        boxShadow: "0 24px 80px rgb(0 0 0 / 0.45)",
-                        background: "black",
-                    }}
-                >
-                    <iframe
-                        title={video.title}
-                        src={embedUrl}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                        allowFullScreen
-                        referrerPolicy="strict-origin-when-cross-origin"
-                        loading="lazy"
-                        style={{
-                            position: "absolute",
-                            inset: 0,
-                            width: "100%",
-                            height: "100%",
-                            border: "none",
-                        }}
-                    />
-                </div>
-            </div>
-        </div>
-    );
-}
-
 // Register all initial commands
 function useRegisterCommands(
     openSearchPanel: () => void,
@@ -493,6 +381,8 @@ function useRegisterCommands(
         const toggleLivePreviewShortcut = getShortcutDefinition(
             "toggle_live_preview",
         );
+        const nextTabShortcut = getShortcutDefinition("next_tab");
+        const previousTabShortcut = getShortcutDefinition("previous_tab");
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             useEditorStore.getState().activeTabId !== null;
@@ -519,6 +409,40 @@ function useRegisterCommands(
             category: quickSwitcherShortcut.category,
             when: hasVault,
             execute: openQuickSwitcher,
+        });
+
+        register({
+            id: "nav:next-tab",
+            label: nextTabShortcut.label,
+            shortcut: formatShortcutAction(nextTabShortcut.id, platform),
+            category: nextTabShortcut.category,
+            when: hasActiveTab,
+            execute: () => cycleEditorTabs(false),
+        });
+
+        register({
+            id: "nav:previous-tab",
+            label: previousTabShortcut.label,
+            shortcut: formatShortcutAction(previousTabShortcut.id, platform),
+            category: previousTabShortcut.category,
+            when: hasActiveTab,
+            execute: () => cycleEditorTabs(true),
+        });
+
+        register({
+            id: "nav:back",
+            label: "Back",
+            shortcut: platform === "macos" ? "⌘[" : "Ctrl+[",
+            category: "Navigation",
+            execute: () => useEditorStore.getState().goBack(),
+        });
+
+        register({
+            id: "nav:forward",
+            label: "Forward",
+            shortcut: platform === "macos" ? "⌘]" : "Ctrl+]",
+            category: "Navigation",
+            execute: () => useEditorStore.getState().goForward(),
         });
 
         // Vault
@@ -641,6 +565,22 @@ function useRegisterCommands(
             ),
             category: toggleLivePreviewShortcut.category,
             execute: toggleLivePreviewSetting,
+        });
+
+        register({
+            id: "editor:font-size-up",
+            label: "Increase Font Size",
+            shortcut: platform === "macos" ? "⌘=" : "Ctrl+=",
+            category: "Editor",
+            execute: () => adjustEditorFontSize(1),
+        });
+
+        register({
+            id: "editor:font-size-down",
+            label: "Decrease Font Size",
+            shortcut: platform === "macos" ? "⌘-" : "Ctrl-",
+            category: "Editor",
+            execute: () => adjustEditorFontSize(-1),
         });
 
         // Layout
@@ -853,6 +793,44 @@ function useGlobalShortcuts(openSettings: () => void) {
         window.addEventListener("keydown", handler, true);
         return () => window.removeEventListener("keydown", handler, true);
     }, [activeModal, closeModal, openCommandPalette, openSettings]);
+}
+
+function useNativeMenuActions(windowMode: ReturnType<typeof getWindowMode>) {
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+
+        const registration = listen<string>(MENU_ACTION_EVENT, (event) => {
+            useCommandStore.getState().execute(event.payload);
+        });
+        void Promise.resolve(registration).then((cleanup) => {
+            unlisten = cleanup;
+        });
+
+        return () => {
+            if (unlisten) {
+                void unlisten();
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        let unlisten: (() => void) | undefined;
+
+        const registration = listen<string>(DOCK_OPEN_VAULT_EVENT, (event) => {
+            void useVaultStore.getState().openVault(event.payload);
+        });
+        void Promise.resolve(registration).then((cleanup) => {
+            unlisten = cleanup;
+        });
+
+        return () => {
+            if (unlisten) {
+                void unlisten();
+            }
+        };
+    }, [windowMode]);
 }
 
 function canScrollElement(element: HTMLElement) {
@@ -1222,6 +1200,7 @@ export default function App() {
 
     useRegisterCommands(openSearchPanel, openSettings, windowMode === "main");
     useGlobalShortcuts(openSettings);
+    useNativeMenuActions(windowMode);
     useDynamicScrollbars();
     useAutoOpenReviewTab();
 
@@ -1501,7 +1480,8 @@ export default function App() {
     }, [activeTabId, tabs, vaultPath, windowMode, windowSessionReady]);
 
     useEffect(() => {
-        if (windowMode !== "main") return;
+        if (windowMode === "settings") return;
+        if (windowMode === "ghost") return;
 
         const label = getCurrentWindowLabel();
         const registerRoute = () => {

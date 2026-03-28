@@ -36,6 +36,7 @@ describe("platform helpers", () => {
             windowControlsSide: "left",
         });
         expect(getManagedWindowChromeOptions()).toMatchObject({
+            decorations: true,
             titleBarStyle: "overlay",
             hiddenTitle: true,
             trafficLightPosition: { x: 14, y: 20 },
@@ -55,6 +56,8 @@ describe("platform helpers", () => {
             titlebarPaddingTop: 0,
             windowControlsSide: "right",
         });
-        expect(getManagedWindowChromeOptions()).toEqual({});
+        expect(getManagedWindowChromeOptions()).toEqual({
+            decorations: false,
+        });
     });
 });

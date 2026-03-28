@@ -10,10 +10,13 @@ import { openVaultWindow } from "./app/detachedWindows";
 import { useEditorStore } from "./app/store/editorStore";
 import { useVaultStore } from "./app/store/vaultStore";
 import { readWindowSessionSnapshot } from "./app/windowSession";
+import { useCommandStore } from "./features/command-palette/store/commandStore";
 import { useChatTabsStore } from "./features/ai/store/chatTabsStore";
 import { useChatStore } from "./features/ai/store/chatStore";
 import { flushPromises, renderComponent } from "./test/test-utils";
 
+const MENU_ACTION_EVENT = "menu-action";
+const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
 const WEB_CLIPPER_CLIP_SAVED_EVENT = "vaultai:web-clipper/clip-saved";
 const WEB_CLIPPER_ROUTE_CLIP_EVENT = "vaultai:web-clipper/route-clip";
 
@@ -160,7 +163,7 @@ vi.mock("./app/windowSession", () => ({
 describe("App web clipper routing", () => {
     const eventHandlers = new Map<
         string,
-        (event: { payload: Record<string, unknown> }) => void
+        (event: { payload: unknown }) => void
     >();
 
     beforeEach(() => {
@@ -171,9 +174,7 @@ describe("App web clipper routing", () => {
         vi.mocked(listen).mockImplementation(async (eventName, handler) => {
             eventHandlers.set(
                 eventName as string,
-                handler as (event: {
-                    payload: Record<string, unknown>;
-                }) => void,
+                handler as (event: { payload: unknown }) => void,
             );
             return vi.fn();
         });
@@ -182,7 +183,7 @@ describe("App web clipper routing", () => {
         vi.mocked(readWindowSessionSnapshot).mockReturnValue([]);
         vi.mocked(getAllWebviewWindows).mockResolvedValue([
             { label: "main", setFocus: vi.fn() },
-        ] as Awaited<ReturnType<typeof getAllWebviewWindows>>);
+        ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>);
 
         useVaultStore.setState({
             vaultPath: "/vaults/a",
@@ -225,6 +226,36 @@ describe("App web clipper routing", () => {
         expect(invoke).toHaveBeenCalledWith("unregister_window_vault_route", {
             label: "main",
         });
+    });
+
+    it("dispatches native menu actions into the command store", async () => {
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            eventHandlers.get(MENU_ACTION_EVENT)?.({
+                payload: "nav:command-palette",
+            });
+            await Promise.resolve();
+        });
+
+        expect(useCommandStore.getState().activeModal).toBe("command-palette");
+    });
+
+    it("opens a vault when the dock menu requests it", async () => {
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            eventHandlers.get(DOCK_OPEN_VAULT_EVENT)?.({
+                payload: "/vaults/dock",
+            });
+            await Promise.resolve();
+        });
+
+        expect(useVaultStore.getState().openVault).toHaveBeenCalledWith(
+            "/vaults/dock",
+        );
     });
 
     it("opens clip-saved payloads without switching the current vault", async () => {
@@ -321,11 +352,11 @@ describe("App web clipper routing", () => {
         vi.mocked(getAllWebviewWindows)
             .mockResolvedValueOnce([
                 { label: "main", setFocus: vi.fn() },
-            ] as Awaited<ReturnType<typeof getAllWebviewWindows>>)
+            ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>)
             .mockResolvedValueOnce([
                 { label: "main", setFocus: vi.fn() },
                 { label: "vault-b", setFocus: targetWindowFocus },
-            ] as Awaited<ReturnType<typeof getAllWebviewWindows>>);
+            ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>);
 
         renderComponent(<App />);
         await flushPromises();

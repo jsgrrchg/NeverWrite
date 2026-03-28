@@ -185,18 +185,34 @@ export function getRecentVaults(): RecentVault[] {
     }
 }
 
+function syncRecentVaultsToNative(vaults: RecentVault[]) {
+    const top15 = vaults.slice(0, 15).map(({ path, name }) => ({
+        path,
+        name,
+    }));
+
+    void invoke("sync_recent_vaults", { vaults: top15 }).catch((error) => {
+        console.warn("Failed to sync recent vaults:", error);
+    });
+}
+
+function writeRecentVaults(vaults: RecentVault[]) {
+    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(vaults));
+    syncRecentVaultsToNative(vaults);
+}
+
 export function togglePinVault(path: string) {
     const vaults = getRecentVaults();
     const updated = vaults.map((v) =>
         v.path === path ? { ...v, pinned: !v.pinned } : v,
     );
-    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(updated));
+    writeRecentVaults(updated);
 }
 
 export async function removeVaultFromList(path: string) {
     // Remove from recent vaults
     const updated = getRecentVaults().filter((v) => v.path !== path);
-    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(updated));
+    writeRecentVaults(updated);
 
     // Clear last vault if it matches
     if (localStorage.getItem(LAST_VAULT_KEY) === path) {
@@ -225,13 +241,15 @@ export async function removeVaultFromList(path: string) {
     }
 }
 
+export function clearRecentVaults() {
+    localStorage.removeItem(RECENT_VAULTS_KEY);
+    syncRecentVaultsToNative([]);
+}
+
 function addToRecentVaults(path: string) {
     const name = getPathBaseName(path);
     const prev = getRecentVaults().filter((v) => v.path !== path);
-    localStorage.setItem(
-        RECENT_VAULTS_KEY,
-        JSON.stringify([{ path, name }, ...prev].slice(0, MAX_RECENT_VAULTS)),
-    );
+    writeRecentVaults([{ path, name }, ...prev].slice(0, MAX_RECENT_VAULTS));
 }
 
 function updateNotesWithChange(notes: NoteDto[], change: VaultNoteChange) {
