@@ -1,10 +1,12 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import {
     renderComponent,
     setEditorTabs,
+    setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
@@ -778,6 +780,70 @@ describe("AIChatMessageItem read tool targets", () => {
 
         await waitFor(() => {
             expect(useEditorStore.getState().tabs).toHaveLength(2);
+        });
+    });
+
+    it("opens text file tool targets in a new tab from the context menu", async () => {
+        const invokeMock = vi.mocked(invoke);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "src/watcher.rs",
+                });
+                return {
+                    path: "/vault/src/watcher.rs",
+                    relative_path: "src/watcher.rs",
+                    file_name: "watcher.rs",
+                    mime_type: "text/rust",
+                    content: "fn main() {}",
+                };
+            }
+            throw new Error(`Unexpected invoke call: ${command}`);
+        });
+
+        setVaultEntries([
+            {
+                id: "src/watcher.rs",
+                path: "/vault/src/watcher.rs",
+                relative_path: "src/watcher.rs",
+                title: "watcher.rs",
+                file_name: "watcher.rs",
+                extension: "rs",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 12,
+                mime_type: "text/rust",
+            },
+        ]);
+
+        renderMessage({
+            id: "tool:read-rs",
+            role: "assistant",
+            kind: "tool",
+            title: "Read file",
+            content: "Read watcher.rs",
+            timestamp: Date.now(),
+            meta: {
+                tool: "read",
+                status: "completed",
+                target: "/vault/src/watcher.rs",
+            },
+        });
+
+        fireEvent.contextMenu(screen.getByText("watcher.rs"), {
+            clientX: 32,
+            clientY: 36,
+        });
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(1);
+        });
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            kind: "file",
+            title: "watcher.rs",
+            path: "/vault/src/watcher.rs",
         });
     });
 });

@@ -1,9 +1,11 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import {
     renderComponent,
     setEditorTabs,
+    setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
 import { MarkdownContent } from "./MarkdownContent";
@@ -57,6 +59,63 @@ describe("MarkdownContent", () => {
 
         await waitFor(() => {
             expect(useEditorStore.getState().tabs).toHaveLength(2);
+        });
+    });
+
+    it("opens text file pills in a new tab from the context menu", async () => {
+        const invokeMock = vi.mocked(invoke);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "src/main.ts",
+                });
+                return {
+                    path: "/vault/src/main.ts",
+                    relative_path: "src/main.ts",
+                    file_name: "main.ts",
+                    mime_type: "text/typescript",
+                    content: "export const value = 1;",
+                };
+            }
+            throw new Error(`Unexpected invoke call: ${command}`);
+        });
+
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="Review `/vault/src/main.ts`."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        fireEvent.contextMenu(screen.getByRole("button", { name: "main.ts" }), {
+            clientX: 28,
+            clientY: 32,
+        });
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(1);
+        });
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            kind: "file",
+            title: "main.ts",
+            path: "/vault/src/main.ts",
         });
     });
 
