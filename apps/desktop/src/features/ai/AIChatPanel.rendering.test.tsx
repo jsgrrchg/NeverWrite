@@ -1,4 +1,4 @@
-import { act } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -14,10 +14,15 @@ import {
 
 let messageListRenderCount = 0;
 let composerRenderCount = 0;
+const exportChatSessionToVaultNoteMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./api", () => {
     const noop = async () => () => {};
+    const noopAsync = async () => undefined;
     return {
+        aiLoadSessionHistoryPage: noopAsync,
+        aiPruneSessionHistories: async () => 0,
+        aiSaveSessionHistory: noopAsync,
         listenToAiAvailableCommandsUpdated: noop,
         listenToAiMessageCompleted: noop,
         listenToAiMessageDelta: noop,
@@ -38,7 +43,25 @@ vi.mock("./api", () => {
 });
 
 vi.mock("./components/AIChatHeader", () => ({
-    AIChatHeader: () => <div data-testid="chat-header" />,
+    AIChatHeader: ({
+        activeSessionId,
+        onExportSession,
+    }: {
+        activeSessionId?: string | null;
+        onExportSession?: (sessionId: string) => void;
+    }) => (
+        <div data-testid="chat-header">
+            {activeSessionId ? (
+                <button
+                    type="button"
+                    data-testid="chat-header-export"
+                    onClick={() => onExportSession?.(activeSessionId)}
+                >
+                    Export
+                </button>
+            ) : null}
+        </div>
+    ),
 }));
 
 vi.mock("./components/AIChatRuntimeBanner", () => ({
@@ -77,6 +100,10 @@ vi.mock("./components/AIChatAgentControls", () => ({
 
 vi.mock("./components/AIAuthTerminalModal", () => ({
     AIAuthTerminalModal: () => null,
+}));
+
+vi.mock("./chatExport", () => ({
+    exportChatSessionToVaultNote: exportChatSessionToVaultNoteMock,
 }));
 
 const runtimeDescriptor: AIRuntimeDescriptor = {
@@ -127,6 +154,7 @@ describe("AIChatPanel rendering", () => {
     beforeEach(() => {
         messageListRenderCount = 0;
         composerRenderCount = 0;
+        exportChatSessionToVaultNoteMock.mockReset();
         resetChatStore();
         resetChatTabsStore();
         markChatTabsReady();
@@ -235,5 +263,108 @@ describe("AIChatPanel rendering", () => {
             initialMessageListRenderCount,
         );
         expect(composerRenderCount).toBeGreaterThan(initialComposerRenderCount);
+    });
+
+    it("hydrates only the selected tab session when switching chats", async () => {
+        const sessionA = createSession("session-a", "Active session", {
+            messages: [],
+            persistedMessageCount: 80,
+            loadedPersistedMessageStart: null,
+        });
+        const sessionB = createSession("session-b", "Background session", {
+            messages: [],
+            persistedMessageCount: 40,
+            loadedPersistedMessageStart: null,
+        });
+        const loadSessionSpy = vi
+            .spyOn(useChatStore.getState(), "loadSession")
+            .mockResolvedValue(undefined);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+                [sessionB.sessionId]: sessionB,
+            },
+            sessionOrder: [sessionA.sessionId, sessionB.sessionId],
+            activeSessionId: sessionA.sessionId,
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: [],
+                [sessionB.sessionId]: [],
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [
+                { id: "tab-a", sessionId: sessionA.sessionId },
+                { id: "tab-b", sessionId: sessionB.sessionId },
+            ],
+            activeTabId: "tab-a",
+            isReady: true,
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        act(() => {
+            useChatTabsStore.setState((state) => ({
+                ...state,
+                activeTabId: "tab-b",
+            }));
+        });
+
+        await waitFor(() => {
+            expect(loadSessionSpy).toHaveBeenCalledWith("session-b");
+        });
+        expect(loadSessionSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not export a chat when the full transcript hydration fails", async () => {
+        const sessionA = createSession("session-a", "Export me", {
+            messages: [],
+            persistedMessageCount: 80,
+            loadedPersistedMessageStart: null,
+            runtimeState: "live",
+        });
+        const ensureSessionTranscriptLoaded = vi.fn().mockResolvedValue(false);
+        const consoleErrorSpy = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => {});
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+            },
+            sessionOrder: [sessionA.sessionId],
+            activeSessionId: sessionA.sessionId,
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: [],
+            },
+            ensureSessionTranscriptLoaded,
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-a", sessionId: sessionA.sessionId }],
+            activeTabId: "tab-a",
+            isReady: true,
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        fireEvent.click(screen.getByTestId("chat-header-export"));
+
+        await waitFor(() => {
+            expect(ensureSessionTranscriptLoaded).toHaveBeenCalledWith(
+                "session-a",
+                "full",
+            );
+        });
+        expect(exportChatSessionToVaultNoteMock).not.toHaveBeenCalled();
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+            "Failed to export chat session:",
+            expect.any(Error),
+        );
+
+        consoleErrorSpy.mockRestore();
     });
 });

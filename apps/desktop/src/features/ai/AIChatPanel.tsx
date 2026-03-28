@@ -672,7 +672,7 @@ export function AIChatPanel() {
 
         if (!currentSession) return;
         tabDrivenSessionIdRef.current = activeTabSessionId;
-        chatActions.setActiveSession(activeTabSessionId);
+        void chatActions.loadSession(activeTabSessionId);
     }, [
         activeSessionId,
         activeTabSessionId,
@@ -734,13 +734,24 @@ export function AIChatPanel() {
             ) : null}
             {!composerExpanded && (
                 <AIChatMessageList
+                    sessionId={composerSessionId}
                     messages={currentSession?.messages ?? []}
                     status={currentSession?.status ?? "idle"}
+                    hasOlderMessages={
+                        (currentSession?.loadedPersistedMessageStart ?? 0) > 0
+                    }
+                    isLoadingOlderMessages={
+                        currentSession?.isLoadingPersistedMessages ?? false
+                    }
                     visibleWorkCycleId={
                         currentSession?.visibleWorkCycleId ?? null
                     }
                     chatFontSize={chatFontSize}
                     chatFontFamily={chatFontFamily}
+                    onLoadOlderMessages={() => {
+                        if (!composerSessionId) return;
+                        void chatActions.loadOlderMessages(composerSessionId);
+                    }}
                     onPermissionResponse={(requestId, optionId) => {
                         if (!composerSessionId) return;
                         void chatActions.respondPermissionForSession(
@@ -1038,13 +1049,32 @@ function AIChatHeaderBridge({
                     return;
                 }
 
-                void exportChatSessionToVaultNote({
-                    session,
-                    runtimes: runtimeOptions,
-                    notes,
-                    createNote,
-                    openNote,
-                }).catch((error) => {
+                void (async () => {
+                    const transcriptLoaded =
+                        await chatActions.ensureSessionTranscriptLoaded(
+                            sessionId,
+                            "full",
+                        );
+                    if (!transcriptLoaded) {
+                        throw new Error(
+                            "Failed to load the full saved transcript before exporting.",
+                        );
+                    }
+
+                    const hydratedSession =
+                        useChatStore.getState().sessionsById[sessionId];
+                    if (!hydratedSession) {
+                        return;
+                    }
+
+                    await exportChatSessionToVaultNote({
+                        session: hydratedSession,
+                        runtimes: runtimeOptions,
+                        notes,
+                        createNote,
+                        openNote,
+                    });
+                })().catch((error) => {
                     console.error("Failed to export chat session:", error);
                 });
             }}

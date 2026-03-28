@@ -30,6 +30,7 @@ import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
 import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
 import { resolveEditorTargetForOpenTab } from "../../editor/editorTargetResolver";
 import { subscribeEditorReviewSync } from "../../editor/editorReviewSync";
+import { useChatRowUiStore } from "./chatRowUiStore";
 
 const invokeMock = vi.mocked(invoke);
 const AI_PREFS_KEY = "vaultai.ai.preferences";
@@ -429,6 +430,16 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
 
     if (command === "ai_load_session_histories") {
         return [];
+    }
+
+    if (command === "ai_load_session_history_page") {
+        return {
+            session_id: "history-1",
+            total_messages: 0,
+            start_index: 0,
+            end_index: 0,
+            messages: [],
+        };
     }
 
     return sessionPayload;
@@ -1570,6 +1581,261 @@ describe("chatStore", () => {
         expect(state.sessionOrder).toEqual(["codex-session-existing"]);
     });
 
+    it("hydrates normalized transcript metadata when a live session adopts persisted history on initialize", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "codex-session-existing",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [
+                            {
+                                id: "status:init-turn",
+                                role: "system",
+                                kind: "status",
+                                content: "New turn",
+                                title: "New turn",
+                                timestamp: 10,
+                                meta: {
+                                    status_event: "turn_started",
+                                    status: "completed",
+                                    emphasis: "neutral",
+                                },
+                            },
+                            {
+                                id: "assistant:init",
+                                role: "assistant",
+                                kind: "text",
+                                content: "Recovered text",
+                                timestamp: 11,
+                            },
+                            {
+                                id: "plan:init",
+                                role: "assistant",
+                                kind: "plan",
+                                content: "Recovered plan",
+                                title: "Plan",
+                                timestamp: 12,
+                                plan_entries: [
+                                    {
+                                        content: "Recovered plan",
+                                        priority: "medium",
+                                        status: "in_progress",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ];
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_create_session") {
+                throw new Error("Should not create a new session");
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+
+        expect(session.messages.map((message) => message.id)).toEqual([
+            "status:init-turn",
+            "assistant:init",
+            "plan:init",
+        ]);
+        expect(session.messageOrder).toEqual([
+            "status:init-turn",
+            "assistant:init",
+            "plan:init",
+        ]);
+        expect(session.messagesById?.["assistant:init"]?.content).toBe(
+            "Recovered text",
+        );
+        expect(session.lastTurnStartedMessageId).toBe("status:init-turn");
+        expect(session.lastAssistantMessageId).toBe("assistant:init");
+        expect(session.activePlanMessageId).toBe("plan:init");
+    });
+
+    it("loads only the latest persisted transcript page for the active live session on initialize", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        const latestPageMessages = Array.from({ length: 60 }, (_, index) => ({
+            id: `assistant:${index + 20}`,
+            role: "assistant",
+            kind: "text",
+            content: `Recovered message ${index + 20}`,
+            timestamp: 1_000 + index,
+        }));
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "codex-session-existing",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 2_000,
+                        message_count: 80,
+                        title: "Seed prompt",
+                        preview: "Recovered message 79",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "codex-session-existing",
+                    total_messages: 80,
+                    start_index: 20,
+                    end_index: 80,
+                    messages: latestPageMessages,
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+
+        expect(session.persistedMessageCount).toBe(80);
+        expect(session.loadedPersistedMessageStart).toBe(20);
+        expect(session.persistedTitle).toBe("Seed prompt");
+        expect(session.persistedPreview).toBe("Recovered message 79");
+        expect(session.messages).toHaveLength(60);
+        expect(session.messages[0]?.id).toBe("assistant:20");
+        expect(session.messages.at(-1)?.id).toBe("assistant:79");
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_load_session_history_page",
+            {
+                vaultPath: "/vault",
+                sessionId: "codex-session-existing",
+                startIndex: 20,
+                limit: 60,
+            },
+        );
+    });
+
+    it("rejects lazy transcript pages that belong to a different session", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        const consoleWarnSpy = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => {});
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "codex-session-existing",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 2_000,
+                        message_count: 80,
+                        title: "Seed prompt",
+                        preview: "Recovered message 79",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "wrong-session",
+                    total_messages: 80,
+                    start_index: 20,
+                    end_index: 80,
+                    messages: [],
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(session.messages).toHaveLength(0);
+        expect(session.isLoadingPersistedMessages).toBe(false);
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+            "Failed to load persisted session transcript page:",
+            expect.any(Error),
+        );
+
+        consoleWarnSpy.mockRestore();
+    });
+
     it("stops before creating a session when onboarding is still required", async () => {
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") {
@@ -1935,6 +2201,155 @@ describe("chatStore", () => {
 
         expect(useChatStore.getState().activeSessionId).toBe("codex-session-2");
         expect(useChatStore.getState().sessionOrder[0]).toBe("codex-session-2");
+    });
+
+    it("prepends older persisted transcript pages on demand", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const latestMessages = Array.from({ length: 20 }, (_, index) => ({
+            id: `assistant:${index + 60}`,
+            role: "assistant" as const,
+            kind: "text" as const,
+            content: `Loaded message ${index + 60}`,
+            timestamp: index + 60,
+        }));
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: {
+                    ...state.sessionsById[sessionId]!,
+                    messages: latestMessages,
+                    persistedCreatedAt: 1,
+                    persistedUpdatedAt: 120,
+                    persistedTitle: "Persisted title",
+                    persistedPreview: "Loaded message 79",
+                    persistedMessageCount: 80,
+                    loadedPersistedMessageStart: 60,
+                    isLoadingPersistedMessages: false,
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    sessionId,
+                    startIndex: 0,
+                    limit: 60,
+                });
+                return {
+                    session_id: sessionId,
+                    total_messages: 80,
+                    start_index: 0,
+                    end_index: 60,
+                    messages: Array.from({ length: 60 }, (_, index) => ({
+                        id: `assistant:${index}`,
+                        role: "assistant",
+                        kind: "text",
+                        content: `Loaded message ${index}`,
+                        timestamp: index,
+                    })),
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().loadOlderMessages(sessionId);
+
+        const session = useChatStore.getState().sessionsById[sessionId]!;
+        expect(session.loadedPersistedMessageStart).toBe(0);
+        expect(session.messages).toHaveLength(80);
+        expect(session.messages[0]?.id).toBe("assistant:0");
+        expect(session.messages[59]?.id).toBe("assistant:59");
+        expect(session.messages[60]?.id).toBe("assistant:60");
+        expect(session.messages.at(-1)?.id).toBe("assistant:79");
+    });
+
+    it("migrates virtualized row UI state when a detached session is resumed", async () => {
+        await useChatStore.getState().initialize();
+
+        const detachedSessionId = "persisted:history-42";
+        const resumedSessionId = "codex-session-resumed";
+        const messageId = "plan:resume";
+        const activeSession =
+            useChatStore.getState().sessionsById[getActiveSessionId()]!;
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, detachedSessionId, {
+                historySessionId: "history-42",
+                runtimeId: "codex-acp",
+                runtimeState: "detached",
+                isPersistedSession: true,
+                status: "idle",
+                messages: [
+                    {
+                        id: messageId,
+                        role: "assistant",
+                        kind: "plan",
+                        title: "Plan",
+                        content: "Resume work",
+                        timestamp: 10,
+                        planEntries: [
+                            {
+                                content: "Resume work",
+                                priority: "medium",
+                                status: "in_progress",
+                            },
+                        ],
+                    },
+                ],
+                attachments: [],
+            }),
+            true,
+        );
+
+        useChatRowUiStore.getState().patchRow(detachedSessionId, messageId, {
+            expanded: false,
+        });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: resumedSessionId,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const nextSessionId = await useChatStore
+            .getState()
+            .resumeSession(detachedSessionId);
+
+        expect(nextSessionId).toBe(resumedSessionId);
+        expect(
+            useChatRowUiStore.getState().rowsBySessionId[detachedSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatRowUiStore.getState().rowsBySessionId[resumedSessionId]?.[
+                messageId
+            ],
+        ).toMatchObject({
+            expanded: false,
+        });
+        expect(
+            useChatStore.getState().sessionsById[resumedSessionId]
+                ?.messageOrder,
+        ).toEqual([messageId]);
+        expect(
+            useChatStore.getState().sessionsById[resumedSessionId]
+                ?.messagesById?.[messageId]?.content,
+        ).toBe("Resume work");
+        expect(
+            useChatStore.getState().sessionsById[resumedSessionId]
+                ?.activePlanMessageId,
+        ).toBe(messageId);
     });
 
     it("adds the user message and turns the session into error when the runtime fails", async () => {
@@ -6012,6 +6427,11 @@ describe("chatStore", () => {
                     },
                 ];
             }
+            if (command === "ai_load_session_history_page") {
+                throw new Error(
+                    "initialize should not refetch a fully hydrated persisted transcript",
+                );
+            }
             if (command === "ai_create_session") return sessionPayload;
             return sessionPayload;
         });
@@ -6094,6 +6514,83 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
             runtimeId: "codex-acp",
             vaultPath: "/vault",
+        });
+    });
+
+    it("aborts resume when the required persisted transcript page cannot be loaded", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 80,
+                    loadedPersistedMessageStart: null,
+                    persistedTitle: "Saved session",
+                    persistedPreview: "Saved session",
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                "persisted:history-1": [],
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                throw new Error("disk read failed");
+            }
+            if (command === "ai_create_session") {
+                throw new Error("resume should stop before creating a session");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const nextSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:history-1");
+
+        expect(nextSessionId).toBeNull();
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content:
+                "Failed to load the full saved transcript before resuming.",
         });
     });
 
@@ -6270,6 +6767,11 @@ describe("chatStore", () => {
                     },
                 ];
             }
+            if (command === "ai_load_session_history_page") {
+                throw new Error(
+                    "initialize should not refetch a fully hydrated persisted transcript",
+                );
+            }
             if (command === "ai_create_session") return sessionPayload;
             return sessionPayload;
         });
@@ -6358,6 +6860,67 @@ describe("chatStore", () => {
                         ],
                     }),
                 ]),
+            }),
+        });
+    });
+
+    it("persists transcript windows with start_index and total message_count", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    historySessionId: "history-windowed",
+                    persistedCreatedAt: 10,
+                    persistedUpdatedAt: 90,
+                    persistedTitle: "Windowed chat",
+                    persistedPreview: "Recovered 79",
+                    persistedMessageCount: 80,
+                    loadedPersistedMessageStart: 60,
+                    messages: [
+                        ...Array.from({ length: 20 }, (_, index) => ({
+                            id: `assistant:${index + 60}`,
+                            role: "assistant" as const,
+                            kind: "text" as const,
+                            content: `Recovered ${index + 60}`,
+                            timestamp: 100 + index,
+                        })),
+                        {
+                            id: "assistant:new",
+                            role: "assistant",
+                            kind: "text",
+                            content: "New tail message",
+                            timestamp: 999,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "Trigger persistence",
+        });
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: "history-windowed",
+                start_index: 60,
+                message_count: 82,
+                created_at: 10,
+                updated_at: expect.any(Number),
+                title: "Windowed chat",
+                preview: "Error: Trigger persistence",
             }),
         });
     });
@@ -6533,6 +7096,11 @@ describe("chatStore", () => {
                     },
                 ];
             }
+            if (command === "ai_load_session_history_page") {
+                throw new Error(
+                    "initialize should not refetch a fully hydrated persisted transcript",
+                );
+            }
             if (command === "ai_create_session") return createSessionPromise;
             return sessionPayload;
         });
@@ -6594,6 +7162,11 @@ describe("chatStore", () => {
                         ],
                     },
                 ];
+            }
+            if (command === "ai_load_session_history_page") {
+                throw new Error(
+                    "initialize should not refetch a fully hydrated persisted transcript",
+                );
             }
             if (command === "ai_create_session") return sessionPayload;
             return sessionPayload;
@@ -6757,6 +7330,64 @@ describe("chatStore", () => {
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-1");
+    });
+
+    it("clears virtualized row UI state when deleting a session", async () => {
+        await useChatStore.getState().initialize();
+
+        useChatStore.getState().upsertSession(
+            {
+                sessionId: "codex-session-2",
+                historySessionId: "codex-session-2",
+                runtimeId: "codex-acp",
+                modelId: "test-model",
+                modeId: "default",
+                status: "idle",
+                messages: [
+                    {
+                        id: "m2",
+                        role: "assistant",
+                        kind: "plan",
+                        content: "Second chat",
+                        title: "Plan",
+                        timestamp: 30,
+                        planEntries: [
+                            {
+                                content: "Second chat",
+                                priority: "medium",
+                                status: "pending",
+                            },
+                        ],
+                    },
+                ],
+                attachments: [],
+                models: acpModels.map((model) => ({
+                    id: model.id,
+                    runtimeId: model.runtime_id,
+                    name: model.name,
+                    description: model.description,
+                })),
+                modes: acpModes.map((mode) => ({
+                    id: mode.id,
+                    runtimeId: mode.runtime_id,
+                    name: mode.name,
+                    description: mode.description,
+                    disabled: mode.disabled,
+                })),
+                configOptions: [],
+            },
+            true,
+        );
+
+        useChatRowUiStore.getState().patchRow("codex-session-2", "m2", {
+            expanded: true,
+        });
+
+        await useChatStore.getState().deleteSession("codex-session-2");
+
+        expect(
+            useChatRowUiStore.getState().rowsBySessionId["codex-session-2"],
+        ).toBeUndefined();
     });
 
     it("ignores agent changes while the session is busy", async () => {
@@ -7580,6 +8211,149 @@ describe("chatStore", () => {
                 id: "local-message",
                 content: "local",
             }),
+        ]);
+    });
+
+    it("normalizes transcript metadata when upserting a session", () => {
+        useChatStore.getState().upsertSession(
+            {
+                sessionId: "normalized-session",
+                historySessionId: "normalized-session",
+                runtimeId: "codex-acp",
+                modelId: "test-model",
+                modeId: "default",
+                status: "idle",
+                messages: [
+                    {
+                        id: "status:turn-a",
+                        role: "system",
+                        kind: "status",
+                        title: "Turn started",
+                        content: "Turn started",
+                        timestamp: 1,
+                        meta: {
+                            status_event: "turn_started",
+                            status: "completed",
+                        },
+                    },
+                    {
+                        id: "assistant:a",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Hello",
+                        timestamp: 2,
+                    },
+                    {
+                        id: "plan:a",
+                        role: "assistant",
+                        kind: "plan",
+                        title: "Plan",
+                        content: "Ship it",
+                        timestamp: 3,
+                        planEntries: [
+                            {
+                                content: "Ship it",
+                                priority: "medium",
+                                status: "in_progress",
+                            },
+                        ],
+                    },
+                ],
+                attachments: [],
+                models: [],
+                modes: [],
+                configOptions: [],
+            },
+            true,
+        );
+
+        const session =
+            useChatStore.getState().sessionsById["normalized-session"]!;
+
+        expect(session.messageOrder).toEqual([
+            "status:turn-a",
+            "assistant:a",
+            "plan:a",
+        ]);
+        expect(session.messagesById?.["assistant:a"]).toMatchObject({
+            content: "Hello",
+        });
+        expect(session.messageIndexById?.["plan:a"]).toBe(2);
+        expect(session.lastTurnStartedMessageId).toBe("status:turn-a");
+        expect(session.lastAssistantMessageId).toBe("assistant:a");
+        expect(session.activePlanMessageId).toBe("plan:a");
+    });
+
+    it("keeps normalized transcript metadata in sync for hot runtime handlers", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "turn-hot",
+            kind: "turn_started",
+            status: "completed",
+            emphasis: "neutral",
+            title: "New turn",
+            detail: "New turn",
+        });
+
+        useChatStore.getState().applyMessageStarted({
+            session_id: activeSessionId,
+            message_id: "assistant-hot",
+        });
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-hot",
+            delta: "hello world",
+        });
+        flushDeltasSync();
+
+        useChatStore.getState().applyPlanUpdate({
+            session_id: activeSessionId,
+            plan_id: "hot-plan",
+            title: "Plan",
+            entries: [
+                {
+                    content: "Inspect",
+                    priority: "medium",
+                    status: "in_progress",
+                },
+            ],
+        });
+
+        let session = useChatStore.getState().sessionsById[activeSessionId]!;
+
+        expect(session.lastTurnStartedMessageId).toBe("status:turn-hot");
+        expect(session.lastAssistantMessageId).toBe("assistant-hot");
+        expect(session.messagesById?.["assistant-hot"]).toMatchObject({
+            content: "hello world",
+            inProgress: true,
+        });
+        expect(session.messageIndexById?.["assistant-hot"]).toBe(
+            session.messages.findIndex(
+                (message) => message.id === "assistant-hot",
+            ),
+        );
+        expect(session.activePlanMessageId).toBe("plan:hot-plan");
+
+        useChatStore.getState().applyPlanUpdate({
+            session_id: activeSessionId,
+            plan_id: "hot-plan",
+            title: "Plan",
+            entries: [
+                {
+                    content: "Inspect",
+                    priority: "medium",
+                    status: "completed",
+                },
+            ],
+        });
+
+        session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.activePlanMessageId).toBeNull();
+        expect(session.messagesById?.["plan:hot-plan"]?.planEntries).toEqual([
+            expect.objectContaining({ status: "completed" }),
         ]);
     });
 });
