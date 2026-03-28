@@ -1649,6 +1649,8 @@ function reloadEditorAfterRestore(
             ? tracked.originPath
             : tracked.path;
     const noteId = resolveNoteTargetForPath(restoredPath)?.noteId ?? null;
+    const fileRelativePath =
+        resolveFileTargetForPath(restoredPath)?.relativePath ?? null;
     if (action.kind === "skip") {
         return;
     }
@@ -1656,6 +1658,10 @@ function reloadEditorAfterRestore(
     if (action.kind === "delete") {
         if (noteId) {
             useEditorStore.getState().handleNoteDeleted(noteId);
+            return;
+        }
+        if (fileRelativePath) {
+            useEditorStore.getState().handleFileDeleted(fileRelativePath);
         }
     } else {
         reloadOpenEditorContent(restoredPath, action.content, change);

@@ -856,9 +856,16 @@ export interface ReloadedDetail {
 }
 
 type ReloadedNoteDetail = ReloadedDetail;
-type ReloadedFileDetail = Pick<ReloadedDetail, "content" | "title">;
+type ReloadedFileDetail = ReloadedDetail;
 
 interface NoteReloadMetadata {
+    origin: "user" | "agent" | "external" | "system" | "unknown";
+    opId: string | null;
+    revision: number;
+    contentHash: string | null;
+}
+
+interface FileReloadMetadata {
     origin: "user" | "agent" | "external" | "system" | "unknown";
     opId: string | null;
     revision: number;
@@ -878,7 +885,9 @@ interface EditorStore {
     _pendingForceReloads: Set<string>;
     _pendingForceFileReloads: Set<string>;
     _noteReloadVersions: Record<string, number>;
+    _fileReloadVersions: Record<string, number>;
     _noteReloadMetadata: Record<string, NoteReloadMetadata | undefined>;
+    _fileReloadMetadata: Record<string, FileReloadMetadata | undefined>;
     noteExternalConflicts: Set<string>;
     fileExternalConflicts: Set<string>;
     openNote: (noteId: string, title: string, content: string) => void;
@@ -906,6 +915,11 @@ interface EditorStore {
     switchTab: (tabId: string) => void;
     updateTabContent: (tabId: string, content: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
+    updateFileHistoryTitle: (
+        tabId: string,
+        relativePath: string,
+        title: string,
+    ) => void;
     updatePdfPage: (tabId: string, page: number) => void;
     updatePdfZoom: (tabId: string, zoom: number) => void;
     updatePdfViewMode: (tabId: string, viewMode: PdfViewMode) => void;
@@ -942,6 +956,7 @@ interface EditorStore {
     markFileExternalConflict: (relativePath: string) => void;
     clearFileExternalConflict: (relativePath: string) => void;
     handleNoteDeleted: (noteId: string) => void;
+    handleFileDeleted: (relativePath: string) => void;
     handleNoteRenamed: (
         oldNoteId: string,
         newNoteId: string,
@@ -962,7 +977,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     _pendingForceReloads: new Set<string>(),
     _pendingForceFileReloads: new Set<string>(),
     _noteReloadVersions: {},
+    _fileReloadVersions: {},
     _noteReloadMetadata: {},
+    _fileReloadMetadata: {},
     noteExternalConflicts: new Set<string>(),
     fileExternalConflicts: new Set<string>(),
 
@@ -1502,6 +1519,34 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 
+    updateFileHistoryTitle: (tabId, relativePath, title) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) => {
+                if (t.id !== tabId || !isFileTab(t)) return t;
+                const tab = ensureFileTabDefaults(t);
+                let didChange = false;
+                const history = tab.history.map((entry) => {
+                    if (
+                        entry.kind !== "file" ||
+                        entry.relativePath !== relativePath ||
+                        entry.title === title
+                    ) {
+                        return entry;
+                    }
+                    didChange = true;
+                    return {
+                        ...entry,
+                        title,
+                    };
+                });
+                if (!didChange) {
+                    return t;
+                }
+                return buildTabFromHistory(tab.id, history, tab.historyIndex);
+            }),
+        }));
+    },
+
     updatePdfPage: (tabId, page) => {
         set((state) => ({
             tabs: state.tabs.map((t) =>
@@ -1669,6 +1714,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     reloadFileContent: (relativePath, detail) => {
         set((state) => ({
+            _fileReloadVersions: {
+                ...state._fileReloadVersions,
+                [relativePath]:
+                    (state._fileReloadVersions[relativePath] ?? 0) + 1,
+            },
+            _fileReloadMetadata: {
+                ...state._fileReloadMetadata,
+                [relativePath]: {
+                    origin: detail.origin ?? "unknown",
+                    opId: detail.opId ?? null,
+                    revision: detail.revision ?? 0,
+                    contentHash: detail.contentHash ?? null,
+                },
+            },
             tabs: state.tabs.map((t) => {
                 if (!isFileTab(t) || t.relativePath !== relativePath) return t;
                 if (t.content === detail.content && t.title === detail.title) {
@@ -1722,6 +1781,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             next.add(relativePath);
             return {
                 _pendingForceFileReloads: next,
+                _fileReloadVersions: {
+                    ...state._fileReloadVersions,
+                    [relativePath]:
+                        (state._fileReloadVersions[relativePath] ?? 0) + 1,
+                },
+                _fileReloadMetadata: {
+                    ...state._fileReloadMetadata,
+                    [relativePath]: {
+                        origin: detail.origin ?? "system",
+                        opId: detail.opId ?? null,
+                        revision: detail.revision ?? 0,
+                        contentHash: detail.contentHash ?? null,
+                    },
+                },
                 tabs: state.tabs.map((t) => {
                     if (!isFileTab(t) || t.relativePath !== relativePath) {
                         return t;
@@ -1755,6 +1828,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         get().forceReloadFileContent(target.relativePath, {
             content: detail.content,
             title: detail.title,
+            origin: detail.origin,
+            opId: detail.opId,
+            revision: detail.revision,
+            contentHash: detail.contentHash,
         });
     },
 
@@ -1874,6 +1951,165 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 activationHistory,
                 tabNavigationHistory,
                 tabNavigationIndex,
+            };
+        });
+    },
+
+    handleFileDeleted: (relativePath) => {
+        set((state) => {
+            let didChange = false;
+            const idsToClose = new Set(
+                state.tabs.flatMap((rawTab) => {
+                    if (!isFileTab(rawTab)) {
+                        return [];
+                    }
+
+                    const tab = ensureFileTabDefaults(rawTab);
+                    const removedEntries = tab.history.filter(
+                        (entry) =>
+                            entry.kind === "file" &&
+                            entry.relativePath === relativePath,
+                    ).length;
+                    if (removedEntries === 0) {
+                        return [];
+                    }
+
+                    didChange = true;
+                    return tab.history.length === removedEntries
+                        ? [tab.id]
+                        : [];
+                }),
+            );
+            const tabs = state.tabs.flatMap((rawTab) => {
+                if (!isFileTab(rawTab)) {
+                    return [rawTab];
+                }
+
+                const tab = ensureFileTabDefaults(rawTab);
+                const removedBeforeOrAtCurrent = tab.history
+                    .slice(0, tab.historyIndex + 1)
+                    .filter(
+                        (entry) =>
+                            entry.kind === "file" &&
+                            entry.relativePath === relativePath,
+                    ).length;
+                const history = tab.history.filter(
+                    (entry) =>
+                        entry.kind !== "file" ||
+                        entry.relativePath !== relativePath,
+                );
+
+                if (history.length === tab.history.length) {
+                    return [rawTab];
+                }
+                if (history.length === 0) {
+                    return [];
+                }
+
+                const nextHistoryIndex = Math.min(
+                    Math.max(0, tab.historyIndex - removedBeforeOrAtCurrent),
+                    history.length - 1,
+                );
+                return [buildTabFromHistory(tab.id, history, nextHistoryIndex)];
+            });
+
+            const nextPendingForceFileReloads = new Set(
+                state._pendingForceFileReloads,
+            );
+            const nextFileExternalConflicts = new Set(
+                state.fileExternalConflicts,
+            );
+            const hadPendingForceReload =
+                nextPendingForceFileReloads.delete(relativePath);
+            const hadExternalConflict =
+                nextFileExternalConflicts.delete(relativePath);
+            const hadReloadVersion = relativePath in state._fileReloadVersions;
+            const hadReloadMetadata = relativePath in state._fileReloadMetadata;
+            const nextFileReloadVersions = hadReloadVersion
+                ? Object.fromEntries(
+                      Object.entries(state._fileReloadVersions).filter(
+                          ([key]) => key !== relativePath,
+                      ),
+                  )
+                : state._fileReloadVersions;
+            const nextFileReloadMetadata = hadReloadMetadata
+                ? Object.fromEntries(
+                      Object.entries(state._fileReloadMetadata).filter(
+                          ([key]) => key !== relativePath,
+                      ),
+                  )
+                : state._fileReloadMetadata;
+
+            if (
+                !didChange &&
+                !hadPendingForceReload &&
+                !hadExternalConflict &&
+                !hadReloadVersion &&
+                !hadReloadMetadata
+            ) {
+                return state;
+            }
+
+            const activationHistory = state.activationHistory.filter(
+                (id) => !idsToClose.has(id),
+            );
+            const tabNavigationHistory = state.tabNavigationHistory.filter(
+                (id) => !idsToClose.has(id),
+            );
+
+            let activeTabId = state.activeTabId;
+            if (activeTabId && idsToClose.has(activeTabId)) {
+                const closedIdx = state.tabs.findIndex(
+                    (t) => t.id === activeTabId,
+                );
+                activeTabId =
+                    [...activationHistory]
+                        .reverse()
+                        .find((id) => tabs.some((tab) => tab.id === id)) ??
+                    tabs[Math.min(closedIdx, tabs.length - 1)]?.id ??
+                    null;
+            }
+
+            let tabNavigationIndex = Math.min(
+                state.tabNavigationIndex,
+                tabNavigationHistory.length - 1,
+            );
+            if (activeTabId) {
+                const lastActiveIndex =
+                    tabNavigationHistory.lastIndexOf(activeTabId);
+                if (lastActiveIndex === -1) {
+                    const navigation = pushTabToNavigation(
+                        tabNavigationHistory,
+                        tabNavigationIndex,
+                        activeTabId,
+                    );
+                    return {
+                        tabs,
+                        activeTabId,
+                        activationHistory,
+                        tabNavigationHistory: navigation.history,
+                        tabNavigationIndex: navigation.index,
+                        _pendingForceFileReloads: nextPendingForceFileReloads,
+                        _fileReloadVersions: nextFileReloadVersions,
+                        _fileReloadMetadata: nextFileReloadMetadata,
+                        fileExternalConflicts: nextFileExternalConflicts,
+                    };
+                }
+                tabNavigationIndex = lastActiveIndex;
+            } else {
+                tabNavigationIndex = -1;
+            }
+
+            return {
+                tabs,
+                activeTabId,
+                activationHistory,
+                tabNavigationHistory,
+                tabNavigationIndex,
+                _pendingForceFileReloads: nextPendingForceFileReloads,
+                _fileReloadVersions: nextFileReloadVersions,
+                _fileReloadMetadata: nextFileReloadMetadata,
+                fileExternalConflicts: nextFileExternalConflicts,
             };
         });
     },
