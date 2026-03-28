@@ -265,11 +265,11 @@ describe("FileTabView", () => {
                 content: "const a = 1;",
             },
         ]);
-        mockInvoke().mockImplementation(async (command, payload) => {
+        mockInvoke().mockImplementation(async (command, rawPayload) => {
             if (command !== "save_vault_file") {
                 throw new Error(`Unexpected command: ${command}`);
             }
-
+            const payload = rawPayload as Record<string, string>;
             return {
                 relative_path: payload.relativePath,
                 file_name: payload.relativePath.split("/").pop(),
@@ -348,11 +348,11 @@ describe("FileTabView", () => {
                 content: "const a = 1;",
             },
         ]);
-        mockInvoke().mockImplementation(async (command, payload) => {
+        mockInvoke().mockImplementation(async (command, rawPayload) => {
             if (command !== "save_vault_file") {
                 throw new Error(`Unexpected command: ${command}`);
             }
-
+            const payload = rawPayload as Record<string, string>;
             return {
                 relative_path: payload.relativePath,
                 file_name: payload.relativePath.split("/").pop(),

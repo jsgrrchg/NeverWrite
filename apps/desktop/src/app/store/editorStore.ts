@@ -1980,7 +1980,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                         : [];
                 }),
             );
-            const tabs = state.tabs.flatMap((rawTab) => {
+            const tabs = state.tabs.flatMap((rawTab): Tab[] => {
                 if (!isFileTab(rawTab)) {
                     return [rawTab];
                 }
