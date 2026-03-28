@@ -92,14 +92,14 @@ export function AIChatPanel() {
 
     const handleRemoveAttachment = useCallback(
         (sessionId: string, attachmentId: string) => {
-            chatActions.removeAttachmentFromSession(sessionId, attachmentId);
+            chatActions.removeAttachment(attachmentId, sessionId);
         },
         [chatActions],
     );
 
     const handleClearAttachments = useCallback(
         (sessionId: string) => {
-            chatActions.clearAttachmentsForSession(sessionId);
+            chatActions.clearAttachments(sessionId);
         },
         [chatActions],
     );
@@ -146,13 +146,13 @@ export function AIChatPanel() {
             const currentParts =
                 useChatStore.getState().composerPartsBySessionId[sessionId] ??
                 createEmptyComposerParts();
-            chatActions.setComposerPartsForSession(
-                sessionId,
+            chatActions.setComposerParts(
                 appendFileAttachmentPart(currentParts, {
                     filePath,
                     mimeType: mimeMap[ext] ?? "application/octet-stream",
                     label: fileName,
                 }),
+                sessionId,
             );
         },
         [chatActions],
@@ -205,13 +205,13 @@ export function AIChatPanel() {
                     useChatStore.getState().composerPartsBySessionId[
                         sessionId
                     ] ?? createEmptyComposerParts();
-                chatActions.setComposerPartsForSession(
-                    sessionId,
+                chatActions.setComposerParts(
                     appendScreenshotPart(currentParts, {
                         filePath: saved.path,
                         mimeType: saved.mime_type ?? file.type,
                         label: timeLabel,
                     }),
+                    sessionId,
                 );
             } catch (error) {
                 console.error("[chat] Failed to save pasted image:", error);
@@ -331,10 +331,7 @@ export function AIChatPanel() {
                                 candidate.id !== part.id,
                         ),
                     );
-                    chatActions.setComposerPartsForSession(
-                        sessionId,
-                        nextParts,
-                    );
+                    chatActions.setComposerParts(nextParts, sessionId);
                     screenshotTimersRef.current.delete(key);
                 }, durationMs);
 
@@ -754,10 +751,10 @@ export function AIChatPanel() {
                     }}
                     onUserInputResponse={(requestId, answers) => {
                         if (!composerSessionId) return;
-                        void chatActions.respondUserInputForSession(
-                            composerSessionId,
+                        void chatActions.respondUserInput(
                             requestId,
                             answers,
+                            composerSessionId,
                         );
                     }}
                 />
@@ -889,34 +886,31 @@ export function AIChatPanel() {
                             configOptions={currentSession?.configOptions ?? []}
                             onModelChange={(modelId) => {
                                 if (!composerSessionId) return;
-                                void chatActions.setModelForSession(
-                                    composerSessionId,
+                                void chatActions.setModel(
                                     modelId,
+                                    composerSessionId,
                                 );
                             }}
                             onModeChange={(modeId) => {
                                 if (!composerSessionId) return;
-                                void chatActions.setModeForSession(
-                                    composerSessionId,
+                                void chatActions.setMode(
                                     modeId,
+                                    composerSessionId,
                                 );
                             }}
                             onConfigOptionChange={(optionId, value) => {
                                 if (!composerSessionId) return;
-                                void chatActions.setConfigOptionForSession(
-                                    composerSessionId,
+                                void chatActions.setConfigOption(
                                     optionId,
                                     value,
+                                    composerSessionId,
                                 );
                             }}
                         />
                     }
                     onChange={(parts) => {
                         if (!composerSessionId) return;
-                        chatActions.setComposerPartsForSession(
-                            composerSessionId,
-                            parts,
-                        );
+                        chatActions.setComposerParts(parts, composerSessionId);
                     }}
                     onAttachFile={() => {
                         if (!composerSessionId) return;
@@ -928,30 +922,23 @@ export function AIChatPanel() {
                     }}
                     onMentionAttach={(note) => {
                         if (!composerSessionId) return;
-                        chatActions.attachNoteToSession(
-                            composerSessionId,
-                            note,
-                        );
+                        chatActions.attachNote(note, composerSessionId);
                     }}
                     onFolderAttach={(folderPath, name) => {
                         if (!composerSessionId) return;
-                        chatActions.attachFolderToSession(
-                            composerSessionId,
+                        chatActions.attachFolder(
                             folderPath,
                             name,
+                            composerSessionId,
                         );
                     }}
                     onSubmit={() => {
                         if (!composerSessionId) return;
-                        void chatActions.sendMessageForSession(
-                            composerSessionId,
-                        );
+                        void chatActions.sendMessage(composerSessionId);
                     }}
                     onStop={() => {
                         if (!composerSessionId) return;
-                        void chatActions.stopStreamingForSession(
-                            composerSessionId,
-                        );
+                        void chatActions.stopStreaming(composerSessionId);
                     }}
                 />
             </div>
