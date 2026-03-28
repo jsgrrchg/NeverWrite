@@ -6,6 +6,7 @@ import {
     perfNow,
 } from "../../app/utils/perfInstrumentation";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import { LruCache } from "./lruCache";
 
 type ResolvedWikilinkDto = {
     target: string;
@@ -25,7 +26,11 @@ type CachedResolution = {
 
 export type WikilinkResolutionState = "valid" | "broken" | "pending";
 
-const resolutionCache = new Map<string, CachedResolution>();
+const MAX_WIKILINK_RESOLUTION_CACHE_ENTRIES = 2048;
+
+const resolutionCache = new LruCache<string, CachedResolution>(
+    MAX_WIKILINK_RESOLUTION_CACHE_ENTRIES,
+);
 const pendingCacheKeys = new Set<string>();
 
 let cachedVaultPath: string | null = null;
@@ -54,6 +59,16 @@ function ensureFreshResolverCache() {
     cachedResolverRevision = resolverRevision;
     perfCount("editor.wikilinkResolver.cache.reset");
     return { vaultPath, resolverRevision };
+}
+
+function cacheResolution(cacheKey: string, resolution: CachedResolution) {
+    const evictedCount = resolutionCache.set(cacheKey, resolution);
+    if (evictedCount > 0) {
+        perfCount("editor.wikilinkResolver.cache.evicted", {
+            evictedCount,
+            maxEntries: MAX_WIKILINK_RESOLUTION_CACHE_ENTRIES,
+        });
+    }
 }
 
 function makeCacheKey(
@@ -111,7 +126,7 @@ function scheduleBatchResolution(
                 const wasPending = pendingCacheKeys.delete(cacheKey);
 
                 const resolved = resolvedByTarget.get(target);
-                resolutionCache.set(cacheKey, {
+                cacheResolution(cacheKey, {
                     noteId: resolved?.resolved_note_id ?? null,
                     title: resolved?.resolved_title ?? null,
                 });
@@ -234,7 +249,7 @@ export async function findNoteByWikilink(
     });
 
     const resolved = results[0];
-    resolutionCache.set(cacheKey, {
+    cacheResolution(cacheKey, {
         noteId: resolved?.resolved_note_id ?? null,
         title: resolved?.resolved_title ?? null,
     });

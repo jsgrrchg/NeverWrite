@@ -15,6 +15,7 @@ import {
     perfMeasure,
     perfNow,
 } from "../../../app/utils/perfInstrumentation";
+import { LruCache } from "../lruCache";
 import { selectionTouchesRange } from "./selectionActivity";
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
@@ -24,6 +25,7 @@ const WIKILINK_SIGNIFICANT = /(?:[\]\n\r|]|\[)/;
 const DENSE_VISIBLE_WIKILINK_THRESHOLD = 50;
 const DENSE_IMMEDIATE_TARGET_LIMIT = 48;
 const DENSE_DEFERRED_BATCH_LIMIT = 64;
+const MAX_WIKILINK_MARK_CACHE_ENTRIES = 512;
 
 type IdleDeadlineLike = {
     didTimeout: boolean;
@@ -108,9 +110,11 @@ const refreshWikilinksEffect = StateEffect.define<null>();
 
 // Cache Decoration.mark objects keyed by "target\0state" to avoid
 // allocating new Decoration + attributes objects for every link on
-// every rebuild. The cache is small (one entry per unique target×state)
-// and grows/shrinks naturally as the viewport changes.
-const wikilinkMarkCache = new Map<string, Decoration>();
+// every rebuild. Keep it bounded because target diversity can grow
+// monotonically across long editing sessions.
+const wikilinkMarkCache = new LruCache<string, Decoration>(
+    MAX_WIKILINK_MARK_CACHE_ENTRIES,
+);
 
 function isViewDetached(view: EditorView) {
     return !view.dom.isConnected;
@@ -137,7 +141,13 @@ function wikilinkMark(
             "data-wikilink-state": resolution,
         },
     });
-    wikilinkMarkCache.set(key, mark);
+    const evictedCount = wikilinkMarkCache.set(key, mark);
+    if (evictedCount > 0) {
+        perfCount("editor.wikilinks.markCache.evicted", {
+            evictedCount,
+            maxEntries: MAX_WIKILINK_MARK_CACHE_ENTRIES,
+        });
+    }
     return mark;
 }
 

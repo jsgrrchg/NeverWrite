@@ -78,6 +78,8 @@ type SpellcheckState = {
     invalidateAllDocuments: () => void;
 };
 
+export const MAX_SPELLCHECK_DOCUMENT_CACHE_ENTRIES = 128;
+
 function createDocumentCacheKey(documentId: string) {
     return documentId;
 }
@@ -91,6 +93,30 @@ function cloneIgnoredWords(current: Set<string>, nextWord?: string) {
     if (nextWord) {
         next.add(nextWord);
     }
+    return next;
+}
+
+function cacheSpellcheckDocument(
+    current: Map<string, SpellcheckDocumentCacheEntry>,
+    cacheKey: string,
+    entry: SpellcheckDocumentCacheEntry,
+) {
+    const next = new Map(current);
+
+    if (next.has(cacheKey)) {
+        next.delete(cacheKey);
+    }
+
+    next.set(cacheKey, entry);
+
+    while (next.size > MAX_SPELLCHECK_DOCUMENT_CACHE_ENTRIES) {
+        const oldestKey = next.keys().next().value;
+        if (oldestKey === undefined) {
+            break;
+        }
+        next.delete(oldestKey);
+    }
+
     return next;
 }
 
@@ -217,10 +243,12 @@ export const useSpellcheckStore = create<SpellcheckState>((set, get) => ({
             };
 
             set((state) => {
-                const nextCache = new Map(state.documentCache);
-                nextCache.set(cacheKey, entry);
                 return {
-                    documentCache: nextCache,
+                    documentCache: cacheSpellcheckDocument(
+                        state.documentCache,
+                        cacheKey,
+                        entry,
+                    ),
                     lastError: null,
                 };
             });

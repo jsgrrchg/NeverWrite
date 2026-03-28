@@ -131,14 +131,20 @@ export function MapsPanel() {
         };
     }, [resetDrag]);
 
-    const loadMaps = useCallback(() => {
-        if (!vaultPath) return;
-        invoke<MapEntry[]>("list_maps", { vaultPath }).then(setMaps);
-    }, [vaultPath]);
-
     useEffect(() => {
-        loadMaps();
-    }, [loadMaps]);
+        if (!vaultPath) return;
+
+        let cancelled = false;
+
+        void invoke<MapEntry[]>("list_maps", { vaultPath }).then((nextMaps) => {
+            if (cancelled) return;
+            setMaps(nextMaps);
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [vaultPath]);
 
     const handleNewMap = async () => {
         if (!vaultPath) return;

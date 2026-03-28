@@ -34,10 +34,10 @@ struct TerminalLaunchConfig {
 
 struct SessionHandle {
     snapshot: Arc<Mutex<DevTerminalSessionSnapshot>>,
-    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    child: Arc<Mutex<Box<dyn PtyChild + Send + Sync>>>,
-    killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+    child: Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
     closed: Arc<AtomicBool>,
 }
 
@@ -48,6 +48,16 @@ impl SessionHandle {
             .map_err(|error| format!("Internal state error: {error}"))?
             .clone()
             .pipe(Ok)
+    }
+
+    fn release_runtime_resources(&self, terminate_process: bool) {
+        release_session_runtime_resources(
+            &self.master,
+            &self.writer,
+            &self.child,
+            &self.killer,
+            terminate_process,
+        );
     }
 }
 
@@ -132,7 +142,7 @@ impl DevTerminalManager {
     }
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let writer = {
+        let (writer, snapshot) = {
             let sessions = self
                 .sessions
                 .lock()
@@ -140,15 +150,25 @@ impl DevTerminalManager {
             let session = sessions
                 .get(session_id)
                 .ok_or_else(|| format!("Terminal session not found: {session_id}"))?;
-            Arc::clone(&session.writer)
+            (Arc::clone(&session.writer), Arc::clone(&session.snapshot))
         };
 
         let mut writer_guard = writer
             .lock()
             .map_err(|error| format!("Internal state error: {error}"))?;
-        let writer = writer_guard
-            .as_mut()
-            .ok_or_else(|| "Terminal session writer is not available".to_string())?;
+        let writer = if let Some(writer) = writer_guard.as_mut() {
+            writer
+        } else {
+            let status = snapshot
+                .lock()
+                .map(|snapshot| snapshot.status.clone())
+                .unwrap_or(DevTerminalStatus::Error);
+            return Err(match status {
+                DevTerminalStatus::Exited => "Terminal session has already exited".to_string(),
+                DevTerminalStatus::Error => "Terminal session is no longer available".to_string(),
+                _ => "Terminal session writer is not available".to_string(),
+            });
+        };
         writer
             .write_all(data.as_bytes())
             .map_err(|error| format!("Failed to write to terminal session: {error}"))?;
@@ -178,16 +198,19 @@ impl DevTerminalManager {
         let cols = cols.max(1);
         let rows = rows.max(1);
 
-        master
+        let master_guard = master
             .lock()
-            .map_err(|error| format!("Internal state error: {error}"))?
-            .resize(PtySize {
-                cols,
-                rows,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|error| format!("Failed to resize terminal PTY: {error}"))?;
+            .map_err(|error| format!("Internal state error: {error}"))?;
+        if let Some(master) = master_guard.as_ref() {
+            master
+                .resize(PtySize {
+                    cols,
+                    rows,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|error| format!("Failed to resize terminal PTY: {error}"))?;
+        }
 
         let mut snapshot = snapshot
             .lock()
@@ -234,7 +257,7 @@ impl DevTerminalManager {
             })
             .map_err(|error| format!("Failed to create terminal PTY: {error}"))?;
 
-        let master = Arc::new(Mutex::new(pair.master));
+        let master = Arc::new(Mutex::new(Some(pair.master)));
         let mut command = CommandBuilder::new(&launch_config.program);
         command.args(&launch_config.args);
         command.cwd(&launch_config.cwd);
@@ -252,11 +275,15 @@ impl DevTerminalManager {
         let writer = master
             .lock()
             .map_err(|error| format!("Internal state error: {error}"))?
+            .as_ref()
+            .ok_or_else(|| "Terminal PTY is not available".to_string())?
             .take_writer()
             .map_err(|error| format!("Failed to open terminal writer: {error}"))?;
         let reader = master
             .lock()
             .map_err(|error| format!("Internal state error: {error}"))?
+            .as_ref()
+            .ok_or_else(|| "Terminal PTY is not available".to_string())?
             .try_clone_reader()
             .map_err(|error| format!("Failed to open terminal reader: {error}"))?;
 
@@ -276,8 +303,8 @@ impl DevTerminalManager {
             snapshot: Arc::clone(&snapshot),
             master: Arc::clone(&master),
             writer: Arc::new(Mutex::new(Some(writer))),
-            child: Arc::new(Mutex::new(child)),
-            killer: Arc::new(Mutex::new(killer)),
+            child: Arc::new(Mutex::new(Some(child))),
+            killer: Arc::new(Mutex::new(Some(killer))),
             closed: Arc::new(AtomicBool::new(false)),
         };
 
@@ -288,7 +315,10 @@ impl DevTerminalManager {
             session_id.clone(),
         );
         spawn_exit_monitor(
+            Arc::clone(&handle.master),
+            Arc::clone(&handle.writer),
             Arc::clone(&handle.child),
+            Arc::clone(&handle.killer),
             Arc::clone(&handle.snapshot),
             Arc::clone(&handle.closed),
             app.clone(),
@@ -308,14 +338,39 @@ impl DevTerminalManager {
 
     fn stop_session_handle(&self, handle: SessionHandle) {
         handle.closed.store(true, Ordering::Relaxed);
+        handle.release_runtime_resources(true);
+    }
+}
 
-        if let Ok(mut writer) = handle.writer.lock() {
-            writer.take();
+fn release_session_runtime_resources(
+    master: &Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: &Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: &Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
+    terminate_process: bool,
+) {
+    if terminate_process {
+        if let Ok(mut killer_guard) = killer.lock() {
+            if let Some(killer) = killer_guard.as_mut() {
+                let _ = killer.kill();
+            }
         }
+    }
 
-        if let Ok(mut killer) = handle.killer.lock() {
-            let _ = killer.kill();
-        }
+    if let Ok(mut writer_guard) = writer.lock() {
+        writer_guard.take();
+    }
+
+    if let Ok(mut child_guard) = child.lock() {
+        child_guard.take();
+    }
+
+    if let Ok(mut killer_guard) = killer.lock() {
+        killer_guard.take();
+    }
+
+    if let Ok(mut master_guard) = master.lock() {
+        master_guard.take();
     }
 }
 
@@ -356,7 +411,10 @@ fn spawn_output_reader(
 }
 
 fn spawn_exit_monitor(
-    child: Arc<Mutex<Box<dyn PtyChild + Send + Sync>>>,
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
     snapshot: Arc<Mutex<DevTerminalSessionSnapshot>>,
     closed: Arc<AtomicBool>,
     app: AppHandle,
@@ -371,20 +429,32 @@ fn spawn_exit_monitor(
                 Ok(child_guard) => child_guard,
                 Err(_) => break,
             };
+            let Some(process) = child_guard.as_mut() else {
+                break;
+            };
 
-            match child_guard.try_wait() {
+            match process.try_wait() {
                 Ok(status) => status,
                 Err(error) => {
-                    let session_id = snapshot
-                        .lock()
-                        .ok()
-                        .map(|snapshot| snapshot.session_id.clone())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    emit_terminal_error(
-                        &app,
-                        &session_id,
-                        format!("Failed to monitor shell process: {error}"),
-                    );
+                    let (session_id, message) = {
+                        let mut snapshot_guard = match snapshot.lock() {
+                            Ok(snapshot_guard) => snapshot_guard,
+                            Err(_) => break,
+                        };
+                        snapshot_guard.status = DevTerminalStatus::Error;
+                        snapshot_guard.exit_code = None;
+                        snapshot_guard.error_message =
+                            Some(format!("Failed to monitor shell process: {error}"));
+                        (
+                            snapshot_guard.session_id.clone(),
+                            snapshot_guard
+                                .error_message
+                                .clone()
+                                .unwrap_or_else(|| "Failed to monitor shell process".to_string()),
+                        )
+                    };
+                    release_session_runtime_resources(&master, &writer, &child, &killer, false);
+                    emit_terminal_error(&app, &session_id, message);
                     break;
                 }
             }
@@ -401,6 +471,7 @@ fn spawn_exit_monitor(
                 snapshot_guard.error_message = None;
                 snapshot_guard.clone()
             };
+            release_session_runtime_resources(&master, &writer, &child, &killer, false);
             emit_terminal_exited(&app, &snapshot);
             break;
         }
@@ -577,8 +648,11 @@ fn path_is_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portable_pty::native_pty_system;
+    use portable_pty::ExitStatus;
     use std::fs;
-    use std::sync::atomic::AtomicU64;
+    use std::io;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(1);
@@ -592,6 +666,130 @@ mod tests {
         let dir = env::temp_dir().join(format!("vaultai-devtools-test-{timestamp}-{suffix}"));
         fs::create_dir_all(&dir).expect("temp test dir");
         dir
+    }
+
+    #[derive(Debug)]
+    struct FakeChild {
+        kill_count: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+
+    impl Drop for FakeChild {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl ChildKiller for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            self.kill_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(FakeKiller {
+                kill_count: Arc::clone(&self.kill_count),
+                dropped: Arc::new(AtomicUsize::new(0)),
+            })
+        }
+    }
+
+    impl PtyChild for FakeChild {
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            Ok(ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(1)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeKiller {
+        kill_count: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+
+    impl Drop for FakeKiller {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl ChildKiller for FakeKiller {
+        fn kill(&mut self) -> io::Result<()> {
+            self.kill_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(FakeKiller {
+                kill_count: Arc::clone(&self.kill_count),
+                dropped: Arc::clone(&self.dropped),
+            })
+        }
+    }
+
+    fn make_snapshot(
+        session_id: &str,
+        status: DevTerminalStatus,
+    ) -> Arc<Mutex<DevTerminalSessionSnapshot>> {
+        Arc::new(Mutex::new(DevTerminalSessionSnapshot {
+            session_id: session_id.to_string(),
+            program: "/bin/sh".to_string(),
+            display_name: "Shell".to_string(),
+            cwd: "/tmp".to_string(),
+            cols: 80,
+            rows: 24,
+            status,
+            exit_code: None,
+            error_message: None,
+        }))
+    }
+
+    fn make_session_handle(
+        session_id: &str,
+        status: DevTerminalStatus,
+    ) -> (
+        SessionHandle,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let child_dropped = Arc::new(AtomicUsize::new(0));
+        let killer_dropped = Arc::new(AtomicUsize::new(0));
+        let kill_count = Arc::new(AtomicUsize::new(0));
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("test pty");
+        let writer = pair.master.take_writer().expect("test pty writer");
+
+        let handle = SessionHandle {
+            snapshot: make_snapshot(session_id, status),
+            master: Arc::new(Mutex::new(Some(pair.master))),
+            writer: Arc::new(Mutex::new(Some(writer))),
+            child: Arc::new(Mutex::new(Some(Box::new(FakeChild {
+                kill_count: Arc::clone(&kill_count),
+                dropped: Arc::clone(&child_dropped),
+            })))),
+            killer: Arc::new(Mutex::new(Some(Box::new(FakeKiller {
+                kill_count: Arc::clone(&kill_count),
+                dropped: Arc::clone(&killer_dropped),
+            })))),
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+
+        (handle, kill_count, child_dropped, killer_dropped)
     }
 
     #[test]
@@ -630,5 +828,76 @@ mod tests {
         let manager = DevTerminalManager::new();
         assert_eq!(manager.next_session_id(), "devterm-1");
         assert_eq!(manager.next_session_id(), "devterm-2");
+    }
+
+    #[test]
+    fn release_runtime_resources_compacts_exited_session_without_killing_process() {
+        let (handle, kill_count, child_dropped, killer_dropped) =
+            make_session_handle("devterm-1", DevTerminalStatus::Exited);
+
+        handle.release_runtime_resources(false);
+
+        assert!(handle.master.lock().unwrap().is_none());
+        assert!(handle.writer.lock().unwrap().is_none());
+        assert!(handle.child.lock().unwrap().is_none());
+        assert!(handle.killer.lock().unwrap().is_none());
+        assert_eq!(kill_count.load(Ordering::Relaxed), 0);
+        assert_eq!(child_dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(killer_dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(handle.snapshot().unwrap().status, DevTerminalStatus::Exited);
+    }
+
+    #[test]
+    fn close_session_releases_runtime_resources_and_kills_process() {
+        let manager = DevTerminalManager::new();
+        let (handle, kill_count, child_dropped, killer_dropped) =
+            make_session_handle("devterm-1", DevTerminalStatus::Running);
+
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("devterm-1".to_string(), handle);
+
+        manager.close_session("devterm-1").unwrap();
+
+        assert_eq!(kill_count.load(Ordering::Relaxed), 1);
+        assert_eq!(child_dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(killer_dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn resize_updates_snapshot_even_after_runtime_resources_are_released() {
+        let manager = DevTerminalManager::new();
+        let (handle, _, _, _) = make_session_handle("devterm-1", DevTerminalStatus::Exited);
+        handle.release_runtime_resources(false);
+
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("devterm-1".to_string(), handle);
+
+        let snapshot = manager.resize("devterm-1", 132, 40).unwrap();
+
+        assert_eq!(snapshot.cols, 132);
+        assert_eq!(snapshot.rows, 40);
+        assert_eq!(snapshot.status, DevTerminalStatus::Exited);
+    }
+
+    #[test]
+    fn write_reports_exited_session_after_runtime_resources_are_released() {
+        let manager = DevTerminalManager::new();
+        let (handle, _, _, _) = make_session_handle("devterm-1", DevTerminalStatus::Exited);
+        handle.release_runtime_resources(false);
+
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("devterm-1".to_string(), handle);
+
+        let error = manager.write("devterm-1", "echo test\n").unwrap_err();
+        assert!(error.contains("already exited"));
     }
 }

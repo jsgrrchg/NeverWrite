@@ -1,40 +1,35 @@
 import { cleanPillMarkers } from "./composerParts";
 import type {
-    AIChatMessage,
     AIChatSession,
     AIRuntimeDescriptor,
     AIRuntimeOption,
 } from "./types";
+import {
+    getFirstUserTextMessage,
+    getLastMeaningfulTranscriptMessage,
+    getLastTranscriptMessage,
+} from "./transcriptModel";
 
 function truncateText(value: string, maxLength: number) {
     if (value.length <= maxLength) return value;
     return `${value.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-function getLastMeaningfulMessage(messages: AIChatMessage[]) {
-    return [...messages]
-        .reverse()
-        .find(
-            (message) =>
-                message.kind !== "status" && message.content.trim().length > 0,
-        );
-}
-
 export function getSessionTitle(session: AIChatSession) {
-    const firstUserText = session.messages.find(
-        (message) =>
-            message.role === "user" &&
-            message.kind === "text" &&
-            message.content.trim().length > 0,
-    );
+    const firstUserText = getFirstUserTextMessage(session);
+    const fallbackTitle = session.persistedTitle?.trim();
 
-    if (!firstUserText) return "New chat";
+    if (!firstUserText) {
+        return fallbackTitle || "New chat";
+    }
     return truncateText(cleanPillMarkers(firstUserText.content), 42);
 }
 
 export function getSessionPreview(session: AIChatSession) {
-    const lastMessage = getLastMeaningfulMessage(session.messages);
-    if (!lastMessage) return "No messages yet";
+    const lastMessage = getLastMeaningfulTranscriptMessage(session);
+    if (!lastMessage) {
+        return session.persistedPreview?.trim() || "No messages yet";
+    }
 
     if (lastMessage.kind === "tool") {
         return truncateText(lastMessage.content, 72);
@@ -77,7 +72,11 @@ export function getSessionRuntimeName(
 }
 
 export function getSessionUpdatedAt(session: AIChatSession) {
-    return session.messages.at(-1)?.timestamp ?? 0;
+    return (
+        getLastTranscriptMessage(session)?.timestamp ??
+        session.persistedUpdatedAt ??
+        0
+    );
 }
 
 export function formatSessionTime(timestamp: number) {

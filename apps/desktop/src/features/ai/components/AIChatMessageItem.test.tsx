@@ -26,11 +26,15 @@ const pillMetrics = {
 
 function renderMessage(
     message: AIChatMessage,
-    options: { visibleWorkCycleId?: string | null } = {},
+    options: {
+        sessionId?: string | null;
+        visibleWorkCycleId?: string | null;
+    } = {},
 ) {
     return renderComponent(
         <AIChatMessageItem
             message={message}
+            sessionId={options.sessionId}
             pillMetrics={pillMetrics}
             visibleWorkCycleId={options.visibleWorkCycleId}
         />,
@@ -695,6 +699,34 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(
             screen.getByTestId("diff-content:/vault/src/second.rs"),
         ).toHaveStyle({ fontSize: "0.76em" });
+    });
+
+    it("preserves expanded diff state when the row unmounts and remounts", () => {
+        const message = createDiffMessage("tool:persisted-expand", {
+            path: "/vault/src/persisted.rs",
+            kind: "update",
+            old_text: "old persisted",
+            new_text: "new persisted",
+        });
+
+        const firstRender = renderMessage(message, {
+            sessionId: "session-diff-state",
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: /persisted\.rs/i }));
+        expect(
+            screen.getByTestId("diff-content:/vault/src/persisted.rs"),
+        ).toBeInTheDocument();
+
+        firstRender.unmount();
+
+        renderMessage(message, {
+            sessionId: "session-diff-state",
+        });
+
+        expect(
+            screen.getByTestId("diff-content:/vault/src/persisted.rs"),
+        ).toBeInTheDocument();
     });
 });
 

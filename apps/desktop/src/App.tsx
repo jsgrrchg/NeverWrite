@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
 import { perfCount } from "./app/utils/perfInstrumentation";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
@@ -786,38 +787,50 @@ function useGlobalShortcuts(openSettings: () => void) {
 
 function useNativeMenuActions(windowMode: ReturnType<typeof getWindowMode>) {
     useEffect(() => {
-        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
 
-        const registration = listen<string>(MENU_ACTION_EVENT, (event) => {
-            useCommandStore.getState().execute(event.payload);
-        });
-        void Promise.resolve(registration).then((cleanup) => {
-            unlisten = cleanup;
-        });
+        resolveDeferredUnlisten(
+            listen<string>(MENU_ACTION_EVENT, (event) => {
+                if (disposed) return;
+                useCommandStore.getState().execute(event.payload);
+            }),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
+            },
+        );
 
         return () => {
-            if (unlisten) {
-                void unlisten();
-            }
+            disposed = true;
+            unlisten?.();
         };
     }, []);
 
     useEffect(() => {
         if (windowMode !== "main") return;
 
-        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
 
-        const registration = listen<string>(DOCK_OPEN_VAULT_EVENT, (event) => {
-            void openVaultWindow(event.payload);
-        });
-        void Promise.resolve(registration).then((cleanup) => {
-            unlisten = cleanup;
-        });
+        resolveDeferredUnlisten(
+            listen<string>(DOCK_OPEN_VAULT_EVENT, (event) => {
+                if (disposed) return;
+                void openVaultWindow(event.payload);
+            }),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
+            },
+        );
 
         return () => {
-            if (unlisten) {
-                void unlisten();
-            }
+            disposed = true;
+            unlisten?.();
         };
     }, [windowMode]);
 }
@@ -1610,143 +1623,154 @@ export default function App() {
     useEffect(() => {
         if (windowMode !== "main") return;
 
-        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
         const pendingNoteReloads = pendingNoteReloadsRef.current;
         const noteReloadVersions = noteReloadVersionRef.current;
         const pendingFileReloads = pendingFileReloadsRef.current;
         const fileReloadVersions = fileReloadVersionRef.current;
 
-        void listen<VaultNoteChange>("vault://note-changed", (event) => {
-            // Only process changes for the current vault
-            const currentVaultPath = useVaultStore.getState().vaultPath;
-            if (
-                event.payload.vault_path &&
-                currentVaultPath &&
-                event.payload.vault_path !== currentVaultPath
-            )
-                return;
+        resolveDeferredUnlisten(
+            listen<VaultNoteChange>("vault://note-changed", (event) => {
+                if (disposed) return;
 
-            if (shouldApplyVaultChangeToVaultStore(event.payload)) {
-                applyVaultNoteChange(event.payload);
-                void refreshEntries();
-            }
+                // Only process changes for the current vault
+                const currentVaultPath = useVaultStore.getState().vaultPath;
+                if (
+                    event.payload.vault_path &&
+                    currentVaultPath &&
+                    event.payload.vault_path !== currentVaultPath
+                )
+                    return;
 
-            // Reload editor content for open tabs when file changes externally
-            const change = event.payload;
-            if (change.kind === "upsert" && change.note) {
-                invalidateLivePreviewNoteCache(change.note.id);
-                const noteId = change.note.id;
-                const openTab = useEditorStore
-                    .getState()
-                    .tabs.find((t) => isNoteTab(t) && t.noteId === noteId);
-                if (openTab) {
-                    const previousTimer =
-                        pendingNoteReloads.get(noteId) ?? null;
-                    if (previousTimer) {
-                        clearTimeout(previousTimer);
-                    }
-
-                    const nextVersion =
-                        (noteReloadVersions.get(noteId) ?? 0) + 1;
-                    noteReloadVersions.set(noteId, nextVersion);
-
-                    const timer = setTimeout(() => {
-                        pendingNoteReloads.delete(noteId);
-
-                        void vaultInvoke<{ title: string; content: string }>(
-                            "read_note",
-                            {
-                                noteId,
-                            },
-                        ).then((detail) => {
-                            if (
-                                noteReloadVersions.get(noteId) !== nextVersion
-                            ) {
-                                return;
-                            }
-                            useEditorStore
-                                .getState()
-                                .reloadNoteContent(noteId, {
-                                    title: detail.title,
-                                    content: detail.content,
-                                    origin: change.origin,
-                                    opId: change.op_id,
-                                    revision: change.revision,
-                                    contentHash: change.content_hash,
-                                });
-                        });
-                    }, 180);
-
-                    pendingNoteReloads.set(noteId, timer);
+                if (shouldApplyVaultChangeToVaultStore(event.payload)) {
+                    applyVaultNoteChange(event.payload);
+                    void refreshEntries();
                 }
-            } else if (
-                change.kind === "upsert" &&
-                change.entry?.kind === "file" &&
-                change.relative_path
-            ) {
-                const relativePath = change.relative_path;
-                const openTab = useEditorStore
-                    .getState()
-                    .tabs.find(
-                        (t) =>
-                            isFileTab(t) &&
-                            t.viewer === "text" &&
-                            t.relativePath === relativePath,
-                    );
-                if (openTab) {
-                    const previousTimer =
-                        pendingFileReloads.get(relativePath) ?? null;
-                    if (previousTimer) {
-                        clearTimeout(previousTimer);
-                    }
 
-                    const nextVersion =
-                        (fileReloadVersions.get(relativePath) ?? 0) + 1;
-                    fileReloadVersions.set(relativePath, nextVersion);
-
-                    const timer = setTimeout(() => {
-                        pendingFileReloads.delete(relativePath);
-
-                        void vaultInvoke<{
-                            file_name: string;
-                            content: string;
-                        }>("read_vault_file", {
-                            relativePath,
-                        }).then((detail) => {
-                            if (
-                                fileReloadVersions.get(relativePath) !==
-                                nextVersion
-                            ) {
-                                return;
-                            }
-                            useEditorStore
-                                .getState()
-                                .reloadFileContent(relativePath, {
-                                    title: detail.file_name,
-                                    content: detail.content,
-                                    origin: change.origin,
-                                    opId: change.op_id,
-                                    revision: change.revision,
-                                    contentHash: change.content_hash,
-                                });
-                        });
-                    }, 180);
-
-                    pendingFileReloads.set(relativePath, timer);
-                }
-            } else if (change.kind === "delete") {
-                invalidateLivePreviewNoteCache(change.note_id);
-                if (change.relative_path) {
-                    useEditorStore
+                // Reload editor content for open tabs when file changes externally
+                const change = event.payload;
+                if (change.kind === "upsert" && change.note) {
+                    invalidateLivePreviewNoteCache(change.note.id);
+                    const noteId = change.note.id;
+                    const openTab = useEditorStore
                         .getState()
-                        .handleFileDeleted(change.relative_path);
+                        .tabs.find((t) => isNoteTab(t) && t.noteId === noteId);
+                    if (openTab) {
+                        const previousTimer =
+                            pendingNoteReloads.get(noteId) ?? null;
+                        if (previousTimer) {
+                            clearTimeout(previousTimer);
+                        }
+
+                        const nextVersion =
+                            (noteReloadVersions.get(noteId) ?? 0) + 1;
+                        noteReloadVersions.set(noteId, nextVersion);
+
+                        const timer = setTimeout(() => {
+                            pendingNoteReloads.delete(noteId);
+
+                            void vaultInvoke<{
+                                title: string;
+                                content: string;
+                            }>("read_note", {
+                                noteId,
+                            }).then((detail) => {
+                                if (
+                                    noteReloadVersions.get(noteId) !==
+                                    nextVersion
+                                ) {
+                                    return;
+                                }
+                                useEditorStore
+                                    .getState()
+                                    .reloadNoteContent(noteId, {
+                                        title: detail.title,
+                                        content: detail.content,
+                                        origin: change.origin,
+                                        opId: change.op_id,
+                                        revision: change.revision,
+                                        contentHash: change.content_hash,
+                                    });
+                            });
+                        }, 180);
+
+                        pendingNoteReloads.set(noteId, timer);
+                    }
+                } else if (
+                    change.kind === "upsert" &&
+                    change.entry?.kind === "file" &&
+                    change.relative_path
+                ) {
+                    const relativePath = change.relative_path;
+                    const openTab = useEditorStore
+                        .getState()
+                        .tabs.find(
+                            (t) =>
+                                isFileTab(t) &&
+                                t.viewer === "text" &&
+                                t.relativePath === relativePath,
+                        );
+                    if (openTab) {
+                        const previousTimer =
+                            pendingFileReloads.get(relativePath) ?? null;
+                        if (previousTimer) {
+                            clearTimeout(previousTimer);
+                        }
+
+                        const nextVersion =
+                            (fileReloadVersions.get(relativePath) ?? 0) + 1;
+                        fileReloadVersions.set(relativePath, nextVersion);
+
+                        const timer = setTimeout(() => {
+                            pendingFileReloads.delete(relativePath);
+
+                            void vaultInvoke<{
+                                file_name: string;
+                                content: string;
+                            }>("read_vault_file", {
+                                relativePath,
+                            }).then((detail) => {
+                                if (
+                                    fileReloadVersions.get(relativePath) !==
+                                    nextVersion
+                                ) {
+                                    return;
+                                }
+                                useEditorStore
+                                    .getState()
+                                    .reloadFileContent(relativePath, {
+                                        title: detail.file_name,
+                                        content: detail.content,
+                                        origin: change.origin,
+                                        opId: change.op_id,
+                                        revision: change.revision,
+                                        contentHash: change.content_hash,
+                                    });
+                            });
+                        }, 180);
+
+                        pendingFileReloads.set(relativePath, timer);
+                    }
+                } else if (change.kind === "delete") {
+                    invalidateLivePreviewNoteCache(change.note_id);
+                    if (change.relative_path) {
+                        useEditorStore
+                            .getState()
+                            .handleFileDeleted(change.relative_path);
+                    }
                 }
-            }
-        }).then((cleanup) => {
-            unlisten = cleanup;
-        });
+            }),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
+            },
+        );
 
         return () => {
+            disposed = true;
             for (const timer of pendingNoteReloads.values()) {
                 clearTimeout(timer);
             }
@@ -1757,72 +1781,89 @@ export default function App() {
             }
             pendingFileReloads.clear();
             fileReloadVersions.clear();
-            if (unlisten) {
-                void unlisten();
-            }
+            unlisten?.();
         };
     }, [applyVaultNoteChange, refreshEntries, windowMode]);
 
     useEffect(() => {
-        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
 
-        void getCurrentWindow()
-            .listen<AttachExternalTabPayload>(
+        resolveDeferredUnlisten(
+            getCurrentWindow().listen<AttachExternalTabPayload>(
                 ATTACH_EXTERNAL_TAB_EVENT,
                 (event) => {
+                    if (disposed) return;
                     insertExternalTab(event.payload.tab);
                 },
-            )
-            .then((cleanup) => {
-                unlisten = cleanup;
-            });
+            ),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
+            },
+        );
 
         return () => {
-            if (unlisten) {
-                void unlisten();
-            }
+            disposed = true;
+            unlisten?.();
         };
     }, [insertExternalTab]);
 
     useEffect(() => {
         if (windowMode !== "main") return;
 
-        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
 
-        void listen<WebClipperSavedPayload>(
-            WEB_CLIPPER_CLIP_SAVED_EVENT,
-            (event) => {
-                openWebClipperClip(event.payload);
+        resolveDeferredUnlisten(
+            listen<WebClipperSavedPayload>(
+                WEB_CLIPPER_CLIP_SAVED_EVENT,
+                (event) => {
+                    if (disposed) return;
+                    openWebClipperClip(event.payload);
+                },
+            ),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
             },
-        ).then((cleanup) => {
-            unlisten = cleanup;
-        });
+        );
 
         return () => {
-            if (unlisten) {
-                void unlisten();
-            }
+            disposed = true;
+            unlisten?.();
         };
     }, [openWebClipperClip, windowMode]);
 
     useEffect(() => {
         if (windowMode !== "main") return;
 
-        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
 
-        void listen<WebClipperSavedPayload>(
-            WEB_CLIPPER_ROUTE_CLIP_EVENT,
-            (event) => {
-                void routeWebClipperClip(event.payload);
+        resolveDeferredUnlisten(
+            listen<WebClipperSavedPayload>(
+                WEB_CLIPPER_ROUTE_CLIP_EVENT,
+                (event) => {
+                    if (disposed) return;
+                    void routeWebClipperClip(event.payload);
+                },
+            ),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
             },
-        ).then((cleanup) => {
-            unlisten = cleanup;
-        });
+        );
 
         return () => {
-            if (unlisten) {
-                void unlisten();
-            }
+            disposed = true;
+            unlisten?.();
         };
     }, [routeWebClipperClip, windowMode]);
 

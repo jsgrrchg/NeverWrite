@@ -40,6 +40,7 @@ import { findWikilinks } from "../../app/utils/wikilinks";
 import {
     useEditorStore,
     isNoteTab,
+    type Tab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useThemeStore } from "../../app/store/themeStore";
@@ -173,6 +174,13 @@ import {
     type SpellcheckContextMenuPayload,
     type SpellcheckGrammarContextDiagnostic,
 } from "../spellcheck/contextMenu";
+import {
+    buildLiveNoteCacheKey,
+    clearNoteStateCaches,
+    deleteNoteStateCacheEntries,
+    pruneNoteStateCaches,
+    type NoteStateCacheCollection,
+} from "./noteStateCache";
 
 type SavedNoteDetail = {
     id: string;
@@ -337,6 +345,7 @@ export function Editor({
     const spellcheckRequestIdRef = useRef(0);
     const didLogCoordinateLookupErrorRef = useRef(false);
     const [, setEditorView] = useState<EditorView | null>(null);
+    const lastLiveNoteCacheKeyRef = useRef<string | null>(null);
 
     // Bridge: search panel context menu callback
     useEffect(() => {
@@ -437,6 +446,7 @@ export function Editor({
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
     const openVault = useVaultStore((s) => s.openVault);
+    const lastVaultPathRef = useRef<string | null>(vaultPath);
 
     // Only re-renders when the active tab identity changes, not on content updates
     const activeTabInfo = useEditorStore(
@@ -524,6 +534,32 @@ export function Editor({
             ""
         );
     }, []);
+
+    const getNoteStateCaches = useCallback(
+        (): NoteStateCacheCollection => ({
+            tabStates: tabStatesRef.current,
+            tabScrollPositions: tabScrollPositionsRef.current,
+            lastSavedContentByTabId: lastSavedContentByTabId.current,
+            lastAckRevisionByTabId: lastAckRevisionByTabId.current,
+            pendingLocalOpIdByTabId: pendingLocalOpIdByTabId.current,
+            frontmatterByTabId: frontmatterByTabId.current,
+        }),
+        [],
+    );
+
+    const deleteNoteStateForIds = useCallback(
+        (noteIds: Iterable<string>) => {
+            deleteNoteStateCacheEntries(noteIds, getNoteStateCaches());
+        },
+        [getNoteStateCaches],
+    );
+
+    const pruneNoteStateForOpenTabs = useCallback(
+        (tabs: readonly Tab[]) => {
+            pruneNoteStateCaches(tabs, getNoteStateCaches());
+        },
+        [getNoteStateCaches],
+    );
 
     const serializePersistedContent = useCallback(
         (_tabId: string, body: string) =>
@@ -629,16 +665,16 @@ export function Editor({
             const saved = await saveNow(tab, content);
             if (saved === false) return;
 
-            // Clean up saved EditorState for all notes in this tab's history.
+            const noteIdsToClean = new Set<string>([tab.noteId]);
             for (const entry of tab.history ?? []) {
                 if (entry.kind === "note") {
-                    tabStatesRef.current.delete(entry.noteId);
+                    noteIdsToClean.add(entry.noteId);
                 }
             }
-            tabStatesRef.current.delete(tab.noteId);
+            deleteNoteStateForIds(noteIdsToClean);
             closeTab(activeTabId, { reason: "user" });
         })();
-    }, [saveNow]);
+    }, [deleteNoteStateForIds, saveNow]);
 
     const reloadNoteFromDisk = useCallback(async () => {
         const tab = activeTabRef.current;
@@ -2852,6 +2888,28 @@ export function Editor({
         updateSelectionToolbar,
         updateWikilinkSuggester,
     ]);
+
+    useEffect(() => {
+        if (lastVaultPathRef.current === vaultPath) return;
+        lastVaultPathRef.current = vaultPath;
+        lastLiveNoteCacheKeyRef.current = null;
+        clearNoteStateCaches(getNoteStateCaches());
+    }, [getNoteStateCaches, vaultPath]);
+
+    useEffect(() => {
+        const syncLiveNoteState = (tabs: readonly Tab[]) => {
+            const nextKey = buildLiveNoteCacheKey(tabs);
+            if (lastLiveNoteCacheKeyRef.current === nextKey) return;
+            lastLiveNoteCacheKeyRef.current = nextKey;
+            pruneNoteStateForOpenTabs(tabs);
+        };
+
+        syncLiveNoteState(useEditorStore.getState().tabs);
+        const unsubscribe = useEditorStore.subscribe((state) => {
+            syncLiveNoteState(state.tabs);
+        });
+        return unsubscribe;
+    }, [pruneNoteStateForOpenTabs]);
 
     useEffect(() => {
         if (activeTabInfo) return;

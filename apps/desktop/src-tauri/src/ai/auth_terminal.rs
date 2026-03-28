@@ -27,6 +27,7 @@ const DEFAULT_COLS: u16 = 100;
 const DEFAULT_ROWS: u16 = 28;
 const MONITOR_INTERVAL: Duration = Duration::from_millis(120);
 const OUTPUT_CHUNK_SIZE: usize = 4096;
+const MAX_AUTH_TERMINAL_BUFFER: usize = 32 * 1024;
 
 pub const AI_AUTH_TERMINAL_STARTED_EVENT: &str = "ai://auth-terminal-started";
 pub const AI_AUTH_TERMINAL_OUTPUT_EVENT: &str = "ai://auth-terminal-output";
@@ -110,7 +111,6 @@ struct SessionHandle {
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    child: Arc<Mutex<Box<dyn PtyChild + Send + Sync>>>,
     killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
     closed: Arc<AtomicBool>,
 }
@@ -134,7 +134,7 @@ trait Pipe: Sized {
 impl<T> Pipe for T {}
 
 pub struct AiAuthTerminalManager {
-    sessions: Mutex<HashMap<String, SessionHandle>>,
+    sessions: Arc<Mutex<HashMap<String, SessionHandle>>>,
     next_session_id: AtomicU64,
 }
 
@@ -147,7 +147,7 @@ impl Default for AiAuthTerminalManager {
 impl AiAuthTerminalManager {
     pub fn new() -> Self {
         Self {
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             next_session_id: AtomicU64::new(1),
         }
     }
@@ -318,37 +318,47 @@ impl AiAuthTerminalManager {
             error_message: None,
         }));
 
+        let writer = Arc::new(Mutex::new(Some(writer)));
+        let child = Arc::new(Mutex::new(child));
+        let killer = Arc::new(Mutex::new(killer));
+        let closed = Arc::new(AtomicBool::new(false));
         let handle = SessionHandle {
             snapshot: Arc::clone(&snapshot),
             master: Arc::clone(&master),
-            writer: Arc::new(Mutex::new(Some(writer))),
-            child: Arc::new(Mutex::new(child)),
-            killer: Arc::new(Mutex::new(killer)),
-            closed: Arc::new(AtomicBool::new(false)),
+            writer: Arc::clone(&writer),
+            killer: Arc::clone(&killer),
+            closed: Arc::clone(&closed),
         };
-
-        spawn_output_reader(
-            reader,
-            Arc::clone(&handle.snapshot),
-            Arc::clone(&handle.closed),
-            app.clone(),
-            session_id.clone(),
-        );
-        spawn_exit_monitor(
-            Arc::clone(&handle.child),
-            Arc::clone(&handle.snapshot),
-            Arc::clone(&handle.closed),
-            app.clone(),
-        );
-
-        let created_snapshot = handle.snapshot()?;
-        emit_started(app, &created_snapshot);
+        let created_snapshot = snapshot
+            .lock()
+            .map_err(|error| format!("Internal state error: {error}"))?
+            .clone();
 
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|error| format!("Internal state error: {error}"))?;
-        sessions.insert(session_id, handle);
+        sessions.insert(session_id.clone(), handle);
+        drop(sessions);
+
+        spawn_output_reader(
+            reader,
+            Arc::clone(&snapshot),
+            Arc::clone(&closed),
+            app.clone(),
+            session_id.clone(),
+        );
+
+        spawn_exit_monitor(
+            Arc::clone(&self.sessions),
+            session_id.clone(),
+            child,
+            snapshot,
+            closed,
+            app.clone(),
+        );
+
+        emit_started(app, &created_snapshot);
 
         Ok(created_snapshot)
     }
@@ -435,6 +445,19 @@ fn emit_error(app: &AppHandle, session_id: &str, message: String) {
     );
 }
 
+fn trim_auth_terminal_buffer(buffer: &mut String) {
+    if buffer.len() <= MAX_AUTH_TERMINAL_BUFFER {
+        return;
+    }
+
+    let keep_from = buffer.len().saturating_sub(MAX_AUTH_TERMINAL_BUFFER);
+    let trimmed = buffer
+        .get(keep_from..)
+        .unwrap_or(buffer.as_str())
+        .to_string();
+    *buffer = format!("...[truncated]\n{trimmed}");
+}
+
 fn spawn_output_reader(
     mut reader: Box<dyn Read + Send>,
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
@@ -457,6 +480,7 @@ fn spawn_output_reader(
                     let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
                     if let Ok(mut snapshot_guard) = snapshot.lock() {
                         snapshot_guard.buffer.push_str(&chunk);
+                        trim_auth_terminal_buffer(&mut snapshot_guard.buffer);
                     }
                     emit_output(&app, &session_id, chunk);
                 }
@@ -476,6 +500,8 @@ fn spawn_output_reader(
 }
 
 fn spawn_exit_monitor(
+    sessions: Arc<Mutex<HashMap<String, SessionHandle>>>,
+    session_id: String,
     child: Arc<Mutex<Box<dyn PtyChild + Send + Sync>>>,
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     closed: Arc<AtomicBool>,
@@ -522,11 +548,36 @@ fn spawn_exit_monitor(
                 snapshot_guard.clone()
             };
             emit_exited(&app, &snapshot);
+            if let Ok(mut sessions_guard) = sessions.lock() {
+                sessions_guard.remove(&session_id);
+            }
             break;
         }
 
         thread::sleep(MONITOR_INTERVAL);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{trim_auth_terminal_buffer, MAX_AUTH_TERMINAL_BUFFER};
+
+    #[test]
+    fn trim_auth_terminal_buffer_keeps_small_buffers_unchanged() {
+        let mut buffer = "hello".to_string();
+        trim_auth_terminal_buffer(&mut buffer);
+        assert_eq!(buffer, "hello");
+    }
+
+    #[test]
+    fn trim_auth_terminal_buffer_keeps_tail_with_marker() {
+        let mut buffer = "a".repeat(MAX_AUTH_TERMINAL_BUFFER + 64);
+        trim_auth_terminal_buffer(&mut buffer);
+
+        assert!(buffer.starts_with("...[truncated]\n"));
+        assert!(buffer.len() > MAX_AUTH_TERMINAL_BUFFER);
+        assert!(buffer.ends_with(&"a".repeat(MAX_AUTH_TERMINAL_BUFFER)));
+    }
 }
 
 fn resolve_auth_terminal_launch_config(

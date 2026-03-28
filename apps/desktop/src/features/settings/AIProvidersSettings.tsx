@@ -445,43 +445,53 @@ export function AIProvidersSettings() {
         }
     }, []);
 
-    const loadProviders = useCallback(async () => {
-        setIsLoading(true);
-        try {
-            const descriptors = await aiListRuntimes();
-            setRuntimes(descriptors);
-
-            const results = await Promise.allSettled(
-                descriptors.map((d) => aiGetSetupStatus(d.runtime.id)),
-            );
-
-            const statuses: Record<string, AIRuntimeSetupStatus> = {};
-            const errors: Record<string, string> = {};
-            results.forEach((result, i) => {
-                const id = descriptors[i]?.runtime.id;
-                if (!id) return;
-                if (result.status === "fulfilled") {
-                    statuses[id] = result.value;
-                } else {
-                    errors[id] = getErrorMessage(
-                        result.reason,
-                        "Failed to check setup.",
-                    );
-                }
-            });
-
-            setSetupStatusMap(statuses);
-            setErrorMap(errors);
-        } catch {
-            /* runtimes will remain empty */
-        } finally {
-            setIsLoading(false);
-        }
-    }, []);
-
     useEffect(() => {
+        let cancelled = false;
+
+        const loadProviders = async () => {
+            setIsLoading(true);
+            try {
+                const descriptors = await aiListRuntimes();
+                if (cancelled) return;
+                setRuntimes(descriptors);
+
+                const results = await Promise.allSettled(
+                    descriptors.map((d) => aiGetSetupStatus(d.runtime.id)),
+                );
+                if (cancelled) return;
+
+                const statuses: Record<string, AIRuntimeSetupStatus> = {};
+                const errors: Record<string, string> = {};
+                results.forEach((result, i) => {
+                    const id = descriptors[i]?.runtime.id;
+                    if (!id) return;
+                    if (result.status === "fulfilled") {
+                        statuses[id] = result.value;
+                    } else {
+                        errors[id] = getErrorMessage(
+                            result.reason,
+                            "Failed to check setup.",
+                        );
+                    }
+                });
+
+                setSetupStatusMap(statuses);
+                setErrorMap(errors);
+            } catch {
+                /* runtimes will remain empty */
+            } finally {
+                if (!cancelled) {
+                    setIsLoading(false);
+                }
+            }
+        };
+
         void loadProviders();
-    }, [loadProviders]);
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     /* ── Handlers ── */
 
