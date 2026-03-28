@@ -96,7 +96,29 @@ interface MarkdownTable {
     rows: string[][];
 }
 
+const PARSED_BLOCK_CACHE_LIMIT = 250;
+const parsedBlockCache = new Map<string, Block[]>();
+
+function rememberParsedBlocks(text: string, blocks: Block[]) {
+    if (parsedBlockCache.has(text)) {
+        parsedBlockCache.delete(text);
+    }
+    parsedBlockCache.set(text, blocks);
+    if (parsedBlockCache.size > PARSED_BLOCK_CACHE_LIMIT) {
+        const oldestKey = parsedBlockCache.keys().next().value;
+        if (oldestKey !== undefined) {
+            parsedBlockCache.delete(oldestKey);
+        }
+    }
+    return blocks;
+}
+
 function parseBlocks(text: string): Block[] {
+    const cached = parsedBlockCache.get(text);
+    if (cached) {
+        return cached;
+    }
+
     const blocks: Block[] = [];
     const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
     let lastIndex = 0;
@@ -121,7 +143,7 @@ function parseBlocks(text: string): Block[] {
         blocks.push({ type: "text", content: text.slice(lastIndex) });
     }
 
-    return blocks;
+    return rememberParsedBlocks(text, blocks);
 }
 
 function parseMarkdownTableRow(line: string): string[] | null {

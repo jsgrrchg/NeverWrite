@@ -117,43 +117,67 @@ function StreamingRunIndicator({
     );
 }
 
-function findLatestRunIndicatorAnchor(
+function deriveMessageListDecorations(
     messages: AIChatMessage[],
     active: boolean,
 ) {
-    // Only show the live indicator while actively streaming.
-    // Elapsed time is stamped on the turn_started message when the turn ends.
-    if (!active) {
-        return null;
+    let pinnedPlan: AIChatMessage | null = null;
+    let latestTurnStarted: AIChatMessage | null = null;
+    let latestUserMessage: AIChatMessage | null = null;
+
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const message = messages[i];
+
+        if (!pinnedPlan && message.kind === "plan") {
+            const entries = message.planEntries ?? [];
+            const allDone =
+                entries.length > 0 &&
+                entries.every((entry) => entry.status === "completed");
+            if (!allDone) {
+                pinnedPlan = message;
+            }
+        }
+
+        if (!active) {
+            if (pinnedPlan) break;
+            continue;
+        }
+
+        if (
+            !latestTurnStarted &&
+            message.kind === "status" &&
+            message.meta?.status_event === "turn_started"
+        ) {
+            latestTurnStarted = message;
+        }
+
+        if (
+            !latestUserMessage &&
+            message.kind === "text" &&
+            message.role === "user"
+        ) {
+            latestUserMessage = message;
+        }
+
+        if (pinnedPlan && (latestTurnStarted || latestUserMessage)) {
+            break;
+        }
     }
 
-    const latestTurnStarted = [...messages]
-        .reverse()
-        .find(
-            (message) =>
-                message.kind === "status" &&
-                message.meta?.status_event === "turn_started",
-        );
+    const anchorMessage = active
+        ? (latestTurnStarted ?? latestUserMessage)
+        : null;
+    const runIndicatorAnchor = anchorMessage
+        ? {
+              id: anchorMessage.id,
+              timestamp: anchorMessage.timestamp,
+          }
+        : null;
 
-    if (latestTurnStarted) {
-        return {
-            id: latestTurnStarted.id,
-            timestamp: latestTurnStarted.timestamp,
-        };
-    }
-
-    const latestUserMessage = [...messages]
-        .reverse()
-        .find((message) => message.kind === "text" && message.role === "user");
-
-    if (latestUserMessage) {
-        return {
-            id: latestUserMessage.id,
-            timestamp: latestUserMessage.timestamp,
-        };
-    }
-
-    return null;
+    return {
+        pinnedPlan,
+        runIndicatorAnchor,
+    };
 }
 
 export const AIChatMessageList = memo(function AIChatMessageList({
@@ -220,24 +244,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         () => getChatPillMetrics(chatFontSize),
         [chatFontSize],
     );
-    const runIndicatorAnchor = useMemo(
-        () => findLatestRunIndicatorAnchor(messages, status === "streaming"),
+    const { pinnedPlan, runIndicatorAnchor } = useMemo(
+        () => deriveMessageListDecorations(messages, status === "streaming"),
         [messages, status],
     );
-
-    // Find the latest active plan message to pin above the scroll area.
-    const pinnedPlan = useMemo(() => {
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const m = messages[i];
-            if (m.kind !== "plan") continue;
-            const entries = m.planEntries ?? [];
-            const allDone =
-                entries.length > 0 &&
-                entries.every((e) => e.status === "completed");
-            if (!allDone) return m;
-        }
-        return null;
-    }, [messages]);
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">
