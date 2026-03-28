@@ -264,7 +264,7 @@ export function AIChatContextBar({
                         )}
                         <button
                             type="button"
-                            className="max-w-[150px] truncate text-xs"
+                            className="max-w-37.5 truncate text-xs"
                             style={{
                                 color: foregroundColor,
                                 backgroundColor: "transparent",
