@@ -310,10 +310,28 @@ export function getEditorFontFamily(fontFamily: EditorFontFamily) {
     switch (fontFamily) {
         case "sans":
             return '"Inter", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif';
+        case "geist":
+            return '"Geist", "Inter", system-ui, sans-serif';
+        case "atkinson":
+            return '"Atkinson Hyperlegible", system-ui, sans-serif';
         case "serif":
             return '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif';
+        case "literata":
+            return '"Literata", Georgia, serif';
+        case "lora":
+            return '"Lora", "Palatino Linotype", Georgia, serif';
+        case "merriweather":
+            return '"Merriweather", Georgia, serif';
+        case "source-serif":
+            return '"Source Serif 4", Georgia, "Iowan Old Style", serif';
         case "mono":
-            return '"SFMono-Regular", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace';
+            return '"JetBrains Mono", "SFMono-Regular", "Fira Code", Menlo, Monaco, Consolas, monospace';
+        case "jetbrains":
+            return '"JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace';
+        case "geist-mono":
+            return '"Geist Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
+        case "ibm-plex-mono":
+            return '"IBM Plex Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
         case "courier":
             return '"Courier New", Courier, "Nimbus Mono PS", monospace';
         case "reading":

@@ -44,8 +44,17 @@ const LAST_VAULT_KEY = "vaultai:lastVaultPath";
 export type EditorFontFamily =
     | "system"
     | "sans"
+    | "geist"
+    | "atkinson"
     | "serif"
+    | "literata"
+    | "lora"
+    | "merriweather"
+    | "source-serif"
     | "mono"
+    | "jetbrains"
+    | "geist-mono"
+    | "ibm-plex-mono"
     | "courier"
     | "reading"
     | "rounded"
@@ -63,8 +72,17 @@ export type SpellcheckSecondaryLanguage = string | null;
 const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "system",
     "sans",
+    "geist",
+    "atkinson",
     "serif",
+    "literata",
+    "lora",
+    "merriweather",
+    "source-serif",
     "mono",
+    "jetbrains",
+    "geist-mono",
+    "ibm-plex-mono",
     "courier",
     "reading",
     "rounded",
@@ -79,20 +97,38 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
 export const EDITOR_FONT_FAMILY_OPTIONS: {
     value: EditorFontFamily;
     label: string;
+    group: "Sans" | "Serif" | "Mono";
 }[] = [
-    { value: "andale", label: "Andale Mono" },
-    { value: "condensed", label: "Condensed" },
-    { value: "courier", label: "Courier New" },
-    { value: "humanist", label: "Humanist" },
-    { value: "mono", label: "Monospace" },
-    { value: "newspaper", label: "Newspaper" },
-    { value: "reading", label: "Reading" },
-    { value: "rounded", label: "Rounded" },
-    { value: "sans", label: "Sans" },
-    { value: "serif", label: "Serif" },
-    { value: "slab", label: "Slab" },
-    { value: "system", label: "System" },
-    { value: "typewriter", label: "Typewriter" },
+    { value: "system", label: "System", group: "Sans" },
+    { value: "sans", label: "Inter", group: "Sans" },
+    { value: "geist", label: "Geist", group: "Sans" },
+    {
+        value: "atkinson",
+        label: "Atkinson Hyperlegible",
+        group: "Sans",
+    },
+    { value: "rounded", label: "Rounded (SF Pro)", group: "Sans" },
+    { value: "humanist", label: "Optima", group: "Sans" },
+    { value: "condensed", label: "Condensed", group: "Sans" },
+    { value: "literata", label: "Literata", group: "Serif" },
+    { value: "lora", label: "Lora", group: "Serif" },
+    { value: "merriweather", label: "Merriweather", group: "Serif" },
+    { value: "reading", label: "Charter", group: "Serif" },
+    { value: "serif", label: "Palatino", group: "Serif" },
+    { value: "source-serif", label: "Source Serif", group: "Serif" },
+    {
+        value: "newspaper",
+        label: "Times New Roman",
+        group: "Serif",
+    },
+    { value: "slab", label: "Rockwell Slab", group: "Serif" },
+    { value: "mono", label: "Monospace (JetBrains)", group: "Mono" },
+    { value: "jetbrains", label: "JetBrains Mono", group: "Mono" },
+    { value: "geist-mono", label: "Geist Mono", group: "Mono" },
+    { value: "ibm-plex-mono", label: "IBM Plex Mono", group: "Mono" },
+    { value: "courier", label: "Courier New", group: "Mono" },
+    { value: "andale", label: "Andale Mono", group: "Mono" },
+    { value: "typewriter", label: "Typewriter", group: "Mono" },
 ];
 
 const defaults: Settings = {

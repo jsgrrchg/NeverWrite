@@ -16,4 +16,7 @@ vendor/
 apps/desktop/dist/
 apps/desktop/node_modules/
 assets/
+!apps/desktop/src/assets/
+!apps/desktop/src/assets/fonts/
+!apps/desktop/src/assets/fonts/**
 node_modules/
