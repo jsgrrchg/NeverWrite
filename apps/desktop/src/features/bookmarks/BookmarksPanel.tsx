@@ -7,6 +7,8 @@ import {
 import {
     useEditorStore,
     isNoteTab,
+    isPdfTab,
+    isFileTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import {
@@ -233,6 +235,16 @@ export function BookmarksPanel() {
     const deleteFolder = useBookmarkStore((s) => s.deleteFolder);
     const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
+
+    // Active tab info for highlight
+    const activeNoteId = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return isNoteTab(tab) ? tab.noteId : null;
+    });
+    const activeEntryPath = useEditorStore((s) => {
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        return isPdfTab(tab) || isFileTab(tab) ? tab.entryPath : null;
+    });
 
     const m = useMemo(() => {
         const s = fileTreeScale / 100;
@@ -876,11 +888,19 @@ export function BookmarksPanel() {
                                 // Item row
                                 const title = resolveItemTitle(row.item);
                                 const indent = row.depth > 0 ? m.indent : 0;
+                                const isActive =
+                                    (row.item.noteId != null &&
+                                        row.item.noteId === activeNoteId) ||
+                                    (row.item.entryPath != null &&
+                                        row.item.entryPath === activeEntryPath);
 
                                 return (
                                     <button
                                         key={`item:${row.item.id}`}
                                         data-bookmark-row
+                                        data-active={
+                                            isActive ? "true" : "false"
+                                        }
                                         onClick={() =>
                                             void handleItemClick(row.item)
                                         }
@@ -903,22 +923,38 @@ export function BookmarksPanel() {
                                                 },
                                             });
                                         }}
-                                        className="flex items-center gap-1.5 w-full text-left py-0.5 rounded mx-1"
+                                        className="bookmark-item-row flex items-center gap-1.5 w-full text-left py-0.5 rounded mx-1"
                                         style={{
                                             fontSize: m.fontSize,
                                             paddingLeft: 8 + indent,
                                             width: "calc(100% - 8px)",
-                                            color: "var(--text-secondary)",
+                                            color: isActive
+                                                ? "var(--text-primary)"
+                                                : "var(--text-secondary)",
+                                            backgroundColor: isActive
+                                                ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                                                : undefined,
+                                            boxShadow: isActive
+                                                ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
+                                                : "none",
                                             minHeight: m.rowHeight,
                                         }}
-                                        onMouseEnter={(e) =>
-                                            (e.currentTarget.style.color =
-                                                "var(--text-primary)")
-                                        }
-                                        onMouseLeave={(e) =>
-                                            (e.currentTarget.style.color =
-                                                "var(--text-secondary)")
-                                        }
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.color =
+                                                "var(--text-primary)";
+                                            if (!isActive)
+                                                e.currentTarget.style.backgroundColor =
+                                                    "var(--bg-tertiary)";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.color =
+                                                isActive
+                                                    ? "var(--text-primary)"
+                                                    : "var(--text-secondary)";
+                                            if (!isActive)
+                                                e.currentTarget.style.backgroundColor =
+                                                    "";
+                                        }}
                                     >
                                         {itemIcon(row.item.kind, m.smallIcon)}
                                         <span className="truncate">
