@@ -1982,6 +1982,58 @@ function hasPersistedHistoryContent(history: PersistedSessionHistory) {
 }
 
 const _queueDrainLocks = new Set<string>();
+const _pendingSessionPersistence = new Map<string, AIChatSession>();
+let _sessionPersistenceFlushScheduled = false;
+let _sessionPersistenceEpoch = 0;
+
+function getSessionPersistenceKey(session: AIChatSession) {
+    return session.historySessionId || session.sessionId;
+}
+
+async function persistSessionNow(session: AIChatSession) {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) return;
+    if (!hasPersistableSessionContent(session)) return;
+
+    const historyRetentionDays = useChatStore.getState().historyRetentionDays;
+    try {
+        await aiSaveSessionHistory(vaultPath, toPersistedHistory(session));
+        if (historyRetentionDays > 0) {
+            await aiPruneSessionHistories(vaultPath, historyRetentionDays);
+        }
+    } catch (error) {
+        console.warn("Failed to persist session history:", error);
+    }
+}
+
+async function flushPendingSessionPersistence(epoch: number) {
+    if (epoch !== _sessionPersistenceEpoch) {
+        return;
+    }
+
+    _sessionPersistenceFlushScheduled = false;
+    const pendingSessions = [..._pendingSessionPersistence.values()];
+    _pendingSessionPersistence.clear();
+
+    await Promise.all(
+        pendingSessions.map((session) => persistSessionNow(session)),
+    );
+}
+
+function scheduleSessionPersistence(session: AIChatSession) {
+    if (!hasPersistableSessionContent(session)) return;
+
+    _pendingSessionPersistence.set(getSessionPersistenceKey(session), session);
+    if (_sessionPersistenceFlushScheduled) {
+        return;
+    }
+
+    _sessionPersistenceFlushScheduled = true;
+    const scheduledEpoch = _sessionPersistenceEpoch;
+    queueMicrotask(() => {
+        void flushPendingSessionPersistence(scheduledEpoch);
+    });
+}
 
 function scheduleStaleStreamingCheck(_: string) {}
 
@@ -2123,16 +2175,7 @@ function flushDeltas() {
 
         if (!changed) return state;
 
-        // Touch sessionOrder for all affected sessions
-        let sessionOrder = state.sessionOrder;
-        for (const sid of new Set([
-            ...msgEntries.keys(),
-            ...thinkEntries.keys(),
-        ])) {
-            sessionOrder = touchSessionOrder(sessionOrder, sid);
-        }
-
-        return { sessionsById, sessionOrder };
+        return { sessionsById };
     });
 }
 
@@ -2180,19 +2223,7 @@ function flushDeltasSync() {
 }
 
 async function persistSession(session: AIChatSession) {
-    const vaultPath = useVaultStore.getState().vaultPath;
-    if (!vaultPath) return;
-    if (!hasPersistableSessionContent(session)) return;
-
-    const historyRetentionDays = useChatStore.getState().historyRetentionDays;
-    try {
-        await aiSaveSessionHistory(vaultPath, toPersistedHistory(session));
-        if (historyRetentionDays > 0) {
-            await aiPruneSessionHistories(vaultPath, historyRetentionDays);
-        }
-    } catch (error) {
-        console.warn("Failed to persist session history:", error);
-    }
+    scheduleSessionPersistence(session);
 }
 
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
@@ -5897,7 +5928,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     useVaultStore.getState().vaultPath,
                 );
                 get().upsertSession(session, true);
-                await persistSession(session);
+                await persistSessionNow(session);
 
                 // Register baselines for all open editor tabs
                 const tabs = useEditorStore.getState().tabs;
@@ -6435,6 +6466,9 @@ export function resetChatStore() {
     }
     const prefs = getNormalizedAiPreferences();
     _queueDrainLocks.clear();
+    _pendingSessionPersistence.clear();
+    _sessionPersistenceFlushScheduled = false;
+    _sessionPersistenceEpoch += 1;
     useChatStore.setState({
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},

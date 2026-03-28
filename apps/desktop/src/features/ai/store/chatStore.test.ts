@@ -1856,6 +1856,38 @@ describe("chatStore", () => {
         expect(state.activeSessionId).toBe("codex-session-2");
     });
 
+    it("does not reorder session history when flushing streamed deltas", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSession =
+            useChatStore.getState().sessionsById[getActiveSessionId()]!;
+        const secondSession = cloneSessionForTest(
+            activeSession,
+            "codex-session-2",
+        );
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [secondSession.sessionId]: secondSession,
+            },
+            sessionOrder: [secondSession.sessionId, activeSession.sessionId],
+            activeSessionId: secondSession.sessionId,
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSession.sessionId,
+            message_id: "assistant-stream-1",
+            delta: "background delta",
+        });
+        flushDeltasSync();
+
+        expect(useChatStore.getState().sessionOrder).toEqual([
+            secondSession.sessionId,
+            activeSession.sessionId,
+        ]);
+    });
+
     it("loads a session from backend and promotes it to the top of the history", async () => {
         await useChatStore.getState().initialize();
 
@@ -6402,6 +6434,62 @@ describe("chatStore", () => {
         expect(historyPayload?.history).not.toHaveProperty("activeWorkCycleId");
         expect(historyPayload?.history).not.toHaveProperty(
             "visibleWorkCycleId",
+        );
+    });
+
+    it("coalesces repeated history persistence requests in the same microtask", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    messages: [
+                        {
+                            id: "assistant-1",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Done",
+                            timestamp: 10,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "First error",
+        });
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "Second error",
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const saveCalls = invokeMock.mock.calls.filter(
+            ([command]) => command === "ai_save_session_history",
+        );
+        expect(saveCalls).toHaveLength(1);
+
+        const payload =
+            typeof saveCalls[0]?.[1] === "object" && saveCalls[0][1] !== null
+                ? (saveCalls[0][1] as {
+                      history?: { messages?: Array<{ content?: string }> };
+                  })
+                : null;
+
+        expect(payload?.history?.messages?.at(-1)?.content).toBe(
+            "Second error",
         );
     });
 

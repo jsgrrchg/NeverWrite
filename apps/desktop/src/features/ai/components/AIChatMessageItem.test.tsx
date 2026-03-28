@@ -335,7 +335,10 @@ describe("AIChatMessageItem tool diffs", () => {
         );
 
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
-        expect(screen.getByText("watcher.rs")).toBeInTheDocument();
+        expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
+            "Earlier change",
+        );
+        expect(screen.getByText(/watcher\.rs/)).toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();

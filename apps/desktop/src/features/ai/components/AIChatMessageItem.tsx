@@ -640,6 +640,10 @@ function ToolMessage({
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
 
+    if (shouldRenderHistoricalDiffSummary(message, showDiffReview)) {
+        return <HistoricalDiffSummaryMessage message={message} />;
+    }
+
     if (showDiffReview && message.diffs && message.diffs.length > 0) {
         return <ChangeReviewPanel message={message} />;
     }
@@ -1397,6 +1401,101 @@ function getDiffPanelToolLabel(toolKind: string) {
     }
 }
 
+function shouldRenderHistoricalDiffSummary(
+    message: AIChatMessage,
+    showDiffReview: boolean,
+) {
+    if (showDiffReview || !message.diffs?.length) {
+        return false;
+    }
+
+    const status = String(message.meta?.status ?? "");
+    if (message.kind === "tool") {
+        return status === "completed";
+    }
+
+    if (message.kind === "permission") {
+        return status === "resolved";
+    }
+
+    return false;
+}
+
+function HistoricalDiffSummaryMessage({ message }: { message: AIChatMessage }) {
+    const diffs = message.diffs ?? [];
+    const stats = computeDiffStats(diffs);
+    const toolKind = String(message.meta?.tool ?? "");
+    const isToolMessage = message.kind === "tool";
+    const accent = isToolMessage
+        ? toolKind === "delete"
+            ? "#ef4444"
+            : "#6b7280"
+        : "#d97706";
+    const singleDiff = diffs.length === 1 ? diffs[0] : null;
+    const actionLabel = isToolMessage
+        ? getDiffPanelToolLabel(toolKind)
+        : "Change";
+    const summaryTitle = singleDiff
+        ? isToolMessage
+            ? `${actionLabel}${actionLabel.endsWith("e") ? "d" : "ed"} ${getFileNameFromPath(singleDiff.path)}`
+            : getFileNameFromPath(singleDiff.path)
+        : `${actionLabel} ${diffs.length} ${diffs.length === 1 ? "file" : "files"}`;
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2"
+            style={{
+                border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border))`,
+                backgroundColor: `color-mix(in srgb, ${accent} 3%, var(--bg-secondary))`,
+                opacity: 0.72,
+            }}
+            data-testid="historical-diff-summary"
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                <span
+                    className="min-w-0 flex-1 truncate"
+                    style={{
+                        color: "var(--text-primary)",
+                        fontSize: "0.81em",
+                        fontWeight: 500,
+                    }}
+                >
+                    {summaryTitle}
+                </span>
+                <span
+                    className="shrink-0 whitespace-nowrap"
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: "0.72em",
+                        opacity: 0.7,
+                    }}
+                >
+                    Earlier change
+                </span>
+            </div>
+            {(stats.additions > 0 || stats.deletions > 0) && (
+                <div
+                    className="mt-1 flex items-center gap-2"
+                    style={{ fontSize: "0.75em" }}
+                >
+                    {stats.additions > 0 && (
+                        <span style={{ color: "#16a34a", fontWeight: 500 }}>
+                            +
+                            {formatDiffStat(stats.additions, stats.approximate)}
+                        </span>
+                    )}
+                    {stats.deletions > 0 && (
+                        <span style={{ color: "#dc2626", fontWeight: 500 }}>
+                            -
+                            {formatDiffStat(stats.deletions, stats.approximate)}
+                        </span>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function ChangeReviewPanel({
     message,
     onPermissionResponse,
@@ -1939,6 +2038,10 @@ function PermissionMessage({
     const hasLongTitle = title.length > MAX_HEADER_PREVIEW;
     const canExpand = hasLongTitle || isLong;
     const [expanded, setExpanded] = useState(() => !canExpand);
+
+    if (shouldRenderHistoricalDiffSummary(message, showDiffReview)) {
+        return <HistoricalDiffSummaryMessage message={message} />;
+    }
 
     // Delegate to Change Review Panel when diffs are present
     if (showDiffReview && message.diffs && message.diffs.length > 0) {
