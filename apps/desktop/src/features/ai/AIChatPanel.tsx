@@ -41,7 +41,6 @@ import { EditedFilesBufferPanel } from "./components/EditedFilesBufferPanel";
 import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
 import { AIAuthTerminalModal } from "./components/AIAuthTerminalModal";
-import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
 import { QueuedMessagesPanel } from "./components/QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
 import {
@@ -62,7 +61,6 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
 };
 
 export function AIChatPanel() {
-    const [savingSetup, setSavingSetup] = useState(false);
     const [composerExpanded, setComposerExpanded] = useState(false);
     const [authTerminalRequest, setAuthTerminalRequest] = useState<{
         runtimeId: string;
@@ -351,11 +349,12 @@ export function AIChatPanel() {
     }, [chatActions, composerPartsBySessionId, screenshotRetentionSeconds]);
 
     useEffect(() => {
+        const timers = screenshotTimersRef.current;
         return () => {
-            for (const { timeoutId } of screenshotTimersRef.current.values()) {
+            for (const { timeoutId } of timers.values()) {
                 window.clearTimeout(timeoutId);
             }
-            screenshotTimersRef.current.clear();
+            timers.clear();
         };
     }, []);
 
@@ -672,77 +671,33 @@ export function AIChatPanel() {
                 connection={activeConnection}
                 runtimeName={activeRuntime?.runtime.name.replace(/ ACP$/, "")}
             />
-            {!composerExpanded &&
-                (activeSetupStatus?.onboardingRequired ? (
-                    <div
-                        className="min-h-0 flex-1 overflow-y-auto"
-                        data-scrollbar-active="true"
-                    >
-                        <AIChatOnboardingCard
-                            runtime={activeRuntime?.runtime ?? null}
-                            setupStatus={activeSetupStatus}
-                            saving={savingSetup}
-                            onSaveSetup={(input) => {
-                                setSavingSetup(true);
-                                void chatActions
-                                    .saveSetup(input)
-                                    .finally(() => {
-                                        setSavingSetup(false);
-                                    });
-                            }}
-                            onAuthenticate={(input) => {
-                                if (
-                                    input.runtimeId === "claude-acp" &&
-                                    input.methodId === "claude-login"
-                                ) {
-                                    setAuthTerminalRequest({
-                                        runtimeId: input.runtimeId,
-                                        runtimeName:
-                                            activeRuntime?.runtime.name.replace(
-                                                / ACP$/,
-                                                "",
-                                            ) ?? "Claude",
-                                        customBinaryPath:
-                                            input.customBinaryPath,
-                                    });
-                                    return;
-                                }
-                                setSavingSetup(true);
-                                void chatActions
-                                    .startAuth(input)
-                                    .finally(() => {
-                                        setSavingSetup(false);
-                                    });
-                            }}
-                        />
-                    </div>
-                ) : (
-                    <AIChatMessageList
-                        messages={currentSession?.messages ?? []}
-                        status={currentSession?.status ?? "idle"}
-                        visibleWorkCycleId={
-                            currentSession?.visibleWorkCycleId ?? null
-                        }
-                        chatFontSize={chatFontSize}
-                        chatFontFamily={chatFontFamily}
-                        onPermissionResponse={(requestId, optionId) => {
-                            if (!composerSessionId) return;
-                            void chatActions.respondPermissionForSession(
-                                composerSessionId,
-                                requestId,
-                                optionId,
-                            );
-                        }}
-                        onUserInputResponse={(requestId, answers) => {
-                            if (!composerSessionId) return;
-                            void chatActions.respondUserInputForSession(
-                                composerSessionId,
-                                requestId,
-                                answers,
-                            );
-                        }}
-                    />
-                ))}
+            {!composerExpanded && (
+                <AIChatMessageList
+                    messages={currentSession?.messages ?? []}
+                    status={currentSession?.status ?? "idle"}
+                    visibleWorkCycleId={
+                        currentSession?.visibleWorkCycleId ?? null
+                    }
+                    chatFontSize={chatFontSize}
+                    chatFontFamily={chatFontFamily}
+                    onPermissionResponse={(requestId, optionId) => {
+                        if (!composerSessionId) return;
+                        void chatActions.respondPermissionForSession(
+                            composerSessionId,
+                            requestId,
+                            optionId,
+                        );
+                    }}
+                    onUserInputResponse={(requestId, answers) => {
+                        if (!composerSessionId) return;
+                        void chatActions.respondUserInputForSession(
+                            composerSessionId,
+                            requestId,
+                            answers,
+                        );
+                    }}
+                />
+            )}
             <EditedFilesBufferPanel sessionId={composerSessionId} />
             <div
                 className={

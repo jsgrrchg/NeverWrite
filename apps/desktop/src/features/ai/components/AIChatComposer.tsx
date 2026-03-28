@@ -1418,8 +1418,9 @@ export function AIChatComposer({
                             left: expanded ? 16 : 14,
                         }}
                     >
-                        Message {runtimeName} — @ to include context, / for
-                        commands
+                        {disabled
+                            ? "Set up a provider in Settings → AI providers"
+                            : `Message ${runtimeName} — @ to include context, / for commands`}
                     </div>
                 )}
                 <div
@@ -1940,6 +1941,15 @@ export function AIChatComposer({
                         entries={[
                             ...(contextMenu.payload.mentionNoteId
                                 ? [
+                                      {
+                                          label: "Open",
+                                          action: () => {
+                                              void openChatNoteById(
+                                                  contextMenu.payload
+                                                      .mentionNoteId!,
+                                              );
+                                          },
+                                      } as const,
                                       {
                                           label: "Open in New Tab",
                                           action: () => {

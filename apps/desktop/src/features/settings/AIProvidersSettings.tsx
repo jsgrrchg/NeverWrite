@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     aiGetSetupStatus,
@@ -7,160 +7,458 @@ import {
     aiUpdateSetup,
 } from "../ai/api";
 import { AIAuthTerminalModal } from "../ai/components/AIAuthTerminalModal";
-import { AIChatOnboardingCard } from "../ai/components/AIChatOnboardingCard";
-import type {
-    AIRuntimeBinarySource,
-    AIRuntimeDescriptor,
-    AIRuntimeSetupStatus,
-} from "../ai/types";
+import type { AIRuntimeDescriptor, AIRuntimeSetupStatus } from "../ai/types";
 
-function getErrorMessage(error: unknown, fallback: string) {
-    if (error instanceof Error && error.message.trim()) {
-        return error.message;
-    }
-    if (typeof error === "string" && error.trim()) {
-        return error;
-    }
+/* ── Provider registry ─────────────────────────────────────────── */
+
+interface ProviderMeta {
+    id: string;
+    name: string;
+    company: string;
+}
+
+const PROVIDERS: ProviderMeta[] = [
+    { id: "codex-acp", name: "Codex", company: "OpenAI" },
+    { id: "claude-acp", name: "Claude", company: "Anthropic" },
+    { id: "gemini-acp", name: "Gemini", company: "Google" },
+];
+
+/* ── Helpers ────────────────────────────────────────────────────── */
+
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    if (typeof error === "string" && error.trim()) return error;
     return fallback;
 }
 
-function getRuntimeStatusLabel(setupStatus: AIRuntimeSetupStatus | null) {
-    if (!setupStatus) return "Checking status";
-    if (!setupStatus.binaryReady) return "Runtime unavailable";
-    if (!setupStatus.authReady) return "Authentication required";
-    return "Ready";
+function isApiKeyMethod(id?: string) {
+    return id === "openai-api-key" || id === "codex-api-key";
 }
 
-function getRuntimeStatusTone(setupStatus: AIRuntimeSetupStatus | null) {
-    if (!setupStatus) return "var(--text-secondary)";
-    if (!setupStatus.binaryReady) return "#fca5a5";
-    if (!setupStatus.authReady) return "#fcd34d";
-    return "#86efac";
+function isGatewayMethod(id?: string) {
+    return id === "gateway";
 }
 
-function getRuntimeSourceLabel(source: AIRuntimeBinarySource) {
-    switch (source) {
-        case "bundled":
-            return "Bundled";
-        case "custom":
-            return "Custom path";
-        case "env":
-            return "Detected in PATH";
-        case "vendor":
-            return "Detected locally";
-        case "missing":
-            return "Missing";
+function getMethodDisplayName(
+    status: AIRuntimeSetupStatus | null,
+): string | null {
+    if (!status?.authMethod) return null;
+    return (
+        status.authMethods.find((m) => m.id === status.authMethod)?.name ?? null
+    );
+}
+
+function getShortMethodDesc(id: string): string {
+    switch (id) {
+        case "chatgpt":
+            return "Browser sign-in";
+        case "claude-login":
+            return "Terminal sign-in";
+        case "openai-api-key":
+            return "OpenAI API key";
+        case "codex-api-key":
+            return "Codex API key";
+        case "gateway":
+            return "Custom endpoint";
         default:
-            return "Unknown";
+            return "";
     }
 }
 
-function getMethodLabel(
-    runtime: AIRuntimeDescriptor | undefined,
-    setupStatus: AIRuntimeSetupStatus | null,
-) {
-    if (!setupStatus?.authMethod) return "No method configured";
-    return (
-        runtime?.runtime.capabilities &&
-        setupStatus.authMethods.find(
-            (method) => method.id === setupStatus.authMethod,
-        )?.name
-    ) ?? setupStatus.authMethod;
+function getAuthHelpText(id: string): string {
+    switch (id) {
+        case "chatgpt":
+            return "Opens the browser to complete sign-in with your ChatGPT account.";
+        case "claude-login":
+            return "Opens a sign-in terminal inside the app.";
+        case "openai-api-key":
+            return "Store an OpenAI API key locally for VaultAI only.";
+        case "codex-api-key":
+            return "Store a Codex API key locally for VaultAI only.";
+        case "gateway":
+            return "Route requests through a custom gateway endpoint.";
+        default:
+            return "Complete authentication to connect this provider.";
+    }
 }
 
-function isApiKeyMethod(methodId?: string) {
-    return methodId === "openai-api-key" || methodId === "codex-api-key";
+function getApiKeyPlaceholder(id?: string): string {
+    if (id === "codex-api-key") return "Codex API key";
+    if (id === "openai-api-key") return "OpenAI API key";
+    return "API key";
 }
+
+function getActionLabel(
+    methodId: string | undefined,
+    status: AIRuntimeSetupStatus,
+): string {
+    if (!methodId) return "Connect";
+    if (methodId === "chatgpt") return "Continue with ChatGPT";
+    if (methodId === "claude-login") return "Open sign-in terminal";
+    if (isApiKeyMethod(methodId)) {
+        return status.authReady && status.authMethod === methodId
+            ? "Replace key"
+            : "Save and connect";
+    }
+    if (isGatewayMethod(methodId)) return "Save gateway";
+    return "Connect";
+}
+
+function getDefaultMethodId(status: AIRuntimeSetupStatus): string {
+    if (
+        status.authMethod &&
+        status.authMethods.some((m) => m.id === status.authMethod)
+    ) {
+        return status.authMethod;
+    }
+    const chatgpt = status.authMethods.find((m) => m.id === "chatgpt");
+    if (chatgpt) return chatgpt.id;
+    return status.authMethods[0]?.id ?? "openai-api-key";
+}
+
+/* ── Shared styles ──────────────────────────────────────────────── */
+
+const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "8px 12px",
+    borderRadius: 6,
+    fontSize: 13,
+    color: "var(--text-primary)",
+    backgroundColor: "var(--bg-primary)",
+    border: "1px solid var(--border)",
+    outline: "none",
+};
+
+/* ── Expanded panel ─────────────────────────────────────────────── */
+
+function ProviderExpandedPanel({
+    setupStatus,
+    error,
+    saving,
+    onAuth,
+    onLogout,
+}: {
+    setupStatus: AIRuntimeSetupStatus;
+    error: string | null;
+    saving: boolean;
+    onAuth: (input: {
+        runtimeId: string;
+        methodId: string;
+        codexApiKey?: string;
+        openaiApiKey?: string;
+        anthropicBaseUrl?: string;
+        anthropicCustomHeaders?: string;
+        anthropicAuthToken?: string;
+    }) => void;
+    onLogout: () => void;
+}) {
+    const [selectedMethodId, setSelectedMethodId] = useState(() =>
+        getDefaultMethodId(setupStatus),
+    );
+    const [apiKey, setApiKey] = useState("");
+    const [gatewayUrl, setGatewayUrl] = useState("");
+    const [gatewayHeaders, setGatewayHeaders] = useState("");
+    const [gatewayToken, setGatewayToken] = useState("");
+
+    const selectedMethod =
+        setupStatus.authMethods.find((m) => m.id === selectedMethodId) ?? null;
+    const apiKeySelected = isApiKeyMethod(selectedMethodId);
+    const gatewaySelected = isGatewayMethod(selectedMethodId);
+    const isOpenAi = selectedMethodId === "openai-api-key";
+    const isCodex = selectedMethodId === "codex-api-key";
+
+    const canSubmit =
+        !saving &&
+        selectedMethod != null &&
+        (!apiKeySelected || apiKey.trim() !== "") &&
+        (!gatewaySelected || gatewayUrl.trim() !== "");
+
+    const handleSubmit = () => {
+        onAuth({
+            runtimeId: setupStatus.runtimeId,
+            methodId: selectedMethodId,
+            openaiApiKey: isOpenAi ? apiKey || undefined : undefined,
+            codexApiKey: isCodex ? apiKey || undefined : undefined,
+            anthropicBaseUrl: gatewaySelected
+                ? gatewayUrl || undefined
+                : undefined,
+            anthropicCustomHeaders: gatewaySelected
+                ? gatewayHeaders || undefined
+                : undefined,
+            anthropicAuthToken: gatewaySelected
+                ? gatewayToken || undefined
+                : undefined,
+        });
+    };
+
+    return (
+        <div
+            style={{
+                padding: "0 14px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+            }}
+        >
+            {/* Auth method selector */}
+            {setupStatus.authMethods.length > 0 && (
+                <div style={{ display: "flex", gap: 8 }}>
+                    {setupStatus.authMethods.map((method) => {
+                        const selected = method.id === selectedMethodId;
+                        return (
+                            <button
+                                key={method.id}
+                                type="button"
+                                onClick={() => setSelectedMethodId(method.id)}
+                                style={{
+                                    flex: 1,
+                                    textAlign: "left",
+                                    padding: "10px 12px",
+                                    borderRadius: 6,
+                                    border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                                    backgroundColor: selected
+                                        ? "color-mix(in srgb, var(--accent) 10%, var(--bg-primary))"
+                                        : "var(--bg-primary)",
+                                    cursor: "pointer",
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        fontSize: 12,
+                                        fontWeight: 600,
+                                        color: selected
+                                            ? "var(--text-primary)"
+                                            : "var(--text-secondary)",
+                                    }}
+                                >
+                                    {method.name}
+                                </div>
+                                <div
+                                    style={{
+                                        fontSize: 11,
+                                        color: "var(--text-secondary)",
+                                        marginTop: 2,
+                                    }}
+                                >
+                                    {getShortMethodDesc(method.id)}
+                                </div>
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
+            {/* API key input */}
+            {apiKeySelected && (
+                <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={getApiKeyPlaceholder(selectedMethodId)}
+                    style={inputStyle}
+                />
+            )}
+
+            {/* Gateway inputs */}
+            {gatewaySelected && (
+                <>
+                    <input
+                        type="url"
+                        value={gatewayUrl}
+                        onChange={(e) => setGatewayUrl(e.target.value)}
+                        placeholder="Gateway base URL"
+                        style={inputStyle}
+                    />
+                    <textarea
+                        value={gatewayHeaders}
+                        onChange={(e) => setGatewayHeaders(e.target.value)}
+                        placeholder={"Headers, one per line\nx-api-key: secret"}
+                        style={{
+                            ...inputStyle,
+                            minHeight: 60,
+                            resize: "vertical",
+                        }}
+                    />
+                    <input
+                        type="password"
+                        value={gatewayToken}
+                        onChange={(e) => setGatewayToken(e.target.value)}
+                        placeholder="Auth token (optional)"
+                        style={inputStyle}
+                    />
+                </>
+            )}
+
+            {/* Info box */}
+            {selectedMethod && (
+                <div
+                    style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "flex-start",
+                        padding: "10px 12px",
+                        borderRadius: 6,
+                        backgroundColor: "var(--bg-primary)",
+                    }}
+                >
+                    <span
+                        style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary)",
+                            flexShrink: 0,
+                        }}
+                    >
+                        ℹ
+                    </span>
+                    <span
+                        style={{ fontSize: 12, color: "var(--text-secondary)" }}
+                    >
+                        {getAuthHelpText(selectedMethodId)}
+                    </span>
+                </div>
+            )}
+
+            {/* Error */}
+            {error && (
+                <div
+                    style={{
+                        padding: "10px 12px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        border: "1px solid #7f1d1d",
+                        backgroundColor:
+                            "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                        color: "#fecaca",
+                    }}
+                >
+                    {error}
+                </div>
+            )}
+
+            {/* Action row */}
+            <div
+                style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                }}
+            >
+                {setupStatus.authReady ? (
+                    <button
+                        type="button"
+                        onClick={onLogout}
+                        disabled={saving}
+                        style={{
+                            padding: "6px 10px",
+                            borderRadius: 6,
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                            border: "1px solid var(--border)",
+                            backgroundColor: "transparent",
+                            cursor: saving ? "not-allowed" : "pointer",
+                            opacity: saving ? 0.5 : 1,
+                        }}
+                    >
+                        Log Out
+                    </button>
+                ) : (
+                    <div />
+                )}
+                <button
+                    type="button"
+                    onClick={handleSubmit}
+                    disabled={!canSubmit}
+                    style={{
+                        padding: "7px 14px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "#fff",
+                        border: "none",
+                        background:
+                            "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 56%, black))",
+                        opacity: canSubmit ? 1 : 0.45,
+                        cursor: canSubmit ? "pointer" : "not-allowed",
+                    }}
+                >
+                    {saving
+                        ? "Connecting…"
+                        : getActionLabel(selectedMethodId, setupStatus)}
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/* ── Main component ─────────────────────────────────────────────── */
 
 export function AIProvidersSettings() {
-    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const vaultPath = useVaultStore((s) => s.vaultPath);
     const [runtimes, setRuntimes] = useState<AIRuntimeDescriptor[]>([]);
-    const [setupStatusByRuntimeId, setSetupStatusByRuntimeId] = useState<
+    const [setupStatusMap, setSetupStatusMap] = useState<
         Record<string, AIRuntimeSetupStatus>
     >({});
-    const [errorByRuntimeId, setErrorByRuntimeId] = useState<
-        Record<string, string>
-    >({});
-    const [selectedRuntimeId, setSelectedRuntimeId] = useState<string | null>(
-        null,
-    );
+    const [errorMap, setErrorMap] = useState<Record<string, string>>({});
+    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [savingId, setSavingId] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [savingRuntimeId, setSavingRuntimeId] = useState<string | null>(null);
-    const [globalError, setGlobalError] = useState<string | null>(null);
     const [authTerminalRequest, setAuthTerminalRequest] = useState<{
         runtimeId: string;
         runtimeName: string;
         customBinaryPath?: string;
     } | null>(null);
 
+    /* ── Data loading ── */
+
     const refreshRuntime = useCallback(async (runtimeId: string) => {
         try {
-            const setupStatus = await aiGetSetupStatus(runtimeId);
-            setSetupStatusByRuntimeId((current) => ({
-                ...current,
-                [runtimeId]: setupStatus,
-            }));
-            setErrorByRuntimeId((current) => {
-                const next = { ...current };
+            const status = await aiGetSetupStatus(runtimeId);
+            setSetupStatusMap((prev) => ({ ...prev, [runtimeId]: status }));
+            setErrorMap((prev) => {
+                const next = { ...prev };
                 delete next[runtimeId];
                 return next;
             });
-            return setupStatus;
         } catch (error) {
-            const message = getErrorMessage(
-                error,
-                "Failed to check the AI setup.",
-            );
-            setErrorByRuntimeId((current) => ({
-                ...current,
-                [runtimeId]: message,
+            setErrorMap((prev) => ({
+                ...prev,
+                [runtimeId]: getErrorMessage(
+                    error,
+                    "Failed to check setup status.",
+                ),
             }));
-            throw error;
         }
     }, []);
 
     const loadProviders = useCallback(async () => {
         setIsLoading(true);
-        setGlobalError(null);
         try {
-            const nextRuntimes = await aiListRuntimes();
-            setRuntimes(nextRuntimes);
-            setSelectedRuntimeId((current) =>
-                current &&
-                nextRuntimes.some(
-                    (descriptor) => descriptor.runtime.id === current,
-                )
-                    ? current
-                    : (nextRuntimes[0]?.runtime.id ?? null),
+            const descriptors = await aiListRuntimes();
+            setRuntimes(descriptors);
+
+            const results = await Promise.allSettled(
+                descriptors.map((d) => aiGetSetupStatus(d.runtime.id)),
             );
 
-            const setupResults = await Promise.allSettled(
-                nextRuntimes.map((descriptor) =>
-                    aiGetSetupStatus(descriptor.runtime.id),
-                ),
-            );
-
-            const nextStatuses: Record<string, AIRuntimeSetupStatus> = {};
-            const nextErrors: Record<string, string> = {};
-            setupResults.forEach((result, index) => {
-                const runtimeId = nextRuntimes[index]?.runtime.id;
-                if (!runtimeId) return;
+            const statuses: Record<string, AIRuntimeSetupStatus> = {};
+            const errors: Record<string, string> = {};
+            results.forEach((result, i) => {
+                const id = descriptors[i]?.runtime.id;
+                if (!id) return;
                 if (result.status === "fulfilled") {
-                    nextStatuses[runtimeId] = result.value;
-                    return;
+                    statuses[id] = result.value;
+                } else {
+                    errors[id] = getErrorMessage(
+                        result.reason,
+                        "Failed to check setup.",
+                    );
                 }
-                nextErrors[runtimeId] = getErrorMessage(
-                    result.reason,
-                    "Failed to check the AI setup.",
-                );
             });
 
-            setSetupStatusByRuntimeId(nextStatuses);
-            setErrorByRuntimeId(nextErrors);
-        } catch (error) {
-            setGlobalError(
-                getErrorMessage(error, "Failed to load AI providers."),
-            );
+            setSetupStatusMap(statuses);
+            setErrorMap(errors);
+        } catch {
+            /* runtimes will remain empty */
         } finally {
             setIsLoading(false);
         }
@@ -170,83 +468,11 @@ export function AIProvidersSettings() {
         void loadProviders();
     }, [loadProviders]);
 
-    const selectedRuntime =
-        runtimes.find((descriptor) => descriptor.runtime.id === selectedRuntimeId) ??
-        null;
-    const selectedSetupStatus = selectedRuntimeId
-        ? (setupStatusByRuntimeId[selectedRuntimeId] ?? null)
-        : null;
-    const selectedRuntimeError = selectedRuntimeId
-        ? (errorByRuntimeId[selectedRuntimeId] ?? null)
-        : null;
-    const isSavingSelectedRuntime =
-        selectedRuntimeId !== null && savingRuntimeId === selectedRuntimeId;
+    /* ── Handlers ── */
 
-    const runtimeRows = useMemo(
-        () =>
-            runtimes.map((descriptor) => {
-                const setupStatus =
-                    setupStatusByRuntimeId[descriptor.runtime.id] ?? null;
-                const error = errorByRuntimeId[descriptor.runtime.id] ?? null;
-                return {
-                    descriptor,
-                    setupStatus,
-                    error,
-                };
-            }),
-        [errorByRuntimeId, runtimes, setupStatusByRuntimeId],
-    );
-
-    const handleSaveSetup = useCallback(
+    const handleAuth = useCallback(
         async (input: {
-            runtimeId?: string;
-            customBinaryPath?: string;
-            codexApiKey?: string;
-            openaiApiKey?: string;
-            anthropicBaseUrl?: string;
-            anthropicCustomHeaders?: string;
-            anthropicAuthToken?: string;
-        }) => {
-            const runtimeId = input.runtimeId ?? selectedRuntimeId;
-            if (!runtimeId) return;
-            setSavingRuntimeId(runtimeId);
-            try {
-                const setupStatus = await aiUpdateSetup({
-                    runtimeId,
-                    customBinaryPath: input.customBinaryPath,
-                    codexApiKey: input.codexApiKey,
-                    openaiApiKey: input.openaiApiKey,
-                    anthropicBaseUrl: input.anthropicBaseUrl,
-                    anthropicCustomHeaders: input.anthropicCustomHeaders,
-                    anthropicAuthToken: input.anthropicAuthToken,
-                });
-                setSetupStatusByRuntimeId((current) => ({
-                    ...current,
-                    [runtimeId]: setupStatus,
-                }));
-                setErrorByRuntimeId((current) => {
-                    const next = { ...current };
-                    delete next[runtimeId];
-                    return next;
-                });
-            } catch (error) {
-                setErrorByRuntimeId((current) => ({
-                    ...current,
-                    [runtimeId]: getErrorMessage(
-                        error,
-                        "Failed to save the AI setup.",
-                    ),
-                }));
-            } finally {
-                setSavingRuntimeId(null);
-            }
-        },
-        [selectedRuntimeId],
-    );
-
-    const handleStartAuth = useCallback(
-        async (input: {
-            runtimeId?: string;
+            runtimeId: string;
             methodId: string;
             customBinaryPath?: string;
             codexApiKey?: string;
@@ -255,22 +481,24 @@ export function AIProvidersSettings() {
             anthropicCustomHeaders?: string;
             anthropicAuthToken?: string;
         }) => {
-            const runtimeId = input.runtimeId ?? selectedRuntimeId;
-            if (!runtimeId || !selectedRuntime) return;
+            const runtime = runtimes.find(
+                (r) => r.runtime.id === input.runtimeId,
+            );
 
-            if (runtimeId === "claude-acp" && input.methodId === "claude-login") {
+            if (
+                input.runtimeId === "claude-acp" &&
+                input.methodId === "claude-login"
+            ) {
                 setAuthTerminalRequest({
-                    runtimeId,
-                    runtimeName: selectedRuntime.runtime.name.replace(
-                        / ACP$/,
-                        "",
-                    ),
+                    runtimeId: input.runtimeId,
+                    runtimeName:
+                        runtime?.runtime.name.replace(/ ACP$/, "") ?? "Claude",
                     customBinaryPath: input.customBinaryPath,
                 });
                 return;
             }
 
-            setSavingRuntimeId(runtimeId);
+            setSavingId(input.runtimeId);
             try {
                 if (
                     input.customBinaryPath !== undefined ||
@@ -280,8 +508,8 @@ export function AIProvidersSettings() {
                     input.anthropicCustomHeaders !== undefined ||
                     input.anthropicAuthToken !== undefined
                 ) {
-                    const preflightSetup = await aiUpdateSetup({
-                        runtimeId,
+                    const preflight = await aiUpdateSetup({
+                        runtimeId: input.runtimeId,
                         customBinaryPath: input.customBinaryPath,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
@@ -289,440 +517,368 @@ export function AIProvidersSettings() {
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
                     });
-                    setSetupStatusByRuntimeId((current) => ({
-                        ...current,
-                        [runtimeId]: preflightSetup,
+                    setSetupStatusMap((prev) => ({
+                        ...prev,
+                        [input.runtimeId]: preflight,
                     }));
                 }
 
-                const setupStatus = await aiStartAuth(
-                    { methodId: input.methodId, runtimeId },
+                const status = await aiStartAuth(
+                    { methodId: input.methodId, runtimeId: input.runtimeId },
                     vaultPath,
                 );
-                setSetupStatusByRuntimeId((current) => ({
-                    ...current,
-                    [runtimeId]: setupStatus,
+                setSetupStatusMap((prev) => ({
+                    ...prev,
+                    [input.runtimeId]: status,
                 }));
-                setErrorByRuntimeId((current) => {
-                    const next = { ...current };
-                    delete next[runtimeId];
+                setErrorMap((prev) => {
+                    const next = { ...prev };
+                    delete next[input.runtimeId];
                     return next;
                 });
             } catch (error) {
-                setErrorByRuntimeId((current) => ({
-                    ...current,
-                    [runtimeId]: getErrorMessage(
+                setErrorMap((prev) => ({
+                    ...prev,
+                    [input.runtimeId]: getErrorMessage(
                         error,
-                        "Failed to authenticate the AI runtime.",
+                        "Failed to authenticate.",
                     ),
                 }));
             } finally {
-                setSavingRuntimeId(null);
+                setSavingId(null);
             }
         },
-        [selectedRuntime, selectedRuntimeId, vaultPath],
+        [runtimes, vaultPath],
     );
 
-    const handleClearCredentials = useCallback(async () => {
-        if (!selectedRuntimeId) return;
-        await handleSaveSetup({
-            runtimeId: selectedRuntimeId,
-            codexApiKey: "",
-            openaiApiKey: "",
-            anthropicBaseUrl: "",
-            anthropicCustomHeaders: "",
-            anthropicAuthToken: "",
-        });
-        await refreshRuntime(selectedRuntimeId).catch(() => undefined);
-    }, [handleSaveSetup, refreshRuntime, selectedRuntimeId]);
+    const handleLogout = useCallback(
+        async (runtimeId: string) => {
+            setSavingId(runtimeId);
+            try {
+                await aiUpdateSetup({
+                    runtimeId,
+                    codexApiKey: "",
+                    openaiApiKey: "",
+                    anthropicBaseUrl: "",
+                    anthropicCustomHeaders: "",
+                    anthropicAuthToken: "",
+                });
+                await refreshRuntime(runtimeId);
+            } catch (error) {
+                setErrorMap((prev) => ({
+                    ...prev,
+                    [runtimeId]: getErrorMessage(error, "Failed to log out."),
+                }));
+            } finally {
+                setSavingId(null);
+            }
+        },
+        [refreshRuntime],
+    );
+
+    /* ── Derived data ── */
+
+    const installedProviders = PROVIDERS.flatMap((p) => {
+        const hasRuntime = runtimes.some((r) => r.runtime.id === p.id);
+        if (!hasRuntime) return [];
+        return [
+            {
+                ...p,
+                setupStatus: setupStatusMap[p.id] ?? null,
+                error: errorMap[p.id] ?? null,
+            },
+        ];
+    });
+
+    /* ── Render ── */
 
     return (
         <>
+            {/* ── Installed ── */}
+            <div
+                style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "var(--text-secondary)",
+                    paddingBottom: 6,
+                }}
+            >
+                Installed
+            </div>
+
             <div
                 style={{
                     border: "1px solid var(--border)",
                     borderRadius: 10,
-                    backgroundColor: "var(--bg-secondary)",
-                    padding: 14,
-                    marginBottom: 18,
+                    overflow: "hidden",
                 }}
             >
-                <div
-                    style={{
-                        fontSize: 11,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.16em",
-                        color: "var(--accent)",
-                    }}
-                >
-                    AI providers
-                </div>
-                <div
-                    style={{
-                        marginTop: 6,
-                        fontSize: 15,
-                        fontWeight: 600,
-                        color: "var(--text-primary)",
-                    }}
-                >
-                    Manage runtimes, authentication, and API keys
-                </div>
-                <div
-                    style={{
-                        marginTop: 6,
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
-                    }}
-                >
-                    These connections apply to VaultAI globally.
-                </div>
-
-                {globalError ? (
+                {isLoading && runtimes.length === 0 ? (
                     <div
                         style={{
-                            marginTop: 12,
-                            borderRadius: 8,
-                            border: "1px solid #7f1d1d",
-                            backgroundColor:
-                                "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
-                            color: "#fecaca",
-                            padding: "10px 12px",
+                            padding: "14px",
                             fontSize: 12,
+                            color: "var(--text-secondary)",
+                            backgroundColor: "var(--bg-secondary)",
                         }}
                     >
-                        {globalError}
+                        Loading providers…
                     </div>
-                ) : null}
+                ) : (
+                    installedProviders.map((provider, i) => {
+                        const isExpanded = expandedId === provider.id;
+                        const isSaving = savingId === provider.id;
+                        const connected =
+                            provider.setupStatus?.authReady === true;
+                        const methodName = getMethodDisplayName(
+                            provider.setupStatus,
+                        );
 
-                <div
-                    style={{
-                        display: "grid",
-                        gap: 10,
-                        marginTop: 14,
-                    }}
-                >
-                    {isLoading && runtimeRows.length === 0 ? (
-                        <div
-                            style={{
-                                fontSize: 12,
-                                color: "var(--text-secondary)",
-                            }}
-                        >
-                            Loading AI providers…
-                        </div>
-                    ) : null}
-
-                    {runtimeRows.map(({ descriptor, setupStatus, error }) => {
-                        const isSelected =
-                            descriptor.runtime.id === selectedRuntimeId;
                         return (
-                            <button
-                                key={descriptor.runtime.id}
-                                type="button"
-                                onClick={() =>
-                                    setSelectedRuntimeId(descriptor.runtime.id)
-                                }
+                            <Fragment key={provider.id}>
+                                {i > 0 && (
+                                    <div
+                                        style={{
+                                            height: 1,
+                                            backgroundColor: "var(--border)",
+                                        }}
+                                    />
+                                )}
+                                <div
+                                    style={{
+                                        backgroundColor: "var(--bg-secondary)",
+                                    }}
+                                >
+                                    {/* Header row */}
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={() =>
+                                            setExpandedId((prev) =>
+                                                prev === provider.id
+                                                    ? null
+                                                    : provider.id,
+                                            )
+                                        }
+                                        onKeyDown={(e) => {
+                                            if (
+                                                e.key === "Enter" ||
+                                                e.key === " "
+                                            ) {
+                                                e.preventDefault();
+                                                setExpandedId((prev) =>
+                                                    prev === provider.id
+                                                        ? null
+                                                        : provider.id,
+                                                );
+                                            }
+                                        }}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            height: 48,
+                                            padding: "0 14px",
+                                            cursor: "pointer",
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 10,
+                                            }}
+                                        >
+                                            <span
+                                                style={{
+                                                    fontSize: 10,
+                                                    color: "var(--text-secondary)",
+                                                    width: 10,
+                                                    textAlign: "center",
+                                                }}
+                                            >
+                                                {isExpanded ? "▾" : "▸"}
+                                            </span>
+                                            <div
+                                                style={{
+                                                    width: 8,
+                                                    height: 8,
+                                                    borderRadius: "50%",
+                                                    backgroundColor: connected
+                                                        ? "#34d399"
+                                                        : "#ef4444",
+                                                    flexShrink: 0,
+                                                }}
+                                            />
+                                            <span
+                                                style={{
+                                                    fontSize: 13,
+                                                    fontWeight: 600,
+                                                    color: "var(--text-primary)",
+                                                }}
+                                            >
+                                                {provider.name}
+                                            </span>
+                                            {methodName && (
+                                                <span
+                                                    style={{
+                                                        fontSize: 12,
+                                                        color: "var(--text-secondary)",
+                                                    }}
+                                                >
+                                                    {methodName}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div
+                                            style={{
+                                                padding: "3px 8px",
+                                                borderRadius: 999,
+                                                fontSize: 10,
+                                                fontWeight: 600,
+                                                backgroundColor: connected
+                                                    ? "color-mix(in srgb, #34d399 15%, var(--bg-primary))"
+                                                    : "color-mix(in srgb, #ef4444 15%, var(--bg-primary))",
+                                                color: connected
+                                                    ? "#34d399"
+                                                    : "#ef4444",
+                                            }}
+                                        >
+                                            {connected
+                                                ? "Connected"
+                                                : "Not configured"}
+                                        </div>
+                                    </div>
+
+                                    {/* Expanded content */}
+                                    {isExpanded && provider.setupStatus && (
+                                        <ProviderExpandedPanel
+                                            setupStatus={provider.setupStatus}
+                                            error={provider.error}
+                                            saving={isSaving}
+                                            onAuth={(input) => {
+                                                void handleAuth(input);
+                                            }}
+                                            onLogout={() => {
+                                                void handleLogout(provider.id);
+                                            }}
+                                        />
+                                    )}
+                                </div>
+                            </Fragment>
+                        );
+                    })
+                )}
+            </div>
+
+            {/* ── All ── */}
+            <div
+                style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "var(--text-secondary)",
+                    paddingTop: 20,
+                    paddingBottom: 6,
+                }}
+            >
+                All
+            </div>
+
+            <div
+                style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    overflow: "hidden",
+                }}
+            >
+                {PROVIDERS.map((provider, i) => {
+                    const installed = runtimes.some(
+                        (r) => r.runtime.id === provider.id,
+                    );
+                    return (
+                        <Fragment key={provider.id}>
+                            {i > 0 && (
+                                <div
+                                    style={{
+                                        height: 1,
+                                        backgroundColor: "var(--border)",
+                                    }}
+                                />
+                            )}
+                            <div
                                 style={{
-                                    width: "100%",
-                                    textAlign: "left",
-                                    borderRadius: 10,
-                                    border: `1px solid ${
-                                        isSelected
-                                            ? "var(--accent)"
-                                            : "var(--border)"
-                                    }`,
-                                    backgroundColor: isSelected
-                                        ? "color-mix(in srgb, var(--accent) 10%, var(--bg-primary))"
-                                        : "var(--bg-primary)",
-                                    padding: 12,
-                                    cursor: "pointer",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    height: 44,
+                                    padding: "0 14px",
+                                    backgroundColor: "var(--bg-secondary)",
                                 }}
                             >
                                 <div
                                     style={{
                                         display: "flex",
-                                        justifyContent: "space-between",
-                                        gap: 12,
                                         alignItems: "center",
+                                        gap: 10,
                                     }}
                                 >
-                                    <div>
-                                        <div
-                                            style={{
-                                                fontSize: 13,
-                                                fontWeight: 600,
-                                                color: "var(--text-primary)",
-                                            }}
-                                        >
-                                            {descriptor.runtime.name.replace(
-                                                / ACP$/,
-                                                "",
-                                            )}
-                                        </div>
-                                        <div
-                                            style={{
-                                                marginTop: 3,
-                                                fontSize: 12,
-                                                color: "var(--text-secondary)",
-                                            }}
-                                        >
-                                            {getMethodLabel(
-                                                descriptor,
-                                                setupStatus,
-                                            )}
-                                            {" · "}
-                                            {getRuntimeSourceLabel(
-                                                setupStatus?.binarySource ??
-                                                    "missing",
-                                            )}
-                                        </div>
-                                    </div>
-                                    <div
+                                    <span
                                         style={{
-                                            fontSize: 11,
-                                            color: getRuntimeStatusTone(
-                                                setupStatus,
-                                            ),
-                                            whiteSpace: "nowrap",
+                                            fontSize: 13,
+                                            fontWeight: 500,
+                                            color: "var(--text-primary)",
                                         }}
                                     >
-                                        {getRuntimeStatusLabel(setupStatus)}
-                                    </div>
-                                </div>
-                                {error ? (
-                                    <div
+                                        {provider.name}
+                                    </span>
+                                    <span
                                         style={{
-                                            marginTop: 8,
-                                            fontSize: 11,
-                                            color: "#fca5a5",
+                                            fontSize: 12,
+                                            color: "var(--text-secondary)",
                                         }}
                                     >
-                                        {error}
-                                    </div>
-                                ) : null}
-                            </button>
-                        );
-                    })}
-                </div>
-
-                {selectedRuntime && selectedSetupStatus ? (
-                    <div style={{ marginTop: 18 }}>
-                        <div
-                            style={{
-                                display: "flex",
-                                flexWrap: "wrap",
-                                gap: 8,
-                                marginBottom: 10,
-                            }}
-                        >
-                            <div
-                                style={{
-                                    borderRadius: 999,
-                                    border: "1px solid var(--border)",
-                                    backgroundColor: "var(--bg-primary)",
-                                    padding: "5px 9px",
-                                    fontSize: 11,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                Status: {getRuntimeStatusLabel(selectedSetupStatus)}
-                            </div>
-                            <div
-                                style={{
-                                    borderRadius: 999,
-                                    border: "1px solid var(--border)",
-                                    backgroundColor: "var(--bg-primary)",
-                                    padding: "5px 9px",
-                                    fontSize: 11,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                Source:{" "}
-                                {getRuntimeSourceLabel(
-                                    selectedSetupStatus.binarySource,
+                                        {provider.company}
+                                    </span>
+                                </div>
+                                {installed ? (
+                                    <span
+                                        style={{
+                                            fontSize: 11,
+                                            fontWeight: 600,
+                                            color: "#34d399",
+                                        }}
+                                    >
+                                        Installed
+                                    </span>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        style={{
+                                            padding: "4px 10px",
+                                            borderRadius: 6,
+                                            fontSize: 11,
+                                            fontWeight: 600,
+                                            border: "1px solid color-mix(in srgb, #34d399 40%, transparent)",
+                                            backgroundColor: "transparent",
+                                            color: "#34d399",
+                                            cursor: "pointer",
+                                        }}
+                                    >
+                                        Install
+                                    </button>
                                 )}
                             </div>
-                            <div
-                                style={{
-                                    borderRadius: 999,
-                                    border: "1px solid var(--border)",
-                                    backgroundColor: "var(--bg-primary)",
-                                    padding: "5px 9px",
-                                    fontSize: 11,
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                Method:{" "}
-                                {getMethodLabel(
-                                    selectedRuntime,
-                                    selectedSetupStatus,
-                                )}
-                            </div>
-                        </div>
-
-                        {selectedSetupStatus.binaryPath ? (
-                            <div
-                                style={{
-                                    marginBottom: 10,
-                                    borderRadius: 8,
-                                    border: "1px solid var(--border)",
-                                    backgroundColor: "var(--bg-primary)",
-                                    padding: "10px 12px",
-                                }}
-                            >
-                                <div
-                                    style={{
-                                        fontSize: 11,
-                                        textTransform: "uppercase",
-                                        letterSpacing: "0.12em",
-                                        color: "var(--text-secondary)",
-                                        marginBottom: 6,
-                                    }}
-                                >
-                                    Runtime path
-                                </div>
-                                <div
-                                    style={{
-                                        fontSize: 12,
-                                        color: "var(--text-primary)",
-                                        wordBreak: "break-all",
-                                        fontFamily: "monospace",
-                                    }}
-                                >
-                                    {selectedSetupStatus.binaryPath}
-                                </div>
-                            </div>
-                        ) : null}
-
-                        {selectedRuntimeError ? (
-                            <div
-                                style={{
-                                    marginBottom: 10,
-                                    borderRadius: 8,
-                                    border: "1px solid #7f1d1d",
-                                    backgroundColor:
-                                        "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
-                                    color: "#fecaca",
-                                    padding: "10px 12px",
-                                    fontSize: 12,
-                                }}
-                            >
-                                {selectedRuntimeError}
-                            </div>
-                        ) : null}
-
-                        <div
-                            style={{
-                                display: "flex",
-                                gap: 8,
-                                flexWrap: "wrap",
-                                marginBottom: 10,
-                            }}
-                        >
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    void refreshRuntime(selectedRuntime.runtime.id)
-                                }
-                                disabled={isSavingSelectedRuntime}
-                                style={{
-                                    borderRadius: 8,
-                                    border: "1px solid var(--border)",
-                                    backgroundColor: "var(--bg-primary)",
-                                    color: "var(--text-primary)",
-                                    padding: "7px 10px",
-                                    fontSize: 12,
-                                    cursor: isSavingSelectedRuntime
-                                        ? "not-allowed"
-                                        : "pointer",
-                                    opacity: isSavingSelectedRuntime ? 0.6 : 1,
-                                }}
-                            >
-                                Refresh status
-                            </button>
-                            {(isApiKeyMethod(selectedSetupStatus.authMethod) ||
-                                selectedSetupStatus.hasGatewayConfig) && (
-                                <button
-                                    type="button"
-                                    onClick={() => void handleClearCredentials()}
-                                    disabled={isSavingSelectedRuntime}
-                                    style={{
-                                        borderRadius: 8,
-                                        border: "1px solid var(--border)",
-                                        backgroundColor: "var(--bg-primary)",
-                                        color: "var(--text-primary)",
-                                        padding: "7px 10px",
-                                        fontSize: 12,
-                                        cursor: isSavingSelectedRuntime
-                                            ? "not-allowed"
-                                            : "pointer",
-                                        opacity: isSavingSelectedRuntime
-                                            ? 0.6
-                                            : 1,
-                                    }}
-                                >
-                                    Clear credentials
-                                </button>
-                            )}
-                        </div>
-
-                        <AIChatOnboardingCard
-                            mode="settings"
-                            runtime={selectedRuntime.runtime}
-                            setupStatus={selectedSetupStatus}
-                            saving={isSavingSelectedRuntime}
-                            onSaveSetup={(
-                                input: {
-                                    runtimeId?: string;
-                                    customBinaryPath?: string;
-                                    anthropicBaseUrl?: string;
-                                    anthropicCustomHeaders?: string;
-                                    anthropicAuthToken?: string;
-                                },
-                            ) => {
-                                void handleSaveSetup(input);
-                            }}
-                            onAuthenticate={(input) => {
-                                void handleStartAuth(input);
-                            }}
-                        />
-                    </div>
-                ) : null}
-
-                <div
-                    style={{
-                        marginTop: 16,
-                        borderRadius: 10,
-                        border: "1px dashed var(--border)",
-                        backgroundColor: "var(--bg-primary)",
-                        padding: 12,
-                    }}
-                >
-                    <div
-                        style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            color: "var(--text-primary)",
-                        }}
-                    >
-                        External runtimes
-                    </div>
-                    <div
-                        style={{
-                            marginTop: 4,
-                            fontSize: 12,
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        Add Runtime is not wired yet. The backend is still
-                        hardcoded to bundled Claude and Codex, so external ACP
-                        registration needs a descriptor-driven runtime layer
-                        first.
-                    </div>
-                </div>
+                        </Fragment>
+                    );
+                })}
             </div>
 
-            {authTerminalRequest ? (
+            {/* ── Auth terminal modal ── */}
+            {authTerminalRequest && (
                 <AIAuthTerminalModal
                     open
                     runtimeId={authTerminalRequest.runtimeId}
@@ -734,7 +890,7 @@ export function AIProvidersSettings() {
                         await refreshRuntime(runtimeId);
                     }}
                 />
-            ) : null}
+            )}
         </>
     );
 }

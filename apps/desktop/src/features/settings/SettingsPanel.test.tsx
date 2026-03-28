@@ -117,16 +117,11 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "AI providers" }));
 
-        expect(
-            await screen.findByText(
-                "Manage runtimes, authentication, and API keys",
-            ),
-        ).toBeInTheDocument();
-        expect(screen.getByText("Codex")).toBeInTheDocument();
-        expect(screen.getByText("Claude")).toBeInTheDocument();
-        expect(
-            screen.getByText("These connections apply to VaultAI globally."),
-        ).toBeInTheDocument();
+        expect(await screen.findByText("Installed")).toBeInTheDocument();
+        expect(screen.getByText("All")).toBeInTheDocument();
+        expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
+        expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
+        expect(screen.getByText("Gemini")).toBeInTheDocument();
     });
 
     it("filters recent vaults in a scrollable list", () => {
@@ -247,6 +242,39 @@ describe("SettingsPanel", () => {
                 "How long pasted screenshots stay in the AI composer before they are removed automatically.",
             ),
         ).toBeInTheDocument();
+    });
+
+    it("groups the font family selector and persists new bundled font options", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+
+        const label = screen.getByText("Font family");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.click(
+            within(row as HTMLElement).getByRole("button", {
+                name: "System",
+            }),
+        );
+
+        expect(screen.getByText("Sans")).toBeInTheDocument();
+        expect(screen.getByText("Serif")).toBeInTheDocument();
+        expect(screen.getByText("Mono")).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Inter" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Literata" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "JetBrains Mono" }),
+        ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Geist Mono" }));
+
+        expect(useSettingsStore.getState().editorFontFamily).toBe("geist-mono");
     });
 
     it("renders and persists the inline review toggle in AI settings", () => {

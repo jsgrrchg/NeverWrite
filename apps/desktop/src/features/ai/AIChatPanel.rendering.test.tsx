@@ -79,10 +79,6 @@ vi.mock("./components/AIAuthTerminalModal", () => ({
     AIAuthTerminalModal: () => null,
 }));
 
-vi.mock("./components/AIChatOnboardingCard", () => ({
-    AIChatOnboardingCard: () => <div data-testid="onboarding-card" />,
-}));
-
 const runtimeDescriptor: AIRuntimeDescriptor = {
     runtime: {
         id: "codex-acp",
@@ -238,8 +234,6 @@ describe("AIChatPanel rendering", () => {
         expect(messageListRenderCount).toBeGreaterThan(
             initialMessageListRenderCount,
         );
-        expect(composerRenderCount).toBeGreaterThan(
-            initialComposerRenderCount,
-        );
+        expect(composerRenderCount).toBeGreaterThan(initialComposerRenderCount);
     });
 });

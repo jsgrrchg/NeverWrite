@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
+import { openSettingsWindow } from "../../../app/detachedWindows";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { AIChatSessionList } from "./AIChatSessionList";
 import { AIChatTabs } from "./AIChatTabs";
 import { getSessionTitle } from "../sessionPresentation";
@@ -104,6 +106,7 @@ export function AIChatHeader({
     onDeleteAllSessions,
     onToggleExpanded,
 }: AIChatHeaderProps) {
+    const vaultPath = useVaultStore((s) => s.vaultPath);
     const [newMenuOpen, setNewMenuOpen] = useState(false);
     const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
     const [headerWidth, setHeaderWidth] = useState<number | null>(null);
@@ -494,6 +497,48 @@ export function AIChatHeader({
                                     {runtime.name}
                                 </button>
                             ))}
+                            <div
+                                style={{
+                                    height: 1,
+                                    backgroundColor: "var(--border)",
+                                    margin: "4px 0",
+                                }}
+                            />
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setNewMenuOpen(false);
+                                    void openSettingsWindow(vaultPath);
+                                }}
+                                className="flex w-full items-center gap-1.5 rounded px-2.5 py-1.5 text-left text-xs"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    backgroundColor: "transparent",
+                                    border: "none",
+                                    transition: "background-color 80ms ease",
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor =
+                                        "var(--bg-tertiary)";
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor =
+                                        "transparent";
+                                }}
+                            >
+                                <svg
+                                    width="12"
+                                    height="12"
+                                    viewBox="0 0 14 14"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinecap="round"
+                                >
+                                    <path d="M7 2v10M2 7h10" />
+                                </svg>
+                                Add providers
+                            </button>
                         </div>
                     </HeaderMenu>
                 </div>
