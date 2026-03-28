@@ -5,6 +5,10 @@ import {
 } from "../../../components/context-menu/ContextMenu";
 import type { AIAttachmentStatus, AIAttachmentType } from "../types";
 import { openChatNoteById } from "../chatNoteNavigation";
+import {
+    canOpenAiEditedFileByAbsolutePath,
+    openAiEditedFileByAbsolutePath,
+} from "../chatFileNavigation";
 import { truncatePillLabel } from "./chatPillMetrics";
 import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
 
@@ -27,7 +31,8 @@ interface AIChatContextBarProps {
 
 interface AttachmentContextMenuPayload {
     attachmentId: string;
-    noteId: string;
+    noteId?: string | null;
+    path?: string | null;
 }
 
 function normalizeAttachmentLabel(label: string) {
@@ -153,6 +158,45 @@ function StatusIndicator({
     return null;
 }
 
+function canOpenAttachment(attachment: ContextBarAttachment) {
+    if (
+        attachment.noteId &&
+        (attachment.type === "note" ||
+            attachment.type === "current_note" ||
+            attachment.type === "selection")
+    ) {
+        return true;
+    }
+
+    return attachment.path
+        ? canOpenAiEditedFileByAbsolutePath(attachment.path)
+        : false;
+}
+
+async function openAttachment(
+    attachment: {
+        noteId?: string | null;
+        path?: string | null;
+        type?: AIAttachmentType;
+    },
+    options?: { newTab?: boolean },
+) {
+    if (
+        attachment.noteId &&
+        (attachment.type === "note" ||
+            attachment.type === "current_note" ||
+            attachment.type === "selection")
+    ) {
+        return openChatNoteById(attachment.noteId, options);
+    }
+
+    if (!attachment.path) {
+        return false;
+    }
+
+    return openAiEditedFileByAbsolutePath(attachment.path, options);
+}
+
 export function AIChatContextBar({
     attachments,
     onRemoveAttachment,
@@ -179,6 +223,7 @@ export function AIChatContextBar({
                     CHAT_PILL_VARIANTS[getAttachmentVariant(attachment.type)];
                 const isError = attachment.status === "error";
                 const foregroundColor = isError ? "#ef4444" : palette.color;
+                const canOpen = canOpenAttachment(attachment);
                 return (
                     <div
                         key={attachment.id}
@@ -189,12 +234,7 @@ export function AIChatContextBar({
                                 : palette.background,
                         }}
                         onContextMenu={(event: MouseEvent<HTMLDivElement>) => {
-                            if (
-                                !attachment.noteId ||
-                                (attachment.type !== "note" &&
-                                    attachment.type !== "current_note" &&
-                                    attachment.type !== "selection")
-                            ) {
+                            if (!canOpen) {
                                 return;
                             }
 
@@ -206,6 +246,7 @@ export function AIChatContextBar({
                                 payload: {
                                     attachmentId: attachment.id,
                                     noteId: attachment.noteId,
+                                    path: attachment.path,
                                 },
                             });
                         }}
@@ -221,17 +262,28 @@ export function AIChatContextBar({
                                 <AttachmentIcon type={attachment.type} />
                             </span>
                         )}
-                        <span
+                        <button
+                            type="button"
                             className="max-w-[150px] truncate text-xs"
-                            style={{ color: foregroundColor }}
+                            style={{
+                                color: foregroundColor,
+                                backgroundColor: "transparent",
+                                border: "none",
+                                padding: 0,
+                                cursor: canOpen ? "pointer" : "default",
+                            }}
                             title={
                                 attachment.errorMessage ??
                                 attachment.path ??
                                 displayLabel
                             }
+                            onClick={() => {
+                                void openAttachment(attachment);
+                            }}
+                            disabled={!canOpen}
                         >
                             {truncatePillLabel(displayLabel)}
-                        </span>
+                        </button>
                         <StatusIndicator
                             status={attachment.status}
                             errorMessage={attachment.errorMessage}
@@ -277,12 +329,17 @@ export function AIChatContextBar({
                     onClose={() => setContextMenu(null)}
                     entries={[
                         {
+                            label: "Open",
+                            action: () => {
+                                void openAttachment(contextMenu.payload);
+                            },
+                        },
+                        {
                             label: "Open in New Tab",
                             action: () => {
-                                void openChatNoteById(
-                                    contextMenu.payload.noteId,
-                                    { newTab: true },
-                                );
+                                void openAttachment(contextMenu.payload, {
+                                    newTab: true,
+                                });
                             },
                         },
                     ]}

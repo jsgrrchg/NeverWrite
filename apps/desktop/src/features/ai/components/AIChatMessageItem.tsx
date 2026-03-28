@@ -28,12 +28,12 @@ import {
     stepDiffZoom,
 } from "../diff/reviewDiff";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
+import { openChatNoteByReference } from "../chatNoteNavigation";
 import {
-    openChatNoteByAbsolutePath,
-    openChatNoteByReference,
-} from "../chatNoteNavigation";
+    canOpenAiEditedFileByAbsolutePath,
+    openAiEditedFileByAbsolutePath,
+} from "../chatFileNavigation";
 import { useSettingsStore } from "../../../app/store/settingsStore";
-import { useVaultStore } from "../../../app/store/vaultStore";
 
 interface UserMentionContextMenuPayload {
     label: string;
@@ -198,6 +198,14 @@ function UserTextMessage({
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
                     entries={[
+                        {
+                            label: "Open",
+                            action: () => {
+                                void openChatNoteByReference(
+                                    contextMenu.payload.label,
+                                );
+                            },
+                        },
                         {
                             label: "Open in New Tab",
                             action: () => {
@@ -376,11 +384,10 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
     const [expanded, setExpanded] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
-    const notes = useVaultStore((state) => state.notes);
     const toolKind = String(message.meta?.tool ?? "edit");
     const target = message.meta?.target ? String(message.meta.target) : null;
     const canOpenTarget = target
-        ? notes.some((note) => note.path === target)
+        ? canOpenAiEditedFileByAbsolutePath(target)
         : false;
     const shortTarget = target?.split("/").pop() ?? null;
     const status = String(message.meta?.status ?? "");
@@ -485,7 +492,7 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                         canOpenTarget && target
                             ? (e) => {
                                   e.stopPropagation();
-                                  void openChatNoteByAbsolutePath(target);
+                                  void openAiEditedFileByAbsolutePath(target);
                               }
                             : undefined
                     }
@@ -594,9 +601,17 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
                     onClose={() => setContextMenu(null)}
                     entries={[
                         {
+                            label: "Open",
+                            action: () => {
+                                void openAiEditedFileByAbsolutePath(
+                                    contextMenu.payload.target,
+                                );
+                            },
+                        },
+                        {
                             label: "Open in New Tab",
                             action: () => {
-                                void openChatNoteByReference(
+                                void openAiEditedFileByAbsolutePath(
                                     contextMenu.payload.target,
                                     { newTab: true },
                                 );
@@ -1393,7 +1408,6 @@ function ChangeReviewPanel({
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
     const lineWrapping = useSettingsStore((state) => state.lineWrapping);
-    const notes = useVaultStore((state) => state.notes);
     const toolKind = String(message.meta?.tool ?? "");
     const isToolMessage = message.kind === "tool";
     const accent = isToolMessage
@@ -1423,7 +1437,7 @@ function ChangeReviewPanel({
             ? (target ?? (diffs.length === 1 ? diffs[0]?.path : null))
             : null;
     const canOpenFile = openFilePath
-        ? notes.some((note) => note.path === openFilePath)
+        ? canOpenAiEditedFileByAbsolutePath(openFilePath)
         : false;
     const actionLabel = isToolMessage
         ? getDiffPanelToolLabel(toolKind)
@@ -1452,6 +1466,8 @@ function ChangeReviewPanel({
     const displayStats =
         isSingleFile && singleFileStats ? singleFileStats : stats;
     const [singleDiffExpanded, setSingleDiffExpanded] = useState(false);
+    const [openFileContextMenu, setOpenFileContextMenu] =
+        useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
     return (
         <div
             className="min-w-0 max-w-full overflow-hidden rounded-lg"
@@ -1550,7 +1566,23 @@ function ChangeReviewPanel({
                                 color: "var(--text-primary)",
                                 fontWeight: 600,
                                 fontSize: "0.83em",
+                                cursor: canOpenFile ? "context-menu" : "auto",
                             }}
+                            onContextMenu={
+                                canOpenFile && openFilePath
+                                    ? (event) => {
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          setOpenFileContextMenu({
+                                              x: event.clientX,
+                                              y: event.clientY,
+                                              payload: {
+                                                  target: openFilePath,
+                                              },
+                                          });
+                                      }
+                                    : undefined
+                            }
                         >
                             {`${actionLabel}${actionLabel.endsWith("e") ? "d" : "ed"} ${singleFilename}`}
                         </span>
@@ -1701,8 +1733,19 @@ function ChangeReviewPanel({
                         <button
                             type="button"
                             onClick={() =>
-                                void openChatNoteByAbsolutePath(openFilePath)
+                                void openAiEditedFileByAbsolutePath(
+                                    openFilePath,
+                                )
                             }
+                            onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setOpenFileContextMenu({
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                    payload: { target: openFilePath },
+                                });
+                            }}
                             className="rounded-md px-2 py-1"
                             style={{
                                 fontSize: "0.76em",
@@ -1743,6 +1786,31 @@ function ChangeReviewPanel({
                     lineWrapping={lineWrapping}
                 />
             )}
+            {openFileContextMenu ? (
+                <ContextMenu
+                    menu={openFileContextMenu}
+                    onClose={() => setOpenFileContextMenu(null)}
+                    entries={[
+                        {
+                            label: "Open",
+                            action: () => {
+                                void openAiEditedFileByAbsolutePath(
+                                    openFileContextMenu.payload.target,
+                                );
+                            },
+                        },
+                        {
+                            label: "Open in New Tab",
+                            action: () => {
+                                void openAiEditedFileByAbsolutePath(
+                                    openFileContextMenu.payload.target,
+                                    { newTab: true },
+                                );
+                            },
+                        },
+                    ]}
+                />
+            ) : null}
 
             {/* Actions */}
             {message.permissionRequestId &&
