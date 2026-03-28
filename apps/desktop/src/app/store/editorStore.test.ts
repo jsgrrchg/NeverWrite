@@ -716,6 +716,72 @@ describe("editorStore tab history mode", () => {
         });
     });
 
+    it("handleFileDeleted removes deleted file entries from local file history", () => {
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "file-tab-a",
+                    kind: "file",
+                    relativePath: "src/beta.ts",
+                    title: "beta.ts",
+                    path: "/vault/src/beta.ts",
+                    content: "beta",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                    history: [
+                        {
+                            kind: "file",
+                            relativePath: "src/alpha.ts",
+                            title: "alpha.ts",
+                            path: "/vault/src/alpha.ts",
+                            content: "alpha",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        },
+                        {
+                            kind: "file",
+                            relativePath: "src/beta.ts",
+                            title: "beta.ts",
+                            path: "/vault/src/beta.ts",
+                            content: "beta",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        },
+                    ],
+                    historyIndex: 1,
+                },
+            ],
+            activeTabId: "file-tab-a",
+        });
+
+        useEditorStore.getState().handleFileDeleted("src/alpha.ts");
+
+        const tab = useEditorStore.getState().tabs[0];
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+        expect(tab).toMatchObject({
+            relativePath: "src/beta.ts",
+            title: "beta.ts",
+            historyIndex: 0,
+        });
+        expect("history" in tab ? tab.history : []).toEqual([
+            {
+                kind: "file",
+                relativePath: "src/beta.ts",
+                title: "beta.ts",
+                path: "/vault/src/beta.ts",
+                content: "beta",
+                mimeType: "text/typescript",
+                viewer: "text",
+            },
+        ]);
+
+        useEditorStore.getState().goBack();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            relativePath: "src/beta.ts",
+            historyIndex: 0,
+        });
+    });
+
     it("openPdf reuses the active pdf tab and restores pdf state through history", () => {
         useEditorStore.setState({
             tabs: [
@@ -1189,6 +1255,8 @@ describe("editorStore tab management", () => {
                 title: "watcher.rs",
                 content: "new line",
                 origin: "agent",
+                revision: 5,
+                opId: "agent-5",
             },
         );
 
@@ -1198,5 +1266,11 @@ describe("editorStore tab management", () => {
             content: "new line",
         });
         expect(state._pendingForceFileReloads.has("src/watcher.rs")).toBe(true);
+        expect(state._fileReloadVersions["src/watcher.rs"]).toBe(1);
+        expect(state._fileReloadMetadata["src/watcher.rs"]).toMatchObject({
+            origin: "agent",
+            revision: 5,
+            opId: "agent-5",
+        });
     });
 });

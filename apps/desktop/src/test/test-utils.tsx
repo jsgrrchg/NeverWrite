@@ -34,7 +34,9 @@ export function setEditorTabs(
         _pendingForceReloads: new Set<string>(),
         _pendingForceFileReloads: new Set<string>(),
         _noteReloadVersions: {},
+        _fileReloadVersions: {},
         _noteReloadMetadata: {},
+        _fileReloadMetadata: {},
         noteExternalConflicts: new Set<string>(),
         fileExternalConflicts: new Set<string>(),
     });
