@@ -246,6 +246,157 @@ describe("FileTabView", () => {
             vaultPath: "/vault",
             relativePath: "src/config.toml",
             content: 'name = "VaultAI"\nversion = "1.0.0"',
+            opId: expect.any(String),
+        });
+    });
+
+    it("switches text files in history mode without writing the next file or showing a false conflict", async () => {
+        vi.useFakeTimers();
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/a.ts",
+                title: "a.ts",
+                path: "/vault/src/a.ts",
+                mimeType: "text/typescript",
+                viewer: "text",
+                content: "const a = 1;",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command, payload) => {
+            if (command !== "save_vault_file") {
+                throw new Error(`Unexpected command: ${command}`);
+            }
+
+            return {
+                relative_path: payload.relativePath,
+                file_name: payload.relativePath.split("/").pop(),
+                content: payload.content,
+            };
+        });
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        act(() => {
+            view!.dispatch({
+                changes: {
+                    from: view!.state.doc.length,
+                    insert: "\n// local edit",
+                },
+            });
+        });
+
+        act(() => {
+            useEditorStore
+                .getState()
+                .openFile(
+                    "src/b.ts",
+                    "b.ts",
+                    "/vault/src/b.ts",
+                    "const b = 2;",
+                    "text/typescript",
+                    "text",
+                );
+        });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(view!.state.doc.toString()).toBe("const b = 2;");
+        expect(
+            screen.queryByText(
+                /This file changed on disk while you still have unsaved edits\./i,
+            ),
+        ).not.toBeInTheDocument();
+
+        const saveCalls = mockInvoke().mock.calls.filter(
+            ([command]) => command === "save_vault_file",
+        );
+        expect(saveCalls).toHaveLength(1);
+        expect(saveCalls[0][1]).toMatchObject({
+            vaultPath: "/vault",
+            relativePath: "src/a.ts",
+            content: "const a = 1;\n// local edit",
+            opId: expect.any(String),
+        });
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            relativePath: "src/b.ts",
+            title: "b.ts",
+        });
+    });
+
+    it("shows a conflict banner only for real external changes while a text file has unsaved edits", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/a.ts",
+                title: "a.ts",
+                path: "/vault/src/a.ts",
+                mimeType: "text/typescript",
+                viewer: "text",
+                content: "const a = 1;",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command, payload) => {
+            if (command !== "save_vault_file") {
+                throw new Error(`Unexpected command: ${command}`);
+            }
+
+            return {
+                relative_path: payload.relativePath,
+                file_name: payload.relativePath.split("/").pop(),
+                content: payload.content,
+            };
+        });
+
+        const { unmount } = renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        act(() => {
+            view!.dispatch({
+                changes: {
+                    from: view!.state.doc.length,
+                    insert: "\n// local edit",
+                },
+            });
+        });
+
+        act(() => {
+            useEditorStore.getState().reloadFileContent("src/a.ts", {
+                title: "a.ts",
+                content: "const a = 1;\n// external edit",
+                origin: "external",
+                revision: 1,
+                opId: "external-1",
+            });
+        });
+
+        expect(
+            screen.getByText(
+                /This file changed on disk while you still have unsaved edits\./i,
+            ),
+        ).toBeInTheDocument();
+        expect(view!.state.doc.toString()).toBe("const a = 1;\n// local edit");
+
+        await act(async () => {
+            unmount();
+            await Promise.resolve();
         });
     });
 

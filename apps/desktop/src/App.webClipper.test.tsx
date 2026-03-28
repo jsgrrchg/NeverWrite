@@ -334,6 +334,40 @@ describe("App web clipper routing", () => {
         expect(openNote).not.toHaveBeenCalled();
     });
 
+    it("does not read text files from disk when no matching text tab is open", async () => {
+        vi.useFakeTimers();
+
+        renderComponent(<App />);
+        await flushPromises();
+        vi.mocked(invoke).mockClear();
+
+        await act(async () => {
+            eventHandlers.get("vault://note-changed")?.({
+                payload: {
+                    vault_path: "/vaults/a",
+                    kind: "upsert",
+                    entry: {
+                        kind: "file",
+                        mime_type: "text/plain",
+                    },
+                    relative_path: "src/ghost.ts",
+                    origin: "external",
+                    op_id: null,
+                    revision: 1,
+                    content_hash: null,
+                },
+            });
+            vi.advanceTimersByTime(250);
+            await Promise.resolve();
+        });
+
+        const readCalls = vi
+            .mocked(invoke)
+            .mock.calls.filter(([command]) => command === "read_vault_file");
+        expect(readCalls).toHaveLength(0);
+        vi.useRealTimers();
+    });
+
     it("routes fallback clips through a new vault window and emits to that label", async () => {
         const targetWindowFocus = vi.fn();
         let snapshotReads = 0;
