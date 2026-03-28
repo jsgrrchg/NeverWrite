@@ -819,7 +819,7 @@ function useNativeMenuActions(windowMode: ReturnType<typeof getWindowMode>) {
         let unlisten: (() => void) | undefined;
 
         const registration = listen<string>(DOCK_OPEN_VAULT_EVENT, (event) => {
-            void useVaultStore.getState().openVault(event.payload);
+            void openVaultWindow(event.payload);
         });
         void Promise.resolve(registration).then((cleanup) => {
             unlisten = cleanup;

@@ -242,9 +242,11 @@ describe("App web clipper routing", () => {
         expect(useCommandStore.getState().activeModal).toBe("command-palette");
     });
 
-    it("opens a vault when the dock menu requests it", async () => {
+    it("opens a new vault window when the dock menu requests it", async () => {
         renderComponent(<App />);
         await flushPromises();
+        vi.mocked(openVaultWindow).mockClear();
+        vi.mocked(useVaultStore.getState().openVault).mockClear();
 
         await act(async () => {
             eventHandlers.get(DOCK_OPEN_VAULT_EVENT)?.({
@@ -253,9 +255,8 @@ describe("App web clipper routing", () => {
             await Promise.resolve();
         });
 
-        expect(useVaultStore.getState().openVault).toHaveBeenCalledWith(
-            "/vaults/dock",
-        );
+        expect(openVaultWindow).toHaveBeenCalledWith("/vaults/dock");
+        expect(useVaultStore.getState().openVault).not.toHaveBeenCalled();
     });
 
     it("opens clip-saved payloads without switching the current vault", async () => {
