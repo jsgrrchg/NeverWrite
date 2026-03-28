@@ -1,6 +1,7 @@
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import type { NoteDto } from "../../app/store/vaultStore";
 import { getSessionRuntimeName, getSessionTitle } from "./sessionPresentation";
+import { getSessionTranscriptMessages } from "./transcriptModel";
 import type { AIChatMessage, AIChatSession, AIRuntimeOption } from "./types";
 
 interface SavedNoteDetail {
@@ -123,6 +124,7 @@ export function buildChatExportMarkdown(
     runtimes: AIRuntimeOption[],
     exportedAt = new Date(),
 ) {
+    const messages = getSessionTranscriptMessages(session);
     const title = getSessionTitle(session);
     const runtimeName = getSessionRuntimeName(session, runtimes);
     const lines: string[] = [
@@ -144,12 +146,12 @@ export function buildChatExportMarkdown(
 
     lines.push("", "## Conversación", "");
 
-    if (session.messages.length === 0) {
+    if (messages.length === 0) {
         lines.push("_Sin mensajes_");
         return `${lines.join("\n")}\n`;
     }
 
-    session.messages.forEach((message, index) => {
+    messages.forEach((message, index) => {
         if (index > 0) {
             lines.push("", "---", "");
         }

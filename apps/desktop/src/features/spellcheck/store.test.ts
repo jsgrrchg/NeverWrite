@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { mockInvoke } from "../../test/test-utils";
 import { resolveFrontendSpellcheckLanguage } from "./api";
-import { useSpellcheckStore } from "./store";
+import {
+    MAX_SPELLCHECK_DOCUMENT_CACHE_ENTRIES,
+    useSpellcheckStore,
+} from "./store";
 
 describe("spellcheck frontend store", () => {
     beforeEach(() => {
@@ -188,5 +191,50 @@ describe("spellcheck frontend store", () => {
             "spellcheck_install_dictionary",
             { language: "es-CL" },
         );
+    });
+
+    it("bounds the document cache and evicts the oldest entries", async () => {
+        mockInvoke().mockImplementation(async (_command, payload) => {
+            const request = payload as {
+                text: string;
+                language: string;
+                secondaryLanguage: string | null;
+            };
+
+            return {
+                language: request.language,
+                secondary_language: request.secondaryLanguage,
+                diagnostics: [
+                    {
+                        start_utf16: 0,
+                        end_utf16: request.text.length,
+                        word: request.text,
+                    },
+                ],
+            };
+        });
+
+        for (
+            let index = 0;
+            index < MAX_SPELLCHECK_DOCUMENT_CACHE_ENTRIES + 1;
+            index += 1
+        ) {
+            await useSpellcheckStore.getState().checkDocument({
+                documentId: `note:${index}`,
+                version: "v1",
+                text: `word-${index}`,
+                language: "en-US",
+            });
+        }
+
+        const cache = useSpellcheckStore.getState().documentCache;
+
+        expect(cache.size).toBe(MAX_SPELLCHECK_DOCUMENT_CACHE_ENTRIES);
+        expect(cache.has("note:0:en-US:none")).toBe(false);
+        expect(
+            cache.has(
+                `note:${MAX_SPELLCHECK_DOCUMENT_CACHE_ENTRIES}:en-US:none`,
+            ),
+        ).toBe(true);
     });
 });

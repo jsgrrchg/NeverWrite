@@ -4,6 +4,7 @@ import {
     getTrackedFilesForSession,
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
+import { getSessionTranscriptMessages } from "../transcriptModel";
 
 const EMPTY_TRACKED_FILES: TrackedFile[] = [];
 
@@ -28,7 +29,7 @@ function isPendingPermissionBuffer(message: AIChatMessage) {
 }
 
 function isWorkCycleResolved(session: AIChatSession, workCycleId: string) {
-    const cycleMessages = session.messages.filter(
+    const cycleMessages = getSessionTranscriptMessages(session).filter(
         (message) =>
             message.workCycleId === workCycleId && hasDiffBuffer(message),
     );

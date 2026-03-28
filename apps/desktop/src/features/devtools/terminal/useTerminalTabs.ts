@@ -7,6 +7,11 @@ import {
     normalizePersistedTerminalRawOutput,
 } from "./terminalRawOutput";
 import {
+    allocateTabSessionVersion,
+    collectSessionIdsToClose,
+    deleteTabSessionVersions,
+} from "./terminalSessionTracking";
+import {
     DEV_TERMINAL_ERROR_EVENT,
     DEV_TERMINAL_EXITED_EVENT,
     DEV_TERMINAL_OUTPUT_EVENT,
@@ -269,7 +274,8 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
     // Buffer output that arrives before attachSessionToTab sets the sessionId
     const pendingOutputRef = useRef<Map<string, string>>(new Map());
     const tabSessionVersionRef = useRef<Map<string, number>>(new Map());
-    const retiredSessionIdsRef = useRef<Set<string>>(new Set());
+    const nextTabSessionVersionRef = useRef(1);
+    const retiredSessionIdsRef = useRef<Map<string, true>>(new Map());
 
     useEffect(() => {
         tabsRef.current = tabs;
@@ -289,9 +295,11 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
     );
 
     const bumpTabSessionVersion = useCallback((tabId: string) => {
-        const nextVersion = (tabSessionVersionRef.current.get(tabId) ?? 0) + 1;
-        tabSessionVersionRef.current.set(tabId, nextVersion);
-        return nextVersion;
+        return allocateTabSessionVersion(
+            tabSessionVersionRef.current,
+            nextTabSessionVersionRef,
+            tabId,
+        );
     }, []);
 
     const invalidateTabSessionRequest = useCallback(
@@ -310,16 +318,20 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
         [invalidateTabSessionRequest],
     );
 
+    const deleteTabSessionTracking = useCallback((tabId: string) => {
+        deleteTabSessionVersions(tabSessionVersionRef.current, [tabId]);
+    }, []);
+
+    const deleteTabSessionTrackings = useCallback((tabIds: string[]) => {
+        deleteTabSessionVersions(tabSessionVersionRef.current, tabIds);
+    }, []);
+
     const closeTrackedSessionIds = useCallback(async (sessionIds: string[]) => {
-        const nextSessionIds = [...new Set(sessionIds)].filter((sessionId) => {
-            if (!sessionId) return false;
-            if (retiredSessionIdsRef.current.has(sessionId)) {
-                return false;
-            }
-            retiredSessionIdsRef.current.add(sessionId);
-            pendingOutputRef.current.delete(sessionId);
-            return true;
-        });
+        const nextSessionIds = collectSessionIdsToClose(
+            sessionIds,
+            retiredSessionIdsRef.current,
+            pendingOutputRef.current,
+        );
 
         if (nextSessionIds.length === 0) {
             return;
@@ -528,6 +540,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             tabsRef.current = nextTabs;
             activeTabIdRef.current = nextActiveTabId;
             invalidateTabSessionRequest(tabId);
+            deleteTabSessionTracking(tabId);
             setTabs(nextTabs);
             setActiveTabId(nextActiveTabId);
 
@@ -539,7 +552,12 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                 await openTab();
             }
         },
-        [closeTrackedSessionIds, invalidateTabSessionRequest, openTab],
+        [
+            closeTrackedSessionIds,
+            deleteTabSessionTracking,
+            invalidateTabSessionRequest,
+            openTab,
+        ],
     );
 
     const closeOtherTabs = useCallback(
@@ -558,6 +576,11 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                     .filter((tab) => tab.id !== tabId)
                     .map((tab) => tab.id),
             );
+            deleteTabSessionTrackings(
+                currentTabs
+                    .filter((tab) => tab.id !== tabId)
+                    .map((tab) => tab.id),
+            );
             tabsRef.current = [preservedTab];
             activeTabIdRef.current = tabId;
             setTabs([preservedTab]);
@@ -567,7 +590,11 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                 await closeTrackedSessionIds(closingSessionIds);
             }
         },
-        [closeTrackedSessionIds, invalidateTabSessionRequests],
+        [
+            closeTrackedSessionIds,
+            deleteTabSessionTrackings,
+            invalidateTabSessionRequests,
+        ],
     );
 
     const restartTab = useCallback(
@@ -813,7 +840,9 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             const previousSessionIds = tabsRef.current
                 .map((tab) => tab.sessionId)
                 .filter((sessionId): sessionId is string => Boolean(sessionId));
-            invalidateTabSessionRequests(tabsRef.current.map((tab) => tab.id));
+            const previousTabIds = tabsRef.current.map((tab) => tab.id);
+            invalidateTabSessionRequests(previousTabIds);
+            deleteTabSessionTrackings(previousTabIds);
 
             if (previousSessionIds.length > 0) {
                 await closeTrackedSessionIds(previousSessionIds);
@@ -863,6 +892,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
         };
     }, [
         closeTrackedSessionIds,
+        deleteTabSessionTrackings,
         enabled,
         invalidateTabSessionRequests,
         vaultPath,
@@ -921,12 +951,22 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
             const sessionIds = tabsRef.current
                 .map((tab) => tab.sessionId)
                 .filter((sessionId): sessionId is string => Boolean(sessionId));
-            invalidateTabSessionRequests(tabsRef.current.map((tab) => tab.id));
+            const tabIds = tabsRef.current.map((tab) => tab.id);
+            invalidateTabSessionRequests(tabIds);
+            deleteTabSessionTrackings(tabIds);
             if (sessionIds.length > 0) {
                 void closeTrackedSessionIds(sessionIds);
             }
+
+            pendingOutputRef.current.clear();
+            tabSessionVersionRef.current.clear();
+            retiredSessionIdsRef.current.clear();
         },
-        [closeTrackedSessionIds, invalidateTabSessionRequests],
+        [
+            closeTrackedSessionIds,
+            deleteTabSessionTrackings,
+            invalidateTabSessionRequests,
+        ],
     );
 
     const activeTab = useMemo(

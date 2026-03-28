@@ -11,6 +11,7 @@ import {
     type DecorationSet,
     WidgetType,
 } from "@codemirror/view";
+import { LruCache } from "../lruCache";
 import type {
     ReviewChunk,
     ReviewChunkId,
@@ -38,7 +39,10 @@ const DENSE_CONTROL_COMPACT_OFFSET_PX = 18;
 const DENSE_CONTROL_COMPACT_COLUMN_PX = 96;
 const MAX_DENSE_SLOT = 2;
 const DENSE_COMPACT_THRESHOLD = 3;
-const outOfRangeControlWarningKeys = new Set<string>();
+const MAX_OUT_OF_RANGE_CONTROL_WARNING_KEYS = 256;
+const outOfRangeControlWarningKeys = new LruCache<string, true>(
+    MAX_OUT_OF_RANGE_CONTROL_WARNING_KEYS,
+);
 
 type ReviewControlEntry =
     | {
@@ -592,11 +596,11 @@ function warnControlOutOfRange(entry: ReviewControlEntry, docLines: number) {
         entry.endLine,
         docLines,
     ].join("|");
-    if (outOfRangeControlWarningKeys.has(warningKey)) {
+    if (outOfRangeControlWarningKeys.get(warningKey)) {
         return;
     }
 
-    outOfRangeControlWarningKeys.add(warningKey);
+    outOfRangeControlWarningKeys.set(warningKey, true);
     console.warn("[merge-inline] skipping out-of-range inline control", {
         controlId: entry.controlId,
         chunkId: entry.chunkId.key,
@@ -858,6 +862,8 @@ const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
             typeof document !== "undefined" && "fonts" in document
                 ? (document.fonts as FontFaceSet)
                 : null;
+        private destroyed = false;
+        private refreshFrame: number | null = null;
         private refreshScheduled = false;
         private lastGeometryKey: string;
         private readonly handleWindowResize = () => {
@@ -926,7 +932,7 @@ const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
                 );
                 this.fontSet.ready
                     .then(() => {
-                        if (this.view.dom.isConnected) {
+                        if (!this.destroyed && this.view.dom.isConnected) {
                             this.scheduleRefresh();
                         }
                     })
@@ -963,15 +969,16 @@ const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
         }
 
         private scheduleRefresh() {
-            if (this.refreshScheduled) {
+            if (this.destroyed || this.refreshScheduled) {
                 return;
             }
 
             this.refreshScheduled = true;
-            requestAnimationFrame(() => {
+            this.refreshFrame = requestAnimationFrame(() => {
+                this.refreshFrame = null;
                 this.refreshScheduled = false;
 
-                if (!this.view.dom.isConnected) {
+                if (this.destroyed || !this.view.dom.isConnected) {
                     return;
                 }
 
@@ -990,6 +997,12 @@ const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
         }
 
         destroy() {
+            this.destroyed = true;
+            if (this.refreshFrame !== null) {
+                cancelAnimationFrame(this.refreshFrame);
+                this.refreshFrame = null;
+            }
+            this.refreshScheduled = false;
             this.resizeObserver?.disconnect();
             this.mutationObserver?.disconnect();
             if (this.fontSet) {

@@ -782,6 +782,110 @@ describe("editorStore tab history mode", () => {
         });
     });
 
+    it("handleNoteDeleted removes reload and conflict state even when the note is not open", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-b",
+                    noteId: "notes/b",
+                    title: "B",
+                    content: "Body B",
+                }),
+            ],
+            activeTabId: "tab-b",
+            activationHistory: ["tab-b"],
+            tabNavigationHistory: ["tab-b"],
+            tabNavigationIndex: 0,
+            _pendingForceReloads: new Set(["notes/a", "notes/b"]),
+            _noteReloadVersions: {
+                "notes/a": 2,
+                "notes/b": 1,
+            },
+            _noteReloadMetadata: {
+                "notes/a": {
+                    origin: "external",
+                    revision: 2,
+                    opId: "external-2",
+                    contentHash: null,
+                },
+                "notes/b": {
+                    origin: "external",
+                    revision: 1,
+                    opId: "external-1",
+                    contentHash: null,
+                },
+            },
+            noteExternalConflicts: new Set(["notes/a"]),
+        });
+
+        useEditorStore.getState().handleNoteDeleted("notes/a");
+
+        const state = useEditorStore.getState();
+        expect(state.tabs).toHaveLength(1);
+        expect(state.activeTabId).toBe("tab-b");
+        expect(state._pendingForceReloads.has("notes/a")).toBe(false);
+        expect(state._pendingForceReloads.has("notes/b")).toBe(true);
+        expect(state._noteReloadVersions["notes/a"]).toBeUndefined();
+        expect(state._noteReloadVersions["notes/b"]).toBe(1);
+        expect(state._noteReloadMetadata["notes/a"]).toBeUndefined();
+        expect(state._noteReloadMetadata["notes/b"]).toMatchObject({
+            origin: "external",
+            revision: 1,
+            opId: "external-1",
+        });
+        expect(state.noteExternalConflicts.has("notes/a")).toBe(false);
+    });
+
+    it("handleNoteDeleted removes reload state and closes matching note tabs", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Body A",
+                }),
+                makeTab({
+                    id: "tab-b",
+                    noteId: "notes/b",
+                    title: "B",
+                    content: "Body B",
+                }),
+            ],
+            activeTabId: "tab-a",
+            activationHistory: ["tab-a", "tab-b"],
+            tabNavigationHistory: ["tab-a"],
+            tabNavigationIndex: 0,
+            _pendingForceReloads: new Set(["notes/a"]),
+            _noteReloadVersions: {
+                "notes/a": 3,
+            },
+            _noteReloadMetadata: {
+                "notes/a": {
+                    origin: "agent",
+                    revision: 3,
+                    opId: "agent-3",
+                    contentHash: null,
+                },
+            },
+            noteExternalConflicts: new Set(["notes/a"]),
+        });
+
+        useEditorStore.getState().handleNoteDeleted("notes/a");
+
+        const state = useEditorStore.getState();
+        expect(state.tabs).toHaveLength(1);
+        expect(state.tabs[0]).toMatchObject({
+            id: "tab-b",
+            noteId: "notes/b",
+        });
+        expect(state.activeTabId).toBe("tab-b");
+        expect(state._pendingForceReloads.has("notes/a")).toBe(false);
+        expect(state._noteReloadVersions["notes/a"]).toBeUndefined();
+        expect(state._noteReloadMetadata["notes/a"]).toBeUndefined();
+        expect(state.noteExternalConflicts.has("notes/a")).toBe(false);
+    });
+
     it("openPdf reuses the active pdf tab and restores pdf state through history", () => {
         useEditorStore.setState({
             tabs: [

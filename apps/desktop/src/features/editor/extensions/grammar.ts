@@ -137,9 +137,7 @@ function maskExcludedText(text: string, excludedRanges: ExcludedRange[]) {
             masked += text.slice(cursor, range.from);
         }
 
-        masked += text
-            .slice(range.from, range.to)
-            .replace(/[^\n\r]/g, " ");
+        masked += text.slice(range.from, range.to).replace(/[^\n\r]/g, " ");
         cursor = range.to;
     }
 
@@ -164,9 +162,7 @@ function findPreferredChunkBoundary(
         from +
             Math.max(
                 1,
-                Math.floor(
-                    (hardEnd - from) * CHUNK_BREAK_SEARCH_FRACTION,
-                ),
+                Math.floor((hardEnd - from) * CHUNK_BREAK_SEARCH_FRACTION),
             ),
     );
     const searchWindow = text.slice(preferredStart, hardEnd);
@@ -188,14 +184,19 @@ function findPreferredChunkBoundary(
     return hardEnd;
 }
 
-function buildGrammarDocumentSnapshot(view: EditorView): GrammarDocumentSnapshot {
+function buildGrammarDocumentSnapshot(
+    view: EditorView,
+): GrammarDocumentSnapshot {
     const text = view.state.doc.toString();
     const maskedText = maskExcludedText(text, collectExcludedRanges(view));
     const chunks: GrammarDocumentChunk[] = [];
     let from = 0;
 
     while (from < maskedText.length) {
-        while (from < maskedText.length && !/\S/u.test(maskedText[from] ?? "")) {
+        while (
+            from < maskedText.length &&
+            !/\S/u.test(maskedText[from] ?? "")
+        ) {
             from += 1;
         }
 
@@ -263,16 +264,38 @@ function setCachedGrammar(
 }
 
 const activeDiagnostics = new Map<string, ResolvedGrammarDiagnostic[]>();
+let activeGrammarDiagnosticsNoteId: string | null = null;
+
+function setCurrentActiveGrammarDiagnosticsNote(noteId: string | null) {
+    activeGrammarDiagnosticsNoteId = noteId;
+
+    if (noteId === null) {
+        activeDiagnostics.clear();
+        return;
+    }
+
+    for (const cachedNoteId of activeDiagnostics.keys()) {
+        if (cachedNoteId !== noteId) {
+            activeDiagnostics.delete(cachedNoteId);
+        }
+    }
+}
 
 function setActiveDiagnostics(
     noteId: string,
     diagnostics: ResolvedGrammarDiagnostic[],
 ) {
+    if (activeGrammarDiagnosticsNoteId !== noteId) {
+        return;
+    }
     activeDiagnostics.set(noteId, diagnostics);
 }
 
 function clearActiveDiagnostics(noteId: string) {
     activeDiagnostics.delete(noteId);
+    if (activeGrammarDiagnosticsNoteId === noteId) {
+        activeGrammarDiagnosticsNoteId = null;
+    }
 }
 
 export function findGrammarDiagnosticsAt(noteId: string, pos: number) {
@@ -291,17 +314,60 @@ export function findGrammarDiagnosticAt(
 const rateLimitedUntilByServer = new Map<string, number>();
 const RATE_LIMIT_BACKOFF_MS = 30_000;
 
-function isRateLimited(serverUrl: string): boolean {
-    const until =
-        rateLimitedUntilByServer.get(normalizeGrammarServerUrl(serverUrl)) ?? 0;
-    return Date.now() < until;
+function pruneExpiredGrammarRateLimits(nowMs: number) {
+    for (const [serverUrl, until] of rateLimitedUntilByServer.entries()) {
+        if (until <= nowMs) {
+            rateLimitedUntilByServer.delete(serverUrl);
+        }
+    }
 }
 
-function markRateLimited(serverUrl: string) {
+export function isGrammarServerRateLimited(
+    serverUrl: string,
+    nowMs = Date.now(),
+): boolean {
+    pruneExpiredGrammarRateLimits(nowMs);
+    const until =
+        rateLimitedUntilByServer.get(normalizeGrammarServerUrl(serverUrl)) ?? 0;
+    return nowMs < until;
+}
+
+export function markGrammarServerRateLimited(
+    serverUrl: string,
+    nowMs = Date.now(),
+) {
+    pruneExpiredGrammarRateLimits(nowMs);
     rateLimitedUntilByServer.set(
         normalizeGrammarServerUrl(serverUrl),
-        Date.now() + RATE_LIMIT_BACKOFF_MS,
+        nowMs + RATE_LIMIT_BACKOFF_MS,
     );
+}
+
+export function getGrammarRateLimitedServerCountForTests(nowMs = Date.now()) {
+    pruneExpiredGrammarRateLimits(nowMs);
+    return rateLimitedUntilByServer.size;
+}
+
+export function resetGrammarRateLimitsForTests() {
+    rateLimitedUntilByServer.clear();
+}
+
+export function resetActiveGrammarDiagnosticsForTests() {
+    activeDiagnostics.clear();
+    activeGrammarDiagnosticsNoteId = null;
+}
+
+export function setCurrentActiveGrammarDiagnosticsNoteForTests(
+    noteId: string | null,
+) {
+    setCurrentActiveGrammarDiagnosticsNote(noteId);
+}
+
+export function setActiveGrammarDiagnosticsForTests(
+    noteId: string,
+    diagnostics: ResolvedGrammarDiagnostic[],
+) {
+    setActiveDiagnostics(noteId, diagnostics);
 }
 
 function buildResolvedGrammarDiagnostics(
@@ -384,7 +450,8 @@ const grammarTooltipTheme = EditorView.baseTheme({
     ".cm-grammar-tooltip-item + .cm-grammar-tooltip-item": {
         marginTop: "6px",
         paddingTop: "6px",
-        borderTop: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+        borderTop:
+            "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
     },
     ".cm-grammar-tooltip-message": {
         color: "var(--text-primary)",
@@ -404,9 +471,11 @@ export function getGrammarEditorExtension({
     serverUrl,
 }: GrammarExtensionOptions) {
     if (!enabled || typeof noteId !== "string" || noteId.length === 0) {
+        setCurrentActiveGrammarDiagnosticsNote(null);
         return [];
     }
     const activeNoteId = noteId;
+    setCurrentActiveGrammarDiagnosticsNote(activeNoteId);
 
     const plugin = ViewPlugin.fromClass(
         class {
@@ -477,9 +546,7 @@ export function getGrammarEditorExtension({
                 }
             }
 
-            private applyDiagnostics(
-                diagnostics: ResolvedGrammarDiagnostic[],
-            ) {
+            private applyDiagnostics(diagnostics: ResolvedGrammarDiagnostic[]) {
                 setActiveDiagnostics(activeNoteId, diagnostics);
                 this.decorations = buildGrammarDecorations(diagnostics);
                 this.view.dispatch({});
@@ -507,7 +574,7 @@ export function getGrammarEditorExtension({
                     return;
                 }
 
-                if (isRateLimited(serverUrl)) {
+                if (isGrammarServerRateLimited(serverUrl)) {
                     return;
                 }
 
@@ -541,10 +608,7 @@ export function getGrammarEditorExtension({
                             left.from - right.from || left.to - right.to,
                     );
 
-                    if (
-                        this.destroyed ||
-                        revision !== this.scheduledRevision
-                    ) {
+                    if (this.destroyed || revision !== this.scheduledRevision) {
                         return;
                     }
 
@@ -561,7 +625,7 @@ export function getGrammarEditorExtension({
                         message.includes("429") ||
                         message.includes("Too Many")
                     ) {
-                        markRateLimited(serverUrl);
+                        markGrammarServerRateLimited(serverUrl);
                     }
 
                     this.decorations = Decoration.none;

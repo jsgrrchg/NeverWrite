@@ -98,9 +98,17 @@ export function TagsPanel() {
     // Refetch when the persisted vault contents may have changed.
     useEffect(() => {
         if (!vaultPath) return;
+        let cancelled = false;
         void vaultInvoke<TagEntry[]>("get_tags")
-            .then(setTags)
+            .then((nextTags) => {
+                if (cancelled) return;
+                setTags(nextTags);
+            })
             .catch(console.error);
+
+        return () => {
+            cancelled = true;
+        };
     }, [vaultPath, tagsRevision]);
 
     const toggleFilter = useCallback(() => {

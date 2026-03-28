@@ -25,6 +25,7 @@ import type {
     AIRuntimeSetupStatus,
     AISessionErrorPayload,
     PersistedSessionHistory,
+    PersistedSessionHistoryPage,
 } from "./types";
 
 const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] = [
@@ -668,9 +669,27 @@ export async function aiSaveSessionHistory(
 
 export async function aiLoadSessionHistories(
     vaultPath: string,
+    options?: {
+        includeMessages?: boolean;
+    },
 ): Promise<PersistedSessionHistory[]> {
     return invoke<PersistedSessionHistory[]>("ai_load_session_histories", {
         vaultPath,
+        includeMessages: options?.includeMessages ?? true,
+    });
+}
+
+export async function aiLoadSessionHistoryPage(
+    vaultPath: string,
+    sessionId: string,
+    startIndex: number,
+    limit: number,
+): Promise<PersistedSessionHistoryPage> {
+    return invoke<PersistedSessionHistoryPage>("ai_load_session_history_page", {
+        vaultPath,
+        sessionId,
+        startIndex,
+        limit,
     });
 }
 

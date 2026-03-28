@@ -18,6 +18,11 @@ import type { ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
 import { useChatStore } from "../store/chatStore";
 import {
+    resolveChatRowUiSessionId,
+    useChatRowUiStore,
+    type ChatRowUiState,
+} from "../store/chatRowUiStore";
+import {
     DIFF_ZOOM_MAX,
     DIFF_ZOOM_MIN,
     DIFF_ZOOM_STEP,
@@ -224,6 +229,7 @@ function UserTextMessage({
 
 interface AIChatMessageItemProps {
     message: AIChatMessage;
+    sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
     visibleWorkCycleId?: string | null;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
@@ -235,6 +241,56 @@ interface AIChatMessageItemProps {
 
 function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
+}
+
+function useChatRowUiEntry(
+    sessionId: string | null | undefined,
+    messageId: string,
+) {
+    const resolvedSessionId = resolveChatRowUiSessionId(sessionId);
+    const rowState = useChatRowUiStore(
+        (state) => state.rowsBySessionId[resolvedSessionId]?.[messageId],
+    );
+    const patchRow = useChatRowUiStore((state) => state.patchRow);
+
+    const updateRow = useCallback(
+        (
+            patch:
+                | Partial<ChatRowUiState>
+                | ((current: ChatRowUiState) => Partial<ChatRowUiState>),
+        ) => {
+            patchRow(resolvedSessionId, messageId, patch);
+        },
+        [messageId, patchRow, resolvedSessionId],
+    );
+
+    return {
+        rowState,
+        updateRow,
+    };
+}
+
+function useStoredRowExpanded(
+    sessionId: string | null | undefined,
+    messageId: string,
+    fallback: boolean,
+) {
+    const { rowState, updateRow } = useChatRowUiEntry(sessionId, messageId);
+    const expanded = rowState?.expanded ?? fallback;
+
+    const setExpanded = useCallback(
+        (value: boolean | ((current: boolean) => boolean)) => {
+            updateRow((current) => ({
+                expanded:
+                    typeof value === "function"
+                        ? value(current.expanded ?? fallback)
+                        : value,
+            }));
+        },
+        [fallback, updateRow],
+    );
+
+    return [expanded, setExpanded] as const;
 }
 
 function shouldShowDiffReview(
@@ -252,8 +308,18 @@ function shouldShowDiffReview(
     return message.workCycleId === visibleWorkCycleId;
 }
 
-function ThinkingMessage({ message }: { message: AIChatMessage }) {
-    const [expanded, setExpanded] = useState(false);
+function ThinkingMessage({
+    message,
+    sessionId,
+}: {
+    message: AIChatMessage;
+    sessionId?: string | null;
+}) {
+    const [expanded, setExpanded] = useStoredRowExpanded(
+        sessionId,
+        message.id,
+        false,
+    );
     const content = stripMarkdownBold(message.content).trim();
 
     return (
@@ -380,8 +446,18 @@ function ToolIcon({ kind }: { kind?: string }) {
 }
 
 /** Compact card for file-mutating tools (edit, delete, move). */
-function FileToolMessage({ message }: { message: AIChatMessage }) {
-    const [expanded, setExpanded] = useState(false);
+function FileToolMessage({
+    message,
+    sessionId,
+}: {
+    message: AIChatMessage;
+    sessionId?: string | null;
+}) {
+    const [expanded, setExpanded] = useStoredRowExpanded(
+        sessionId,
+        message.id,
+        false,
+    );
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
     const toolKind = String(message.meta?.tool ?? "edit");
@@ -626,12 +702,18 @@ function FileToolMessage({ message }: { message: AIChatMessage }) {
 
 function ToolMessage({
     message,
+    sessionId,
     showDiffReview = true,
 }: {
     message: AIChatMessage;
+    sessionId?: string | null;
     showDiffReview?: boolean;
 }) {
-    const [expanded, setExpanded] = useState(false);
+    const [expanded, setExpanded] = useStoredRowExpanded(
+        sessionId,
+        message.id,
+        false,
+    );
     const toolKind = String(message.meta?.tool ?? "");
     const target = message.meta?.target ? String(message.meta.target) : null;
     const shortTarget = target?.split("/").pop() ?? null;
@@ -645,17 +727,17 @@ function ToolMessage({
     }
 
     if (showDiffReview && message.diffs && message.diffs.length > 0) {
-        return <ChangeReviewPanel message={message} />;
+        return <ChangeReviewPanel message={message} sessionId={sessionId} />;
     }
 
     // File-mutating tools get card treatment
     if (toolKind === "edit" || toolKind === "delete" || toolKind === "move") {
-        return <FileToolMessage message={message} />;
+        return <FileToolMessage message={message} sessionId={sessionId} />;
     }
 
     // Read/search tools with a file target get card treatment
     if ((toolKind === "read" || toolKind === "search") && target) {
-        return <FileToolMessage message={message} />;
+        return <FileToolMessage message={message} sessionId={sessionId} />;
     }
 
     // Show detail content if it differs from the label (e.g. long shell commands)
@@ -733,12 +815,18 @@ function ToolMessage({
 
 export function PlanMessage({
     message,
+    sessionId,
     pillMetrics,
 }: {
     message: AIChatMessage;
+    sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
 }) {
-    const [expanded, setExpanded] = useState(true);
+    const [expanded, setExpanded] = useStoredRowExpanded(
+        sessionId,
+        message.id,
+        true,
+    );
     const entries = message.planEntries ?? [];
     const detail = message.planDetail?.trim() || null;
     const completedCount = entries.filter(
@@ -1352,17 +1440,22 @@ function ChangeReviewFileRow({
 }
 
 function ChangeReviewFileList({
+    sessionId,
+    messageId,
     diffs,
     accent,
     diffZoom,
     lineWrapping,
 }: {
+    sessionId?: string | null;
+    messageId: string;
     diffs: AIFileDiff[];
     accent: string;
     diffZoom: number;
     lineWrapping: boolean;
 }) {
-    const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+    const { rowState, updateRow } = useChatRowUiEntry(sessionId, messageId);
+    const expanded = rowState?.diffExpandedByPath ?? {};
 
     return (
         <div className="flex flex-col">
@@ -1376,9 +1469,14 @@ function ChangeReviewFileList({
                         lineWrapping={lineWrapping}
                         expanded={expanded[diff.path] ?? false}
                         onToggle={() =>
-                            setExpanded((prev) => ({
-                                ...prev,
-                                [diff.path]: !prev[diff.path],
+                            updateRow((current) => ({
+                                diffExpandedByPath: {
+                                    ...(current.diffExpandedByPath ?? {}),
+                                    [diff.path]:
+                                        !current.diffExpandedByPath?.[
+                                            diff.path
+                                        ],
+                                },
                             }))
                         }
                     />
@@ -1498,9 +1596,11 @@ function HistoricalDiffSummaryMessage({ message }: { message: AIChatMessage }) {
 
 function ChangeReviewPanel({
     message,
+    sessionId,
     onPermissionResponse,
 }: {
     message: AIChatMessage;
+    sessionId?: string | null;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
     const diffs = message.diffs ?? [];
@@ -1564,7 +1664,8 @@ function ChangeReviewPanel({
         : null;
     const displayStats =
         isSingleFile && singleFileStats ? singleFileStats : stats;
-    const [singleDiffExpanded, setSingleDiffExpanded] = useState(false);
+    const { rowState, updateRow } = useChatRowUiEntry(sessionId, message.id);
+    const singleDiffExpanded = rowState?.singleDiffExpanded ?? false;
     const [openFileContextMenu, setOpenFileContextMenu] =
         useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
     return (
@@ -1582,7 +1683,12 @@ function ChangeReviewPanel({
                 tabIndex={isSingleFile ? 0 : undefined}
                 onClick={
                     isSingleFile
-                        ? () => setSingleDiffExpanded((p) => !p)
+                        ? () =>
+                              updateRow((current) => ({
+                                  singleDiffExpanded: !(
+                                      current.singleDiffExpanded ?? false
+                                  ),
+                              }))
                         : undefined
                 }
                 onKeyDown={
@@ -1590,7 +1696,11 @@ function ChangeReviewPanel({
                         ? (e) => {
                               if (e.key === "Enter" || e.key === " ") {
                                   e.preventDefault();
-                                  setSingleDiffExpanded((p) => !p);
+                                  updateRow((current) => ({
+                                      singleDiffExpanded: !(
+                                          current.singleDiffExpanded ?? false
+                                      ),
+                                  }));
                               }
                           }
                         : undefined
@@ -1879,6 +1989,8 @@ function ChangeReviewPanel({
             {/* File list with expandable diffs (multi-file only) */}
             {!isSingleFile && (
                 <ChangeReviewFileList
+                    sessionId={sessionId}
+                    messageId={message.id}
                     diffs={diffs}
                     accent={accent}
                     diffZoom={editDiffZoom}
@@ -2019,11 +2131,13 @@ function ErrorMessage({ message }: { message: AIChatMessage }) {
 
 function PermissionMessage({
     message,
+    sessionId,
     pillMetrics,
     showDiffReview = true,
     onPermissionResponse,
 }: {
     message: AIChatMessage;
+    sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
     showDiffReview?: boolean;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
@@ -2037,7 +2151,11 @@ function PermissionMessage({
     const isLong = details.length > MAX_PREVIEW;
     const hasLongTitle = title.length > MAX_HEADER_PREVIEW;
     const canExpand = hasLongTitle || isLong;
-    const [expanded, setExpanded] = useState(() => !canExpand);
+    const [expanded, setExpanded] = useStoredRowExpanded(
+        sessionId,
+        message.id,
+        !canExpand,
+    );
 
     if (shouldRenderHistoricalDiffSummary(message, showDiffReview)) {
         return <HistoricalDiffSummaryMessage message={message} />;
@@ -2048,6 +2166,7 @@ function PermissionMessage({
         return (
             <ChangeReviewPanel
                 message={message}
+                sessionId={sessionId}
                 onPermissionResponse={onPermissionResponse}
             />
         );
@@ -2297,9 +2416,11 @@ function PermissionMessage({
 
 function UserInputRequestMessage({
     message,
+    sessionId,
     onUserInputResponse,
 }: {
     message: AIChatMessage;
+    sessionId?: string | null;
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
@@ -2310,13 +2431,10 @@ function UserInputRequestMessage({
     const isPending = status === "pending";
     const isResponding = status === "responding";
     const isResolved = status === "resolved";
-    const [selectedOptions, setSelectedOptions] = useState<
-        Record<string, string>
-    >({});
-    const [textAnswers, setTextAnswers] = useState<Record<string, string>>({});
-    const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>(
-        {},
-    );
+    const { rowState, updateRow } = useChatRowUiEntry(sessionId, message.id);
+    const selectedOptions = rowState?.userInputSelectedOptions ?? {};
+    const textAnswers = rowState?.userInputTextAnswers ?? {};
+    const otherAnswers = rowState?.userInputOtherAnswers ?? {};
 
     const submitAnswers = (cancelled = false) => {
         if (!message.userInputRequestId) return;
@@ -2432,13 +2550,15 @@ function UserInputRequestMessage({
                                                 type="button"
                                                 disabled={!isPending}
                                                 onClick={() =>
-                                                    setSelectedOptions(
-                                                        (current) => ({
-                                                            ...current,
-                                                            [question.id]:
-                                                                option.label,
-                                                        }),
-                                                    )
+                                                    updateRow((current) => ({
+                                                        userInputSelectedOptions:
+                                                            {
+                                                                ...(current.userInputSelectedOptions ??
+                                                                    {}),
+                                                                [question.id]:
+                                                                    option.label,
+                                                            },
+                                                    }))
                                                 }
                                                 className="rounded-md px-2.5 py-1 text-left transition-colors"
                                                 style={{
@@ -2474,9 +2594,13 @@ function UserInputRequestMessage({
                                     value={textValue}
                                     disabled={!isPending}
                                     onChange={(event) =>
-                                        setTextAnswers((current) => ({
-                                            ...current,
-                                            [question.id]: event.target.value,
+                                        updateRow((current) => ({
+                                            userInputTextAnswers: {
+                                                ...(current.userInputTextAnswers ??
+                                                    {}),
+                                                [question.id]:
+                                                    event.target.value,
+                                            },
                                         }))
                                     }
                                     className="w-full rounded-md px-2.5 py-2"
@@ -2494,9 +2618,13 @@ function UserInputRequestMessage({
                                     value={otherValue}
                                     disabled={!isPending}
                                     onChange={(event) =>
-                                        setOtherAnswers((current) => ({
-                                            ...current,
-                                            [question.id]: event.target.value,
+                                        updateRow((current) => ({
+                                            userInputOtherAnswers: {
+                                                ...(current.userInputOtherAnswers ??
+                                                    {}),
+                                                [question.id]:
+                                                    event.target.value,
+                                            },
                                         }))
                                     }
                                     placeholder="Additional note"
@@ -2579,6 +2707,7 @@ function UserInputRequestMessage({
 
 export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
+    sessionId,
     pillMetrics,
     visibleWorkCycleId = null,
     onPermissionResponse,
@@ -2593,18 +2722,28 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     // Thinking — collapsible single line
     if (message.kind === "thinking") {
-        return <ThinkingMessage message={message} />;
+        return <ThinkingMessage message={message} sessionId={sessionId} />;
     }
 
     // Tool activity — subtle one-liner
     if (message.kind === "tool") {
         return (
-            <ToolMessage message={message} showDiffReview={showDiffReview} />
+            <ToolMessage
+                message={message}
+                sessionId={sessionId}
+                showDiffReview={showDiffReview}
+            />
         );
     }
 
     if (message.kind === "plan") {
-        return <PlanMessage message={message} pillMetrics={pillMetrics} />;
+        return (
+            <PlanMessage
+                message={message}
+                sessionId={sessionId}
+                pillMetrics={pillMetrics}
+            />
+        );
     }
 
     if (message.kind === "status") {
@@ -2621,6 +2760,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
         return (
             <PermissionMessage
                 message={message}
+                sessionId={sessionId}
                 pillMetrics={pillMetrics}
                 showDiffReview={showDiffReview}
                 onPermissionResponse={onPermissionResponse}
@@ -2632,6 +2772,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
         return (
             <UserInputRequestMessage
                 message={message}
+                sessionId={sessionId}
                 onUserInputResponse={onUserInputResponse}
             />
         );

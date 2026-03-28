@@ -223,6 +223,33 @@ export interface AIAvailableCommandsPayload {
     commands: AIAvailableCommand[];
 }
 
+export type AIBufferedSessionTimelineEvent =
+    | {
+          type: "tool_activity";
+          payload: AIToolActivityPayload;
+          timestamp: number;
+      }
+    | {
+          type: "status_event";
+          payload: AIStatusEventPayload;
+          timestamp: number;
+      }
+    | {
+          type: "plan_update";
+          payload: AIPlanUpdatePayload;
+          timestamp: number;
+      }
+    | {
+          type: "permission_request";
+          payload: AIPermissionRequestPayload;
+          timestamp: number;
+      }
+    | {
+          type: "user_input_request";
+          payload: AIUserInputRequestPayload;
+          timestamp: number;
+      };
+
 export interface AIChatMessage {
     id: string;
     role: AIChatRole;
@@ -261,6 +288,24 @@ export interface AIChatSession {
     configOptions: AIConfigOption[];
     availableCommands?: AIAvailableCommand[];
     messages: AIChatMessage[];
+    persistedCreatedAt?: number | null;
+    persistedUpdatedAt?: number | null;
+    persistedTitle?: string | null;
+    persistedPreview?: string | null;
+    persistedMessageCount?: number;
+    loadedPersistedMessageStart?: number | null;
+    isLoadingPersistedMessages?: boolean;
+    /**
+     * Internal transcript normalization layer.
+     * `messages` remains the public shape for current consumers.
+     */
+    messageOrder?: string[];
+    messagesById?: Record<string, AIChatMessage>;
+    /** Internal O(1) lookup for in-place row replacement. */
+    messageIndexById?: Record<string, number>;
+    lastAssistantMessageId?: string | null;
+    lastTurnStartedMessageId?: string | null;
+    activePlanMessageId?: string | null;
     attachments: AIChatAttachment[];
     isPersistedSession?: boolean;
     resumeContextPending?: boolean;
@@ -507,5 +552,17 @@ export interface PersistedSessionHistory {
     mode_id: string;
     created_at: number;
     updated_at: number;
+    start_index?: number;
+    message_count?: number;
+    title?: string;
+    preview?: string;
+    messages: PersistedMessage[];
+}
+
+export interface PersistedSessionHistoryPage {
+    session_id: string;
+    total_messages: number;
+    start_index: number;
+    end_index: number;
     messages: PersistedMessage[];
 }

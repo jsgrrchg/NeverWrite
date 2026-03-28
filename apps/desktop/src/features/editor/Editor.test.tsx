@@ -1,6 +1,7 @@
 import { act, fireEvent, screen } from "@testing-library/react";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorSelection } from "@codemirror/state";
+import { undo } from "@codemirror/commands";
 import { EditorView, keymap } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
@@ -1962,6 +1963,85 @@ describe("Editor", () => {
             "save_note",
             expect.anything(),
         );
+    });
+
+    it("preserves undo history for notes still reachable from an open tab history", async () => {
+        vi.useFakeTimers();
+        mockInvoke().mockImplementation(async (command, args) => {
+            if (command === "save_note") {
+                return {
+                    id: String(args?.noteId ?? ""),
+                    path: `/${String(args?.noteId ?? "")}.md`,
+                    title:
+                        args?.noteId === "notes/current" ? "Current" : "Next",
+                    content: String(args?.content ?? ""),
+                };
+            }
+            return undefined;
+        });
+
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Original",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+
+        renderComponent(<Editor />);
+
+        let view = getEditorView();
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: "!",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await flushPromises();
+        });
+
+        await act(async () => {
+            useEditorStore
+                .getState()
+                .openNote("notes/next", "Next", "Next body");
+            await flushPromises();
+        });
+
+        expect(getEditorView().state.doc.toString()).toBe("Next body");
+
+        await act(async () => {
+            useEditorStore.getState().closeTab("tab-2", { reason: "user" });
+            await flushPromises();
+        });
+
+        await act(async () => {
+            useEditorStore.getState().goBack();
+            await flushPromises();
+        });
+
+        view = getEditorView();
+        expect(view.state.doc.toString()).toBe("Original!");
+        expect(undo(view)).toBe(true);
+        expect(view.state.doc.toString()).toBe("Original");
+
+        vi.clearAllTimers();
+        vi.useRealTimers();
     });
 
     it("recreates the editor view and shows the next note immediately on tab switch", async () => {

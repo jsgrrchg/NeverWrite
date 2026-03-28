@@ -28,6 +28,7 @@ import {
 import {
     useEditorStore,
     isFileTab,
+    type Tab,
     type FileTab,
 } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -50,6 +51,12 @@ import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
 import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
 import { subscribeEditorReviewSync } from "./editorReviewSync";
 import { shouldEnableInlineReviewMergeView } from "./editorReviewGate";
+import {
+    buildLiveFilePathCacheKey,
+    clearFilePathStateCaches,
+    pruneFilePathStateCaches,
+    type FilePathStateCacheCollection,
+} from "./filePathStateCache";
 
 type SavedVaultFileDetail = {
     relative_path: string;
@@ -102,6 +109,8 @@ export function FileTextTabView() {
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const sessionsById = useChatStore((state) => state.sessionsById);
+    const lastLiveFilePathCacheKeyRef = useRef<string | null>(null);
+    const lastVaultPathRef = useRef<string | null>(vaultPath);
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;
     const trackedFileMatch = tab
@@ -117,6 +126,45 @@ export function FileTextTabView() {
     useEffect(() => {
         tabRef.current = tab;
     }, [tab]);
+
+    const getFilePathStateCaches = useCallback(
+        (): FilePathStateCacheCollection => ({
+            lastSavedContentByPath: lastSavedContentByPathRef.current,
+            lastAckRevisionByPath: lastAckRevisionByPathRef.current,
+            pendingLocalOpIdByPath: pendingLocalOpIdByPathRef.current,
+            saveRequestIdByPath: saveRequestIdByPathRef.current,
+        }),
+        [],
+    );
+
+    const pruneFilePathStateForOpenTabs = useCallback(
+        (tabs: readonly Tab[]) => {
+            pruneFilePathStateCaches(tabs, getFilePathStateCaches());
+        },
+        [getFilePathStateCaches],
+    );
+
+    useEffect(() => {
+        if (lastVaultPathRef.current === vaultPath) return;
+        lastVaultPathRef.current = vaultPath;
+        lastLiveFilePathCacheKeyRef.current = null;
+        clearFilePathStateCaches(getFilePathStateCaches());
+    }, [getFilePathStateCaches, vaultPath]);
+
+    useEffect(() => {
+        const syncLiveFilePathState = (tabs: readonly Tab[]) => {
+            const nextKey = buildLiveFilePathCacheKey(tabs);
+            if (lastLiveFilePathCacheKeyRef.current === nextKey) return;
+            lastLiveFilePathCacheKeyRef.current = nextKey;
+            pruneFilePathStateForOpenTabs(tabs);
+        };
+
+        syncLiveFilePathState(useEditorStore.getState().tabs);
+        const unsubscribe = useEditorStore.subscribe((state) => {
+            syncLiveFilePathState(state.tabs);
+        });
+        return unsubscribe;
+    }, [pruneFilePathStateForOpenTabs]);
 
     useEffect(() => {
         const handler = (event: KeyboardEvent) => {

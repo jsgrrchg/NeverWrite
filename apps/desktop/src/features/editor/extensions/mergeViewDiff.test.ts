@@ -679,6 +679,107 @@ describe("mergeViewDiff", () => {
         vi.useRealTimers();
     });
 
+    it("cancels a pending geometry refresh frame on destroy", () => {
+        const pendingFrames = new Map<number, FrameRequestCallback>();
+        let nextFrameId = 1;
+        const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+            const frameId = nextFrameId;
+            nextFrameId += 1;
+            pendingFrames.set(frameId, callback);
+            return frameId;
+        });
+        const cancelFrame = vi.fn((frameId: number) => {
+            pendingFrames.delete(frameId);
+        });
+
+        vi.stubGlobal("requestAnimationFrame", requestFrame);
+        vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+
+        try {
+            const { destroy } = mountMergeView({
+                doc: "alpha\nbeta changed\n",
+                original: "alpha\nbeta\n",
+                reviewHunks: [makeReviewHunk()],
+                reviewChunks: [
+                    makeReviewChunk({
+                        startLine: 1,
+                        endLine: 2,
+                    }),
+                ],
+            });
+
+            window.dispatchEvent(new Event("focus"));
+
+            expect(requestFrame).toHaveBeenCalled();
+            expect(pendingFrames.size).toBeGreaterThan(0);
+
+            destroy();
+
+            expect(cancelFrame).toHaveBeenCalled();
+            expect(pendingFrames.size).toBe(0);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it("bounds out-of-range control warnings while still deduping repeats", () => {
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const warningPrefix = `warning-${crypto.randomUUID()}`;
+
+        const mountOutOfRangeView = (index: number) =>
+            mountMergeView({
+                doc: "alpha\nbeta changed\n",
+                original: "alpha\nbeta\n",
+                reviewHunks: [
+                    makeReviewHunk({
+                        id: {
+                            trackedVersion: 1,
+                            key: `${warningPrefix}-h-${index}`,
+                        },
+                    }),
+                ],
+                reviewChunks: [
+                    makeReviewChunk({
+                        id: {
+                            trackedVersion: 1,
+                            key: `${warningPrefix}-c-${index}`,
+                        },
+                        hunkIds: [
+                            {
+                                trackedVersion: 1,
+                                key: `${warningPrefix}-h-${index}`,
+                            },
+                        ],
+                        overlapGroupIds: [`${warningPrefix}-g-${index}`],
+                        startLine: 20 + index,
+                        endLine: 21 + index,
+                    }),
+                ],
+            });
+
+        try {
+            const first = mountOutOfRangeView(0);
+            first.destroy();
+
+            const duplicate = mountOutOfRangeView(0);
+            duplicate.destroy();
+
+            expect(warnSpy).toHaveBeenCalledTimes(1);
+
+            for (let index = 1; index <= 256; index += 1) {
+                const view = mountOutOfRangeView(index);
+                view.destroy();
+            }
+
+            const afterEviction = mountOutOfRangeView(0);
+            afterEviction.destroy();
+
+            expect(warnSpy).toHaveBeenCalledTimes(258);
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
+
     it("renders a panel CTA instead of buttons when widgets are gated off", () => {
         const calls: MergeDecisionPayload[] = [];
         const { view, destroy } = mountMergeView({

@@ -48,6 +48,8 @@ const DEFAULT_GRAPH_MAX_LINKS_GLOBAL: usize = 24_000;
 const DEFAULT_GRAPH_MAX_NODES_LOCAL: usize = 2_500;
 const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
 const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
+const MAX_GRAPH_QUERY_CACHE_ENTRIES: usize = 128;
+const MAX_GRAPH_QUERY_CACHE_RESULT_NOTE_IDS: usize = 4_096;
 const VAULT_CHANGE_ORIGIN_USER: &str = "user";
 const VAULT_CHANGE_ORIGIN_AGENT: &str = "agent";
 const VAULT_CHANGE_ORIGIN_EXTERNAL: &str = "external";
@@ -134,6 +136,7 @@ struct VaultInstance {
     note_revisions: HashMap<String, u64>,
     file_revisions: HashMap<String, u64>,
     graph_query_cache: HashMap<String, CachedGraphQueryResult>,
+    graph_query_cache_clock: u64,
     watcher: Option<RecommendedWatcher>,
     open_job_id: u64,
     open_cancel: Option<Arc<AtomicBool>>,
@@ -153,6 +156,7 @@ impl VaultInstance {
             note_revisions: HashMap::new(),
             file_revisions: HashMap::new(),
             graph_query_cache: HashMap::new(),
+            graph_query_cache_clock: 0,
             watcher: None,
             open_job_id: 0,
             open_cancel: None,
@@ -289,6 +293,7 @@ struct CachedGraphQueryResult {
     revision: u64,
     kind: GraphQueryKind,
     note_ids: Vec<String>,
+    last_access_clock: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1110,11 +1115,86 @@ fn reset_graph_cache(instance: &mut VaultInstance) {
 fn invalidate_graph_query_cache(instance: &mut VaultInstance) {
     instance.index_revision = next_index_revision(instance.index_revision);
     instance.graph_query_cache.clear();
+    instance.graph_query_cache_clock = 0;
 }
 
 fn reset_graph_query_cache(instance: &mut VaultInstance) {
     instance.index_revision = 1;
     instance.graph_query_cache.clear();
+    instance.graph_query_cache_clock = 0;
+}
+
+fn next_graph_query_cache_clock(instance: &mut VaultInstance) -> u64 {
+    let next = instance.graph_query_cache_clock.saturating_add(1).max(1);
+    instance.graph_query_cache_clock = next;
+    next
+}
+
+fn get_cached_graph_query_note_ids(
+    instance: &mut VaultInstance,
+    normalized_query: &str,
+    revision: u64,
+    expected_kind: GraphQueryKind,
+) -> Option<Vec<String>> {
+    let access_clock = next_graph_query_cache_clock(instance);
+    let entry = instance.graph_query_cache.get_mut(normalized_query)?;
+    if entry.revision != revision || entry.kind != expected_kind {
+        return None;
+    }
+    entry.last_access_clock = access_clock;
+    Some(entry.note_ids.clone())
+}
+
+fn evict_lru_graph_query_cache_entries(instance: &mut VaultInstance) {
+    let overflow = instance
+        .graph_query_cache
+        .len()
+        .saturating_sub(MAX_GRAPH_QUERY_CACHE_ENTRIES);
+    if overflow == 0 {
+        return;
+    }
+
+    let mut lru_entries: Vec<(String, u64)> = instance
+        .graph_query_cache
+        .iter()
+        .map(|(query, entry)| (query.clone(), entry.last_access_clock))
+        .collect();
+    lru_entries.sort_by_key(|(_, last_access_clock)| *last_access_clock);
+
+    for (query, _) in lru_entries.into_iter().take(overflow) {
+        instance.graph_query_cache.remove(&query);
+    }
+}
+
+fn cache_graph_query_result(
+    instance: &mut VaultInstance,
+    normalized_query: String,
+    revision: u64,
+    kind: GraphQueryKind,
+    note_ids: Vec<String>,
+) {
+    if note_ids.len() > MAX_GRAPH_QUERY_CACHE_RESULT_NOTE_IDS {
+        dbg_log!(
+            "graph_query_cache SKIP kind={:?}, ids={}, revision={}, reason=too_many_ids",
+            kind,
+            note_ids.len(),
+            revision
+        );
+        instance.graph_query_cache.remove(&normalized_query);
+        return;
+    }
+
+    let last_access_clock = next_graph_query_cache_clock(instance);
+    instance.graph_query_cache.insert(
+        normalized_query,
+        CachedGraphQueryResult {
+            revision,
+            kind,
+            note_ids,
+            last_access_clock,
+        },
+    );
+    evict_lru_graph_query_cache_entries(instance);
 }
 
 fn graph_note_fingerprint_from_index(
@@ -2063,6 +2143,7 @@ fn start_open_vault_inner(
         instance.note_revisions.clear();
         instance.file_revisions.clear();
         instance.graph_query_cache.clear();
+        instance.graph_query_cache_clock = 0;
         instance.watcher = None;
 
         (write_tracker, job_id)
@@ -3414,12 +3495,6 @@ fn resolve_graph_query_ids_batch(
         return Ok(HashMap::new());
     }
 
-    let Some(index) = instance.index.as_ref() else {
-        return Err("No hay vault abierto".to_string());
-    };
-    let Some(vault) = instance.vault.as_ref() else {
-        return Err("No hay vault abierto".to_string());
-    };
     let index_revision = instance.index_revision.max(1);
 
     let mut unique_queries = HashMap::<String, &AdvancedSearchParams>::new();
@@ -3433,11 +3508,12 @@ fn resolve_graph_query_ids_batch(
 
     for (normalized_query, params) in unique_queries {
         let expected_kind = graph_query_kind(params);
-        let cached_ids = instance
-            .graph_query_cache
-            .get(&normalized_query)
-            .filter(|entry| entry.revision == index_revision && entry.kind == expected_kind)
-            .map(|entry| entry.note_ids.clone());
+        let cached_ids = get_cached_graph_query_note_ids(
+            instance,
+            &normalized_query,
+            index_revision,
+            expected_kind,
+        );
 
         if let Some(note_ids) = cached_ids {
             dbg_log!(
@@ -3450,6 +3526,12 @@ fn resolve_graph_query_ids_batch(
             continue;
         }
 
+        let Some(index) = instance.index.as_ref() else {
+            return Err("No hay vault abierto".to_string());
+        };
+        let Some(vault) = instance.vault.as_ref() else {
+            return Err("No hay vault abierto".to_string());
+        };
         let _query_start = Instant::now();
         let note_ids = index.advanced_search_note_ids(params, vault);
         let mut sorted_note_ids: Vec<String> = note_ids.into_iter().collect();
@@ -3463,13 +3545,12 @@ fn resolve_graph_query_ids_batch(
             _query_start.elapsed()
         );
 
-        instance.graph_query_cache.insert(
+        cache_graph_query_result(
+            instance,
             normalized_query.clone(),
-            CachedGraphQueryResult {
-                revision: index_revision,
-                kind: expected_kind,
-                note_ids: sorted_note_ids.clone(),
-            },
+            index_revision,
+            expected_kind,
+            sorted_note_ids.clone(),
         );
         resolved.insert(normalized_query, sorted_note_ids.into_iter().collect());
     }
@@ -5377,6 +5458,7 @@ pub fn run() {
             ai::commands::ai_respond_user_input,
             ai::commands::ai_save_session_history,
             ai::commands::ai_load_session_histories,
+            ai::commands::ai_load_session_history_page,
             ai::commands::ai_delete_session_history,
             ai::commands::ai_delete_all_session_histories,
             ai::commands::ai_delete_runtime_session,
@@ -5718,6 +5800,77 @@ mod tests {
         );
         assert_eq!(revisions.get("src/a.ts"), None);
         assert_eq!(revisions.get("src/b.ts"), Some(&3));
+    }
+
+    #[test]
+    fn graph_query_cache_skips_oversized_results() {
+        let mut instance = VaultInstance::new();
+        let note_ids = (0..=MAX_GRAPH_QUERY_CACHE_RESULT_NOTE_IDS)
+            .map(|index| format!("note-{index}"))
+            .collect();
+
+        cache_graph_query_result(
+            &mut instance,
+            "oversized".to_string(),
+            1,
+            GraphQueryKind::Expensive,
+            note_ids,
+        );
+
+        assert!(instance.graph_query_cache.is_empty());
+    }
+
+    #[test]
+    fn graph_query_cache_evicts_least_recently_used_entry() {
+        let mut instance = VaultInstance::new();
+
+        for index in 0..MAX_GRAPH_QUERY_CACHE_ENTRIES {
+            cache_graph_query_result(
+                &mut instance,
+                format!("query-{index}"),
+                1,
+                GraphQueryKind::Cheap,
+                vec![format!("note-{index}")],
+            );
+        }
+
+        let touched =
+            get_cached_graph_query_note_ids(&mut instance, "query-0", 1, GraphQueryKind::Cheap);
+        assert_eq!(touched, Some(vec!["note-0".to_string()]));
+
+        cache_graph_query_result(
+            &mut instance,
+            "query-new".to_string(),
+            1,
+            GraphQueryKind::Cheap,
+            vec!["note-new".to_string()],
+        );
+
+        assert_eq!(
+            instance.graph_query_cache.len(),
+            MAX_GRAPH_QUERY_CACHE_ENTRIES
+        );
+        assert!(instance.graph_query_cache.contains_key("query-0"));
+        assert!(!instance.graph_query_cache.contains_key("query-1"));
+        assert!(instance.graph_query_cache.contains_key("query-new"));
+    }
+
+    #[test]
+    fn graph_query_cache_resets_clock_when_invalidated() {
+        let mut instance = VaultInstance::new();
+        cache_graph_query_result(
+            &mut instance,
+            "query".to_string(),
+            1,
+            GraphQueryKind::Expensive,
+            vec!["note".to_string()],
+        );
+
+        invalidate_graph_query_cache(&mut instance);
+
+        assert!(instance.graph_query_cache.is_empty());
+        assert_eq!(instance.graph_query_cache_clock, 0);
+        assert_eq!(instance.index_revision, 1);
     }
 
     #[test]

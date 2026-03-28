@@ -1,6 +1,7 @@
 import type { EditorState } from "@codemirror/state";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+import { LruCache } from "../lruCache";
 
 export type WikilinkContext = {
     wholeFrom: number;
@@ -22,7 +23,11 @@ type WikilinkSuggestionDto = {
     insert_text: string;
 };
 
-const suggestionCache = new Map<string, WikilinkSuggestionItem[]>();
+export const MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES = 256;
+
+const suggestionCache = new LruCache<string, WikilinkSuggestionItem[]>(
+    MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES,
+);
 
 let cachedVaultPath: string | null = null;
 let cachedResolverRevision: number | null = null;

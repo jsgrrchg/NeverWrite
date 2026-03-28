@@ -13,7 +13,7 @@ use super::{
     emit::{emit_session_created, emit_session_error, emit_session_updated},
     gemini::GeminiSetupInput,
     manager::{AiAttachmentInput, AiManager},
-    persistence::{self, PersistedSessionHistory},
+    persistence::{self, PersistedSessionHistory, PersistedSessionHistoryPage},
     runtime::AiRuntimeSetupInput,
 };
 
@@ -384,8 +384,27 @@ pub fn ai_save_session_history(
 #[tauri::command]
 pub fn ai_load_session_histories(
     vault_path: String,
+    include_messages: Option<bool>,
 ) -> Result<Vec<PersistedSessionHistory>, String> {
-    persistence::load_all_session_histories(&PathBuf::from(vault_path))
+    persistence::load_all_session_histories(
+        &PathBuf::from(vault_path),
+        include_messages.unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+pub fn ai_load_session_history_page(
+    vault_path: String,
+    session_id: String,
+    start_index: usize,
+    limit: usize,
+) -> Result<PersistedSessionHistoryPage, String> {
+    persistence::load_session_history_page(
+        &PathBuf::from(vault_path),
+        &session_id,
+        start_index,
+        limit,
+    )
 }
 
 #[tauri::command]

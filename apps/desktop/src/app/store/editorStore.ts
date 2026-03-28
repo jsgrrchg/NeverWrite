@@ -1896,7 +1896,41 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                     .filter((t) => isNoteTab(t) && t.noteId === noteId)
                     .map((t) => t.id),
             );
-            if (idsToClose.size === 0) return state;
+            const nextPendingForceReloads = new Set(state._pendingForceReloads);
+            const nextNoteExternalConflicts = new Set(
+                state.noteExternalConflicts,
+            );
+            const hadPendingForceReload =
+                nextPendingForceReloads.delete(noteId);
+            const hadExternalConflict =
+                nextNoteExternalConflicts.delete(noteId);
+            const hadReloadVersion = noteId in state._noteReloadVersions;
+            const hadReloadMetadata = noteId in state._noteReloadMetadata;
+            const nextNoteReloadVersions = hadReloadVersion
+                ? Object.fromEntries(
+                      Object.entries(state._noteReloadVersions).filter(
+                          ([key]) => key !== noteId,
+                      ),
+                  )
+                : state._noteReloadVersions;
+            const nextNoteReloadMetadata = hadReloadMetadata
+                ? Object.fromEntries(
+                      Object.entries(state._noteReloadMetadata).filter(
+                          ([key]) => key !== noteId,
+                      ),
+                  )
+                : state._noteReloadMetadata;
+            const didChange = idsToClose.size > 0;
+
+            if (
+                !didChange &&
+                !hadPendingForceReload &&
+                !hadExternalConflict &&
+                !hadReloadVersion &&
+                !hadReloadMetadata
+            ) {
+                return state;
+            }
 
             const tabs = state.tabs.filter((t) => !idsToClose.has(t.id));
             const activationHistory = state.activationHistory.filter(
@@ -1938,6 +1972,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                         activationHistory,
                         tabNavigationHistory: navigation.history,
                         tabNavigationIndex: navigation.index,
+                        _pendingForceReloads: nextPendingForceReloads,
+                        _noteReloadVersions: nextNoteReloadVersions,
+                        _noteReloadMetadata: nextNoteReloadMetadata,
+                        noteExternalConflicts: nextNoteExternalConflicts,
                     };
                 }
                 tabNavigationIndex = lastActiveIndex;
@@ -1951,6 +1989,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 activationHistory,
                 tabNavigationHistory,
                 tabNavigationIndex,
+                _pendingForceReloads: nextPendingForceReloads,
+                _noteReloadVersions: nextNoteReloadVersions,
+                _noteReloadMetadata: nextNoteReloadMetadata,
+                noteExternalConflicts: nextNoteExternalConflicts,
             };
         });
     },
