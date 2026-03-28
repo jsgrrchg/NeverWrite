@@ -90,17 +90,6 @@ import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
 
-function isTextLikeMimeType(mimeType: string | null | undefined) {
-    if (!mimeType) return false;
-    return (
-        mimeType.startsWith("text/") ||
-        mimeType === "application/json" ||
-        mimeType === "application/yaml" ||
-        mimeType === "application/toml" ||
-        mimeType === "application/xml"
-    );
-}
-
 function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
     return (
         change.origin === "external" ||
@@ -1693,8 +1682,7 @@ export default function App() {
             } else if (
                 change.kind === "upsert" &&
                 change.entry?.kind === "file" &&
-                change.relative_path &&
-                isTextLikeMimeType(change.entry.mime_type)
+                change.relative_path
             ) {
                 const relativePath = change.relative_path;
                 const openTab = useEditorStore
@@ -1736,6 +1724,10 @@ export default function App() {
                                 .reloadFileContent(relativePath, {
                                     title: detail.file_name,
                                     content: detail.content,
+                                    origin: change.origin,
+                                    opId: change.op_id,
+                                    revision: change.revision,
+                                    contentHash: change.content_hash,
                                 });
                         });
                     }, 180);
@@ -1744,6 +1736,11 @@ export default function App() {
                 }
             } else if (change.kind === "delete") {
                 invalidateLivePreviewNoteCache(change.note_id);
+                if (change.relative_path) {
+                    useEditorStore
+                        .getState()
+                        .handleFileDeleted(change.relative_path);
+                }
             }
         }).then((cleanup) => {
             unlisten = cleanup;

@@ -477,7 +477,7 @@ pub(crate) fn is_pdf_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
-pub(crate) fn is_supported_text_path(path: &Path) -> bool {
+pub fn is_supported_text_path(path: &Path) -> bool {
     let Some(mime_type) = guess_mime_type(path) else {
         return false;
     };
@@ -485,10 +485,7 @@ pub(crate) fn is_supported_text_path(path: &Path) -> bool {
     mime_type.starts_with("text/")
         || matches!(
             mime_type.as_str(),
-            "application/json"
-                | "application/yaml"
-                | "application/toml"
-                | "application/xml"
+            "application/json" | "application/yaml" | "application/toml" | "application/xml"
         )
 }
 
@@ -637,7 +634,7 @@ fn guess_mime_type(path: &Path) -> Option<String> {
         _ => {
             let ext = path.extension()?.to_str()?.to_ascii_lowercase();
             match ext.as_str() {
-                "md" => "text/markdown",
+                "md" | "mdx" => "text/markdown",
                 "txt" | "log" | "ini" | "cfg" | "conf" => "text/plain",
                 "rs" => "text/rust",
                 "js" | "cjs" | "mjs" => "text/javascript",
@@ -650,9 +647,14 @@ fn guess_mime_type(path: &Path) -> Option<String> {
                 "html" | "htm" => "text/html",
                 "css" => "text/css",
                 "csv" => "text/csv",
-                "bat" | "bash" | "cmake" | "env" | "gradle" | "kt" | "kts" | "lock" | "mk"
-                | "properties" | "proto" | "ps1" | "sh" | "sql" | "tf" | "tfvars" | "vue"
-                | "zsh" => "text/plain",
+                "astro" | "bat" | "bash" | "c" | "cc" | "clj" | "cljs" | "cmake" | "cpp" | "cs"
+                | "d" | "dart" | "diff" | "elm" | "env" | "erl" | "ex" | "exs" | "fish" | "go"
+                | "gradle" | "graphql" | "groovy" | "h" | "hpp" | "hs" | "java" | "jl"
+                | "jsonc" | "kt" | "kts" | "less" | "lock" | "lua" | "m" | "mk" | "nim" | "nix"
+                | "patch" | "php" | "pl" | "plist" | "prisma" | "properties" | "proto" | "ps1"
+                | "py" | "r" | "rb" | "rc" | "sass" | "scala" | "scss" | "sh" | "sql" | "styl"
+                | "svelte" | "swift" | "tcl" | "tex" | "tf" | "tfvars" | "v" | "vb" | "vue"
+                | "wast" | "zig" | "zsh" => "text/plain",
                 "svg" => "image/svg+xml",
                 "png" => "image/png",
                 "jpg" | "jpeg" | "jpe" | "jfif" => "image/jpeg",
@@ -669,4 +671,37 @@ fn guess_mime_type(path: &Path) -> Option<String> {
     };
 
     Some(mime.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{guess_mime_type, is_supported_text_path};
+    use std::path::Path;
+
+    #[test]
+    fn guess_mime_type_recognizes_extended_text_file_set() {
+        assert_eq!(
+            guess_mime_type(Path::new("src/main.py")).as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(
+            guess_mime_type(Path::new("src/App.svelte")).as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(
+            guess_mime_type(Path::new("src/workflow.mdx")).as_deref(),
+            Some("text/markdown")
+        );
+        assert_eq!(
+            guess_mime_type(Path::new("src/config.jsonc")).as_deref(),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn supported_text_path_accepts_extended_text_files() {
+        assert!(is_supported_text_path(Path::new("src/main.py")));
+        assert!(is_supported_text_path(Path::new("src/App.svelte")));
+        assert!(is_supported_text_path(Path::new(".env.local")));
+    }
 }

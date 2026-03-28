@@ -35,6 +35,7 @@ use vault_ai_types::{
     NoteDto, NoteId, NoteMetadata, ResolvedWikilinkDto, SearchResultDto, VaultEntryDto,
     VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto, WikilinkSuggestionDto,
 };
+use vault_ai_vault::vault::is_supported_text_path;
 use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
 
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
@@ -131,6 +132,7 @@ struct VaultInstance {
     graph_revision: u64,
     index_revision: u64,
     note_revisions: HashMap<String, u64>,
+    file_revisions: HashMap<String, u64>,
     graph_query_cache: HashMap<String, CachedGraphQueryResult>,
     watcher: Option<RecommendedWatcher>,
     open_job_id: u64,
@@ -149,6 +151,7 @@ impl VaultInstance {
             graph_revision: 0,
             index_revision: 0,
             note_revisions: HashMap::new(),
+            file_revisions: HashMap::new(),
             graph_query_cache: HashMap::new(),
             watcher: None,
             open_job_id: 0,
@@ -484,6 +487,24 @@ fn advance_note_revision(
         .saturating_add(1)
         .max(1);
     note_revisions.insert(note_id.to_string(), next_revision);
+    next_revision
+}
+
+fn advance_file_revision(
+    file_revisions: &mut HashMap<String, u64>,
+    relative_path: &str,
+    previous_relative_path: Option<&str>,
+) -> u64 {
+    let previous_revision = previous_relative_path
+        .filter(|previous| *previous != relative_path)
+        .and_then(|previous| file_revisions.remove(previous))
+        .unwrap_or(0);
+    let current_revision = file_revisions.get(relative_path).copied().unwrap_or(0);
+    let next_revision = previous_revision
+        .max(current_revision)
+        .saturating_add(1)
+        .max(1);
+    file_revisions.insert(relative_path.to_string(), next_revision);
     next_revision
 }
 
@@ -1592,47 +1613,89 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 }
             }
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
+                let relative_path = vault.path_to_relative_path(&path);
                 let entry = vault.read_vault_entry_from_path(&path).ok();
+                let is_text_file = is_supported_text_path(&path);
+                let revision = if is_text_file {
+                    advance_file_revision(&mut instance.file_revisions, &relative_path, None)
+                } else {
+                    0
+                };
+                let content_hash = if is_text_file {
+                    std::fs::read_to_string(&path)
+                        .ok()
+                        .map(|content| note_content_hash(&content))
+                } else {
+                    None
+                };
                 Some(build_vault_note_change(
                     vault_path,
                     "upsert",
                     None,
                     None,
                     entry,
-                    Some(vault.path_to_relative_path(&path)),
+                    Some(relative_path),
                     VAULT_CHANGE_ORIGIN_EXTERNAL,
                     None,
+                    revision,
+                    content_hash,
                     0,
+                ))
+            }
+            VaultEvent::FileDeleted(path) => {
+                let relative_path = vault.path_to_relative_path(&path);
+                let is_text_file = is_supported_text_path(&path);
+                let revision = if is_text_file {
+                    advance_file_revision(&mut instance.file_revisions, &relative_path, None)
+                } else {
+                    0
+                };
+                Some(build_vault_note_change(
+                    vault_path,
+                    "delete",
+                    None,
+                    None,
+                    None,
+                    Some(relative_path),
+                    VAULT_CHANGE_ORIGIN_EXTERNAL,
+                    None,
+                    revision,
                     None,
                     0,
                 ))
             }
-            VaultEvent::FileDeleted(path) => Some(build_vault_note_change(
-                vault_path,
-                "delete",
-                None,
-                None,
-                None,
-                Some(vault.path_to_relative_path(&path)),
-                VAULT_CHANGE_ORIGIN_EXTERNAL,
-                None,
-                0,
-                None,
-                0,
-            )),
-            VaultEvent::FileRenamed { to, .. } => {
+            VaultEvent::FileRenamed { from, to } => {
+                let relative_path = vault.path_to_relative_path(&to);
+                let previous_relative_path = vault.path_to_relative_path(&from);
                 let entry = vault.read_vault_entry_from_path(&to).ok();
+                let is_text_file = is_supported_text_path(&to);
+                let revision = if is_text_file {
+                    advance_file_revision(
+                        &mut instance.file_revisions,
+                        &relative_path,
+                        Some(&previous_relative_path),
+                    )
+                } else {
+                    0
+                };
+                let content_hash = if is_text_file {
+                    std::fs::read_to_string(&to)
+                        .ok()
+                        .map(|content| note_content_hash(&content))
+                } else {
+                    None
+                };
                 Some(build_vault_note_change(
                     vault_path,
                     "upsert",
                     None,
                     None,
                     entry,
-                    Some(vault.path_to_relative_path(&to)),
+                    Some(relative_path),
                     VAULT_CHANGE_ORIGIN_EXTERNAL,
                     None,
-                    0,
-                    None,
+                    revision,
+                    content_hash,
                     0,
                 ))
             }
@@ -1997,6 +2060,8 @@ fn start_open_vault_inner(
         instance.graph_base_snapshot = None;
         instance.graph_revision = 0;
         instance.index_revision = 0;
+        instance.note_revisions.clear();
+        instance.file_revisions.clear();
         instance.graph_query_cache.clear();
         instance.watcher = None;
 
@@ -2258,15 +2323,18 @@ fn save_vault_file(
     vault_path: String,
     relative_path: String,
     content: String,
+    op_id: Option<String>,
+    app: AppHandle,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<VaultFileDetail, String> {
     let mut state = lock!(state)?;
     let write_tracker = state.write_tracker.clone();
+    let op_id = op_id.unwrap_or_else(|| next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_USER));
     let instance = state
         .vaults
         .get_mut(&vault_path)
         .ok_or("No hay vault abierto")?;
-    let (entry, detail) = {
+    let (entry, detail, revision, content_hash) = {
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
         let abs_path = vault
             .resolve_relative_path(&relative_path)
@@ -2285,14 +2353,34 @@ fn save_vault_file(
             content,
         };
 
-        (entry, detail)
+        let revision =
+            advance_file_revision(&mut instance.file_revisions, &entry.relative_path, None);
+        let content_hash = Some(note_content_hash(&detail.content));
+
+        (entry, detail, revision, content_hash)
     };
     mutate_entries_cache(instance, |vault, entries| {
         ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
-        upsert_entry_in_cache(entries, entry);
+        upsert_entry_in_cache(entries, entry.clone());
         Ok(())
     })?;
 
+    let change = build_vault_note_change(
+        &vault_path,
+        "upsert",
+        None,
+        None,
+        Some(entry.clone()),
+        Some(detail.relative_path.clone()),
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id),
+        revision,
+        content_hash,
+        instance.graph_revision.max(1),
+    );
+
+    drop(state);
+    emit_vault_note_change(&app, "save_vault_file", change);
     Ok(detail)
 }
 
@@ -2948,6 +3036,15 @@ fn ai_restore_text_file(
                     relative_path_from_absolute(&vault.root, &current_path)?;
                 (entry, relative_path, current_relative_path)
             };
+            let revision = advance_file_revision(
+                &mut instance.file_revisions,
+                &relative_path,
+                if current_relative_path != relative_path {
+                    Some(current_relative_path.as_str())
+                } else {
+                    None
+                },
+            );
 
             mutate_entries_cache(instance, |vault, entries| {
                 remove_entry_from_cache(entries, &current_relative_path);
@@ -2968,7 +3065,7 @@ fn ai_restore_text_file(
                 Some(relative_path),
                 VAULT_CHANGE_ORIGIN_AGENT,
                 Some(op_id.clone()),
-                0,
+                revision,
                 Some(note_content_hash(text)),
                 instance.graph_revision.max(1),
             )
@@ -3037,6 +3134,8 @@ fn ai_restore_text_file(
                 .transpose()?;
             (current_relative_path, target_relative_path)
         };
+        let revision =
+            advance_file_revision(&mut instance.file_revisions, &current_relative_path, None);
 
         mutate_entries_cache(instance, |_, entries| {
             remove_entry_from_cache(entries, &current_relative_path);
@@ -3055,7 +3154,7 @@ fn ai_restore_text_file(
             Some(current_relative_path),
             VAULT_CHANGE_ORIGIN_AGENT,
             Some(op_id),
-            0,
+            revision,
             None,
             instance.graph_revision.max(1),
         )
@@ -5605,6 +5704,20 @@ mod tests {
         );
         assert_eq!(revisions.get("notes/a"), None);
         assert_eq!(revisions.get("notes/b"), Some(&3));
+    }
+
+    #[test]
+    fn advance_file_revision_increments_and_preserves_history_across_rename() {
+        let mut revisions = HashMap::new();
+
+        assert_eq!(advance_file_revision(&mut revisions, "src/a.ts", None), 1);
+        assert_eq!(advance_file_revision(&mut revisions, "src/a.ts", None), 2);
+        assert_eq!(
+            advance_file_revision(&mut revisions, "src/b.ts", Some("src/a.ts")),
+            3
+        );
+        assert_eq!(revisions.get("src/a.ts"), None);
+        assert_eq!(revisions.get("src/b.ts"), Some(&3));
     }
 
     #[test]
