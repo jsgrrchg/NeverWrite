@@ -57,6 +57,13 @@ type SavedVaultFileDetail = {
     content: string;
 };
 
+type FileReloadMetadata = {
+    origin?: "user" | "agent" | "external" | "system" | "unknown";
+    opId?: string | null;
+    revision?: number;
+    contentHash?: string | null;
+};
+
 export function FileTextTabView() {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -66,9 +73,12 @@ export function FileTextTabView() {
     const loadRequestRef = useRef(0);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const tabRef = useRef<FileTab | null>(null);
+    const previousTabRef = useRef<FileTab | null>(null);
     const contextMenuCleanupRef = useRef<(() => void) | null>(null);
     const applyingExternalUpdateRef = useRef(false);
     const lastSavedContentByPathRef = useRef(new Map<string, string>());
+    const lastAckRevisionByPathRef = useRef(new Map<string, number>());
+    const pendingLocalOpIdByPathRef = useRef(new Map<string, string>());
     const saveRequestIdByPathRef = useRef(new Map<string, number>());
     const [, setEditorView] = useState<EditorView | null>(null);
     const [editorContextMenu, setEditorContextMenu] =
@@ -76,12 +86,6 @@ export function FileTextTabView() {
 
     const tab = useEditorStore((state) => {
         return getActiveFileTab(state);
-    });
-    const hasPendingForceReload = useEditorStore((state) => {
-        const relativePath = tab?.relativePath;
-        return relativePath
-            ? state._pendingForceFileReloads.has(relativePath)
-            : false;
     });
     const hasExternalConflict = useEditorStore((state) => {
         const relativePath = tab?.relativePath;
@@ -291,6 +295,15 @@ export function FileTextTabView() {
                 targetTab.relativePath,
                 requestId,
             );
+            const localOpId =
+                typeof crypto !== "undefined" &&
+                typeof crypto.randomUUID === "function"
+                    ? crypto.randomUUID()
+                    : `local-file-save-${Date.now()}-${Math.random()}`;
+            pendingLocalOpIdByPathRef.current.set(
+                targetTab.relativePath,
+                localOpId,
+            );
 
             try {
                 const detail = await vaultInvoke<SavedVaultFileDetail>(
@@ -298,6 +311,7 @@ export function FileTextTabView() {
                     {
                         relativePath: targetTab.relativePath,
                         content,
+                        opId: localOpId,
                     },
                 );
                 if (
@@ -312,9 +326,16 @@ export function FileTextTabView() {
                     detail.content,
                 );
                 const store = useEditorStore.getState();
-                store.updateTabTitle(targetTab.id, detail.file_name);
+                store.updateFileHistoryTitle(
+                    targetTab.id,
+                    targetTab.relativePath,
+                    detail.file_name,
+                );
                 store.clearFileExternalConflict(targetTab.relativePath);
             } catch (error) {
+                pendingLocalOpIdByPathRef.current.delete(
+                    targetTab.relativePath,
+                );
                 console.error("Error saving vault file:", error);
             }
         },
@@ -337,6 +358,33 @@ export function FileTextTabView() {
         },
         [saveFile],
     );
+
+    const replaceEditorDocument = useCallback((nextContent: string) => {
+        const view = viewRef.current;
+        if (!view) {
+            return;
+        }
+
+        const currentContent = view.state.doc.toString();
+        if (currentContent === nextContent) {
+            return;
+        }
+
+        const selection = view.state.selection.main;
+        applyingExternalUpdateRef.current = true;
+        view.dispatch({
+            changes: {
+                from: 0,
+                to: currentContent.length,
+                insert: nextContent,
+            },
+            selection: {
+                anchor: Math.min(selection.anchor, nextContent.length),
+                head: Math.min(selection.head, nextContent.length),
+            },
+        });
+        applyingExternalUpdateRef.current = false;
+    }, []);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -451,58 +499,35 @@ export function FileTextTabView() {
     ]);
 
     useEffect(() => {
-        if (!tab) {
-            contextMenuCleanupRef.current?.();
-            contextMenuCleanupRef.current = null;
-            viewRef.current?.destroy();
-            viewRef.current = null;
-            queueMicrotask(() => {
-                setEditorContextMenu(null);
-                setEditorView(null);
-            });
-            loadRequestRef.current += 1;
-            return;
-        }
-
         const view = viewRef.current;
-        if (!view) {
+        const previousTab = previousTabRef.current;
+
+        if (previousTab && view) {
+            if (saveTimerRef.current) {
+                clearTimeout(saveTimerRef.current);
+                saveTimerRef.current = null;
+            }
+
+            const previousContent = view.state.doc.toString();
+            const previousLastSaved =
+                lastSavedContentByPathRef.current.get(
+                    previousTab.relativePath,
+                ) ?? previousTab.content;
+            if (previousContent !== previousLastSaved) {
+                void saveFile(previousTab, previousContent);
+            }
+        }
+
+        previousTabRef.current = tab;
+
+        if (!tab || !view) {
             return;
         }
 
-        const currentContent = view.state.doc.toString();
-        const lastSaved =
-            lastSavedContentByPathRef.current.get(tab.relativePath) ?? null;
-        const hasLocalUnsavedChanges =
-            lastSaved !== null && currentContent !== lastSaved;
-
-        if (hasLocalUnsavedChanges && !hasPendingForceReload) {
-            useEditorStore
-                .getState()
-                .markFileExternalConflict(tab.relativePath);
-            return;
-        }
-
-        if (hasPendingForceReload) {
-            useEditorStore.getState().clearForceFileReload(tab.relativePath);
-        }
-        useEditorStore.getState().clearFileExternalConflict(tab.relativePath);
-
-        if (currentContent !== tab.content) {
-            applyingExternalUpdateRef.current = true;
-            view.dispatch({
-                changes: {
-                    from: 0,
-                    to: currentContent.length,
-                    insert: tab.content,
-                },
-            });
-            applyingExternalUpdateRef.current = false;
-            lastSavedContentByPathRef.current.set(
-                tab.relativePath,
-                tab.content,
-            );
-        }
-    }, [hasPendingForceReload, tab]);
+        replaceEditorDocument(tab.content);
+        lastSavedContentByPathRef.current.set(tab.relativePath, tab.content);
+        useEditorStore.getState().clearCurrentSelection();
+    }, [replaceEditorDocument, saveFile, tab?.id, tab?.relativePath]);
 
     useEffect(() => {
         if (!tab) {
@@ -515,7 +540,136 @@ export function FileTextTabView() {
                 tab.content,
             );
         }
-    }, [tab, tab?.content, tab?.relativePath]);
+    }, [tab?.content, tab?.relativePath]);
+
+    useEffect(() => {
+        const unsubscribe = useEditorStore.subscribe((state, prev) => {
+            const view = viewRef.current;
+            if (!view) return;
+
+            const activeTabId = state.activeTabId;
+            if (!activeTabId) return;
+
+            const currentTab = state.tabs.find(
+                (candidate) => candidate.id === activeTabId,
+            );
+            const previousTab = prev.tabs.find(
+                (candidate) => candidate.id === activeTabId,
+            );
+            if (!currentTab || !previousTab) return;
+            if (!isFileTab(currentTab) || !isFileTab(previousTab)) return;
+            if (currentTab.viewer !== "text" || previousTab.viewer !== "text") {
+                return;
+            }
+
+            if (currentTab.relativePath !== previousTab.relativePath) {
+                return;
+            }
+
+            const relativePath = currentTab.relativePath;
+            const reloadVersion =
+                state._fileReloadVersions?.[relativePath] ?? 0;
+            const previousReloadVersion =
+                prev._fileReloadVersions?.[relativePath] ?? 0;
+            const isForced =
+                state._pendingForceFileReloads?.has(relativePath) ?? false;
+
+            if (reloadVersion === previousReloadVersion && !isForced) {
+                return;
+            }
+
+            const currentContent = view.state.doc.toString();
+            const lastSaved =
+                lastSavedContentByPathRef.current.get(relativePath) ?? null;
+            const hasLocalUnsavedChanges =
+                lastSaved !== null && currentContent !== lastSaved;
+            const incomingContent = currentTab.content;
+            const reloadMeta = (state._fileReloadMetadata?.[relativePath] ??
+                null) as FileReloadMetadata | null;
+            const incomingOrigin = reloadMeta?.origin ?? "unknown";
+            const incomingOpId = reloadMeta?.opId ?? null;
+            const incomingRevision = reloadMeta?.revision ?? 0;
+            const lastAckRevision =
+                lastAckRevisionByPathRef.current.get(relativePath) ?? 0;
+            const pendingLocalOpId =
+                pendingLocalOpIdByPathRef.current.get(relativePath) ?? null;
+            const isPendingLocalSaveAck =
+                !isForced &&
+                incomingOrigin === "user" &&
+                incomingOpId !== null &&
+                incomingOpId === pendingLocalOpId;
+            const isStaleRevision =
+                !isForced &&
+                incomingRevision > 0 &&
+                incomingRevision <= lastAckRevision &&
+                !isPendingLocalSaveAck;
+            const acknowledgeIncomingRevision = () => {
+                if (incomingRevision <= 0) return;
+                lastAckRevisionByPathRef.current.set(
+                    relativePath,
+                    Math.max(lastAckRevision, incomingRevision),
+                );
+            };
+            const clearPendingLocalAck = () => {
+                if (isPendingLocalSaveAck) {
+                    pendingLocalOpIdByPathRef.current.delete(relativePath);
+                }
+            };
+
+            if (isStaleRevision) {
+                clearPendingLocalAck();
+                return;
+            }
+
+            if (!isForced && incomingContent === currentContent) {
+                acknowledgeIncomingRevision();
+                clearPendingLocalAck();
+                if (lastSaved !== incomingContent) {
+                    lastSavedContentByPathRef.current.set(
+                        relativePath,
+                        incomingContent,
+                    );
+                }
+                useEditorStore
+                    .getState()
+                    .clearFileExternalConflict(relativePath);
+                return;
+            }
+
+            if (hasLocalUnsavedChanges && !isForced) {
+                if (isPendingLocalSaveAck) {
+                    acknowledgeIncomingRevision();
+                    clearPendingLocalAck();
+                    lastSavedContentByPathRef.current.set(
+                        relativePath,
+                        incomingContent,
+                    );
+                    useEditorStore
+                        .getState()
+                        .clearFileExternalConflict(relativePath);
+                    return;
+                }
+                useEditorStore
+                    .getState()
+                    .markFileExternalConflict(relativePath);
+                return;
+            }
+
+            if (isForced) {
+                useEditorStore.getState().clearForceFileReload(relativePath);
+            }
+            acknowledgeIncomingRevision();
+            clearPendingLocalAck();
+            useEditorStore.getState().clearFileExternalConflict(relativePath);
+            lastSavedContentByPathRef.current.set(
+                relativePath,
+                incomingContent,
+            );
+            replaceEditorDocument(incomingContent);
+        });
+
+        return unsubscribe;
+    }, [replaceEditorDocument]);
 
     useEffect(() => {
         const view = viewRef.current;
@@ -622,30 +776,14 @@ export function FileTextTabView() {
 
     useEffect(() => {
         return () => {
+            const currentTab = tabRef.current;
+            const view = viewRef.current;
             if (saveTimerRef.current) {
                 clearTimeout(saveTimerRef.current);
                 saveTimerRef.current = null;
             }
-            if (tab) {
-                const currentTab = useEditorStore
-                    .getState()
-                    .tabs.find(
-                        (candidate): candidate is FileTab =>
-                            candidate.id === tab.id && isFileTab(candidate),
-                    );
-                void saveFile(
-                    currentTab ?? tab,
-                    currentTab?.content ?? tab.content,
-                );
-            }
-        };
-    }, [saveFile, tab]);
-
-    useEffect(() => {
-        return () => {
-            if (saveTimerRef.current) {
-                clearTimeout(saveTimerRef.current);
-                saveTimerRef.current = null;
+            if (currentTab && view) {
+                void saveFile(currentTab, view.state.doc.toString());
             }
             contextMenuCleanupRef.current?.();
             contextMenuCleanupRef.current = null;
@@ -656,7 +794,7 @@ export function FileTextTabView() {
             setEditorContextMenu(null);
             setEditorView(null);
         };
-    }, []);
+    }, [saveFile]);
 
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,
