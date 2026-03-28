@@ -260,6 +260,27 @@ function createQueuedMessage(
     };
 }
 
+function cloneSessionForTest(
+    source: AIChatSession,
+    sessionId: string,
+    overrides: Partial<AIChatSession> = {},
+): AIChatSession {
+    return {
+        ...source,
+        sessionId,
+        historySessionId: sessionId,
+        models: source.models.map((model) => ({ ...model })),
+        modes: source.modes.map((mode) => ({ ...mode })),
+        configOptions: source.configOptions.map((option) => ({
+            ...option,
+            options: option.options.map((item) => ({ ...item })),
+        })),
+        messages: [],
+        attachments: [],
+        ...overrides,
+    };
+}
+
 function createDeferred<T>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
     let reject!: (reason?: unknown) => void;
@@ -6739,6 +6760,316 @@ describe("chatStore", () => {
                 )
                 ?.options.map((option) => option.value),
         ).toEqual(["low", "medium", "high", "xhigh"]);
+    });
+
+    it("supports targeting a non-active session for local draft and attachment mutations", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const secondSessionId = "codex-session-2";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore
+            .getState()
+            .upsertSession(
+                cloneSessionForTest(activeSession, secondSessionId),
+                true,
+            );
+
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("second explicit"),
+                secondSessionId,
+            );
+        useChatStore.getState().attachNote(
+            {
+                id: "notes/two",
+                title: "Note Two",
+                path: "/vault/Note Two.md",
+            },
+            secondSessionId,
+        );
+        useChatStore
+            .getState()
+            .attachFolder("/vault/folder", "Project Folder", secondSessionId);
+
+        let state = useChatStore.getState();
+        const noteAttachment = state.sessionsById[
+            secondSessionId
+        ]?.attachments.find((attachment) => attachment.type === "note");
+        const folderAttachment = state.sessionsById[
+            secondSessionId
+        ]?.attachments.find((attachment) => attachment.type === "folder");
+
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId[activeSessionId] ?? [],
+            ),
+        ).toBe("");
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId[secondSessionId] ?? [],
+            ),
+        ).toBe("second explicit");
+        expect(state.sessionsById[activeSessionId]?.attachments).toEqual([]);
+        expect(noteAttachment?.label).toBe("Note Two");
+        expect(folderAttachment?.label).toBe("Project Folder");
+
+        expect(noteAttachment).toBeDefined();
+        expect(folderAttachment).toBeDefined();
+
+        useChatStore
+            .getState()
+            .updateAttachment(
+                noteAttachment!.id,
+                { label: "Note Two Renamed" },
+                secondSessionId,
+            );
+        useChatStore
+            .getState()
+            .removeAttachment(folderAttachment!.id, secondSessionId);
+
+        state = useChatStore.getState();
+        expect(
+            state.sessionsById[secondSessionId]?.attachments.map(
+                (attachment) => attachment.label,
+            ),
+        ).toEqual(["Note Two Renamed"]);
+
+        useChatStore.getState().clearAttachments(secondSessionId);
+
+        expect(
+            useChatStore.getState().sessionsById[secondSessionId]?.attachments,
+        ).toEqual([]);
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toEqual([]);
+    });
+
+    it("supports targeting a non-active session for local session settings", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const secondSessionId = "codex-session-2";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, secondSessionId, {
+                runtimeState: "persisted_only",
+                modelId: "test-model",
+                modeId: "draft-mode",
+            }),
+            true,
+        );
+
+        await useChatStore.getState().setModel("wide-model", secondSessionId);
+        await useChatStore.getState().setMode("review-mode", secondSessionId);
+        await useChatStore
+            .getState()
+            .setConfigOption("reasoning_effort", "high", secondSessionId);
+
+        const state = useChatStore.getState();
+
+        expect(state.sessionsById[secondSessionId]?.modelId).toBe("wide-model");
+        expect(state.sessionsById[secondSessionId]?.modeId).toBe("review-mode");
+        expect(
+            state.sessionsById[secondSessionId]?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+        expect(state.sessionsById[activeSessionId]?.modelId).toBe("test-model");
+        expect(state.sessionsById[activeSessionId]?.modeId).toBe("default");
+        expect(
+            state.sessionsById[activeSessionId]?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("medium");
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) =>
+                    command === "ai_set_model" ||
+                    command === "ai_set_mode" ||
+                    command === "ai_set_config_option",
+            ),
+        ).toHaveLength(0);
+    });
+
+    it("supports targeting a non-active live session for send, user input and stop actions", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const secondSessionId = "codex-session-2";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, secondSessionId, {
+                runtimeState: "live",
+            }),
+            true,
+        );
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                expect(
+                    (args as { sessionId?: string } | undefined)?.sessionId,
+                ).toBe(secondSessionId);
+                return {
+                    ...sessionPayload,
+                    session_id: secondSessionId,
+                    status: "streaming" as const,
+                };
+            }
+
+            if (command === "ai_respond_user_input") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (
+                              args as {
+                                  input?: {
+                                      session_id?: string;
+                                      request_id?: string;
+                                      answers?: Record<string, string[]>;
+                                  };
+                              }
+                          ).input
+                        : undefined;
+                expect(input?.session_id).toBe(secondSessionId);
+                expect(input?.request_id).toBe("input-2");
+                expect(input?.answers).toEqual({ scope: ["Safe"] });
+                return {
+                    ...sessionPayload,
+                    session_id: secondSessionId,
+                    status: "streaming" as const,
+                };
+            }
+
+            if (command === "ai_cancel_turn") {
+                expect(
+                    (args as { sessionId?: string } | undefined)?.sessionId,
+                ).toBe(secondSessionId);
+                return {
+                    ...sessionPayload,
+                    session_id: secondSessionId,
+                    status: "idle" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("Send to second"),
+                secondSessionId,
+            );
+        await useChatStore.getState().sendMessage(secondSessionId);
+
+        let state = useChatStore.getState();
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId[secondSessionId] ?? [],
+            ),
+        ).toBe("");
+        expect(
+            state.sessionsById[secondSessionId]?.messages.some(
+                (message) =>
+                    message.role === "user" &&
+                    message.content === "Send to second",
+            ),
+        ).toBe(true);
+        expect(state.sessionsById[activeSessionId]?.messages).toHaveLength(0);
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: secondSessionId,
+            request_id: "input-2",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-2", { scope: ["Safe"] }, secondSessionId);
+
+        state = useChatStore.getState();
+        expect(state.sessionsById[secondSessionId]?.status).toBe("streaming");
+        expect(
+            state.sessionsById[secondSessionId]?.messages.at(-1)?.meta,
+        ).toMatchObject({
+            status: "resolved",
+            answered: true,
+        });
+
+        await useChatStore.getState().stopStreaming(secondSessionId);
+
+        state = useChatStore.getState();
+        expect(state.sessionsById[secondSessionId]?.status).toBe("idle");
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) =>
+                    command === "ai_send_message" ||
+                    command === "ai_respond_user_input" ||
+                    command === "ai_cancel_turn",
+            ),
+        ).toHaveLength(3);
+    });
+
+    it("no-ops when no active session exists and no explicit sessionId is provided", async () => {
+        await useChatStore.getState().initialize();
+
+        const previousComposerPartsBySessionId = structuredClone(
+            useChatStore.getState().composerPartsBySessionId,
+        );
+
+        useChatStore.setState({ activeSessionId: null });
+
+        useChatStore.getState().setComposerParts(createTextParts("ignored"));
+        useChatStore.getState().attachNote({
+            id: "notes/ignored",
+            title: "Ignored",
+            path: "/vault/Ignored.md",
+        });
+        await useChatStore.getState().setModel("wide-model");
+        await useChatStore.getState().setMode("review-mode");
+        await useChatStore
+            .getState()
+            .setConfigOption("reasoning_effort", "high");
+        await useChatStore.getState().sendMessage();
+        await useChatStore.getState().respondUserInput("input-missing", {});
+        await useChatStore.getState().stopStreaming();
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) =>
+                    command === "ai_set_model" ||
+                    command === "ai_set_mode" ||
+                    command === "ai_set_config_option" ||
+                    command === "ai_send_message" ||
+                    command === "ai_respond_user_input" ||
+                    command === "ai_cancel_turn",
+            ),
+        ).toHaveLength(0);
+        expect(useChatStore.getState().composerPartsBySessionId).toEqual(
+            previousComposerPartsBySessionId,
+        );
     });
 
     it("attachSelectionFromEditor inserts a selection_mention composer part", async () => {
