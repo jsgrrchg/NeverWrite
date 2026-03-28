@@ -116,6 +116,7 @@ export function getCurrentWindowLabel() {
 }
 
 function getWebviewWindowChromeOptions(): {
+    decorations?: boolean;
     titleBarStyle?: "overlay";
     hiddenTitle?: boolean;
     trafficLightPosition?: LogicalPosition;
@@ -123,12 +124,14 @@ function getWebviewWindowChromeOptions(): {
     const options = getManagedWindowChromeOptions();
     if (!options.trafficLightPosition) {
         return {
+            decorations: options.decorations,
             titleBarStyle: options.titleBarStyle,
             hiddenTitle: options.hiddenTitle,
         };
     }
 
     return {
+        decorations: options.decorations,
         titleBarStyle: options.titleBarStyle,
         hiddenTitle: options.hiddenTitle,
         trafficLightPosition: new LogicalPosition(

@@ -10,12 +10,24 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use notify::RecommendedWatcher;
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+#[cfg(target_os = "macos")]
+use objc2::{ffi, sel, MainThreadMarker, MainThreadOnly};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApplication, NSMenu as CocoaMenu, NSMenuItem as CocoaMenuItem};
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use tauri::menu::{AboutMetadataBuilder, Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 use vault_ai_index::{IndexBuildPhase, VaultIndex};
 use vault_ai_types::{
@@ -26,6 +38,8 @@ use vault_ai_types::{
 use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
 
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
+const MENU_ACTION_EVENT: &str = "menu-action";
+const DOCK_OPEN_VAULT_EVENT: &str = "dock-open-vault";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const OPEN_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_GRAPH_MAX_NODES_GLOBAL: usize = 8_000;
@@ -36,6 +50,9 @@ const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
 const VAULT_CHANGE_ORIGIN_USER: &str = "user";
 const VAULT_CHANGE_ORIGIN_AGENT: &str = "agent";
 const VAULT_CHANGE_ORIGIN_EXTERNAL: &str = "external";
+
+#[cfg(target_os = "macos")]
+static MACOS_DOCK_MENU_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 // --- Debug timing ---
 #[cfg(feature = "debug-logs")]
@@ -654,6 +671,51 @@ fn select_web_clipper_target_window_label(state: &AppState, vault_path: &str) ->
             route.window_kind.can_receive_web_clipper_clip()
                 && route.vault_path.as_deref() == Some(vault_path)
         })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .last_seen_ms
+            .cmp(&left.last_seen_ms)
+            .then_with(|| {
+                window_route_label_rank(&left.label).cmp(&window_route_label_rank(&right.label))
+            })
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    candidates.first().map(|route| route.label.clone())
+}
+
+fn select_menu_target_window_label(state: &AppState) -> Option<String> {
+    let mut candidates = state
+        .window_vault_routes
+        .values()
+        .filter(|route| {
+            matches!(
+                route.window_kind,
+                WindowRouteKind::Main | WindowRouteKind::Note
+            )
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .last_seen_ms
+            .cmp(&left.last_seen_ms)
+            .then_with(|| {
+                window_route_label_rank(&left.label).cmp(&window_route_label_rank(&right.label))
+            })
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    candidates.first().map(|route| route.label.clone())
+}
+
+fn select_main_window_label(state: &AppState) -> Option<String> {
+    let mut candidates = state
+        .window_vault_routes
+        .values()
+        .filter(|route| route.window_kind == WindowRouteKind::Main)
         .collect::<Vec<_>>();
 
     candidates.sort_by(|left, right| {
@@ -4244,6 +4306,561 @@ pub(crate) struct WebClipperSavedPayload {
     content: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecentVaultEntry {
+    path: String,
+    name: String,
+}
+
+fn recent_vaults_file_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(app_data_dir.join("recent_vaults.json"))
+}
+
+fn write_recent_vaults_file<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    vaults: &[RecentVaultEntry],
+) -> Result<(), String> {
+    let path = recent_vaults_file_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let payload = serde_json::to_vec(vaults).map_err(|error| error.to_string())?;
+    fs::write(path, payload).map_err(|error| error.to_string())
+}
+
+fn read_recent_vaults_file<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<RecentVaultEntry> {
+    let Ok(path) = recent_vaults_file_path(app) else {
+        return Vec::new();
+    };
+    let Ok(contents) = fs::read(path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<RecentVaultEntry>>(&contents).unwrap_or_default()
+}
+
+#[tauri::command]
+fn sync_recent_vaults(app: AppHandle, vaults: Vec<RecentVaultEntry>) -> Result<(), String> {
+    let sanitized = vaults
+        .into_iter()
+        .filter(|vault| !vault.path.trim().is_empty() && !vault.name.trim().is_empty())
+        .take(15)
+        .collect::<Vec<_>>();
+    write_recent_vaults_file(&app, &sanitized)
+}
+
+fn emit_menu_action_to_target_window(app: &AppHandle, action_id: &str) {
+    let target_label = app
+        .state::<Mutex<AppState>>()
+        .lock()
+        .ok()
+        .and_then(|mut state| {
+            prune_stale_window_vault_routes(app, &mut state);
+            select_menu_target_window_label(&state)
+        })
+        .or_else(|| {
+            if app.get_webview_window("main").is_some() {
+                Some("main".to_string())
+            } else {
+                None
+            }
+        });
+
+    if let Some(label) = target_label {
+        let _ = app.emit_to(label, MENU_ACTION_EVENT, action_id.to_string());
+    } else {
+        let _ = app.emit(MENU_ACTION_EVENT, action_id.to_string());
+    }
+}
+
+fn emit_dock_open_vault(app: &AppHandle, vault_path: &str) {
+    let target_label = app
+        .state::<Mutex<AppState>>()
+        .lock()
+        .ok()
+        .and_then(|mut state| {
+            prune_stale_window_vault_routes(app, &mut state);
+            select_main_window_label(&state)
+        })
+        .or_else(|| {
+            if app.get_webview_window("main").is_some() {
+                Some("main".to_string())
+            } else {
+                None
+            }
+        });
+
+    if let Some(label) = target_label {
+        let _ = app.emit_to(label, DOCK_OPEN_VAULT_EVENT, vault_path.to_string());
+    } else {
+        let _ = app.emit(DOCK_OPEN_VAULT_EVENT, vault_path.to_string());
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_dock_menu(app: &AppHandle) {
+    let _ = MACOS_DOCK_MENU_APP_HANDLE.set(app.clone());
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let ns_app = NSApplication::sharedApplication(mtm);
+    let Some(delegate) = ns_app.delegate() else {
+        return;
+    };
+    let delegate_object: &AnyObject = (&*delegate).as_ref();
+    let delegate_class = delegate_object.class();
+
+    // Extend Tauri's existing app delegate instead of replacing it, so we
+    // keep its lifecycle behavior intact and only add dock-specific hooks.
+    unsafe {
+        add_delegate_method_if_missing(
+            delegate_class,
+            sel!(applicationDockMenu:),
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(&AnyObject, Sel, &NSApplication) -> *mut CocoaMenu,
+                Imp,
+            >(macos_application_dock_menu),
+            b"@@:@\0",
+        );
+        add_delegate_method_if_missing(
+            delegate_class,
+            sel!(vaultAiOpenRecentVaultFromDock:),
+            std::mem::transmute::<unsafe extern "C-unwind" fn(&AnyObject, Sel, &CocoaMenuItem), Imp>(
+                macos_open_recent_vault_from_dock,
+            ),
+            b"v@:@\0",
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn add_delegate_method_if_missing(
+    delegate_class: &AnyClass,
+    selector: Sel,
+    implementation: Imp,
+    method_types: &'static [u8],
+) {
+    if delegate_class.instance_method(selector).is_some() {
+        return;
+    }
+
+    let _ = unsafe {
+        ffi::class_addMethod(
+            delegate_class as *const AnyClass as *mut AnyClass,
+            selector,
+            implementation,
+            method_types.as_ptr().cast(),
+        )
+    };
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C-unwind" fn macos_application_dock_menu(
+    delegate: &AnyObject,
+    _cmd: Sel,
+    _sender: &NSApplication,
+) -> *mut CocoaMenu {
+    build_macos_dock_menu(delegate)
+        .map(Retained::autorelease_return)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C-unwind" fn macos_open_recent_vault_from_dock(
+    _delegate: &AnyObject,
+    _cmd: Sel,
+    sender: &CocoaMenuItem,
+) {
+    let Some(path) = sender.representedObject().and_then(|object| {
+        (&*object)
+            .downcast_ref::<NSString>()
+            .map(|path| path.to_string())
+    }) else {
+        return;
+    };
+    let Some(app) = MACOS_DOCK_MENU_APP_HANDLE.get() else {
+        return;
+    };
+    emit_dock_open_vault(app, &path);
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_dock_menu(delegate: &AnyObject) -> Option<Retained<CocoaMenu>> {
+    let Some(app) = MACOS_DOCK_MENU_APP_HANDLE.get() else {
+        return None;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return None;
+    };
+
+    let recent_vaults = read_recent_vaults_file(app);
+    let menu = CocoaMenu::initWithTitle(CocoaMenu::alloc(mtm), &NSString::from_str("VaultAI"));
+    let vaults_item = unsafe {
+        CocoaMenuItem::initWithTitle_action_keyEquivalent(
+            CocoaMenuItem::alloc(mtm),
+            &NSString::from_str("Vaults"),
+            None,
+            &NSString::from_str(""),
+        )
+    };
+    let vaults_submenu = build_macos_vaults_submenu(delegate, &recent_vaults, mtm);
+    vaults_item.setSubmenu(Some(&vaults_submenu));
+    menu.addItem(&vaults_item);
+
+    Some(menu)
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_vaults_submenu(
+    delegate: &AnyObject,
+    vaults: &[RecentVaultEntry],
+    mtm: MainThreadMarker,
+) -> Retained<CocoaMenu> {
+    let submenu = CocoaMenu::initWithTitle(CocoaMenu::alloc(mtm), &NSString::from_str("Vaults"));
+
+    if vaults.is_empty() {
+        let item = unsafe {
+            CocoaMenuItem::initWithTitle_action_keyEquivalent(
+                CocoaMenuItem::alloc(mtm),
+                &NSString::from_str("No vaults registered"),
+                None,
+                &NSString::from_str(""),
+            )
+        };
+        item.setEnabled(false);
+        submenu.addItem(&item);
+        return submenu;
+    }
+
+    for vault in vaults.iter().take(15) {
+        let path = NSString::from_str(&vault.path);
+        let path_object: &AnyObject = (&*path).as_ref();
+        let item = unsafe {
+            CocoaMenuItem::initWithTitle_action_keyEquivalent(
+                CocoaMenuItem::alloc(mtm),
+                &NSString::from_str(&vault.name),
+                Some(sel!(vaultAiOpenRecentVaultFromDock:)),
+                &NSString::from_str(""),
+            )
+        };
+        unsafe {
+            item.setTarget(Some(delegate));
+            item.setRepresentedObject(Some(path_object));
+        }
+        item.setSubtitle(Some(&path));
+        item.setToolTip(Some(&path));
+        submenu.addItem(&item);
+    }
+
+    submenu
+}
+
+#[cfg(target_os = "macos")]
+fn is_native_menu_command(id: &str) -> bool {
+    matches!(
+        id,
+        "app:open-settings"
+            | "vault:new-note"
+            | "editor:new-tab"
+            | "vault:open"
+            | "editor:close-tab"
+            | "editor:reopen-closed-tab"
+            | "editor:save-active-note"
+            | "editor:search-in-note"
+            | "vault:search"
+            | "editor:bold-selection"
+            | "editor:highlight-selection"
+            | "editor:heading-1"
+            | "editor:heading-2"
+            | "editor:heading-3"
+            | "editor:heading-4"
+            | "editor:heading-5"
+            | "editor:heading-6"
+            | "editor:heading-0"
+            | "editor:toggle-live-preview"
+            | "layout:toggle-sidebar"
+            | "layout:toggle-right-panel"
+            | "nav:command-palette"
+            | "nav:quick-switcher"
+            | "editor:font-size-up"
+            | "editor:font-size-down"
+            | "nav:back"
+            | "nav:forward"
+            | "nav:next-tab"
+            | "nav:previous-tab"
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_menu_item<R: tauri::Runtime, M: Manager<R>>(
+    manager: &M,
+    id: &str,
+    text: &str,
+    accelerator: Option<&str>,
+) -> tauri::Result<MenuItem<R>> {
+    MenuItem::with_id(manager, id, text, true, accelerator)
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu<R>> {
+    let about_metadata = AboutMetadataBuilder::new()
+        .name(Some("VaultAI"))
+        .version(Some(manager.package_info().version.to_string()))
+        .build();
+
+    let app_menu = SubmenuBuilder::new(manager, "VaultAI")
+        .about(Some(about_metadata))
+        .separator()
+        .services()
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "app:open-settings",
+            "Settings...",
+            Some("Cmd+,"),
+        )?)
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let file_menu = SubmenuBuilder::new(manager, "File")
+        .item(&macos_menu_item(
+            manager,
+            "vault:new-note",
+            "New Note",
+            Some("Cmd+N"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:new-tab",
+            "New Tab",
+            Some("Cmd+T"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "vault:open",
+            "Open Vault...",
+            Some("Shift+Cmd+O"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "editor:close-tab",
+            "Close Tab",
+            Some("Cmd+W"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:reopen-closed-tab",
+            "Reopen Closed Tab",
+            Some("Shift+Cmd+T"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "editor:save-active-note",
+            "Save",
+            Some("Shift+Cmd+S"),
+        )?)
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(manager, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "editor:search-in-note",
+            "Find in Note...",
+            Some("Cmd+F"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "vault:search",
+            "Search in Vault...",
+            Some("Shift+Cmd+F"),
+        )?)
+        .build()?;
+
+    let format_menu = SubmenuBuilder::new(manager, "Format")
+        .item(&macos_menu_item(
+            manager,
+            "editor:bold-selection",
+            "Bold",
+            Some("Cmd+B"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:highlight-selection",
+            "Highlight",
+            Some("Shift+Cmd+H"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-1",
+            "Heading 1",
+            Some("Cmd+1"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-2",
+            "Heading 2",
+            Some("Cmd+2"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-3",
+            "Heading 3",
+            Some("Cmd+3"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-4",
+            "Heading 4",
+            Some("Cmd+4"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-5",
+            "Heading 5",
+            Some("Cmd+5"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-6",
+            "Heading 6",
+            Some("Cmd+6"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:heading-0",
+            "Remove Heading",
+            Some("Cmd+0"),
+        )?)
+        .build()?;
+
+    let view_menu = SubmenuBuilder::new(manager, "View")
+        .item(&macos_menu_item(
+            manager,
+            "editor:toggle-live-preview",
+            "Toggle Live Preview",
+            Some("Cmd+E"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "layout:toggle-sidebar",
+            "Toggle Sidebar",
+            Some("Cmd+S"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "layout:toggle-right-panel",
+            "Toggle Right Panel",
+            Some("Cmd+J"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "nav:command-palette",
+            "Command Palette...",
+            Some("Cmd+K"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "nav:quick-switcher",
+            "Quick Switcher...",
+            Some("Cmd+O"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "editor:font-size-up",
+            "Increase Font Size",
+            Some("Cmd+="),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "editor:font-size-down",
+            "Decrease Font Size",
+            Some("Cmd+-"),
+        )?)
+        .separator()
+        .fullscreen()
+        .build()?;
+
+    let go_menu = SubmenuBuilder::new(manager, "Go")
+        .item(&macos_menu_item(
+            manager,
+            "nav:back",
+            "Back",
+            Some("Cmd+["),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "nav:forward",
+            "Forward",
+            Some("Cmd+]"),
+        )?)
+        .separator()
+        .item(&macos_menu_item(
+            manager,
+            "nav:next-tab",
+            "Next Tab",
+            Some("Ctrl+Tab"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "nav:previous-tab",
+            "Previous Tab",
+            Some("Alt+Cmd+T"),
+        )?)
+        .build()?;
+
+    let window_menu = SubmenuBuilder::new(manager, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .close_window()
+        .build()?;
+    window_menu.set_as_windows_menu_for_nsapp()?;
+
+    let help_menu = SubmenuBuilder::new(manager, "Help")
+        .item(&macos_menu_item(
+            manager,
+            "app:open-settings",
+            "Keyboard Shortcuts",
+            None,
+        )?)
+        .build()?;
+    help_menu.set_as_help_menu_for_nsapp()?;
+
+    MenuBuilder::new(manager)
+        .item(&app_menu)
+        .item(&file_menu)
+        .item(&edit_menu)
+        .item(&format_menu)
+        .item(&view_menu)
+        .item(&go_menu)
+        .item(&window_menu)
+        .item(&help_menu)
+        .build()
+}
+
 fn clipper_vault_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -4529,14 +5146,26 @@ pub(crate) fn web_clipper_save_note(
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(AppState::new()))
         .manage(Mutex::new(ai::AiManager::new()))
         .manage(ai::auth_terminal::AiAuthTerminalManager::new())
         .manage(devtools::DevTerminalManager::new())
-        .manage(spellcheck::SpellcheckState::new())
+        .manage(spellcheck::SpellcheckState::new());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(|app| build_macos_menu(app))
+        .on_menu_event(|app, event| {
+            let action_id = event.id().as_ref();
+            if is_native_menu_command(action_id) {
+                emit_menu_action_to_target_window(app, action_id);
+            }
+        });
+
+    builder
         .setup(|app| {
             // Create the main window programmatically so we can set the
             // traffic-light position dynamically based on the macOS version.
@@ -4545,17 +5174,32 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let (tl_x, tl_y) = (14.0, 20.0);
 
-            tauri::WebviewWindowBuilder::new(
+            let mut main_window_builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("VaultAI")
-            .inner_size(1200.0, 800.0)
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(tl_x, tl_y))
-            .build()?;
+            .inner_size(1200.0, 800.0);
+
+            #[cfg(target_os = "macos")]
+            {
+                main_window_builder = main_window_builder
+                    .decorations(true)
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true)
+                    .traffic_light_position(tauri::LogicalPosition::new(tl_x, tl_y));
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                main_window_builder = main_window_builder.decorations(false);
+            }
+
+            main_window_builder.build()?;
+
+            #[cfg(target_os = "macos")]
+            install_macos_dock_menu(&app.handle().clone());
 
             clipper_api::start_server(app.handle().clone());
 
@@ -4640,6 +5284,7 @@ pub fn run() {
             ai::commands::ai_delete_runtime_sessions_for_vault,
             ai::commands::ai_prune_session_histories,
             ai::commands::ai_register_file_baseline,
+            sync_recent_vaults,
             devtools::commands::devtools_create_terminal_session,
             devtools::commands::devtools_write_terminal_session,
             devtools::commands::devtools_resize_terminal_session,
