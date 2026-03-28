@@ -11,7 +11,7 @@
     },
     "bundle": {
         "active": true,
-        "targets": ["app"],
+        "targets": ["app", "nsis", "msi"],
         "resources": ["binaries/*", "embedded/**/*"],
         "macOS": {
             "minimumSystemVersion": "12.0",
