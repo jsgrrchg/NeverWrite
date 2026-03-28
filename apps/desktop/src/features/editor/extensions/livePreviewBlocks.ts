@@ -17,6 +17,7 @@ import katex from "katex";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
+    dispatchOpenYouTubeModal,
     extractYouTubeVideoId,
     getYouTubePreview,
     getYouTubeThumbnailUrl,
@@ -671,6 +672,25 @@ class YouTubeWidget extends WidgetType {
         wrapper.dataset.title = this.title;
         wrapper.tabIndex = 0;
         wrapper.setAttribute("role", "button");
+        const openVideo = () => {
+            dispatchOpenYouTubeModal({
+                href: this.href,
+                title: wrapper.dataset.title || this.title || "YouTube video",
+            });
+        };
+        wrapper.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openVideo();
+        });
+        wrapper.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            openVideo();
+        });
 
         const media = document.createElement("div");
         media.className = "cm-youtube-link-media";
@@ -736,8 +756,8 @@ class YouTubeWidget extends WidgetType {
         return outer;
     }
 
-    ignoreEvent() {
-        return true;
+    ignoreEvent(event: Event) {
+        return event.type !== "contextmenu";
     }
 }
 

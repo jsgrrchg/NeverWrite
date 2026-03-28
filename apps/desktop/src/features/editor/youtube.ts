@@ -12,6 +12,12 @@ export interface YouTubePreviewData {
 
 const YOUTUBE_PREVIEW_CACHE_LIMIT = 128;
 const previewCache = new Map<string, Promise<YouTubePreviewData>>();
+const YOUTUBE_HOSTS = new Set([
+    "youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+]);
+const YOUTUBE_EMBED_HOSTS = new Set(["youtube-nocookie.com"]);
 
 function rememberPreviewRequest(
     url: string,
@@ -39,13 +45,17 @@ export function extractYouTubeVideoId(url: string): string | null {
             return id || null;
         }
 
-        if (host === "youtube.com" || host === "m.youtube.com") {
+        if (YOUTUBE_HOSTS.has(host) || YOUTUBE_EMBED_HOSTS.has(host)) {
             if (parsed.pathname === "/watch") {
                 return parsed.searchParams.get("v");
             }
 
             const segments = parsed.pathname.split("/").filter(Boolean);
-            if (segments[0] === "embed" || segments[0] === "shorts") {
+            if (
+                segments[0] === "embed" ||
+                segments[0] === "shorts" ||
+                segments[0] === "live"
+            ) {
                 return segments[1] ?? null;
             }
         }
