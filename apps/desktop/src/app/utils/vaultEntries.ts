@@ -160,6 +160,17 @@ const IMAGE_EXTENSIONS = new Set([
     "ico",
 ]);
 
+export function isTextLikeMimeType(mimeType: string | null | undefined) {
+    if (!mimeType) return false;
+    return (
+        mimeType.startsWith("text/") ||
+        mimeType === "application/json" ||
+        mimeType === "application/xml" ||
+        mimeType === "application/yaml" ||
+        mimeType === "application/toml"
+    );
+}
+
 function getNormalizedExtension(pathOrExtension: string) {
     const normalized = pathOrExtension.toLowerCase().split("/").pop() ?? "";
     if (!normalized.includes(".")) {
@@ -201,14 +212,7 @@ export function isTextLikeVaultEntry(
     if (isTextLikeVaultPath(entry.file_name)) {
         return true;
     }
-    if (!entry.mime_type) return false;
-    return (
-        entry.mime_type.startsWith("text/") ||
-        entry.mime_type === "application/json" ||
-        entry.mime_type === "application/xml" ||
-        entry.mime_type === "application/yaml" ||
-        entry.mime_type === "application/toml"
-    );
+    return isTextLikeMimeType(entry.mime_type);
 }
 
 export function isImageLikeVaultEntry(
@@ -346,7 +350,11 @@ export async function openVaultFileEntry(
     if (options?.newTab) {
         const inserted = await insertVaultEntryTab(entry);
         if (!inserted) {
-            await openPath(entry.path);
+            try {
+                await openPath(entry.path);
+            } catch (error) {
+                console.error("Error opening vault file externally:", error);
+            }
         }
         return;
     }
@@ -366,7 +374,11 @@ export async function openVaultFileEntry(
     }
 
     if (!canOpenVaultFileEntryInApp(entry)) {
-        await openPath(entry.path);
+        try {
+            await openPath(entry.path);
+        } catch (error) {
+            console.error("Error opening vault file externally:", error);
+        }
         return;
     }
 
