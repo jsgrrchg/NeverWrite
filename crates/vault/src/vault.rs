@@ -177,16 +177,8 @@ impl Vault {
     }
 
     pub fn resolve_relative_path(&self, relative_path: &str) -> Result<PathBuf, VaultError> {
-        let path = Path::new(relative_path);
-        if path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
-            return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
-        }
-
+        let path = validate_untrusted_relative_path(relative_path, true)
+            .map_err(|_| VaultError::InvalidVaultPath(relative_path.to_string()))?;
         let joined = self.root.join(path);
 
         // If the path exists on disk, verify its canonical form stays inside the vault.
@@ -202,6 +194,50 @@ impl Vault {
         }
 
         Ok(joined)
+    }
+
+    /// Resuelve un note_id relativo sin extensión `.md` dentro del vault.
+    pub fn resolve_note_id_path(&self, note_id: &str) -> Result<PathBuf, VaultError> {
+        let path = validate_untrusted_relative_path(note_id, false)
+            .map_err(|_| VaultError::InvalidVaultPath(note_id.to_string()))?;
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            return Err(VaultError::InvalidVaultPath(note_id.to_string()));
+        }
+
+        Ok(self.root.join(path).with_extension("md"))
+    }
+
+    /// Resuelve un path relativo con extensión `.md` dentro del vault.
+    pub fn resolve_note_relative_markdown_path(
+        &self,
+        relative_path: &str,
+    ) -> Result<PathBuf, VaultError> {
+        let path = validate_untrusted_relative_path(relative_path, false)
+            .map_err(|_| VaultError::InvalidVaultPath(relative_path.to_string()))?;
+        if !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
+        }
+
+        self.resolve_relative_path(relative_path)
+    }
+
+    /// Valida un nombre de archivo leaf dentro del vault sin permitir traversal ni separadores.
+    pub fn validate_vault_leaf_file_name(&self, file_name: &str) -> Result<(), VaultError> {
+        let path = validate_untrusted_relative_path(file_name, false)
+            .map_err(|_| VaultError::InvalidVaultPath(file_name.to_string()))?;
+        if path.components().count() != 1 {
+            return Err(VaultError::InvalidVaultPath(file_name.to_string()));
+        }
+
+        Ok(())
     }
 
     pub fn read_text_file(&self, relative_path: &str) -> Result<String, VaultError> {
@@ -281,6 +317,7 @@ impl Vault {
         if path_is_ignored(&self.root, &dir_path) {
             return Err(VaultError::InvalidVaultPath(relative_dir.to_string()));
         }
+        self.validate_vault_leaf_file_name(file_name)?;
         if !dir_path.exists() {
             std::fs::create_dir_all(&dir_path)?;
         }
@@ -445,8 +482,8 @@ impl Vault {
             .to_string()
     }
 
-    /// Convierte un note_id al path absoluto del archivo.
-    pub fn id_to_path(&self, note_id: &str) -> PathBuf {
+    /// Convierte un note_id ya validado al path absoluto del archivo.
+    pub(crate) fn id_to_path(&self, note_id: &str) -> PathBuf {
         self.root.join(format!("{}.md", note_id))
     }
 
@@ -459,6 +496,51 @@ impl Vault {
     pub fn read_vault_entry_from_path(&self, path: &Path) -> Result<VaultEntryDto, VaultError> {
         build_vault_entry(path, entry_kind(path).to_string(), self)
     }
+}
+
+fn validate_untrusted_relative_path(raw: &str, allow_empty: bool) -> Result<PathBuf, ()> {
+    if raw.is_empty() {
+        return if allow_empty {
+            Ok(PathBuf::new())
+        } else {
+            Err(())
+        };
+    }
+
+    if raw.contains('\\') || raw.split('/').any(str::is_empty) {
+        return Err(());
+    }
+
+    let mut normalized = PathBuf::new();
+    let mut has_component = false;
+
+    for component in Path::new(raw).components() {
+        match component {
+            Component::Normal(value) => {
+                let value = value.to_str().ok_or(())?;
+                if value == "." || value == ".." || looks_like_windows_prefix(value) {
+                    return Err(());
+                }
+                normalized.push(value);
+                has_component = true;
+            }
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => return Err(()),
+        }
+    }
+
+    if !has_component && !allow_empty {
+        return Err(());
+    }
+
+    Ok(normalized)
+}
+
+fn looks_like_windows_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 pub(crate) fn is_ignored_dir_name(name: &str) -> bool {

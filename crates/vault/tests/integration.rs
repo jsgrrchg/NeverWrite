@@ -123,12 +123,25 @@ fn read_note_not_found() {
 }
 
 #[test]
+fn read_note_rejects_parent_traversal() {
+    let (_dir, vault) = setup_vault();
+    assert!(vault.read_note("../outside").is_err());
+    assert!(vault.read_note("..\\outside").is_err());
+}
+
+#[test]
 fn save_note_works() {
     let (_dir, vault) = setup_vault();
     vault.save_note("nota1", "# Nuevo contenido\n").unwrap();
     let note = vault.read_note("nota1").unwrap();
     assert_eq!(note.raw_markdown, "# Nuevo contenido\n");
     assert_eq!(note.title, "Nuevo contenido");
+}
+
+#[test]
+fn save_note_rejects_parent_traversal() {
+    let (_dir, vault) = setup_vault();
+    assert!(vault.save_note("../outside", "x").is_err());
 }
 
 #[test]
@@ -151,6 +164,13 @@ fn create_note_in_subdirectory() {
         .create_note("sub/deep/nota.md", "# Deep Note")
         .unwrap();
     assert_eq!(note.id.0, "sub/deep/nota");
+}
+
+#[test]
+fn create_note_rejects_parent_traversal() {
+    let (_dir, vault) = setup_vault();
+    assert!(vault.create_note("../outside.md", "# nope").is_err());
+    assert!(vault.create_note("..\\outside.md", "# nope").is_err());
 }
 
 #[test]
@@ -182,6 +202,12 @@ fn delete_note_not_found() {
 }
 
 #[test]
+fn delete_note_rejects_parent_traversal() {
+    let (_dir, vault) = setup_vault();
+    assert!(vault.delete_note("../outside").is_err());
+}
+
+#[test]
 fn rename_note_works() {
     let (_dir, vault) = setup_vault();
     let note = vault.rename_note("nota1", "renamed.md").unwrap();
@@ -197,6 +223,53 @@ fn rename_note_works() {
 fn rename_to_existing_fails() {
     let (_dir, vault) = setup_vault();
     assert!(vault.rename_note("nota1", "nota2.md").is_err());
+}
+
+#[test]
+fn rename_note_rejects_parent_traversal() {
+    let (_dir, vault) = setup_vault();
+    assert!(vault.rename_note("../outside", "safe.md").is_err());
+    assert!(vault.rename_note("nota1", "../outside.md").is_err());
+    assert!(vault.rename_note("nota1", "..\\outside.md").is_err());
+}
+
+#[test]
+fn rename_note_preserves_nested_valid_paths() {
+    let (_dir, vault) = setup_vault();
+    let note = vault
+        .rename_note("carpeta/nota3", "archive/nueva/nota3.md")
+        .unwrap();
+    assert_eq!(note.id.0, "archive/nueva/nota3");
+    assert!(vault.read_note("archive/nueva/nota3").is_ok());
+}
+
+#[test]
+fn save_binary_file_accepts_leaf_name_in_valid_directory() {
+    let (_dir, vault) = setup_vault();
+    let bytes = b"image";
+    let (_path, entry) = vault.save_binary_file("assets", "ok.png", bytes).unwrap();
+
+    assert_eq!(entry.relative_path, "assets/ok.png");
+    assert_eq!(entry.file_name, "ok.png");
+}
+
+#[test]
+fn save_binary_file_rejects_invalid_file_names() {
+    let (_dir, vault) = setup_vault();
+    let bytes = b"evil";
+
+    assert!(vault
+        .save_binary_file("assets", "../evil.bin", bytes)
+        .is_err());
+    assert!(vault
+        .save_binary_file("assets", "..\\evil.bin", bytes)
+        .is_err());
+    assert!(vault
+        .save_binary_file("assets", "nested/evil.bin", bytes)
+        .is_err());
+    assert!(vault
+        .save_binary_file("assets", "nested\\evil.bin", bytes)
+        .is_err());
 }
 
 #[test]
@@ -265,7 +338,7 @@ fn path_to_id_conversions() {
     let id = vault.path_to_id(&vault.root.join("carpeta/nota3.md"));
     assert_eq!(id, "carpeta/nota3");
 
-    let path = vault.id_to_path("carpeta/nota3");
+    let path = vault.resolve_note_id_path("carpeta/nota3").unwrap();
     assert!(path.ends_with("carpeta/nota3.md"));
 }
 
