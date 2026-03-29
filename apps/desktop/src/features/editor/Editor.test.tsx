@@ -1969,12 +1969,12 @@ describe("Editor", () => {
         vi.useFakeTimers();
         mockInvoke().mockImplementation(async (command, args) => {
             if (command === "save_note") {
+                const a = args as Record<string, unknown> | undefined;
                 return {
-                    id: String(args?.noteId ?? ""),
-                    path: `/${String(args?.noteId ?? "")}.md`,
-                    title:
-                        args?.noteId === "notes/current" ? "Current" : "Next",
-                    content: String(args?.content ?? ""),
+                    id: String(a?.noteId ?? ""),
+                    path: `/${String(a?.noteId ?? "")}.md`,
+                    title: a?.noteId === "notes/current" ? "Current" : "Next",
+                    content: String(a?.content ?? ""),
                 };
             }
             return undefined;

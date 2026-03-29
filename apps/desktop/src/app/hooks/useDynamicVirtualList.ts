@@ -130,19 +130,21 @@ export function useDynamicVirtualList<T>({
             }
         });
 
-        setMeasuredSizes((current) => {
-            let changed = false;
-            const next: Record<string, number> = {};
+        queueMicrotask(() => {
+            setMeasuredSizes((current) => {
+                let changed = false;
+                const next: Record<string, number> = {};
 
-            for (const [key, size] of Object.entries(current)) {
-                if (!activeKeys.has(key)) {
-                    changed = true;
-                    continue;
+                for (const [key, size] of Object.entries(current)) {
+                    if (!activeKeys.has(key)) {
+                        changed = true;
+                        continue;
+                    }
+                    next[key] = size;
                 }
-                next[key] = size;
-            }
 
-            return changed ? next : current;
+                return changed ? next : current;
+            });
         });
     }, [getItemKey, items]);
 

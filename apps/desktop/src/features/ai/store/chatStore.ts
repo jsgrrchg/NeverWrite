@@ -2504,9 +2504,9 @@ function scheduleSessionPersistence(session: AIChatSession) {
     });
 }
 
-function scheduleStaleStreamingCheck(_: string) {}
+function scheduleStaleStreamingCheck(_sessionId: string) {}
 
-function clearStaleStreamingCheck(_: string) {}
+function clearStaleStreamingCheck(_sessionId: string) {}
 
 function markSessionStreamingIfLive(session: AIChatSession): AIChatSession {
     if (session.runtimeState != null && session.runtimeState !== "live") {
@@ -2843,8 +2843,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const currentSession = normalizeSessionTranscript(current);
                     const shouldPrepend =
                         mode === "older" ||
-                        (mode !== "older" &&
-                            currentSession.messages.length > 0 &&
+                        (currentSession.messages.length > 0 &&
                             (currentSession.loadedPersistedMessageStart ==
                                 null ||
                                 currentSession.loadedPersistedMessageStart >=
