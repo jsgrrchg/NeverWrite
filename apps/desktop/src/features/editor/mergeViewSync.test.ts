@@ -239,6 +239,30 @@ describe("mergeViewSync", () => {
         destroy();
     });
 
+    it("activates merge for restored sessions missing vaultPath metadata", () => {
+        const { view, destroy } = mountView("alpHa");
+        const path = "notes/current.md";
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const legacySession = {
+            ...createSession("session-legacy", "wc-legacy", [
+                createTrackedFile(path, "alpha", "alpHa"),
+            ]),
+            vaultPath: undefined,
+        };
+
+        syncMergeViewForPaths(view, [path], {
+            [legacySession.sessionId]: legacySession,
+        });
+
+        expect(getChunks(view.state)?.chunks.length).toBe(1);
+        expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+            enabled: true,
+            sessionId: "session-legacy",
+            trackedVersion: 1,
+        });
+        destroy();
+    });
+
     it("deactivates merge in preview mode", () => {
         const { view, destroy } = mountView("alpHa");
         const path = "notes/current.md";

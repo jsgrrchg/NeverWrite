@@ -111,4 +111,28 @@ describe("trackedFileMatch", () => {
         expect(result.foundTrackedFile).toBe(false);
         expect(result.match).toBeNull();
     });
+
+    it("matches legacy tracked sessions that do not have vaultPath stamped yet", () => {
+        const candidatePath = "notes/current.md";
+        const legacySession = {
+            ...createSession("session-legacy", "/vault-a", [
+                createTrackedFile(candidatePath, "alpha", "CURRENT"),
+            ]),
+            vaultPath: undefined,
+        };
+
+        const result = resolveTrackedFileMatchForPaths(
+            [candidatePath],
+            {
+                [legacySession.sessionId]: legacySession,
+            },
+            {
+                vaultPath: "/vault-a",
+            },
+        );
+
+        expect(result.foundTrackedFile).toBe(true);
+        expect(result.match?.sessionId).toBe("session-legacy");
+        expect(result.match?.trackedFile.diffBase).toBe("alpha");
+    });
 });
