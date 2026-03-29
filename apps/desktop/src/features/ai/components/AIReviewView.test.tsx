@@ -1,7 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { useEditorStore } from "../../../app/store/editorStore";
+import { isReviewTab, useEditorStore } from "../../../app/store/editorStore";
 import {
     renderComponent,
     setVaultEntries,
@@ -16,6 +16,15 @@ import { AIReviewView } from "./AIReviewView";
 import { readPersistedReviewViewState } from "./reviewTabPersistence";
 
 const DEFAULT_WORK_CYCLE = "default-wc";
+const defaultChatActions = {
+    rejectEditedFile: useChatStore.getState().rejectEditedFile,
+    keepEditedFile: useChatStore.getState().keepEditedFile,
+    keepAllEditedFiles: useChatStore.getState().keepAllEditedFiles,
+    rejectAllEditedFiles: useChatStore.getState().rejectAllEditedFiles,
+    resolveEditedFileWithMergedText:
+        useChatStore.getState().resolveEditedFileWithMergedText,
+    resolveReviewHunks: useChatStore.getState().resolveReviewHunks,
+};
 
 function makeTrackedFile(overrides: Partial<TrackedFile> = {}): TrackedFile {
     const diffBase = overrides.diffBase ?? "old line";
@@ -117,6 +126,14 @@ describe("AIReviewView", () => {
     beforeEach(() => {
         localStorage.clear();
         resetChatStore();
+        useEditorStore.setState({
+            tabs: [],
+            activeTabId: null,
+            activationHistory: [],
+            tabNavigationHistory: [],
+            tabNavigationIndex: -1,
+        });
+        useChatStore.setState(defaultChatActions);
         vi.clearAllMocks();
     });
 
@@ -177,6 +194,33 @@ describe("AIReviewView", () => {
         expect(screen.getByText("Keep All")).toBeInTheDocument();
     });
 
+    it("closes the review tab when Keep All accepts the last pending file", async () => {
+        const sessionId = "sess-close-keep-all";
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [makeTrackedFile()]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        renderComponent(<AIReviewView />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Keep All" }));
+
+        await waitFor(() =>
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.find(
+                        (tab) =>
+                            isReviewTab(tab) && tab.sessionId === sessionId,
+                    ),
+            ).toBeUndefined(),
+        );
+        expect(screen.getByText("No review tab active")).toBeInTheDocument();
+    });
+
     it("shows Conflict badge for conflict entries", () => {
         const sessionId = "sess-4";
         const file = makeTrackedFile({
@@ -214,9 +258,7 @@ describe("AIReviewView", () => {
         });
 
         renderComponent(<AIReviewView />);
-        expect(
-            screen.getByRole("button", { name: "Open File" }),
-        ).toBeInTheDocument();
+        expect(screen.getByTitle("Open File")).toBeInTheDocument();
     });
 
     it("enables Open File for supported non-note vault files", () => {
@@ -252,7 +294,7 @@ describe("AIReviewView", () => {
         });
 
         renderComponent(<AIReviewView />);
-        expect(screen.getByRole("button", { name: "Open File" })).toBeEnabled();
+        expect(screen.getByTitle("Open File")).toBeEnabled();
     });
 
     it("enables Open File for supported text files even when the vault entry is not indexed yet", () => {
@@ -274,7 +316,7 @@ describe("AIReviewView", () => {
         });
 
         renderComponent(<AIReviewView />);
-        expect(screen.getByRole("button", { name: "Open File" })).toBeEnabled();
+        expect(screen.getByTitle("Open File")).toBeEnabled();
     });
 
     it("scopes review actions to the review tab session instead of the active chat session", () => {
@@ -311,7 +353,7 @@ describe("AIReviewView", () => {
 
         renderComponent(<AIReviewView />);
 
-        fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+        fireEvent.click(screen.getByTitle("Reject"));
         fireEvent.click(screen.getByRole("button", { name: "Reject All" }));
         fireEvent.click(screen.getByRole("button", { name: "Keep All" }));
 
@@ -342,16 +384,22 @@ describe("AIReviewView", () => {
         renderComponent(<AIReviewView />);
 
         // With a single file, it starts expanded (<=5 entries rule).
-        // The Reject button is visible when expanded.
-        expect(screen.getByText("Reject")).toBeInTheDocument();
+        // Per-hunk controls are visible when expanded.
+        expect(
+            screen.getByRole("button", { name: "Reject hunk 1" }),
+        ).toBeInTheDocument();
 
         // Click the header to collapse
         fireEvent.click(screen.getByText("test.md"));
-        expect(screen.queryByText("Reject")).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Reject hunk 1" }),
+        ).not.toBeInTheDocument();
 
         // Click again to expand
         fireEvent.click(screen.getByText("test.md"));
-        expect(screen.getByText("Reject")).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Reject hunk 1" }),
+        ).toBeInTheDocument();
     });
 
     it("restores persisted expansion and scroll anchor state when reopening the same review session", async () => {
@@ -540,6 +588,41 @@ describe("AIReviewView", () => {
         );
     });
 
+    it("closes the review tab when accepting the last review hunk", async () => {
+        const sessionId = "sess-close-last-hunk";
+        const file = makeTrackedFile({
+            identityKey: "close-last-hunk",
+            path: "/vault/close-last-hunk.md",
+            originPath: "/vault/close-last-hunk.md",
+            diffBase: "old line",
+            currentText: "new line",
+        });
+
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        renderComponent(<AIReviewView />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
+
+        await waitFor(() =>
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.find(
+                        (tab) =>
+                            isReviewTab(tab) && tab.sessionId === sessionId,
+                    ),
+            ).toBeUndefined(),
+        );
+        expect(screen.getByText("No review tab active")).toBeInTheDocument();
+    });
+
     it("keeps review controls visible for accumulated hunks on the same file", () => {
         const sessionId = "sess-accumulated";
         const file = makeTrackedFile({
@@ -568,9 +651,7 @@ describe("AIReviewView", () => {
         renderComponent(<AIReviewView />);
 
         expect(screen.getByText("file.md")).toBeInTheDocument();
-        expect(
-            screen.getByRole("button", { name: "Reject" }),
-        ).toBeInTheDocument();
+        expect(screen.getByTitle("Reject")).toBeInTheDocument();
         expect(
             screen.getByRole("button", { name: "Accept hunk 1" }),
         ).toBeInTheDocument();

@@ -80,6 +80,13 @@ const runtimes: AIRuntimeDescriptor[] = [
 describe("useAutoOpenReviewTab", () => {
     beforeEach(() => {
         resetChatStore();
+        useEditorStore.setState({
+            tabs: [],
+            activeTabId: null,
+            activationHistory: [],
+            tabNavigationHistory: [],
+            tabNavigationIndex: -1,
+        });
     });
 
     it("opens a background review tab when another session starts surfacing edits", () => {
@@ -158,6 +165,58 @@ describe("useAutoOpenReviewTab", () => {
             .tabs.filter((tab) => isReviewTab(tab));
         expect(reviewTabs).toHaveLength(1);
         expect(reviewTabs[0]?.sessionId).toBe("session-a");
+    });
+
+    it("reopens a review tab when a resolved session surfaces new edits again", () => {
+        renderComponent(<AutoOpenReviewHarness />);
+
+        const session = createSession("session-a", ["/vault/a.ts"]);
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        }));
+
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === session.sessionId,
+                ),
+        ).toHaveLength(1);
+
+        useChatStore.getState().keepAllEditedFiles(session.sessionId);
+
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === session.sessionId,
+                ),
+        ).toHaveLength(0);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [session.sessionId]: createSession(session.sessionId, [
+                    "/vault/b.ts",
+                ]),
+            },
+        }));
+
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === session.sessionId,
+                ),
+        ).toHaveLength(1);
     });
 
     it("recomputes tracked counts only for sessions whose object changed", () => {
