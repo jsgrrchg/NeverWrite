@@ -4,7 +4,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import userEvent from "@testing-library/user-event";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
@@ -73,6 +73,10 @@ function seedTrackedDiff(
 }
 
 describe("FileTabView", () => {
+    beforeEach(() => {
+        setVaultEntries([], "/vault");
+    });
+
     it("renders image files with native-first controls", async () => {
         const user = userEvent.setup();
 

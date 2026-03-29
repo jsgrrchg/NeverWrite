@@ -14,8 +14,11 @@ import {
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+import {
+    buildVaultPreviewUrlFromAbsolutePath,
+    isAuthorizedVaultPreviewPath,
+} from "../../../app/utils/filePreviewUrl";
 import {
     dispatchOpenYouTubeModal,
     extractYouTubeVideoId,
@@ -1725,7 +1728,7 @@ function resolveImageUrl(
     rawUrl: string,
     vaultRoot: string | null,
     notePath: string | null,
-): string {
+): string | null {
     const resolved = resolvePreviewAssetPath(rawUrl, vaultRoot, notePath);
     if (
         resolved.startsWith("http://") ||
@@ -1735,7 +1738,7 @@ function resolveImageUrl(
     ) {
         return resolved;
     }
-    return convertFileSrc(resolved);
+    return buildVaultPreviewUrlFromAbsolutePath(resolved, vaultRoot);
 }
 
 function truncateInlineImageLabel(value: string, maxLength = 160): string {
@@ -1884,25 +1887,41 @@ function buildBlockDecorations(
                     to: node.to,
                     deco: Decoration.replace({
                         widget: IMAGE_EXTENSIONS.test(embedParsed.target)
-                            ? new ImageWidget(
-                                  resolveImageUrl(
+                            ? (() => {
+                                  const resolvedUrl = resolveImageUrl(
                                       embedParsed.target,
                                       vaultRoot,
                                       activeNotePath,
-                                  ),
-                                  embedParsed.target,
-                                  node.from,
-                                  node.to,
-                                  null,
-                                  null,
-                                  embedParsed.width ?? null,
-                                  true,
-                                  resolvePreviewAssetPath(
+                                  );
+                                  const resolvedPath = resolvePreviewAssetPath(
                                       embedParsed.target,
                                       vaultRoot,
                                       activeNotePath,
-                                  ),
-                              )
+                                  );
+
+                                  if (!resolvedUrl) {
+                                      return new SkippedImageWidget(
+                                          "Local image preview blocked: file is outside the active vault.",
+                                          node.from,
+                                          node.to,
+                                      );
+                                  }
+
+                                  return new ImageWidget(
+                                      resolvedUrl,
+                                      embedParsed.target,
+                                      node.from,
+                                      node.to,
+                                      null,
+                                      null,
+                                      embedParsed.width ?? null,
+                                      true,
+                                      isAuthorizedVaultPreviewPath(
+                                          resolvedPath,
+                                          vaultRoot,
+                                      ),
+                                  );
+                              })()
                             : PDF_EXTENSION.test(embedParsed.target)
                               ? new PdfEmbedWidget(
                                     embedParsed.target.split("/").pop() ??
@@ -1910,10 +1929,13 @@ function buildBlockDecorations(
                                     embedParsed.target,
                                     node.from,
                                     node.to,
-                                    resolvePreviewAssetPath(
-                                        embedParsed.target,
+                                    isAuthorizedVaultPreviewPath(
+                                        resolvePreviewAssetPath(
+                                            embedParsed.target,
+                                            vaultRoot,
+                                            activeNotePath,
+                                        ),
                                         vaultRoot,
-                                        activeNotePath,
                                     ),
                                 )
                               : new NoteEmbedWidget(
@@ -1992,6 +2014,22 @@ function buildBlockDecorations(
                 vaultRoot,
                 activeNotePath,
             );
+
+            if (!resolvedUrl) {
+                decos.push({
+                    from: node.from,
+                    to: node.to,
+                    deco: Decoration.replace({
+                        widget: new SkippedImageWidget(
+                            "Local image preview blocked: file is outside the active vault.",
+                            node.from,
+                            node.to,
+                        ),
+                        block: false,
+                    }),
+                });
+                return;
+            }
 
             decos.push({
                 from: node.from,

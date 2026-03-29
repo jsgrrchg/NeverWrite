@@ -8,7 +8,6 @@ import {
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
     ContextMenu,
@@ -24,6 +23,8 @@ import {
     isWheelZoomGesture,
     useWheelZoomModifier,
 } from "../../app/hooks/useWheelZoomModifier";
+import { useVaultStore } from "../../app/store/vaultStore";
+import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePreviewUrl";
 import { formatZoomPercentage, persistWheelZoom } from "../../app/utils/zoom";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -249,6 +250,7 @@ export function PdfTabView() {
 }
 
 function PdfViewer({ tab }: { tab: PdfTab }) {
+    const vaultPath = useVaultStore((state) => state.vaultPath);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -281,6 +283,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const updatePdfPage = useEditorStore((s) => s.updatePdfPage);
     const updatePdfZoom = useEditorStore((s) => s.updatePdfZoom);
     const updatePdfViewMode = useEditorStore((s) => s.updatePdfViewMode);
+    const previewUrl = useMemo(
+        () => buildVaultPreviewUrlFromAbsolutePath(tab.path, vaultPath),
+        [tab.path, vaultPath],
+    );
 
     const activePdf =
         loadedPdf?.path === tab.path && loadedPdf.retryCount === retryCount
@@ -396,9 +402,17 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         let cancelled = false;
         let resolvedPdf: pdfjsLib.PDFDocumentProxy | null = null;
 
+        if (!previewUrl) {
+            setLoadedPdf(null);
+            setPdfError(
+                "This PDF can no longer be previewed because it is outside the active vault.",
+            );
+            return;
+        }
+
         const loadingTask = pdfjsLib.getDocument({
             ...PDF_DOCUMENT_OPTIONS,
-            url: convertFileSrc(tab.path),
+            url: previewUrl,
         });
 
         loadingTask.promise
@@ -428,7 +442,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 void resolvedPdf.destroy();
             }
         };
-    }, [retryCount, setPdfError, tab.path]);
+    }, [previewUrl, retryCount, setPdfError, tab.path]);
 
     useEffect(() => {
         const previousViewMode = previousViewModeRef.current;
