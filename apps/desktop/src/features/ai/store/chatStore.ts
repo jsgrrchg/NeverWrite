@@ -123,6 +123,11 @@ import { getSessionPreview, getSessionTitle } from "../sessionPresentation";
 
 const AI_PREFS_KEY = "vaultai.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "vaultai.ai.runtime-catalog";
+let _persistedHistoryCacheVaultPath: string | null = null;
+let _persistedHistoryCacheBySessionId = new Map<
+    string,
+    PersistedSessionHistory
+>();
 const AI_AUTO_CONTEXT_KEY_PREFIX = "vaultai.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
 const TRANSCRIPT_PAGE_SIZE = 60;
@@ -298,6 +303,43 @@ function saveRuntimeCatalogCache(
     }
 }
 
+function setPersistedHistoryCache(
+    vaultPath: string | null,
+    histories: PersistedSessionHistory[],
+) {
+    _persistedHistoryCacheVaultPath = vaultPath ?? null;
+    _persistedHistoryCacheBySessionId = new Map(
+        histories.map((history) => [history.session_id, history]),
+    );
+}
+
+function upsertPersistedHistoryCache(
+    vaultPath: string | null,
+    history: PersistedSessionHistory,
+) {
+    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+        setPersistedHistoryCache(vaultPath, [history]);
+        return;
+    }
+
+    _persistedHistoryCacheBySessionId.set(history.session_id, history);
+}
+
+function getPersistedHistoryFromCache(
+    vaultPath: string | null,
+    historySessionId: string | null | undefined,
+) {
+    if (!historySessionId) {
+        return null;
+    }
+
+    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+        return null;
+    }
+
+    return _persistedHistoryCacheBySessionId.get(historySessionId) ?? null;
+}
+
 function hasRuntimeCatalog(snapshot: AIRuntimeCatalogSnapshot) {
     return (
         snapshot.models.length > 0 ||
@@ -316,23 +358,60 @@ function getRuntimeCatalogSnapshot(
     };
 }
 
-function hydrateSessionCatalogFromRuntime(
+function getPersistedHistoryCatalogSnapshot(
+    history: Pick<
+        PersistedSessionHistory,
+        "models" | "modes" | "config_options"
+    >,
+): AIRuntimeCatalogSnapshot {
+    return {
+        models: (history.models ?? []).map((model) => ({
+            id: model.id,
+            runtimeId: model.runtime_id,
+            name: model.name,
+            description: model.description,
+        })),
+        modes: (history.modes ?? []).map((mode) => ({
+            id: mode.id,
+            runtimeId: mode.runtime_id,
+            name: mode.name,
+            description: mode.description,
+            disabled: mode.disabled,
+        })),
+        configOptions: (history.config_options ?? []).map((option) => ({
+            id: option.id,
+            runtimeId: option.runtime_id,
+            category: option.category,
+            label: option.label,
+            description: option.description ?? undefined,
+            type: option.type,
+            value: option.value,
+            options: option.options.map((item) => ({
+                value: item.value,
+                label: item.label,
+                description: item.description ?? undefined,
+            })),
+        })),
+    };
+}
+
+function hydrateSessionCatalogFromSnapshot(
     session: AIChatSession,
-    runtime: AIRuntimeDescriptor | undefined,
+    snapshot: AIRuntimeCatalogSnapshot,
 ): AIChatSession {
-    if (!runtime) {
+    if (!hasRuntimeCatalog(snapshot)) {
         return session;
     }
 
     const optionValues = new Map(
         session.configOptions.map((option) => [option.id, option.value]),
     );
-    const models = session.models.length > 0 ? session.models : runtime.models;
-    const modes = session.modes.length > 0 ? session.modes : runtime.modes;
+    const models = session.models.length > 0 ? session.models : snapshot.models;
+    const modes = session.modes.length > 0 ? session.modes : snapshot.modes;
     const configOptions =
         session.configOptions.length > 0
             ? session.configOptions
-            : runtime.configOptions.map((option) => ({
+            : snapshot.configOptions.map((option) => ({
                   ...option,
                   value:
                       optionValues.get(option.id) ??
@@ -351,16 +430,192 @@ function hydrateSessionCatalogFromRuntime(
         return session;
     }
 
-    return {
+    return synchronizeSessionConfigSelections({
         ...session,
         models,
         modes,
         configOptions,
+    });
+}
+
+function synchronizeSessionConfigSelections(
+    session: AIChatSession,
+): AIChatSession {
+    if (session.configOptions.length === 0) {
+        return session;
+    }
+
+    let changed = false;
+    const configOptions = session.configOptions.map((option) => {
+        const nextValue =
+            option.category === "model"
+                ? session.modelId
+                : option.category === "mode"
+                  ? session.modeId
+                  : option.value;
+
+        if (nextValue === option.value) {
+            return option;
+        }
+
+        changed = true;
+        return {
+            ...option,
+            value: nextValue,
+        };
+    });
+
+    if (!changed) {
+        return session;
+    }
+
+    return {
+        ...session,
+        configOptions,
     };
+}
+
+function hydrateSessionCatalogFromRuntime(
+    session: AIChatSession,
+    runtime: AIRuntimeDescriptor | undefined,
+): AIChatSession {
+    if (!runtime) {
+        return session;
+    }
+
+    return hydrateSessionCatalogFromSnapshot(session, {
+        models: runtime.models,
+        modes: runtime.modes,
+        configOptions: runtime.configOptions,
+    });
+}
+
+async function ensureLiveSessionForAgentConfigChange(
+    sessionId: string,
+): Promise<string | null> {
+    const session = useChatStore.getState().sessionsById[sessionId];
+    if (!session) return null;
+    if (session.runtimeState === "live") return sessionId;
+    if (!session.isPersistedSession) return sessionId;
+
+    const resumedSessionId = await useChatStore
+        .getState()
+        .resumeSession(sessionId);
+    if (!resumedSessionId) {
+        return null;
+    }
+
+    const resumedSession =
+        useChatStore.getState().sessionsById[resumedSessionId] ?? null;
+    return resumedSession?.runtimeState === "live" ? resumedSessionId : null;
+}
+
+function sessionHasAgentCatalog(
+    session: Pick<AIChatSession, "models" | "modes" | "configOptions">,
+) {
+    return hasRuntimeCatalog(getRuntimeCatalogSnapshot(session));
+}
+
+async function ensureSessionAgentCatalogLoaded(
+    sessionId: string,
+): Promise<string | null> {
+    let session = useChatStore.getState().sessionsById[sessionId] ?? null;
+    if (!session) return null;
+
+    if (!sessionHasAgentCatalog(session)) {
+        const persisted = getPersistedHistoryFromCache(
+            session.vaultPath ?? useVaultStore.getState().vaultPath,
+            session.historySessionId,
+        );
+        if (persisted) {
+            useChatStore
+                .getState()
+                .upsertSession(
+                    applyPersistedHistoryMetadata(session, persisted),
+                );
+            session =
+                useChatStore.getState().sessionsById[session.sessionId] ??
+                session;
+        }
+
+        if (session.runtimeState !== "live") {
+            const liveSessionId =
+                await ensureLiveSessionForAgentConfigChange(sessionId);
+            if (!liveSessionId) {
+                return null;
+            }
+            session =
+                useChatStore.getState().sessionsById[liveSessionId] ?? null;
+            if (!session) {
+                return null;
+            }
+        }
+
+        if (!sessionHasAgentCatalog(session)) {
+            try {
+                const loaded = await aiLoadSession(session.sessionId);
+                const latest =
+                    useChatStore.getState().sessionsById[session.sessionId] ??
+                    session;
+                useChatStore.getState().upsertSession({
+                    ...loaded,
+                    historySessionId:
+                        latest.historySessionId ?? loaded.historySessionId,
+                    vaultPath: latest.vaultPath ?? loaded.vaultPath ?? null,
+                    persistedCreatedAt:
+                        latest.persistedCreatedAt ??
+                        loaded.persistedCreatedAt ??
+                        null,
+                    persistedUpdatedAt:
+                        latest.persistedUpdatedAt ??
+                        loaded.persistedUpdatedAt ??
+                        null,
+                    persistedTitle:
+                        latest.persistedTitle ?? loaded.persistedTitle ?? null,
+                    persistedPreview:
+                        latest.persistedPreview ??
+                        loaded.persistedPreview ??
+                        null,
+                    persistedMessageCount:
+                        latest.persistedMessageCount ??
+                        loaded.persistedMessageCount ??
+                        loaded.messages.length,
+                    loadedPersistedMessageStart:
+                        latest.loadedPersistedMessageStart ??
+                        loaded.loadedPersistedMessageStart ??
+                        null,
+                    isLoadingPersistedMessages:
+                        latest.isLoadingPersistedMessages ??
+                        loaded.isLoadingPersistedMessages ??
+                        false,
+                });
+            } catch {
+                // Leave the session usable even if backend catalog refresh fails.
+            }
+        }
+    }
+
+    const resolved =
+        useChatStore.getState().sessionsById[session.sessionId] ?? null;
+    return resolved ? resolved.sessionId : null;
 }
 
 function getModelConfigOption(session: Pick<AIChatSession, "configOptions">) {
     return session.configOptions.find((option) => option.category === "model");
+}
+
+function getModeConfigOption(session: Pick<AIChatSession, "configOptions">) {
+    return session.configOptions.find(
+        (option) => option.category === "mode" || option.id === "mode",
+    );
+}
+
+function getConfigOptionValue(
+    session: Pick<AIChatSession, "configOptions">,
+    optionId: string,
+) {
+    return session.configOptions.find((option) => option.id === optionId)
+        ?.value;
 }
 
 function supportsModelSelection(
@@ -388,6 +643,90 @@ function applyLocalModelSelection(
                 : option,
         ),
     };
+}
+
+type AgentSelectionChange =
+    | { kind: "model"; value: string }
+    | { kind: "mode"; value: string }
+    | { kind: "config"; optionId: string; value: string };
+
+function sessionReflectsAgentSelectionChange(
+    session: AIChatSession,
+    change: AgentSelectionChange,
+) {
+    switch (change.kind) {
+        case "model":
+            return (
+                session.modelId === change.value ||
+                getModelConfigOption(session)?.value === change.value
+            );
+        case "mode":
+            return (
+                session.modeId === change.value ||
+                getModeConfigOption(session)?.value === change.value
+            );
+        case "config":
+            if (change.optionId === "model") {
+                return (
+                    session.modelId === change.value ||
+                    getConfigOptionValue(session, "model") === change.value
+                );
+            }
+
+            if (change.optionId === "mode") {
+                return (
+                    session.modeId === change.value ||
+                    getConfigOptionValue(session, "mode") === change.value
+                );
+            }
+
+            return (
+                getConfigOptionValue(session, change.optionId) === change.value
+            );
+    }
+}
+
+function resolveAgentSelectionMutationResult(
+    latestSession: AIChatSession | null | undefined,
+    returnedSession: AIChatSession,
+    change: AgentSelectionChange,
+) {
+    if (!latestSession) {
+        return returnedSession;
+    }
+
+    const latestMatches = sessionReflectsAgentSelectionChange(
+        latestSession,
+        change,
+    );
+    const returnedMatches = sessionReflectsAgentSelectionChange(
+        returnedSession,
+        change,
+    );
+
+    if (!latestMatches || returnedMatches) {
+        return returnedSession;
+    }
+
+    return synchronizeSessionConfigSelections({
+        ...returnedSession,
+        modelId: latestSession.modelId,
+        modeId: latestSession.modeId,
+        configOptions: latestSession.configOptions,
+        models:
+            latestSession.models.length > 0
+                ? latestSession.models
+                : returnedSession.models,
+        modes:
+            latestSession.modes.length > 0
+                ? latestSession.modes
+                : returnedSession.modes,
+        effortsByModel:
+            latestSession.effortsByModel &&
+            Object.keys(latestSession.effortsByModel).length > 0
+                ? latestSession.effortsByModel
+                : returnedSession.effortsByModel,
+    });
 }
 
 function mergeRuntimeCatalog(
@@ -456,6 +795,13 @@ interface ChatStore {
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
     initialize: () => Promise<void>;
+    reconcileRestoredWorkspaceTabs: (
+        tabs: Array<{
+            sessionId: string;
+            historySessionId?: string | null;
+            runtimeId?: string | null;
+        }>,
+    ) => Promise<void>;
     syncAutoContextForVault: (vaultPath: string | null) => void;
     setSelectedRuntime: (runtimeId: string | null) => void;
     refreshSetupStatus: (runtimeId?: string) => Promise<void>;
@@ -2055,18 +2401,26 @@ function applyPersistedHistoryMetadata(
     session: AIChatSession,
     history: PersistedSessionHistory,
 ) {
-    return {
-        ...session,
-        persistedCreatedAt: history.created_at,
-        persistedUpdatedAt: history.updated_at,
-        persistedTitle: history.title ?? null,
-        persistedPreview: history.preview ?? null,
-        persistedMessageCount: getPersistedHistoryMessageCount(history),
-        loadedPersistedMessageStart:
-            getPersistedHistoryMessageCount(history) === 0
-                ? 0
-                : (session.loadedPersistedMessageStart ?? null),
-    };
+    const persistedCatalog = getPersistedHistoryCatalogSnapshot(history);
+    if (hasRuntimeCatalog(persistedCatalog)) {
+        saveRuntimeCatalogCache(session.runtimeId, persistedCatalog);
+    }
+
+    return hydrateSessionCatalogFromSnapshot(
+        {
+            ...session,
+            persistedCreatedAt: history.created_at,
+            persistedUpdatedAt: history.updated_at,
+            persistedTitle: history.title ?? null,
+            persistedPreview: history.preview ?? null,
+            persistedMessageCount: getPersistedHistoryMessageCount(history),
+            loadedPersistedMessageStart:
+                getPersistedHistoryMessageCount(history) === 0
+                    ? 0
+                    : (session.loadedPersistedMessageStart ?? null),
+        },
+        persistedCatalog,
+    );
 }
 
 function applyPersistedHistoryPage(
@@ -2142,6 +2496,19 @@ function createPersistedSession(
     if (!runtime) return null;
     const runtimeId = history.runtime_id ?? runtime.runtime.id;
     const persistedMessageCount = getPersistedHistoryMessageCount(history);
+    const persistedCatalog = getPersistedHistoryCatalogSnapshot(history);
+    const catalogSource = hasRuntimeCatalog(persistedCatalog)
+        ? persistedCatalog
+        : {
+              models: runtime.models,
+              modes: runtime.modes,
+              configOptions: runtime.configOptions,
+          };
+
+    if (hasRuntimeCatalog(persistedCatalog)) {
+        saveRuntimeCatalogCache(runtimeId, persistedCatalog);
+    }
+
     const baseSession = hydrateSessionCatalogFromRuntime(
         {
             sessionId: `persisted:${history.session_id}`,
@@ -2155,9 +2522,9 @@ function createPersistedSession(
             visibleWorkCycleId: null,
             isResumingSession: false,
             effortsByModel: {},
-            models: runtime.models,
-            modes: runtime.modes,
-            configOptions: runtime.configOptions.map((option) =>
+            models: catalogSource.models,
+            modes: catalogSource.modes,
+            configOptions: catalogSource.configOptions.map((option) =>
                 option.category === "model"
                     ? { ...option, value: history.model_id }
                     : option.category === "mode"
@@ -2244,38 +2611,46 @@ function mergeSession(
     incoming: AIChatSession,
 ): AIChatSession {
     if (!existing) {
-        return replaceSessionTranscript(
-            {
-                ...incoming,
-                historySessionId:
-                    incoming.historySessionId ?? incoming.sessionId,
-                vaultPath: incoming.vaultPath ?? null,
-                isPersistedSession: incoming.isPersistedSession ?? false,
-                resumeContextPending: incoming.resumeContextPending ?? false,
-                activeWorkCycleId: incoming.activeWorkCycleId ?? null,
-                visibleWorkCycleId: incoming.visibleWorkCycleId ?? null,
-                // The backend never resets session status to "idle" after streaming,
-                // so cap stale "streaming" for freshly loaded sessions.
-                status:
-                    incoming.status === "streaming" ? "idle" : incoming.status,
-                messages: [],
-                attachments: incoming.attachments ?? [],
-                persistedCreatedAt: incoming.persistedCreatedAt ?? null,
-                persistedUpdatedAt: incoming.persistedUpdatedAt ?? null,
-                persistedTitle: incoming.persistedTitle ?? null,
-                persistedPreview: incoming.persistedPreview ?? null,
-                persistedMessageCount:
-                    incoming.persistedMessageCount ?? incoming.messages.length,
-                loadedPersistedMessageStart:
-                    incoming.loadedPersistedMessageStart ??
-                    (incoming.messages.length > 0 ? 0 : null),
-                isLoadingPersistedMessages:
-                    incoming.isLoadingPersistedMessages ?? false,
-                runtimeState:
-                    incoming.runtimeState ??
-                    (incoming.isPersistedSession ? "persisted_only" : "live"),
-            },
-            incoming.messages ?? [],
+        return synchronizeSessionConfigSelections(
+            replaceSessionTranscript(
+                {
+                    ...incoming,
+                    historySessionId:
+                        incoming.historySessionId ?? incoming.sessionId,
+                    vaultPath: incoming.vaultPath ?? null,
+                    isPersistedSession: incoming.isPersistedSession ?? false,
+                    resumeContextPending:
+                        incoming.resumeContextPending ?? false,
+                    activeWorkCycleId: incoming.activeWorkCycleId ?? null,
+                    visibleWorkCycleId: incoming.visibleWorkCycleId ?? null,
+                    // The backend never resets session status to "idle" after streaming,
+                    // so cap stale "streaming" for freshly loaded sessions.
+                    status:
+                        incoming.status === "streaming"
+                            ? "idle"
+                            : incoming.status,
+                    messages: [],
+                    attachments: incoming.attachments ?? [],
+                    persistedCreatedAt: incoming.persistedCreatedAt ?? null,
+                    persistedUpdatedAt: incoming.persistedUpdatedAt ?? null,
+                    persistedTitle: incoming.persistedTitle ?? null,
+                    persistedPreview: incoming.persistedPreview ?? null,
+                    persistedMessageCount:
+                        incoming.persistedMessageCount ??
+                        incoming.messages.length,
+                    loadedPersistedMessageStart:
+                        incoming.loadedPersistedMessageStart ??
+                        (incoming.messages.length > 0 ? 0 : null),
+                    isLoadingPersistedMessages:
+                        incoming.isLoadingPersistedMessages ?? false,
+                    runtimeState:
+                        incoming.runtimeState ??
+                        (incoming.isPersistedSession
+                            ? "persisted_only"
+                            : "live"),
+                },
+                incoming.messages ?? [],
+            ),
         );
     }
 
@@ -2294,6 +2669,18 @@ function mergeSession(
     const merged = {
         ...normalizedExisting,
         ...incoming,
+        models:
+            incoming.models.length > 0
+                ? incoming.models
+                : normalizedExisting.models,
+        modes:
+            incoming.modes.length > 0
+                ? incoming.modes
+                : normalizedExisting.modes,
+        configOptions:
+            incoming.configOptions.length > 0
+                ? incoming.configOptions
+                : normalizedExisting.configOptions,
         historySessionId:
             normalizedExisting.historySessionId ?? incoming.historySessionId,
         vaultPath: incoming.vaultPath ?? normalizedExisting.vaultPath ?? null,
@@ -2357,11 +2744,13 @@ function mergeSession(
         attachments: normalizedExisting.attachments,
     };
 
-    return replaceSessionTranscript(
-        merged,
-        normalizedExisting.messageOrder?.length
-            ? normalizedExisting.messages
-            : incomingMessages,
+    return synchronizeSessionConfigSelections(
+        replaceSessionTranscript(
+            merged,
+            normalizedExisting.messageOrder?.length
+                ? normalizedExisting.messages
+                : incomingMessages,
+        ),
     );
 }
 
@@ -2463,6 +2852,8 @@ function updateSessionById(
 function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
     // The edits buffer is intentionally excluded from persisted history.
     // It represents pending local review state, not durable chat history.
+    const runtimeCatalog = getRuntimeCatalogSnapshot(session);
+    const hasCatalog = hasRuntimeCatalog(runtimeCatalog);
     const messages = getSessionTranscriptMessages(session)
         .filter((m) => !m.inProgress)
         .filter((m) => m.kind !== "permission")
@@ -2500,6 +2891,39 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
+        models: hasCatalog
+            ? session.models.map((model) => ({
+                  id: model.id,
+                  runtime_id: model.runtimeId,
+                  name: model.name,
+                  description: model.description,
+              }))
+            : undefined,
+        modes: hasCatalog
+            ? session.modes.map((mode) => ({
+                  id: mode.id,
+                  runtime_id: mode.runtimeId,
+                  name: mode.name,
+                  description: mode.description,
+                  disabled: mode.disabled ?? false,
+              }))
+            : undefined,
+        config_options: hasCatalog
+            ? session.configOptions.map((option) => ({
+                  id: option.id,
+                  runtime_id: option.runtimeId,
+                  category: option.category,
+                  label: option.label,
+                  description: option.description ?? null,
+                  type: option.type,
+                  value: option.value,
+                  options: option.options.map((item) => ({
+                      value: item.value,
+                      label: item.label,
+                      description: item.description ?? null,
+                  })),
+              }))
+            : undefined,
         created_at: createdAt,
         updated_at: updatedAt,
         start_index: startIndex,
@@ -2530,7 +2954,9 @@ async function persistSessionNow(session: AIChatSession) {
 
     const historyRetentionDays = useChatStore.getState().historyRetentionDays;
     try {
-        await aiSaveSessionHistory(vaultPath, toPersistedHistory(session));
+        const history = toPersistedHistory(session);
+        await aiSaveSessionHistory(vaultPath, history);
+        upsertPersistedHistoryCache(vaultPath, history);
         if (historyRetentionDays > 0) {
             await aiPruneSessionHistories(vaultPath, historyRetentionDays);
         }
@@ -3341,9 +3767,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         persistedBySessionId = new Map(
                             histories.map((h) => [h.session_id, h]),
                         );
+                        setPersistedHistoryCache(vaultPath, histories);
                     } catch {
                         // Disk histories unavailable, continue without them
+                        setPersistedHistoryCache(vaultPath, []);
                     }
+                } else {
+                    setPersistedHistoryCache(null, []);
                 }
 
                 if (sessions.length || histories.length) {
@@ -3460,6 +3890,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             "latest",
                         );
                     }
+
+                    const hydratedActiveSessionId = get().activeSessionId;
+                    if (hydratedActiveSessionId) {
+                        await ensureSessionAgentCatalogLoaded(
+                            hydratedActiveSessionId,
+                        );
+                    }
                     return;
                 }
 
@@ -3497,6 +3934,85 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
             } finally {
                 set({ isInitializing: false });
+            }
+        },
+
+        reconcileRestoredWorkspaceTabs: async (tabs) => {
+            if (tabs.length === 0) {
+                return;
+            }
+
+            const sessionIdsNeedingCatalog = new Set<string>();
+            const vaultPath = useVaultStore.getState().vaultPath;
+
+            set((state) => {
+                const nextSessionsById = { ...state.sessionsById };
+                const changedSessions: AIChatSession[] = [];
+
+                for (const tab of tabs) {
+                    if (!tab.sessionId || !tab.historySessionId) {
+                        continue;
+                    }
+
+                    const currentSession = nextSessionsById[tab.sessionId];
+                    if (!currentSession) {
+                        continue;
+                    }
+
+                    let nextSession = currentSession;
+                    if (
+                        currentSession.historySessionId !==
+                            tab.historySessionId ||
+                        (!currentSession.runtimeId && tab.runtimeId)
+                    ) {
+                        nextSession = {
+                            ...currentSession,
+                            historySessionId: tab.historySessionId,
+                            runtimeId:
+                                currentSession.runtimeId ??
+                                tab.runtimeId ??
+                                currentSession.runtimeId,
+                        };
+                    }
+
+                    const persisted = getPersistedHistoryFromCache(
+                        currentSession.vaultPath ?? vaultPath,
+                        tab.historySessionId,
+                    );
+                    if (persisted) {
+                        nextSession = applyPersistedHistoryMetadata(
+                            nextSession,
+                            persisted,
+                        );
+                    }
+
+                    if (!sessionHasAgentCatalog(nextSession)) {
+                        sessionIdsNeedingCatalog.add(tab.sessionId);
+                    }
+
+                    if (nextSession === currentSession) {
+                        continue;
+                    }
+
+                    nextSessionsById[tab.sessionId] = nextSession;
+                    changedSessions.push(nextSession);
+                }
+
+                if (changedSessions.length === 0) {
+                    return state;
+                }
+
+                return {
+                    runtimes: hydrateRuntimesFromSessions(
+                        state.runtimes,
+                        changedSessions,
+                    ),
+                    sessionsById: nextSessionsById,
+                };
+            });
+
+            for (const sessionId of sessionIdsNeedingCatalog) {
+                await ensureSessionAgentCatalogLoaded(sessionId);
             }
         },
 
@@ -3708,6 +4224,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let shouldDrainQueue = false;
             set((state) => {
                 const currentVaultPath = useVaultStore.getState().vaultPath;
+                const workspaceTabs = useChatTabsStore.getState().tabs;
                 const stampedSession = stampSessionVaultPath(
                     session,
                     currentVaultPath,
@@ -3723,11 +4240,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const isKnown = state.sessionOrder.includes(
                     scopedSession.sessionId,
                 );
+                const isWorkspaceSession =
+                    state.activeSessionId === scopedSession.sessionId ||
+                    workspaceTabs.some(
+                        (tab) => tab.sessionId === scopedSession.sessionId,
+                    );
 
                 if (
                     !activate &&
                     ((existing &&
-                        !sessionMatchesVaultPath(existing, currentVaultPath)) ||
+                        !sessionMatchesVaultPath(existing, currentVaultPath) &&
+                        !isWorkspaceSession) ||
                         !sessionMatchesVaultPath(
                             scopedSession,
                             currentVaultPath,
@@ -4458,6 +4981,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     get().sessionsById[sessionId] ?? currentSession;
                 const historySessionId =
                     latestSession.historySessionId || latestSession.sessionId;
+                const latestCatalog = getRuntimeCatalogSnapshot(latestSession);
 
                 let resumedSession: AIChatSession;
                 let resumeContextPending = false;
@@ -4530,6 +5054,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                     resumeContextPending =
                         getSessionTranscriptLength(latestSession) > 0;
+                }
+
+                if (hasRuntimeCatalog(latestCatalog)) {
+                    resumedSession = hydrateSessionCatalogFromSnapshot(
+                        resumedSession,
+                        latestCatalog,
+                    );
+                    saveRuntimeCatalogCache(
+                        latestSession.runtimeId,
+                        getRuntimeCatalogSnapshot(resumedSession),
+                    );
                 }
 
                 // Register baselines for all open editor tabs
@@ -4686,6 +5221,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
+                await ensureSessionAgentCatalogLoaded(sessionId);
                 await get().ensureSessionTranscriptLoaded(sessionId, "latest");
                 return;
             }
@@ -4707,8 +5243,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         setModel: async (modelId, sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
-            const { sessionsById } = get();
-            const session = sessionsById[resolvedSessionId];
+            let session = get().sessionsById[resolvedSessionId];
             if (!session) return;
             if (
                 session.status === "streaming" ||
@@ -4720,10 +5255,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             if (session.runtimeState !== "live") {
+                const liveSessionId =
+                    await ensureLiveSessionForAgentConfigChange(
+                        resolvedSessionId,
+                    );
+                if (
+                    liveSessionId &&
+                    liveSessionId !== resolvedSessionId &&
+                    get().sessionsById[liveSessionId]
+                ) {
+                    session = get().sessionsById[liveSessionId]!;
+                } else if (session.isPersistedSession) {
+                    return;
+                }
+            }
+
+            if (
+                session.runtimeState === "live" &&
+                !sessionHasAgentCatalog(session)
+            ) {
+                await ensureSessionAgentCatalogLoaded(session.sessionId);
+                session = get().sessionsById[session.sessionId] ?? session;
+            }
+
+            if (session.runtimeState !== "live") {
                 set((state) => ({
                     sessionsById: (() => {
                         const currentSession =
-                            state.sessionsById[resolvedSessionId]!;
+                            state.sessionsById[session.sessionId]!;
                         const hydratedSession =
                             hydrateSessionCatalogFromRuntime(
                                 currentSession,
@@ -4736,7 +5295,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                         return {
                             ...state.sessionsById,
-                            [resolvedSessionId]: applyLocalModelSelection(
+                            [session.sessionId]: applyLocalModelSelection(
                                 hydratedSession,
                                 modelId,
                             ),
@@ -4755,16 +5314,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         (option) => option.value === modelId,
                     )
                         ? await aiSetConfigOption(
-                              resolvedSessionId,
+                              session.sessionId,
                               modelConfig.id,
                               modelId,
                           )
-                        : await aiSetModel(resolvedSessionId, modelId);
-                get().upsertSession(updatedSession);
+                        : await aiSetModel(session.sessionId, modelId);
+                get().upsertSession(
+                    resolveAgentSelectionMutationResult(
+                        get().sessionsById[session.sessionId],
+                        updatedSession,
+                        { kind: "model", value: modelId },
+                    ),
+                );
                 saveAiPreferences({ modelId });
             } catch (error) {
                 get().applySessionError({
-                    session_id: resolvedSessionId,
+                    session_id: session.sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to update the model.",
@@ -4776,8 +5341,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         setMode: async (modeId, sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
-            const { sessionsById } = get();
-            const session = sessionsById[resolvedSessionId];
+            let session = get().sessionsById[resolvedSessionId];
             if (!session) return;
             if (
                 session.status === "streaming" ||
@@ -4789,10 +5353,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             if (session.runtimeState !== "live") {
+                const liveSessionId =
+                    await ensureLiveSessionForAgentConfigChange(
+                        resolvedSessionId,
+                    );
+                if (
+                    liveSessionId &&
+                    liveSessionId !== resolvedSessionId &&
+                    get().sessionsById[liveSessionId]
+                ) {
+                    session = get().sessionsById[liveSessionId]!;
+                } else if (session.isPersistedSession) {
+                    return;
+                }
+            }
+
+            if (
+                session.runtimeState === "live" &&
+                !sessionHasAgentCatalog(session)
+            ) {
+                await ensureSessionAgentCatalogLoaded(session.sessionId);
+                session = get().sessionsById[session.sessionId] ?? session;
+            }
+
+            if (session.runtimeState !== "live") {
                 set((state) => ({
                     sessionsById: (() => {
                         const currentSession =
-                            state.sessionsById[resolvedSessionId]!;
+                            state.sessionsById[session.sessionId]!;
                         const hydratedSession =
                             hydrateSessionCatalogFromRuntime(
                                 currentSession,
@@ -4805,7 +5393,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                         return {
                             ...state.sessionsById,
-                            [resolvedSessionId]: {
+                            [session.sessionId]: {
                                 ...hydratedSession,
                                 modeId,
                             },
@@ -4818,14 +5406,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const updatedSession = await aiSetMode(
-                    resolvedSessionId,
+                    session.sessionId,
                     modeId,
                 );
-                get().upsertSession(updatedSession);
+                get().upsertSession(
+                    resolveAgentSelectionMutationResult(
+                        get().sessionsById[session.sessionId],
+                        updatedSession,
+                        { kind: "mode", value: modeId },
+                    ),
+                );
                 saveAiPreferences({ modeId });
             } catch (error) {
                 get().applySessionError({
-                    session_id: resolvedSessionId,
+                    session_id: session.sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to update the mode.",
@@ -4837,8 +5431,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         setConfigOption: async (optionId, value, sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
-            const { sessionsById } = get();
-            const session = sessionsById[resolvedSessionId];
+            let session = get().sessionsById[resolvedSessionId];
             if (!session) return;
             if (
                 session.status === "streaming" ||
@@ -4850,13 +5443,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             if (session.runtimeState !== "live") {
+                const liveSessionId =
+                    await ensureLiveSessionForAgentConfigChange(
+                        resolvedSessionId,
+                    );
+                if (
+                    liveSessionId &&
+                    liveSessionId !== resolvedSessionId &&
+                    get().sessionsById[liveSessionId]
+                ) {
+                    session = get().sessionsById[liveSessionId]!;
+                } else if (session.isPersistedSession) {
+                    return;
+                }
+            }
+
+            if (
+                session.runtimeState === "live" &&
+                !sessionHasAgentCatalog(session)
+            ) {
+                await ensureSessionAgentCatalogLoaded(session.sessionId);
+                session = get().sessionsById[session.sessionId] ?? session;
+            }
+
+            if (session.runtimeState !== "live") {
                 set((state) => {
                     const currentSession = hydrateSessionCatalogFromRuntime(
-                        state.sessionsById[resolvedSessionId]!,
+                        state.sessionsById[session.sessionId]!,
                         state.runtimes.find(
                             (runtime) =>
                                 runtime.runtime.id ===
-                                state.sessionsById[resolvedSessionId]!
+                                state.sessionsById[session.sessionId]!
                                     .runtimeId,
                         ),
                     );
@@ -4877,7 +5494,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [resolvedSessionId]: nextSession,
+                            [session.sessionId]: nextSession,
                         },
                     };
                 });
@@ -4891,11 +5508,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const updatedSession = await aiSetConfigOption(
-                    resolvedSessionId,
+                    session.sessionId,
                     optionId,
                     value,
                 );
-                get().upsertSession(updatedSession);
+                get().upsertSession(
+                    resolveAgentSelectionMutationResult(
+                        get().sessionsById[session.sessionId],
+                        updatedSession,
+                        { kind: "config", optionId, value },
+                    ),
+                );
                 if (optionId === "model") {
                     saveAiPreferences({ modelId: value });
                 } else {
@@ -4903,7 +5526,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
             } catch (error) {
                 get().applySessionError({
-                    session_id: resolvedSessionId,
+                    session_id: session.sessionId,
                     message: getAiErrorMessage(
                         error,
                         "Failed to update the session option.",
@@ -7159,6 +7782,8 @@ export function resetChatStore() {
     } catch {
         // ignore
     }
+    _persistedHistoryCacheVaultPath = null;
+    _persistedHistoryCacheBySessionId.clear();
     const prefs = getNormalizedAiPreferences();
     _queueDrainLocks.clear();
     _pendingSessionPersistence.clear();

@@ -448,6 +448,12 @@ export function AIChatPanel() {
     const runtimeModels = agentCatalog.models;
     const runtimeModes = agentCatalog.modes;
     const runtimeConfigOptions = agentCatalog.configOptions;
+    const agentControlsDisabled =
+        !currentSession ||
+        currentSession?.status === "streaming" ||
+        Boolean(currentSession?.isResumingSession) ||
+        currentSession?.status === "waiting_permission" ||
+        currentSession?.status === "waiting_user_input";
     const composerRuntimeLabel =
         (currentSession
             ? runtimes.find(
@@ -903,14 +909,7 @@ export function AIChatPanel() {
                     }
                     footer={
                         <AIChatAgentControls
-                            disabled={
-                                !currentSession ||
-                                currentSession?.status === "streaming" ||
-                                Boolean(currentSession?.isResumingSession) ||
-                                currentSession?.status ===
-                                    "waiting_permission" ||
-                                currentSession?.status === "waiting_user_input"
-                            }
+                            disabled={agentControlsDisabled}
                             modelId={currentSession?.modelId ?? ""}
                             modeId={currentSession?.modeId ?? ""}
                             effortsByModel={

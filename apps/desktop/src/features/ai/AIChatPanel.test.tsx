@@ -114,68 +114,62 @@ const claudeRuntimeDescriptor: AIRuntimeDescriptor = {
     configOptions: [],
 };
 
-const populatedRuntimeDescriptor: AIRuntimeDescriptor = {
-    runtime: {
-        id: "codex-acp",
-        name: "Codex ACP",
-        description: "Codex runtime embedded as an ACP sidecar.",
-        capabilities: ["attachments", "permissions", "reasoning"],
+const restoredSessionModels: AIChatSession["models"] = [
+    {
+        id: "test-model",
+        runtimeId: "codex-acp",
+        name: "Test Model",
+        description: "Default test model.",
     },
-    models: [
-        {
-            id: "test-model",
-            runtimeId: "codex-acp",
-            name: "Test Model",
-            description: "Default test model.",
-        },
-        {
-            id: "wide-model",
-            runtimeId: "codex-acp",
-            name: "Wide Model",
-            description: "Alternative test model.",
-        },
-    ],
-    modes: [
-        {
-            id: "default",
-            runtimeId: "codex-acp",
-            name: "Default",
-            description: "Default approval preset.",
-        },
-        {
-            id: "review-mode",
-            runtimeId: "codex-acp",
-            name: "Review Mode",
-            description: "Review-focused preset.",
-        },
-    ],
-    configOptions: [
-        {
-            id: "model",
-            runtimeId: "codex-acp",
-            category: "model",
-            label: "Model",
-            type: "select",
-            value: "test-model",
-            options: [
-                { value: "test-model", label: "Test Model" },
-                { value: "wide-model", label: "Wide Model" },
-            ],
-        },
-        {
-            id: "reasoning_effort",
-            runtimeId: "codex-acp",
-            category: "reasoning",
-            label: "Reasoning Effort",
-            type: "select",
-            value: "medium",
-            options: [
-                { value: "medium", label: "Medium" },
-                { value: "high", label: "High" },
-            ],
-        },
-    ],
-};
+    {
+        id: "wide-model",
+        runtimeId: "codex-acp",
+        name: "Wide Model",
+        description: "Alternative test model.",
+    },
+];
+
+const restoredSessionModes: AIChatSession["modes"] = [
+    {
+        id: "default",
+        runtimeId: "codex-acp",
+        name: "Default",
+        description: "Default approval preset.",
+    },
+    {
+        id: "review-mode",
+        runtimeId: "codex-acp",
+        name: "Review Mode",
+        description: "Review-focused preset.",
+    },
+];
+
+const restoredSessionConfigOptions: AIChatSession["configOptions"] = [
+    {
+        id: "model",
+        runtimeId: "codex-acp",
+        category: "model",
+        label: "Model",
+        type: "select",
+        value: "test-model",
+        options: [
+            { value: "test-model", label: "Test Model" },
+            { value: "wide-model", label: "Wide Model" },
+        ],
+    },
+    {
+        id: "reasoning_effort",
+        runtimeId: "codex-acp",
+        category: "reasoning",
+        label: "Reasoning Effort",
+        type: "select",
+        value: "medium",
+        options: [
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High" },
+        ],
+    },
+];
 
 describe("AIChatPanel tabs lifecycle", () => {
     beforeEach(() => {
@@ -498,8 +492,8 @@ describe("AIChatPanel tabs lifecycle", () => {
             );
             expect(useChatStore.getState().activeSessionId).toBe("session-b");
             expect(useChatStore.getState().sessionOrder).toEqual([
-                "session-a",
                 "session-b",
+                "session-a",
             ]);
             expect(
                 useChatStore.getState().sessionsById["session-a"]?.messages[0]
@@ -756,7 +750,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         expect(screen.queryByText(/\(11:19\)/)).toBeNull();
     });
 
-    it("routes composer edits to the visible tab session when tab and active session diverge", () => {
+    it("routes composer edits to the visible tab session when tab and active session diverge", async () => {
         const sessionA = createSession("session-a", "First conversation");
         const sessionB = createSession("session-b", "Second conversation");
 
@@ -798,7 +792,9 @@ describe("AIChatPanel tabs lifecycle", () => {
             name: "Message VaultAI",
         });
         expect(textbox.textContent).toContain("Draft B");
-        expect(useChatStore.getState().activeSessionId).toBe("session-a");
+        await waitFor(() => {
+            expect(useChatStore.getState().activeSessionId).toBe("session-b");
+        });
 
         textbox.textContent = "Visible draft";
         fireEvent.input(textbox);
@@ -1470,7 +1466,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
     });
 
-    it("uses the runtime catalog for restored chats with empty agent options", async () => {
+    it("uses the restored session catalog when ACP descriptors are empty", async () => {
         const session = createSession(
             "session-restored",
             "Restored chat",
@@ -1478,9 +1474,9 @@ describe("AIChatPanel tabs lifecycle", () => {
             {
                 isPersistedSession: true,
                 runtimeState: "persisted_only",
-                models: [],
-                modes: [],
-                configOptions: [],
+                models: restoredSessionModels,
+                modes: restoredSessionModes,
+                configOptions: restoredSessionConfigOptions,
                 modelId: "test-model",
                 modeId: "default",
             },
@@ -1492,7 +1488,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         useChatStore.setState((state) => ({
             ...state,
             runtimeConnection: { status: "ready", message: null },
-            runtimes: [populatedRuntimeDescriptor],
+            runtimes: [runtimeDescriptor],
             sessionsById: {
                 [session.sessionId]: session,
             },

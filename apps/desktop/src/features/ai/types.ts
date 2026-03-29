@@ -550,6 +550,9 @@ export interface PersistedSessionHistory {
     runtime_id?: string;
     model_id: string;
     mode_id: string;
+    models?: AIBackendRuntimeDescriptorPayload["models"];
+    modes?: AIBackendRuntimeDescriptorPayload["modes"];
+    config_options?: AIBackendSessionPayload["config_options"];
     created_at: number;
     updated_at: number;
     start_index?: number;
