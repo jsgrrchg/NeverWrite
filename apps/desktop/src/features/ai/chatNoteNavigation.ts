@@ -5,6 +5,7 @@ import {
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 
 function findNoteByReference(reference: string) {
@@ -131,7 +132,7 @@ export async function openChatNoteByAbsolutePath(
 interface MapEntry {
     id: string;
     title: string;
-    path: string;
+    relative_path: string;
 }
 
 export async function openChatMapByReference(reference: string) {
@@ -140,11 +141,15 @@ export async function openChatMapByReference(reference: string) {
 
     try {
         const maps = await invoke<MapEntry[]>("list_maps", { vaultPath });
+        const legacyRelativePath = toVaultRelativePath(reference, vaultPath);
         const normalized = reference
             .toLowerCase()
             .replace(/\.excalidraw$/i, "");
         const map =
-            maps.find((m) => m.path === reference) ??
+            maps.find((m) => m.relative_path === reference) ??
+            (legacyRelativePath
+                ? maps.find((m) => m.relative_path === legacyRelativePath)
+                : undefined) ??
             maps.find(
                 (m) =>
                     m.title.toLowerCase() === normalized ||
@@ -152,12 +157,14 @@ export async function openChatMapByReference(reference: string) {
             ) ??
             maps.find(
                 (m) =>
-                    m.path.toLowerCase().endsWith(reference.toLowerCase()) ||
+                    m.relative_path
+                        .toLowerCase()
+                        .endsWith(reference.toLowerCase()) ||
                     m.title.toLowerCase().includes(normalized),
             );
         if (!map) return false;
 
-        useEditorStore.getState().openMap(map.path, map.id, map.title);
+        useEditorStore.getState().openMap(map.relative_path, map.title);
         return true;
     } catch (error) {
         console.error("Error opening chat map:", error);

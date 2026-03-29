@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isFileTab,
+    isMapTab,
     isNoteTab,
     markSessionReady,
     readPersistedSession,
@@ -88,6 +89,19 @@ function makePdfTab(overrides: {
             },
         ],
         historyIndex: 0,
+    };
+}
+
+function makeMapTab(overrides: {
+    id: string;
+    relativePath: string;
+    title: string;
+}) {
+    return {
+        ...overrides,
+        kind: "map" as const,
+        history: [],
+        historyIndex: -1,
     };
 }
 
@@ -188,6 +202,34 @@ describe("editorStore session persistence", () => {
         expect(session?.fileTabs?.[0]).not.toHaveProperty("content");
     });
 
+    it("persists map tabs by relative path", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/maps-2026" });
+
+        useEditorStore.setState({
+            tabs: [
+                makeMapTab({
+                    id: "map-tab-1",
+                    relativePath: "Excalidraw/Architecture.excalidraw",
+                    title: "Architecture",
+                }),
+            ],
+            activeTabId: "map-tab-1",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const session = readPersistedSession("/vaults/maps-2026");
+        expect(session?.mapTabs?.[0]).toMatchObject({
+            relativePath: "Excalidraw/Architecture.excalidraw",
+            title: "Architecture",
+        });
+        expect(session?.activeMapRelativePath).toBe(
+            "Excalidraw/Architecture.excalidraw",
+        );
+        expect(session?.mapTabs?.[0]).not.toHaveProperty("filePath");
+    });
+
     it("does not persist note contents in the top-level session payload", async () => {
         markSessionReady();
         useVaultStore.setState({ vaultPath: "/vaults/lean-2026" });
@@ -274,6 +316,48 @@ describe("editorStore session persistence", () => {
             noteIds: [{ noteId: "notes/legacy", title: "Legacy" }],
             activeNoteId: "notes/legacy",
         });
+    });
+});
+
+describe("editorStore map tabs", () => {
+    beforeEach(() => {
+        useVaultStore.setState({ vaultPath: "/vaults/maps-2026" });
+    });
+
+    it("deduplicates map tabs by relative path", () => {
+        const store = useEditorStore.getState();
+
+        store.openMap("Excalidraw/Architecture.excalidraw", "Architecture");
+        store.openMap("Excalidraw/Architecture.excalidraw", "Architecture");
+
+        const mapTabs = useEditorStore.getState().tabs.filter(isMapTab);
+        expect(mapTabs).toHaveLength(1);
+        expect(mapTabs[0]?.relativePath).toBe(
+            "Excalidraw/Architecture.excalidraw",
+        );
+    });
+
+    it("hydrates legacy map tabs from an absolute file path inside the active vault", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "map-1",
+                    kind: "map",
+                    title: "Legacy",
+                    relativePath: "",
+                    filePath: "/vaults/maps-2026/Excalidraw/Legacy.excalidraw",
+                },
+            ] as any,
+            "map-1",
+        );
+
+        const activeTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === "map-1");
+        expect(activeTab && isMapTab(activeTab)).toBe(true);
+        expect(activeTab && isMapTab(activeTab) && activeTab.relativePath).toBe(
+            "Excalidraw/Legacy.excalidraw",
+        );
     });
 });
 

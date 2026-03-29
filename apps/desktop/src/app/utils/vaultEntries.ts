@@ -6,7 +6,8 @@ import {
     isPdfTab,
     type TabInput,
 } from "../store/editorStore";
-import type { VaultEntryDto } from "../store/vaultStore";
+import { useVaultStore, type VaultEntryDto } from "../store/vaultStore";
+import { toVaultRelativePath } from "./vaultPaths";
 import { vaultInvoke } from "./vaultInvoke";
 
 const TEXT_EXTENSIONS = new Set([
@@ -339,11 +340,7 @@ export async function openVaultFileEntry(
     if (isExcalidrawVaultEntry(entry)) {
         useEditorStore
             .getState()
-            .openMap(
-                entry.path,
-                entry.relative_path,
-                entry.title || entry.file_name,
-            );
+            .openMap(entry.relative_path, entry.title || entry.file_name);
         return;
     }
 
@@ -406,10 +403,16 @@ export async function moveVaultEntryToTrash(relativePath: string) {
 
 export function closeOpenTabsForVaultPath(path: string) {
     const { tabs, closeTab } = useEditorStore.getState();
+    const relativePath = toVaultRelativePath(
+        path,
+        useVaultStore.getState().vaultPath,
+    );
     const matchingTabs = tabs.filter(
         (tab) =>
             ((isPdfTab(tab) || isFileTab(tab)) && tab.path === path) ||
-            (isMapTab(tab) && tab.filePath === path),
+            (isMapTab(tab) &&
+                relativePath !== null &&
+                tab.relativePath === relativePath),
     );
 
     for (const tab of matchingTabs) {

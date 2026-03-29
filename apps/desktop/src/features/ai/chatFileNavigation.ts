@@ -1,6 +1,10 @@
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";
 import {
+    normalizeVaultPath as normalizeVaultPathMatch,
+    toVaultRelativePath,
+} from "../../app/utils/vaultPaths";
+import {
     isExcalidrawVaultPath,
     isImageLikeVaultEntry,
     isImageLikeVaultPath,
@@ -19,39 +23,16 @@ function getVaultEntryByAbsolutePath(absPath: string) {
     );
 }
 
-function normalizeVaultPath(path: string) {
-    return path.replace(/\\/g, "/");
-}
-
-function toVaultRelativePath(absPath: string) {
-    const vaultPath = useVaultStore.getState().vaultPath;
-    if (!vaultPath) {
-        return null;
-    }
-
-    const normalizedPath = normalizeVaultPath(absPath);
-    const normalizedVaultPath = normalizeVaultPath(vaultPath).replace(
-        /\/+$/,
-        "",
-    );
-    const prefix = `${normalizedVaultPath}/`;
-    if (!normalizedPath.startsWith(prefix)) {
-        return null;
-    }
-
-    return normalizedPath.slice(prefix.length);
-}
-
 function getFileNameFromAbsolutePath(absPath: string) {
-    return normalizeVaultPath(absPath).split("/").pop() ?? absPath;
+    return normalizeVaultPathMatch(absPath).split("/").pop() ?? absPath;
 }
 
 function canOpenAiEditedFileByPathFallback(absPath: string) {
-    if (!toVaultRelativePath(absPath)) {
+    if (!toVaultRelativePath(absPath, useVaultStore.getState().vaultPath)) {
         return false;
     }
 
-    const normalizedPath = normalizeVaultPath(absPath).toLowerCase();
+    const normalizedPath = normalizeVaultPathMatch(absPath).toLowerCase();
     return (
         normalizedPath.endsWith(".pdf") ||
         isExcalidrawVaultPath(absPath) ||
@@ -113,13 +94,16 @@ export async function openAiEditedFileByAbsolutePath(
         return true;
     }
 
-    const relativePath = toVaultRelativePath(absPath);
+    const relativePath = toVaultRelativePath(
+        absPath,
+        useVaultStore.getState().vaultPath,
+    );
     if (!relativePath) {
         return false;
     }
 
     const title = getFileNameFromAbsolutePath(absPath);
-    const normalizedPath = normalizeVaultPath(absPath).toLowerCase();
+    const normalizedPath = normalizeVaultPathMatch(absPath).toLowerCase();
 
     if (normalizedPath.endsWith(".pdf")) {
         if (options?.newTab) {
@@ -140,7 +124,7 @@ export async function openAiEditedFileByAbsolutePath(
     }
 
     if (isExcalidrawVaultPath(absPath)) {
-        useEditorStore.getState().openMap(absPath, relativePath, title);
+        useEditorStore.getState().openMap(relativePath, title);
         return true;
     }
 

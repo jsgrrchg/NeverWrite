@@ -90,6 +90,7 @@ import {
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
+import { toVaultRelativePath } from "./app/utils/vaultPaths";
 
 function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
     return (
@@ -486,13 +487,14 @@ function useRegisterCommands(
                 const vaultPath = useVaultStore.getState().vaultPath;
                 if (!vaultPath) return;
                 const name = `Map ${new Date().toLocaleDateString("en-CA")}`;
-                void invoke<{ id: string; title: string; path: string }>(
-                    "create_map",
-                    { vaultPath, name },
-                ).then((entry) => {
+                void invoke<{
+                    id: string;
+                    title: string;
+                    relative_path: string;
+                }>("create_map", { vaultPath, name }).then((entry) => {
                     useEditorStore
                         .getState()
-                        .openMap(entry.path, entry.id, entry.title);
+                        .openMap(entry.relative_path, entry.title);
                 });
             },
         });
@@ -1369,12 +1371,22 @@ export default function App() {
             }
         }
 
+        const currentVaultPath = useVaultStore.getState().vaultPath;
+
         for (const mapEntry of session?.mapTabs ?? []) {
+            const relativePath =
+                mapEntry.relativePath ||
+                (mapEntry.filePath
+                    ? toVaultRelativePath(mapEntry.filePath, currentVaultPath)
+                    : null);
+            if (!relativePath) {
+                continue;
+            }
+
             if (
                 restoredTabs.some(
                     (tab) =>
-                        tab.kind === "map" &&
-                        tab.filePath === mapEntry.filePath,
+                        tab.kind === "map" && tab.relativePath === relativePath,
                 )
             ) {
                 continue;
@@ -1383,8 +1395,7 @@ export default function App() {
             restoredTabs.push({
                 id: crypto.randomUUID(),
                 kind: "map",
-                filePath: mapEntry.filePath,
-                relativePath: mapEntry.relativePath,
+                relativePath,
                 title: mapEntry.title,
             });
         }
@@ -1404,11 +1415,21 @@ export default function App() {
         if (session?.activeGraphTab) {
             activeTab = restoredTabs.find((tab) => tab.kind === "graph");
         }
-        if (!activeTab && session?.activeMapFilePath) {
+        const activeLegacyMapRelativePath = session?.activeMapFilePath
+            ? toVaultRelativePath(session.activeMapFilePath, currentVaultPath)
+            : null;
+        if (!activeTab && session?.activeMapRelativePath) {
             activeTab = restoredTabs.find(
                 (tab) =>
                     tab.kind === "map" &&
-                    tab.filePath === session.activeMapFilePath,
+                    tab.relativePath === session.activeMapRelativePath,
+            );
+        }
+        if (!activeTab && activeLegacyMapRelativePath) {
+            activeTab = restoredTabs.find(
+                (tab) =>
+                    tab.kind === "map" &&
+                    tab.relativePath === activeLegacyMapRelativePath,
             );
         }
         if (!activeTab && session?.activePdfEntryId) {

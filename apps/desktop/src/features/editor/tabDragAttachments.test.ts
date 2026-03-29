@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { buildTabFileDragDetail } from "./tabDragAttachments";
 import type {
     FileTab,
+    MapTab,
     NoteTab,
     PdfTab,
     ReviewTab,
 } from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 
 describe("buildTabFileDragDetail", () => {
     it("builds a note mention payload for note tabs", () => {
@@ -119,6 +121,30 @@ describe("buildTabFileDragDetail", () => {
                     filePath: "/vault/data/report.csv",
                     fileName: "report.csv",
                     mimeType: "text/csv",
+                },
+            ],
+        });
+    });
+
+    it("resolves a vault-scoped absolute path for map tabs", () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        const tab: MapTab = {
+            id: "map-1",
+            kind: "map",
+            relativePath: "Excalidraw/Architecture.excalidraw",
+            title: "Architecture",
+            history: [],
+            historyIndex: -1,
+        };
+
+        expect(
+            buildTabFileDragDetail(tab, "move", { clientX: 3, clientY: 4 }),
+        )?.toMatchObject({
+            files: [
+                {
+                    filePath: "/vault/Excalidraw/Architecture.excalidraw",
+                    fileName: "Architecture.excalidraw",
+                    mimeType: "application/json",
                 },
             ],
         });

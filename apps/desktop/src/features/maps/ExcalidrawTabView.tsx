@@ -3,6 +3,7 @@ import type { MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEditorStore, isMapTab } from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
@@ -34,16 +35,27 @@ const Excalidraw = React.lazy(() =>
 );
 
 interface LoadedData {
-    forPath: string;
+    forVaultPath: string;
+    forRelativePath: string;
     elements: ExcalidrawElement[];
     appState: Partial<AppState>;
     files: BinaryFiles;
 }
 
 interface QueuedSave {
-    path: string;
+    vaultPath: string;
+    relativePath: string;
     content: string;
     signature: string;
+}
+
+interface MapChangedPayload {
+    vault_path: string;
+    relative_path: string;
+}
+
+function getQueuedSaveKey(vaultPath: string, relativePath: string) {
+    return `${vaultPath}:${relativePath}`;
 }
 
 function getSceneSignature(
@@ -65,16 +77,19 @@ function flushSaveQueue(
     const nextSave = pendingSavesRef.current.values().next().value;
     if (!nextSave) return;
 
-    pendingSavesRef.current.delete(nextSave.path);
+    pendingSavesRef.current.delete(
+        getQueuedSaveKey(nextSave.vaultPath, nextSave.relativePath),
+    );
     activeSaveRef.current = nextSave;
 
     invoke<void>("save_map", {
-        path: nextSave.path,
+        vaultPath: nextSave.vaultPath,
+        relativePath: nextSave.relativePath,
         content: nextSave.content,
     })
         .then(() => {
             persistedSignaturesRef.current.set(
-                nextSave.path,
+                getQueuedSaveKey(nextSave.vaultPath, nextSave.relativePath),
                 nextSave.signature,
             );
         })
@@ -105,15 +120,19 @@ function flushScheduledSaveRefs(
     if (!scheduledSave) return;
 
     scheduledSaveRef.current = null;
-    pendingSavesRef.current.set(scheduledSave.path, scheduledSave);
+    pendingSavesRef.current.set(
+        getQueuedSaveKey(scheduledSave.vaultPath, scheduledSave.relativePath),
+        scheduledSave,
+    );
     flushSaveQueue(activeSaveRef, pendingSavesRef, persistedSignaturesRef);
 }
 
 export function ExcalidrawTabView() {
-    const filePath = useEditorStore((s) => {
+    const relativePath = useEditorStore((s) => {
         const t = s.tabs.find((t) => t.id === s.activeTabId);
-        return t && isMapTab(t) ? t.filePath : null;
+        return t && isMapTab(t) ? t.relativePath : null;
     });
+    const vaultPath = useVaultStore((s) => s.vaultPath);
     const isDark = useThemeStore((s) => s.isDark);
 
     const [loaded, setLoaded] = useState<LoadedData | null>(null);
@@ -122,15 +141,20 @@ export function ExcalidrawTabView() {
         useState<ExcalidrawImperativeAPI | null>(null);
 
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const filePathRef = useRef(filePath);
+    const relativePathRef = useRef(relativePath);
+    const vaultPathRef = useRef(vaultPath);
     const persistedSignaturesRef = useRef(new Map<string, string>());
     const scheduledSaveRef = useRef<QueuedSave | null>(null);
     const activeSaveRef = useRef<QueuedSave | null>(null);
     const pendingSavesRef = useRef(new Map<string, QueuedSave>());
 
     useEffect(() => {
-        filePathRef.current = filePath;
-    }, [filePath]);
+        relativePathRef.current = relativePath;
+    }, [relativePath]);
+
+    useEffect(() => {
+        vaultPathRef.current = vaultPath;
+    }, [vaultPath]);
 
     const flushScheduledSave = useCallback(() => {
         flushScheduledSaveRefs(
@@ -143,12 +167,13 @@ export function ExcalidrawTabView() {
     }, []);
 
     useEffect(() => {
-        if (!filePath) return;
+        if (!vaultPath || !relativePath) return;
 
         let cancelled = false;
+        const queuedSaveKey = getQueuedSaveKey(vaultPath, relativePath);
 
         Promise.all([
-            invoke<string>("read_map", { path: filePath }),
+            invoke<string>("read_map", { vaultPath, relativePath }),
             loadExcalidrawModule(),
         ])
             .then(([json, excalidraw]) => {
@@ -160,7 +185,7 @@ export function ExcalidrawTabView() {
                 const files = data.files ?? {};
 
                 persistedSignaturesRef.current.set(
-                    filePath,
+                    queuedSaveKey,
                     getSceneSignature(
                         excalidraw.getSceneVersion,
                         elements,
@@ -169,7 +194,8 @@ export function ExcalidrawTabView() {
                 );
 
                 setLoaded({
-                    forPath: filePath,
+                    forVaultPath: vaultPath,
+                    forRelativePath: relativePath,
                     elements,
                     appState,
                     files,
@@ -178,9 +204,10 @@ export function ExcalidrawTabView() {
             .catch(() => {
                 if (cancelled) return;
 
-                persistedSignaturesRef.current.set(filePath, "0:");
+                persistedSignaturesRef.current.set(queuedSaveKey, "0:");
                 setLoaded({
-                    forPath: filePath,
+                    forVaultPath: vaultPath,
+                    forRelativePath: relativePath,
                     elements: [],
                     appState: {},
                     files: {},
@@ -190,7 +217,7 @@ export function ExcalidrawTabView() {
         return () => {
             cancelled = true;
         };
-    }, [filePath]);
+    }, [relativePath, vaultPath]);
 
     const handleChange = useCallback(
         (
@@ -198,24 +225,35 @@ export function ExcalidrawTabView() {
             appState: AppState,
             files: BinaryFiles,
         ) => {
-            const path = filePathRef.current;
+            const currentVaultPath = vaultPathRef.current;
+            const currentRelativePath = relativePathRef.current;
             const excalidraw = excalidrawModuleCache;
-            if (!path || !excalidraw) return;
+            if (!currentVaultPath || !currentRelativePath || !excalidraw) {
+                return;
+            }
+
+            const saveKey = getQueuedSaveKey(
+                currentVaultPath,
+                currentRelativePath,
+            );
 
             const signature = getSceneSignature(
                 excalidraw.getSceneVersion,
                 elements,
                 appState,
             );
-            const persistedSignature = persistedSignaturesRef.current.get(path);
+            const persistedSignature =
+                persistedSignaturesRef.current.get(saveKey);
             const scheduledSignature =
-                scheduledSaveRef.current?.path === path
+                scheduledSaveRef.current?.vaultPath === currentVaultPath &&
+                scheduledSaveRef.current?.relativePath === currentRelativePath
                     ? scheduledSaveRef.current.signature
                     : null;
             const pendingSignature =
-                pendingSavesRef.current.get(path)?.signature ?? null;
+                pendingSavesRef.current.get(saveKey)?.signature ?? null;
             const activeSignature =
-                activeSaveRef.current?.path === path
+                activeSaveRef.current?.vaultPath === currentVaultPath &&
+                activeSaveRef.current?.relativePath === currentRelativePath
                     ? activeSaveRef.current.signature
                     : null;
 
@@ -235,7 +273,8 @@ export function ExcalidrawTabView() {
             saveTimerRef.current = setTimeout(() => {
                 saveTimerRef.current = null;
                 scheduledSaveRef.current = {
-                    path,
+                    vaultPath: currentVaultPath,
+                    relativePath: currentRelativePath,
                     signature,
                     content: excalidraw.serializeAsJSON(
                         elements,
@@ -260,41 +299,66 @@ export function ExcalidrawTabView() {
         return () => {
             flushScheduledSave();
         };
-    }, [filePath, flushScheduledSave]);
+    }, [relativePath, flushScheduledSave]);
 
     // Listen for external changes (e.g. AI agent edits)
     useEffect(() => {
-        const unlisten = listen<string>("map-external-change", (event) => {
-            const changedPath = event.payload;
-            if (changedPath !== filePathRef.current || !excalidrawAPI) return;
+        const unlisten = listen<MapChangedPayload>(
+            "map-external-change",
+            (event) => {
+                const payload = event.payload;
+                if (
+                    payload.vault_path !== vaultPathRef.current ||
+                    payload.relative_path !== relativePathRef.current ||
+                    !excalidrawAPI
+                ) {
+                    return;
+                }
 
-            invoke<string>("read_map", { path: changedPath })
-                .then((json) => {
-                    const data = JSON.parse(json);
-                    excalidrawAPI.updateScene({
-                        elements: data.elements ?? [],
-                        appState: data.appState ?? {},
-                    });
-                    if (excalidrawModuleCache) {
-                        persistedSignaturesRef.current.set(
-                            changedPath,
-                            getSceneSignature(
-                                excalidrawModuleCache.getSceneVersion,
-                                data.elements ?? [],
-                                data.appState ?? {},
-                            ),
-                        );
-                    }
+                const currentVaultPath = vaultPathRef.current;
+                if (!currentVaultPath) {
+                    return;
+                }
+
+                invoke<string>("read_map", {
+                    vaultPath: currentVaultPath,
+                    relativePath: payload.relative_path,
                 })
-                .catch(console.error);
-        });
+                    .then((json) => {
+                        const data = JSON.parse(json);
+                        excalidrawAPI.updateScene({
+                            elements: data.elements ?? [],
+                            appState: data.appState ?? {},
+                        });
+                        if (excalidrawModuleCache) {
+                            persistedSignaturesRef.current.set(
+                                getQueuedSaveKey(
+                                    currentVaultPath,
+                                    payload.relative_path,
+                                ),
+                                getSceneSignature(
+                                    excalidrawModuleCache.getSceneVersion,
+                                    data.elements ?? [],
+                                    data.appState ?? {},
+                                ),
+                            );
+                        }
+                    })
+                    .catch(console.error);
+            },
+        );
 
         return () => {
             unlisten.then((fn) => fn());
         };
     }, [excalidrawAPI]);
 
-    const ready = filePath && loaded && loaded.forPath === filePath;
+    const ready =
+        vaultPath &&
+        relativePath &&
+        loaded &&
+        loaded.forVaultPath === vaultPath &&
+        loaded.forRelativePath === relativePath;
 
     if (!ready) {
         return (
@@ -314,7 +378,7 @@ export function ExcalidrawTabView() {
         >
             <div className="w-full h-full">
                 <Excalidraw
-                    key={filePath}
+                    key={relativePath}
                     excalidrawAPI={setExcalidrawAPI}
                     initialData={loaded}
                     onChange={handleChange}
