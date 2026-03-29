@@ -34,7 +34,11 @@ export function resolveTrackedFileMatchForPaths(
     let foundTrackedFile = false;
 
     for (const [sessionId, session] of Object.entries(sessionsById)) {
-        if ((session.vaultPath ?? null) !== options.vaultPath) {
+        const sessionVaultPath = session.vaultPath ?? null;
+        if (
+            sessionVaultPath !== null &&
+            sessionVaultPath !== options.vaultPath
+        ) {
             continue;
         }
         if (!session.actionLog) continue;
