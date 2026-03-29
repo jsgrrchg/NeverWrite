@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
+import { toVaultRelativePath } from "../utils/vaultPaths";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
@@ -51,14 +52,15 @@ interface PersistedSession {
         historyIndex?: number;
     }>;
     mapTabs?: Array<{
-        filePath: string;
         relativePath: string;
         title: string;
+        filePath?: string;
     }>;
     hasGraphTab?: boolean;
     activeNoteId: string | null;
     activePdfEntryId?: string | null;
     activeFilePath?: string | null;
+    activeMapRelativePath?: string | null;
     activeMapFilePath?: string | null;
     activeGraphTab?: boolean;
 }
@@ -173,9 +175,9 @@ export interface FileHistoryEntry {
 
 export interface MapHistoryEntry {
     kind: "map";
-    filePath: string;
     relativePath: string;
     title: string;
+    filePath?: string;
 }
 
 export type TabHistoryEntry =
@@ -252,7 +254,6 @@ export interface ReviewTab {
 export interface MapTab {
     id: string;
     kind: "map";
-    filePath: string;
     relativePath: string;
     title: string;
     history: TabHistoryEntry[];
@@ -427,13 +428,11 @@ function createFileHistoryEntry(
 }
 
 function createMapHistoryEntry(
-    filePath: string,
     relativePath: string,
     title: string,
 ): MapHistoryEntry {
     return {
         kind: "map",
-        filePath,
         relativePath,
         title,
     };
@@ -446,7 +445,7 @@ function inferHistoryEntryKind(
     if (entry.kind) return entry.kind;
     if ("noteId" in entry) return "note";
     if ("entryId" in entry) return "pdf";
-    if ("filePath" in entry) return "map";
+    if (fallbackKind === "map") return "map";
     if ("relativePath" in entry) return "file";
     return fallbackKind;
 }
@@ -480,7 +479,6 @@ function normalizeHistoryEntry(
 
     if (kind === "map") {
         return createMapHistoryEntry(
-            "filePath" in entry ? entry.filePath : "",
             "relativePath" in entry ? entry.relativePath : "",
             entry.title,
         );
@@ -527,7 +525,7 @@ function createHistoryEntryFromTab(
     }
 
     if (isMapTab(tab)) {
-        return createMapHistoryEntry(tab.filePath, tab.relativePath, tab.title);
+        return createMapHistoryEntry(tab.relativePath, tab.title);
     }
 
     return createNoteHistoryEntry(tab.noteId, tab.title, tab.content);
@@ -575,7 +573,6 @@ function buildTabFromHistory(
         return {
             id,
             kind: "map",
-            filePath: entry.filePath,
             relativePath: entry.relativePath,
             title: entry.title,
             history,
@@ -675,15 +672,10 @@ function createFileTab(
     };
 }
 
-function createMapTab(
-    filePath: string,
-    relativePath: string,
-    title: string,
-): MapTab {
+function createMapTab(relativePath: string, title: string): MapTab {
     return {
         id: crypto.randomUUID(),
         kind: "map",
-        filePath,
         relativePath,
         title,
         history: [],
@@ -700,11 +692,19 @@ function createGraphTab(): GraphTab {
 }
 
 function ensureMapTabDefaults(tab: MapTabInput): MapTab {
+    const relativePath =
+        tab.relativePath ||
+        ("filePath" in tab && typeof tab.filePath === "string"
+            ? (toVaultRelativePath(
+                  tab.filePath,
+                  useVaultStore.getState().vaultPath,
+              ) ?? "")
+            : "");
+
     return {
         id: tab.id,
         kind: "map",
-        filePath: tab.filePath,
-        relativePath: tab.relativePath,
+        relativePath,
         title: tab.title,
         history:
             tab.history?.map((entry) => normalizeHistoryEntry(entry, "map")) ??
@@ -900,7 +900,7 @@ interface EditorStore {
         mimeType: string | null,
         viewer: FileViewerMode,
     ) => void;
-    openMap: (filePath: string, relativePath: string, title: string) => void;
+    openMap: (relativePath: string, title: string) => void;
     openGraph: () => void;
     openReview: (
         sessionId: string,
@@ -1107,15 +1107,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
-    openMap: (filePath, relativePath, title) => {
+    openMap: (relativePath, title) => {
         set((state) => {
             const existing = state.tabs.find(
-                (t) => isMapTab(t) && t.filePath === filePath,
+                (t) => isMapTab(t) && t.relativePath === relativePath,
             );
             if (existing) {
                 return activateTab(state, existing.id);
             }
-            const newTab = createMapTab(filePath, relativePath, title);
+            const newTab = createMapTab(relativePath, title);
             return {
                 tabs: [...state.tabs, newTab],
                 ...activateTab(state, newTab.id),
@@ -1619,17 +1619,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     hydrateTabs: (tabs, activeTabId) => {
         const hydratedTabs: Tab[] = tabs
             .filter((tab) => tab.kind !== "ai-review")
-            .map((tab) =>
-                tab.kind === "pdf"
-                    ? ensurePdfTabDefaults(tab)
-                    : tab.kind === "file"
-                      ? ensureFileTabDefaults(tab)
-                      : tab.kind === "map"
-                        ? ensureMapTabDefaults(tab)
-                        : tab.kind === "graph"
-                          ? tab
-                          : ensureNoteTabHistory(tab),
-            );
+            .flatMap((tab) => {
+                if (tab.kind === "pdf") {
+                    return [ensurePdfTabDefaults(tab)];
+                }
+                if (tab.kind === "file") {
+                    return [ensureFileTabDefaults(tab)];
+                }
+                if (tab.kind === "map") {
+                    const mapTab = ensureMapTabDefaults(tab);
+                    return mapTab.relativePath ? [mapTab] : [];
+                }
+                if (tab.kind === "graph") {
+                    return [tab];
+                }
+                return [ensureNoteTabHistory(tab)];
+            });
         const nextActiveTabId =
             activeTabId && hydratedTabs.some((tab) => tab.id === activeTabId)
                 ? activeTabId
@@ -1646,7 +1651,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     insertExternalTab: (tab, index) => {
         set((state) => {
-            const incoming: Tab =
+            const incoming: Tab | null =
                 tab.kind === "pdf"
                     ? ensurePdfTabDefaults(tab)
                     : tab.kind === "file"
@@ -1654,10 +1659,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                       : tab.kind === "ai-review"
                         ? tab
                         : tab.kind === "map"
-                          ? ensureMapTabDefaults(tab)
+                          ? (() => {
+                                const mapTab = ensureMapTabDefaults(tab);
+                                return mapTab.relativePath ? mapTab : null;
+                            })()
                           : tab.kind === "graph"
                             ? tab
                             : ensureNoteTabHistory(tab);
+            if (!incoming) {
+                return state;
+            }
             const tabs = state.tabs.filter(
                 (existing) => existing.id !== incoming.id,
             );
@@ -2275,7 +2286,7 @@ useEditorStore.subscribe((state) => {
         } else if (isNoteTab(t)) {
             sig += `|note|${t.noteId}|${t.title}|${t.historyIndex}|${t.history.length}`;
         } else if (isMapTab(t)) {
-            sig += `|map|${t.filePath}|${t.title}`;
+            sig += `|map|${t.relativePath}|${t.title}`;
         } else if (isGraphTab(t)) {
             sig += `|graph`;
         } else if (isFileTab(t)) {
@@ -2373,7 +2384,6 @@ useEditorStore.subscribe((state) => {
         mapTabs: state.tabs
             .filter((t): t is MapTab => isMapTab(t))
             .map((t) => ({
-                filePath: t.filePath,
                 relativePath: t.relativePath,
                 title: t.title,
             })),
@@ -2384,8 +2394,8 @@ useEditorStore.subscribe((state) => {
             activeTab && isPdfTab(activeTab) ? activeTab.entryId : null,
         activeFilePath:
             activeTab && isFileTab(activeTab) ? activeTab.relativePath : null,
-        activeMapFilePath:
-            activeTab && isMapTab(activeTab) ? activeTab.filePath : null,
+        activeMapRelativePath:
+            activeTab && isMapTab(activeTab) ? activeTab.relativePath : null,
         activeGraphTab: activeTab ? isGraphTab(activeTab) : false,
     };
     const json = JSON.stringify(session);

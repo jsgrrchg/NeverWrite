@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEditorStore, isMapTab } from "../../app/store/editorStore";
+import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 import { getPathBaseName } from "../../app/utils/path";
 
+interface MapEntryDto {
+    id: string;
+    title: string;
+    relative_path: string;
+}
+
 interface MapEntry {
     id: string;
     title: string;
-    path: string;
+    relativePath: string;
 }
 
 const DRAG_THRESHOLD = 5;
@@ -24,9 +31,9 @@ export function MapsPanel() {
     const [maps, setMaps] = useState<MapEntry[]>([]);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const openMap = useEditorStore((s) => s.openMap);
-    const activeMapPath = useEditorStore((s) => {
+    const activeMapRelativePath = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return tab && isMapTab(tab) ? tab.filePath : null;
+        return tab && isMapTab(tab) ? tab.relativePath : null;
     });
 
     const dragStateRef = useRef<DragState | null>(null);
@@ -58,6 +65,11 @@ export function MapsPanel() {
 
             const dx = e.clientX - s.startX;
             const dy = e.clientY - s.startY;
+            const filePath = resolveVaultAbsolutePath(
+                s.map.relativePath,
+                vaultPath,
+            );
+            const fileName = getPathBaseName(s.map.relativePath) || s.map.title;
 
             if (!s.active) {
                 if (
@@ -73,9 +85,8 @@ export function MapsPanel() {
                     notes: [],
                     files: [
                         {
-                            filePath: s.map.path,
-                            fileName:
-                                getPathBaseName(s.map.path) || s.map.title,
+                            filePath,
+                            fileName,
                             mimeType: "application/json",
                         },
                     ],
@@ -90,8 +101,8 @@ export function MapsPanel() {
                 notes: [],
                 files: [
                     {
-                        filePath: s.map.path,
-                        fileName: getPathBaseName(s.map.path) || s.map.title,
+                        filePath,
+                        fileName,
                         mimeType: "application/json",
                     },
                 ],
@@ -110,9 +121,13 @@ export function MapsPanel() {
                     notes: [],
                     files: [
                         {
-                            filePath: s.map.path,
+                            filePath: resolveVaultAbsolutePath(
+                                s.map.relativePath,
+                                vaultPath,
+                            ),
                             fileName:
-                                getPathBaseName(s.map.path) || s.map.title,
+                                getPathBaseName(s.map.relativePath) ||
+                                s.map.title,
                             mimeType: "application/json",
                         },
                     ],
@@ -129,17 +144,25 @@ export function MapsPanel() {
             window.removeEventListener("mouseup", handleMouseUp);
             resetDrag();
         };
-    }, [resetDrag]);
+    }, [resetDrag, vaultPath]);
 
     useEffect(() => {
         if (!vaultPath) return;
 
         let cancelled = false;
 
-        void invoke<MapEntry[]>("list_maps", { vaultPath }).then((nextMaps) => {
-            if (cancelled) return;
-            setMaps(nextMaps);
-        });
+        void invoke<MapEntryDto[]>("list_maps", { vaultPath }).then(
+            (nextMaps) => {
+                if (cancelled) return;
+                setMaps(
+                    nextMaps.map((entry) => ({
+                        id: entry.id,
+                        title: entry.title,
+                        relativePath: entry.relative_path,
+                    })),
+                );
+            },
+        );
 
         return () => {
             cancelled = true;
@@ -149,18 +172,32 @@ export function MapsPanel() {
     const handleNewMap = async () => {
         if (!vaultPath) return;
         const name = `Map ${new Date().toLocaleDateString("en-CA")}`;
-        const entry = await invoke<MapEntry>("create_map", { vaultPath, name });
-        setMaps((prev) => [entry, ...prev]);
-        openMap(entry.path, entry.id, entry.title);
+        const entry = await invoke<MapEntryDto>("create_map", {
+            vaultPath,
+            name,
+        });
+        const nextEntry = {
+            id: entry.id,
+            title: entry.title,
+            relativePath: entry.relative_path,
+        };
+        setMaps((prev) => [nextEntry, ...prev]);
+        openMap(nextEntry.relativePath, nextEntry.title);
     };
 
     const handleDeleteMap = async (map: MapEntry) => {
-        await invoke("delete_map", { path: map.path });
-        setMaps((prev) => prev.filter((m) => m.path !== map.path));
+        if (!vaultPath) return;
+        await invoke("delete_map", {
+            vaultPath,
+            relativePath: map.relativePath,
+        });
+        setMaps((prev) =>
+            prev.filter((m) => m.relativePath !== map.relativePath),
+        );
         // Close any open tab for this map
         const { tabs, closeTab } = useEditorStore.getState();
         const openTab = tabs.find(
-            (t) => isMapTab(t) && t.filePath === map.path,
+            (t) => isMapTab(t) && t.relativePath === map.relativePath,
         );
         if (openTab) closeTab(openTab.id, { reason: "delete" });
     };
@@ -202,10 +239,10 @@ export function MapsPanel() {
                 ) : (
                     maps.map((map) => (
                         <div
-                            key={map.path}
+                            key={map.relativePath}
                             className="group flex items-center hover:bg-(--bg-tertiary)"
                             style={
-                                activeMapPath === map.path
+                                activeMapRelativePath === map.relativePath
                                     ? {
                                           backgroundColor:
                                               "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))",
@@ -215,7 +252,7 @@ export function MapsPanel() {
                         >
                             <button
                                 onClick={() =>
-                                    openMap(map.path, map.id, map.title)
+                                    openMap(map.relativePath, map.title)
                                 }
                                 onMouseDown={(e) => handleItemMouseDown(map, e)}
                                 className="flex-1 text-left px-3 py-1.5 text-sm text-(--text-primary) truncate"

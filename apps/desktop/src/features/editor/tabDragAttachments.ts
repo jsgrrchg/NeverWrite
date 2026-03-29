@@ -6,6 +6,8 @@ import {
     type Tab,
 } from "../../app/store/editorStore";
 import { getPathBaseName } from "../../app/utils/path";
+import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
+import { useVaultStore } from "../../app/store/vaultStore";
 import type {
     FileTreeDraggedFile,
     FileTreeNoteDragDetail,
@@ -43,10 +45,14 @@ function buildDraggedFiles(tab: Tab): FileTreeDraggedFile[] | null {
     }
 
     if (isMapTab(tab)) {
+        const filePath = resolveVaultAbsolutePath(
+            tab.relativePath,
+            useVaultStore.getState().vaultPath,
+        );
         return [
             {
-                filePath: tab.filePath,
-                fileName: getPathBaseName(tab.filePath) || tab.title,
+                filePath,
+                fileName: getPathBaseName(tab.relativePath) || tab.title,
                 mimeType: "application/json",
             },
         ];

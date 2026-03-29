@@ -6,6 +6,11 @@ import {
     useEditorStore,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    normalizeVaultPath,
+    resolveVaultAbsolutePath,
+    toVaultRelativePath,
+} from "../../app/utils/vaultPaths";
 
 export interface NoteEditorTarget {
     kind: "note";
@@ -24,55 +29,11 @@ export interface FileEditorTarget {
 export type EditorTarget = NoteEditorTarget | FileEditorTarget;
 
 export function normalizeVaultPathMatch(path: string) {
-    return path.replace(/\\/g, "/");
+    return normalizeVaultPath(path);
 }
 
 function stripMarkdownExtension(path: string) {
     return path.toLowerCase().endsWith(".md") ? path.slice(0, -3) : path;
-}
-
-function normalizeVaultRoot(vaultPath: string | null) {
-    if (!vaultPath) {
-        return null;
-    }
-
-    return normalizeVaultPathMatch(vaultPath).replace(/\/+$/, "");
-}
-
-function resolveAbsolutePath(path: string, vaultPath: string | null) {
-    const normalizedPath = normalizeVaultPathMatch(path);
-    if (normalizedPath.startsWith("/")) {
-        return normalizedPath;
-    }
-
-    const normalizedVaultPath = normalizeVaultRoot(vaultPath);
-    if (!normalizedVaultPath) {
-        return normalizedPath;
-    }
-
-    return `${normalizedVaultPath}/${normalizedPath.replace(/^\/+/, "")}`;
-}
-
-export function toVaultRelativePath(
-    path: string,
-    vaultPath: string | null,
-): string | null {
-    const normalizedPath = normalizeVaultPathMatch(path);
-    if (!normalizedPath.startsWith("/")) {
-        return normalizedPath;
-    }
-
-    const normalizedVaultPath = normalizeVaultRoot(vaultPath);
-    if (!normalizedVaultPath) {
-        return null;
-    }
-
-    const prefix = `${normalizedVaultPath}/`;
-    if (!normalizedPath.startsWith(prefix)) {
-        return null;
-    }
-
-    return normalizedPath.slice(prefix.length);
 }
 
 export function resolveMarkdownNoteIdForPath(path: string): string | null {
@@ -148,7 +109,7 @@ export function findOpenNoteTarget(path: string): NoteEditorTarget | null {
 
     return {
         kind: "note",
-        absolutePath: resolveAbsolutePath(
+        absolutePath: resolveVaultAbsolutePath(
             path,
             useVaultStore.getState().vaultPath,
         ),
@@ -204,7 +165,7 @@ export function resolveNoteTargetForPath(
 
     return {
         kind: "note",
-        absolutePath: resolveAbsolutePath(
+        absolutePath: resolveVaultAbsolutePath(
             path,
             useVaultStore.getState().vaultPath,
         ),
@@ -229,7 +190,7 @@ export function resolveFileTargetForPath(
 
     return {
         kind: "file",
-        absolutePath: resolveAbsolutePath(path, vaultPath),
+        absolutePath: resolveVaultAbsolutePath(path, vaultPath),
         relativePath,
         openTab: null,
     };
