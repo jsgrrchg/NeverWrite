@@ -5500,6 +5500,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tokio-util",
+ "uuid",
  "vault-ai-ai",
  "vault-ai-diff",
  "vault-ai-index",
