@@ -1304,7 +1304,7 @@ impl RuntimeActor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        apply_auth_env(&mut command, &spec.setup);
+        apply_auth_env(&mut command, &self.app, &spec.setup)?;
 
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);

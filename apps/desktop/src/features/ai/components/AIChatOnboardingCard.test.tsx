@@ -78,6 +78,12 @@ describe("AIChatOnboardingCard", () => {
         expect(onSaveSetup).toHaveBeenCalledWith({
             runtimeId: "claude-acp",
             customBinaryPath: "",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "unchanged" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
         });
     });
 
@@ -110,9 +116,13 @@ describe("AIChatOnboardingCard", () => {
 
         expect(onSaveSetup).toHaveBeenCalledWith({
             runtimeId: "claude-acp",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
             anthropicBaseUrl: "",
-            anthropicCustomHeaders: "",
-            anthropicAuthToken: "",
+            geminiApiKey: { action: "unchanged" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "clear" },
+            anthropicAuthToken: { action: "clear" },
         });
     });
 
@@ -173,14 +183,62 @@ describe("AIChatOnboardingCard", () => {
             runtimeId: "gemini-acp",
             methodId: "use_gemini",
             customBinaryPath: undefined,
-            openaiApiKey: undefined,
-            codexApiKey: undefined,
-            geminiApiKey: "gemini-secret",
+            openaiApiKey: { action: "unchanged" },
+            codexApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "set", value: "gemini-secret" },
             gatewayBaseUrl: undefined,
-            gatewayHeaders: undefined,
+            gatewayHeaders: { action: "unchanged" },
             anthropicBaseUrl: undefined,
-            anthropicCustomHeaders: undefined,
-            anthropicAuthToken: undefined,
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
+        });
+    });
+
+    it("can clear a stored API key explicitly from settings", () => {
+        const onSaveSetup = vi.fn();
+
+        renderComponent(
+            <AIChatOnboardingCard
+                runtime={{
+                    id: "gemini-acp",
+                    name: "Gemini ACP",
+                    description: "",
+                    capabilities: [],
+                }}
+                mode="settings"
+                setupStatus={{
+                    runtimeId: "gemini-acp",
+                    binaryReady: true,
+                    binarySource: "env",
+                    authReady: true,
+                    authMethod: "use_gemini",
+                    authMethods: [
+                        {
+                            id: "use_gemini",
+                            name: "Gemini API key",
+                            description:
+                                "Use a Gemini Developer API key stored only for VaultAI.",
+                        },
+                    ],
+                    onboardingRequired: false,
+                }}
+                onSaveSetup={onSaveSetup}
+                onAuthenticate={vi.fn()}
+            />,
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Clear stored API key" }),
+        );
+
+        expect(onSaveSetup).toHaveBeenCalledWith({
+            runtimeId: "gemini-acp",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "clear" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
         });
     });
 });

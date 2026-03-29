@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AIRuntimeOption, AIRuntimeSetupStatus } from "../types";
+import type {
+    AIRuntimeOption,
+    AIRuntimeSetupStatus,
+    AISecretPatch,
+} from "../types";
 
 interface AIChatOnboardingCardProps {
     runtime?: AIRuntimeOption | null;
@@ -10,25 +14,27 @@ interface AIChatOnboardingCardProps {
     onSaveSetup: (input: {
         runtimeId?: string;
         customBinaryPath?: string;
-        geminiApiKey?: string;
+        codexApiKey: AISecretPatch;
+        openaiApiKey: AISecretPatch;
+        geminiApiKey: AISecretPatch;
         gatewayBaseUrl?: string;
-        gatewayHeaders?: string;
+        gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
-        anthropicCustomHeaders?: string;
-        anthropicAuthToken?: string;
+        anthropicCustomHeaders: AISecretPatch;
+        anthropicAuthToken: AISecretPatch;
     }) => void;
     onAuthenticate: (input: {
         runtimeId?: string;
         methodId: string;
         customBinaryPath?: string;
-        openaiApiKey?: string;
-        codexApiKey?: string;
-        geminiApiKey?: string;
+        openaiApiKey: AISecretPatch;
+        codexApiKey: AISecretPatch;
+        geminiApiKey: AISecretPatch;
         gatewayBaseUrl?: string;
-        gatewayHeaders?: string;
+        gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
-        anthropicCustomHeaders?: string;
-        anthropicAuthToken?: string;
+        anthropicCustomHeaders: AISecretPatch;
+        anthropicAuthToken: AISecretPatch;
     }) => void;
 }
 
@@ -38,6 +44,35 @@ const inputStyle = {
     border: "1px solid var(--border)",
     outline: "none",
 } as const;
+
+const unchangedSecretPatch: AISecretPatch = { action: "unchanged" };
+const clearSecretPatch: AISecretPatch = { action: "clear" };
+
+function setSecretPatch(value: string): AISecretPatch {
+    return {
+        action: "set",
+        value,
+    };
+}
+
+function setOptionalSecretPatch(value: string): AISecretPatch {
+    return value.trim() ? setSecretPatch(value) : unchangedSecretPatch;
+}
+
+function getClearedApiKeyPatches(methodId?: string | null) {
+    return {
+        codexApiKey:
+            methodId === "codex-api-key"
+                ? clearSecretPatch
+                : unchangedSecretPatch,
+        openaiApiKey:
+            methodId === "openai-api-key"
+                ? clearSecretPatch
+                : unchangedSecretPatch,
+        geminiApiKey:
+            methodId === "use_gemini" ? clearSecretPatch : unchangedSecretPatch,
+    };
+}
 
 export function AIChatOnboardingCard({
     runtime = null,
@@ -164,6 +199,15 @@ export function AIChatOnboardingCard({
                                         onSaveSetup({
                                             runtimeId: setupStatus.runtimeId,
                                             customBinaryPath: "",
+                                            codexApiKey: unchangedSecretPatch,
+                                            openaiApiKey: unchangedSecretPatch,
+                                            geminiApiKey: unchangedSecretPatch,
+                                            gatewayHeaders:
+                                                unchangedSecretPatch,
+                                            anthropicCustomHeaders:
+                                                unchangedSecretPatch,
+                                            anthropicAuthToken:
+                                                unchangedSecretPatch,
                                         })
                                     }
                                     disabled={saving}
@@ -269,9 +313,19 @@ export function AIChatOnboardingCard({
                                                 onSaveSetup({
                                                     runtimeId:
                                                         setupStatus.runtimeId,
+                                                    codexApiKey:
+                                                        unchangedSecretPatch,
+                                                    openaiApiKey:
+                                                        unchangedSecretPatch,
                                                     anthropicBaseUrl: "",
-                                                    anthropicCustomHeaders: "",
-                                                    anthropicAuthToken: "",
+                                                    geminiApiKey:
+                                                        unchangedSecretPatch,
+                                                    gatewayHeaders:
+                                                        unchangedSecretPatch,
+                                                    anthropicCustomHeaders:
+                                                        clearSecretPatch,
+                                                    anthropicAuthToken:
+                                                        clearSecretPatch,
                                                 });
                                             }}
                                             disabled={saving}
@@ -309,6 +363,43 @@ export function AIChatOnboardingCard({
                                         >
                                             Stored locally for VaultAI only.
                                         </div>
+                                        {isSettingsMode ||
+                                        setupStatus.authMethod ===
+                                            selectedMethod?.id ? (
+                                            <div className="mt-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        onSaveSetup({
+                                                            runtimeId:
+                                                                setupStatus.runtimeId,
+                                                            ...getClearedApiKeyPatches(
+                                                                selectedMethod?.id,
+                                                            ),
+                                                            gatewayHeaders:
+                                                                unchangedSecretPatch,
+                                                            anthropicCustomHeaders:
+                                                                unchangedSecretPatch,
+                                                            anthropicAuthToken:
+                                                                unchangedSecretPatch,
+                                                        })
+                                                    }
+                                                    disabled={saving}
+                                                    className="rounded-md px-3 py-1.5 text-xs"
+                                                    style={{
+                                                        color: "var(--text-primary)",
+                                                        backgroundColor:
+                                                            "var(--bg-secondary)",
+                                                        border: "1px solid var(--border)",
+                                                        opacity: saving
+                                                            ? 0.5
+                                                            : 1,
+                                                    }}
+                                                >
+                                                    Clear stored API key
+                                                </button>
+                                            </div>
+                                        ) : null}
                                     </>
                                 ) : null}
 
@@ -445,6 +536,18 @@ export function AIChatOnboardingCard({
                                                 runtimeId:
                                                     setupStatus.runtimeId,
                                                 customBinaryPath: "",
+                                                codexApiKey:
+                                                    unchangedSecretPatch,
+                                                openaiApiKey:
+                                                    unchangedSecretPatch,
+                                                geminiApiKey:
+                                                    unchangedSecretPatch,
+                                                gatewayHeaders:
+                                                    unchangedSecretPatch,
+                                                anthropicCustomHeaders:
+                                                    unchangedSecretPatch,
+                                                anthropicAuthToken:
+                                                    unchangedSecretPatch,
                                             });
                                         }}
                                         disabled={saving}
@@ -488,29 +591,29 @@ export function AIChatOnboardingCard({
                                     selectedMethod?.id ?? "openai-api-key",
                                 customBinaryPath: customBinaryPath || undefined,
                                 openaiApiKey: isOpenAiApiKeyMethod
-                                    ? apiKey || undefined
-                                    : undefined,
+                                    ? setSecretPatch(apiKey)
+                                    : unchangedSecretPatch,
                                 codexApiKey: isCodexApiKeyMethod
-                                    ? apiKey || undefined
-                                    : undefined,
+                                    ? setSecretPatch(apiKey)
+                                    : unchangedSecretPatch,
                                 geminiApiKey: isGeminiApiKeyMethod
-                                    ? apiKey || undefined
-                                    : undefined,
+                                    ? setSecretPatch(apiKey)
+                                    : unchangedSecretPatch,
                                 gatewayBaseUrl: isGatewayMethod
                                     ? gatewayBaseUrl || undefined
                                     : undefined,
                                 gatewayHeaders: isGatewayMethod
-                                    ? gatewayHeaders || undefined
-                                    : undefined,
+                                    ? setOptionalSecretPatch(gatewayHeaders)
+                                    : unchangedSecretPatch,
                                 anthropicBaseUrl: isGatewayMethod
                                     ? gatewayBaseUrl || undefined
                                     : undefined,
                                 anthropicCustomHeaders: isGatewayMethod
-                                    ? gatewayHeaders || undefined
-                                    : undefined,
+                                    ? setOptionalSecretPatch(gatewayHeaders)
+                                    : unchangedSecretPatch,
                                 anthropicAuthToken: isGatewayMethod
-                                    ? gatewayAuthToken || undefined
-                                    : undefined,
+                                    ? setOptionalSecretPatch(gatewayAuthToken)
+                                    : unchangedSecretPatch,
                             })
                         }
                         disabled={

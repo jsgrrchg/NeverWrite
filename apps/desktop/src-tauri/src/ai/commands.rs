@@ -17,6 +17,7 @@ use super::{
     manager::{AiAttachmentInput, AiManager},
     persistence::{self, PersistedSessionHistory, PersistedSessionHistoryPage},
     runtime::AiRuntimeSetupInput,
+    secret_store::SecretValuePatch,
 };
 
 fn require_runtime_id(runtime_id: Option<String>, command_name: &str) -> Result<String, String> {
@@ -61,17 +62,24 @@ pub struct AiStartAuthInput {
 #[derive(Debug, Deserialize)]
 pub struct AiRuntimeSetupPayload {
     pub custom_binary_path: Option<String>,
-    pub codex_api_key: Option<String>,
-    pub openai_api_key: Option<String>,
-    pub gemini_api_key: Option<String>,
-    pub google_api_key: Option<String>,
+    #[serde(default)]
+    pub codex_api_key: SecretValuePatch,
+    #[serde(default)]
+    pub openai_api_key: SecretValuePatch,
+    #[serde(default)]
+    pub gemini_api_key: SecretValuePatch,
+    #[serde(default)]
+    pub google_api_key: SecretValuePatch,
     pub google_cloud_project: Option<String>,
     pub google_cloud_location: Option<String>,
     pub gateway_base_url: Option<String>,
-    pub gateway_headers: Option<String>,
+    #[serde(default)]
+    pub gateway_headers: SecretValuePatch,
     pub anthropic_base_url: Option<String>,
-    pub anthropic_custom_headers: Option<String>,
-    pub anthropic_auth_token: Option<String>,
+    #[serde(default)]
+    pub anthropic_custom_headers: SecretValuePatch,
+    #[serde(default)]
+    pub anthropic_auth_token: SecretValuePatch,
 }
 
 #[derive(Debug, Deserialize)]

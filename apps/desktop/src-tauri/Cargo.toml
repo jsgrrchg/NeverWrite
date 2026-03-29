@@ -42,9 +42,16 @@ tiny_http = "0.12"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.2", default-features = false, features = ["apple-native"] }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSSpellChecker"] }
 objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSObjCRuntime", "NSRange", "NSString"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.2", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { version = "3.6.2", default-features = false, features = ["linux-native-sync-persistent"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

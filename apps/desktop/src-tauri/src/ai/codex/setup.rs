@@ -1,24 +1,51 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
 
+#[cfg(test)]
+use crate::ai::secret_store::TestSecretStore;
+use crate::ai::secret_store::{
+    clear_secret, get_secret, has_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
+};
+
 const SETUP_FILE_NAME: &str = "setup.json";
+const CODEX_API_KEY_SECRET: &str = "codex_api_key";
+const OPENAI_API_KEY_SECRET: &str = "openai_api_key";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodexSetupConfig {
     pub custom_binary_path: Option<String>,
+    pub auth_method: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StoredCodexSetupConfig {
+    pub custom_binary_path: Option<String>,
+    pub auth_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodexSecretBundle {
     pub codex_api_key: Option<String>,
     pub openai_api_key: Option<String>,
-    pub auth_method: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CodexSetupInput {
     pub custom_binary_path: Option<String>,
-    pub codex_api_key: Option<String>,
-    pub openai_api_key: Option<String>,
+    #[serde(default)]
+    pub codex_api_key: SecretValuePatch,
+    #[serde(default)]
+    pub openai_api_key: SecretValuePatch,
 }
 
 #[derive(Debug, Clone)]
@@ -28,53 +55,58 @@ pub struct ResolvedBinary {
 }
 
 impl CodexSetupConfig {
-    pub fn merge_input(mut self, input: CodexSetupInput) -> Self {
-        if let Some(path) = input.custom_binary_path {
-            self.custom_binary_path = normalize_optional_string(Some(path));
+    fn apply_input(&mut self, input: &CodexSetupInput) {
+        if let Some(path) = input.custom_binary_path.as_ref() {
+            self.custom_binary_path = normalize_optional_string(Some(path.clone()));
         }
+    }
+}
 
-        if let Some(value) = input.codex_api_key {
-            self.codex_api_key = normalize_optional_string(Some(value));
-            if self.codex_api_key.is_some() {
-                self.openai_api_key = None;
-                self.auth_method = None;
-            }
+impl From<StoredCodexSetupConfig> for CodexSetupConfig {
+    fn from(value: StoredCodexSetupConfig) -> Self {
+        Self {
+            custom_binary_path: value.custom_binary_path,
+            auth_method: value.auth_method,
         }
+    }
+}
 
-        if let Some(value) = input.openai_api_key {
-            self.openai_api_key = normalize_optional_string(Some(value));
-            if self.openai_api_key.is_some() {
-                self.codex_api_key = None;
-                self.auth_method = None;
-            }
+impl StoredCodexSetupConfig {
+    fn from_public(config: &CodexSetupConfig) -> Self {
+        Self {
+            custom_binary_path: config.custom_binary_path.clone(),
+            auth_method: config.auth_method.clone(),
+            codex_api_key: None,
+            openai_api_key: None,
         }
+    }
 
-        self
+    fn has_legacy_secrets(&self) -> bool {
+        self.codex_api_key.is_some() || self.openai_api_key.is_some()
     }
 }
 
 pub fn load_setup_config(app: &AppHandle) -> Result<CodexSetupConfig, String> {
     let path = setup_file_path(app)?;
-    if !path.exists() {
-        return Ok(CodexSetupConfig::default());
-    }
+    load_setup_config_from_path(&path)
+}
 
-    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&raw).map_err(|error| error.to_string())
+pub fn load_secret_bundle() -> Result<CodexSecretBundle, String> {
+    Ok(CodexSecretBundle {
+        codex_api_key: get_secret(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET)?,
+        openai_api_key: get_secret(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET)?,
+    })
 }
 
 pub fn save_setup_config(
     app: &AppHandle,
     input: CodexSetupInput,
 ) -> Result<CodexSetupConfig, String> {
-    let config = load_setup_config(app)?.merge_input(input);
     let path = setup_file_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    let serialized = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    fs::write(path, serialized).map_err(|error| error.to_string())?;
+    let mut config = load_setup_config_from_path(&path)?;
+    config.apply_input(&input);
+    apply_secret_patches(&input)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
@@ -82,28 +114,18 @@ pub fn mark_authenticated_method(
     app: &AppHandle,
     method_id: &str,
 ) -> Result<CodexSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
-    config.auth_method = Some(method_id.to_string());
     let path = setup_file_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    let serialized = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    fs::write(path, serialized).map_err(|error| error.to_string())?;
+    let mut config = load_setup_config_from_path(&path)?;
+    config.auth_method = Some(method_id.to_string());
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
 pub fn clear_authenticated_method(app: &AppHandle) -> Result<CodexSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
-    config.auth_method = None;
     let path = setup_file_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    let serialized = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    fs::write(path, serialized).map_err(|error| error.to_string())?;
+    let mut config = load_setup_config_from_path(&path)?;
+    config.auth_method = None;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
@@ -115,7 +137,7 @@ pub fn setup_status(
     let config = load_setup_config(app)?;
     let resolved = resolve_binary_path(&config, bundled_path, vendor_path);
     let auth_methods = available_auth_methods();
-    let auth_method = detect_auth_method(&config);
+    let auth_method = detect_auth_method(&config)?;
     let binary_ready = resolved.path.as_ref().is_some_and(|path| path.exists());
     let auth_ready = auth_method.is_some();
 
@@ -191,68 +213,86 @@ pub fn resolve_binary_path(
     }
 }
 
-pub fn apply_auth_env(command: &mut tokio::process::Command, config: &CodexSetupConfig) {
-    if let Some(value) = config.codex_api_key.as_ref() {
-        command.env("CODEX_API_KEY", value);
+pub fn apply_auth_env(command: &mut tokio::process::Command) -> Result<(), String> {
+    let secrets = load_secret_bundle()?;
+
+    if !env_secret_present("CODEX_API_KEY") {
+        if let Some(value) = secrets.codex_api_key.as_ref() {
+            command.env("CODEX_API_KEY", value);
+        }
     }
 
-    if let Some(value) = config.openai_api_key.as_ref() {
-        command.env("OPENAI_API_KEY", value);
+    if !env_secret_present("OPENAI_API_KEY") {
+        if let Some(value) = secrets.openai_api_key.as_ref() {
+            command.env("OPENAI_API_KEY", value);
+        }
     }
+
+    Ok(())
 }
 
-fn detect_auth_method(config: &CodexSetupConfig) -> Option<String> {
+fn detect_auth_method(config: &CodexSetupConfig) -> Result<Option<String>, String> {
     if config.auth_method.as_deref() == Some("chatgpt") {
-        return Some("chatgpt".to_string());
+        return Ok(Some("chatgpt".to_string()));
     }
 
-    if config.auth_method.as_deref() == Some("codex-api-key")
-        && (config
-            .codex_api_key
-            .as_ref()
-            .is_some_and(|value| !value.trim().is_empty())
-            || std::env::var("CODEX_API_KEY")
-                .ok()
-                .is_some_and(|value| !value.trim().is_empty()))
-    {
-        return Some("codex-api-key".to_string());
+    if config.auth_method.as_deref() == Some("codex-api-key") && codex_api_key_ready()? {
+        return Ok(Some("codex-api-key".to_string()));
     }
 
-    if config.auth_method.as_deref() == Some("openai-api-key")
-        && (config
-            .openai_api_key
-            .as_ref()
-            .is_some_and(|value| !value.trim().is_empty())
-            || std::env::var("OPENAI_API_KEY")
-                .ok()
-                .is_some_and(|value| !value.trim().is_empty()))
-    {
-        return Some("openai-api-key".to_string());
+    if config.auth_method.as_deref() == Some("openai-api-key") && openai_api_key_ready()? {
+        return Ok(Some("openai-api-key".to_string()));
     }
 
-    if config
-        .codex_api_key
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty())
-        || std::env::var("CODEX_API_KEY")
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
-    {
-        return Some("codex-api-key".to_string());
+    if codex_api_key_ready()? {
+        return Ok(Some("codex-api-key".to_string()));
     }
 
-    if config
-        .openai_api_key
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty())
-        || std::env::var("OPENAI_API_KEY")
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
-    {
-        return Some("openai-api-key".to_string());
+    if openai_api_key_ready()? {
+        return Ok(Some("openai-api-key".to_string()));
     }
 
-    None
+    Ok(None)
+}
+
+fn codex_api_key_ready() -> Result<bool, String> {
+    if env_secret_present("CODEX_API_KEY") {
+        return Ok(true);
+    }
+    has_secret(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET)
+}
+
+fn openai_api_key_ready() -> Result<bool, String> {
+    if env_secret_present("OPENAI_API_KEY") {
+        return Ok(true);
+    }
+    has_secret(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET)
+}
+
+fn apply_secret_patches(input: &CodexSetupInput) -> Result<(), String> {
+    match input.codex_api_key.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET, &value)?;
+            clear_secret(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET)?;
+        }
+    }
+
+    match input.openai_api_key.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET, &value)?;
+            clear_secret(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn available_auth_methods() -> Vec<AiAuthMethod> {
@@ -272,7 +312,53 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
         description: "Use an OpenAI API key stored locally in VaultAI.".to_string(),
     });
 
+    methods.push(AiAuthMethod {
+        id: "codex-api-key".to_string(),
+        name: "Codex API key".to_string(),
+        description: "Use a Codex API key stored locally in VaultAI.".to_string(),
+    });
+
     methods
+}
+
+fn load_setup_config_from_path(path: &Path) -> Result<CodexSetupConfig, String> {
+    let stored = load_stored_setup_config(path)?;
+    if stored.has_legacy_secrets() {
+        migrate_legacy_secrets(path, &stored)?;
+    }
+    Ok(stored.into())
+}
+
+fn load_stored_setup_config(path: &Path) -> Result<StoredCodexSetupConfig, String> {
+    if !path.exists() {
+        return Ok(StoredCodexSetupConfig::default());
+    }
+
+    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
+fn migrate_legacy_secrets(path: &Path, stored: &StoredCodexSetupConfig) -> Result<(), String> {
+    if let Some(value) = normalize_optional_string(stored.codex_api_key.clone()) {
+        set_secret(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET, &value)?;
+    }
+
+    if let Some(value) = normalize_optional_string(stored.openai_api_key.clone()) {
+        set_secret(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET, &value)?;
+    }
+
+    let sanitized: CodexSetupConfig = stored.clone().into();
+    write_setup_config_to_path(path, &sanitized)
+}
+
+fn write_setup_config_to_path(path: &Path, config: &CodexSetupConfig) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let serialized = serde_json::to_string_pretty(&StoredCodexSetupConfig::from_public(config))
+        .map_err(|error| error.to_string())?;
+    fs::write(path, serialized).map_err(|error| error.to_string())
 }
 
 fn setup_file_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -292,4 +378,144 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
             Some(trimmed)
         }
     })
+}
+
+fn env_secret_present(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::secret_store::test_lock;
+    use std::{
+        env,
+        sync::{Arc, Mutex},
+    };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn temp_setup_path(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!(
+            "vaultai-codex-setup-tests-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(SETUP_FILE_NAME)
+    }
+
+    #[test]
+    fn writes_public_config_without_serializing_secrets() {
+        let _guard = test_lock().lock().unwrap();
+        let path = temp_setup_path("public-only");
+        let store = Arc::new(TestSecretStore::default());
+        store.install();
+
+        let config = CodexSetupConfig {
+            custom_binary_path: Some("/tmp/codex".to_string()),
+            auth_method: Some("chatgpt".to_string()),
+        };
+
+        write_setup_config_to_path(&path, &config).expect("write setup");
+        let raw = fs::read_to_string(&path).expect("read setup");
+
+        assert!(raw.contains("custom_binary_path"));
+        assert!(!raw.contains("codex_api_key"));
+        assert!(!raw.contains("openai_api_key"));
+
+        TestSecretStore::uninstall();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_legacy_json_secrets_into_secure_store() {
+        let _guard = test_lock().lock().unwrap();
+        let path = temp_setup_path("migrate");
+        let store = Arc::new(TestSecretStore::default());
+        store.install();
+
+        let legacy = serde_json::json!({
+            "custom_binary_path": "/tmp/codex",
+            "codex_api_key": "secret-one",
+            "openai_api_key": "secret-two",
+            "auth_method": "codex-api-key"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = load_setup_config_from_path(&path).expect("load config");
+        let raw = fs::read_to_string(&path).expect("read sanitized setup");
+
+        assert_eq!(loaded.custom_binary_path.as_deref(), Some("/tmp/codex"));
+        assert_eq!(
+            store
+                .get_value(CODEX_RUNTIME_ID, CODEX_API_KEY_SECRET)
+                .as_deref(),
+            Some("secret-one")
+        );
+        assert_eq!(
+            store
+                .get_value(CODEX_RUNTIME_ID, OPENAI_API_KEY_SECRET)
+                .as_deref(),
+            Some("secret-two")
+        );
+        assert!(!raw.contains("codex_api_key"));
+        assert!(!raw.contains("openai_api_key"));
+
+        TestSecretStore::uninstall();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_keeps_legacy_json_when_secure_store_fails() {
+        let _guard = test_lock().lock().unwrap();
+        let path = temp_setup_path("migrate-fail");
+        let store = Arc::new(TestSecretStore::default());
+        store.fail_with("secure store unavailable");
+        store.install();
+
+        let legacy = serde_json::json!({
+            "custom_binary_path": "/tmp/codex",
+            "codex_api_key": "secret-one"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let error = load_setup_config_from_path(&path).expect_err("migration should fail");
+        let raw = fs::read_to_string(&path).expect("read original setup");
+
+        assert!(error.contains("secure store unavailable"));
+        assert!(raw.contains("codex_api_key"));
+
+        TestSecretStore::uninstall();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn detect_auth_method_prefers_external_env_before_secure_store() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _secret_guard = test_lock().lock().unwrap();
+        let original = env::var_os("CODEX_API_KEY");
+        env::set_var("CODEX_API_KEY", "external-secret");
+        let store = Arc::new(TestSecretStore::default());
+        store.install();
+
+        let config = CodexSetupConfig {
+            auth_method: Some("codex-api-key".to_string()),
+            ..CodexSetupConfig::default()
+        };
+
+        let detected = detect_auth_method(&config).expect("detect auth method");
+
+        if let Some(value) = original {
+            env::set_var("CODEX_API_KEY", value);
+        } else {
+            env::remove_var("CODEX_API_KEY");
+        }
+        TestSecretStore::uninstall();
+
+        assert_eq!(detected.as_deref(), Some("codex-api-key"));
+    }
 }

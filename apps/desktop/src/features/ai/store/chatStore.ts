@@ -102,6 +102,7 @@ import {
     type AIRuntimeConnectionPayload,
     type AIRuntimeConnectionState,
     type AIRuntimeDescriptor,
+    type AISecretPatch,
     type AIRuntimeSetupStatus,
     type AISessionErrorPayload,
     type PersistedSessionHistory,
@@ -356,6 +357,10 @@ function getRuntimeCatalogSnapshot(
         modes: session.modes,
         configOptions: session.configOptions,
     };
+}
+
+function secretPatchChanged(patch: AISecretPatch) {
+    return patch.action !== "unchanged";
 }
 
 function getPersistedHistoryCatalogSnapshot(
@@ -808,33 +813,33 @@ interface ChatStore {
     saveSetup: (input: {
         runtimeId?: string;
         customBinaryPath?: string;
-        codexApiKey?: string;
-        openaiApiKey?: string;
-        geminiApiKey?: string;
-        googleApiKey?: string;
+        codexApiKey: AISecretPatch;
+        openaiApiKey: AISecretPatch;
+        geminiApiKey: AISecretPatch;
+        googleApiKey: AISecretPatch;
         googleCloudProject?: string;
         googleCloudLocation?: string;
         gatewayBaseUrl?: string;
-        gatewayHeaders?: string;
+        gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
-        anthropicCustomHeaders?: string;
-        anthropicAuthToken?: string;
+        anthropicCustomHeaders: AISecretPatch;
+        anthropicAuthToken: AISecretPatch;
     }) => Promise<void>;
     startAuth: (input: {
         runtimeId?: string;
         methodId: string;
         customBinaryPath?: string;
-        codexApiKey?: string;
-        openaiApiKey?: string;
-        geminiApiKey?: string;
-        googleApiKey?: string;
+        codexApiKey: AISecretPatch;
+        openaiApiKey: AISecretPatch;
+        geminiApiKey: AISecretPatch;
+        googleApiKey: AISecretPatch;
         googleCloudProject?: string;
         googleCloudLocation?: string;
         gatewayBaseUrl?: string;
-        gatewayHeaders?: string;
+        gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
-        anthropicCustomHeaders?: string;
-        anthropicAuthToken?: string;
+        anthropicCustomHeaders: AISecretPatch;
+        anthropicAuthToken: AISecretPatch;
     }) => Promise<void>;
     upsertSession: (session: AIChatSession, activate?: boolean) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
@@ -4128,17 +4133,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
                 if (
                     input.customBinaryPath ||
-                    input.codexApiKey ||
-                    input.openaiApiKey ||
-                    input.geminiApiKey ||
-                    input.googleApiKey ||
+                    secretPatchChanged(input.codexApiKey) ||
+                    secretPatchChanged(input.openaiApiKey) ||
+                    secretPatchChanged(input.geminiApiKey) ||
+                    secretPatchChanged(input.googleApiKey) ||
                     input.googleCloudProject ||
                     input.googleCloudLocation ||
                     input.gatewayBaseUrl ||
-                    input.gatewayHeaders ||
+                    secretPatchChanged(input.gatewayHeaders) ||
                     input.anthropicBaseUrl ||
-                    input.anthropicCustomHeaders ||
-                    input.anthropicAuthToken
+                    secretPatchChanged(input.anthropicCustomHeaders) ||
+                    secretPatchChanged(input.anthropicAuthToken)
                 ) {
                     const setupStatus = await aiUpdateSetup({
                         runtimeId: targetRuntimeId,
