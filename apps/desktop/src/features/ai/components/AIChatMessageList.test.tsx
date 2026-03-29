@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
@@ -81,51 +81,6 @@ function getScrollContainer(root: HTMLElement) {
     ) as HTMLDivElement | null;
     expect(container).not.toBeNull();
     return container!;
-}
-
-function mockVisibleRowRects(
-    container: HTMLElement,
-    rowTops: Record<string, number>,
-    rowHeight = 80,
-) {
-    Object.defineProperty(container, "getBoundingClientRect", {
-        configurable: true,
-        value: () =>
-            ({
-                top: 0,
-                bottom: 320,
-                left: 0,
-                right: 420,
-                width: 420,
-                height: 320,
-                x: 0,
-                y: 0,
-                toJSON: () => ({}),
-            }) satisfies DOMRect,
-    });
-
-    const rows = Array.from(
-        container.querySelectorAll<HTMLElement>("[data-chat-row-key]"),
-    );
-    for (const row of rows) {
-        const key = row.dataset.chatRowKey ?? "";
-        const top = rowTops[key] ?? 500;
-        Object.defineProperty(row, "getBoundingClientRect", {
-            configurable: true,
-            value: () =>
-                ({
-                    top,
-                    bottom: top + rowHeight,
-                    left: 0,
-                    right: 420,
-                    width: 420,
-                    height: rowHeight,
-                    x: 0,
-                    y: top,
-                    toJSON: () => ({}),
-                }) satisfies DOMRect,
-        });
-    }
 }
 
 describe("AIChatMessageList streaming run indicator", () => {
@@ -245,11 +200,11 @@ describe("AIChatMessageList streaming run indicator", () => {
         });
     });
 
-    it("virtualizes long transcripts while keeping the hot tail mounted", () => {
+    it("renders long transcripts without dropping rows", () => {
         const messages = createLongTranscript(140);
         const view = renderComponent(
             <AIChatMessageList
-                sessionId="session-virtualized"
+                sessionId="session-long"
                 messages={messages}
                 status="idle"
             />,
@@ -264,89 +219,12 @@ describe("AIChatMessageList streaming run indicator", () => {
 
         expect(
             view.container.querySelectorAll('[data-chat-row="true"]').length,
-        ).toBeLessThan(140);
-        expect(screen.queryByText("Long message 0")).not.toBeInTheDocument();
-        expect(screen.getByText("Long message 139")).toBeInTheDocument();
-
-        act(() => {
-            scrollContainer.scrollTop = 0;
-            scrollContainer.dispatchEvent(new Event("scroll"));
-        });
-
+        ).toBe(140);
         expect(screen.getByText("Long message 0")).toBeInTheDocument();
+        expect(screen.getByText("Long message 139")).toBeInTheDocument();
     });
 
-    it("preserves user input drafts when a virtualized row unmounts and remounts", () => {
-        const transcript = createLongTranscript(40);
-        transcript.splice(10, 0, {
-            id: "user-input:1",
-            role: "assistant",
-            kind: "user_input_request",
-            title: "Need input",
-            content: "Need input",
-            timestamp: 500,
-            userInputRequestId: "request-1",
-            userInputQuestions: [
-                {
-                    id: "api-key",
-                    header: "API key",
-                    question: "Paste your API key",
-                    is_secret: false,
-                    is_other: false,
-                    options: [],
-                },
-            ],
-            meta: {
-                status: "pending",
-            },
-        });
-        const messages = [
-            ...transcript,
-            ...createLongTranscript(100).map((message, index) => ({
-                ...message,
-                id: `tail:${index}`,
-                content: `Tail message ${index}`,
-                timestamp: 1_000 + index,
-            })),
-        ];
-
-        const view = renderComponent(
-            <AIChatMessageList
-                sessionId="session-drafts"
-                messages={messages}
-                status="idle"
-            />,
-        );
-        const scrollContainer = getScrollContainer(view.container);
-        configureScrollableViewport(scrollContainer);
-
-        act(() => {
-            scrollContainer.scrollTop = 0;
-            scrollContainer.dispatchEvent(new Event("scroll"));
-        });
-
-        fireEvent.change(screen.getByRole("textbox"), {
-            target: { value: "sk-test-123" },
-        });
-
-        act(() => {
-            scrollContainer.scrollTop = 11_000;
-            scrollContainer.dispatchEvent(new Event("scroll"));
-        });
-
-        expect(
-            screen.queryByDisplayValue("sk-test-123"),
-        ).not.toBeInTheDocument();
-
-        act(() => {
-            scrollContainer.scrollTop = 0;
-            scrollContainer.dispatchEvent(new Event("scroll"));
-        });
-
-        expect(screen.getByDisplayValue("sk-test-123")).toBeInTheDocument();
-    });
-
-    it("scopes virtual row keys by session id so measurement cache does not bleed across sessions", () => {
+    it("scopes row keys by session id", () => {
         const messages = createLongTranscript(140);
         const view = renderComponent(
             <AIChatMessageList
@@ -464,48 +342,5 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         expect(scrollContainer.scrollTop).toBe(510);
-    });
-
-    it("preserves the visible anchor when the chat panel width changes", () => {
-        const messages = createLongTranscript(6);
-        const view = renderComponent(
-            <AIChatMessageList
-                sessionId="session-resize"
-                messages={messages}
-                status="idle"
-            />,
-        );
-        const scrollContainer = getScrollContainer(view.container);
-        let viewportWidth = 420;
-        configureScrollableViewport(scrollContainer, 320, {
-            getWidth: () => viewportWidth,
-        });
-
-        mockVisibleRowRects(scrollContainer, {
-            "session-resize:assistant:0": -120,
-            "session-resize:assistant:1": 12,
-            "session-resize:assistant:2": 108,
-            "session-resize:assistant:3": 204,
-        });
-
-        act(() => {
-            scrollContainer.scrollTop = 240;
-            scrollContainer.dispatchEvent(new Event("scroll"));
-        });
-
-        mockVisibleRowRects(scrollContainer, {
-            "session-resize:assistant:0": -120,
-            "session-resize:assistant:1": 52,
-            "session-resize:assistant:2": 164,
-            "session-resize:assistant:3": 292,
-        });
-
-        viewportWidth = 320;
-
-        act(() => {
-            window.dispatchEvent(new Event("resize"));
-        });
-
-        expect(scrollContainer.scrollTop).toBe(280);
     });
 });

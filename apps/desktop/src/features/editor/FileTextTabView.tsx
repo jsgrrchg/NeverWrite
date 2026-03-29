@@ -549,6 +549,7 @@ export function FileTextTabView() {
     useEffect(() => {
         const view = viewRef.current;
         const previousTab = previousTabRef.current;
+        const currentTab = tabRef.current;
 
         if (previousTab && view) {
             if (saveTimerRef.current) {
@@ -566,26 +567,30 @@ export function FileTextTabView() {
             }
         }
 
-        previousTabRef.current = tab;
+        previousTabRef.current = currentTab;
 
-        if (!tab || !view) {
+        if (!currentTab || !view) {
             return;
         }
 
-        replaceEditorDocument(tab.content);
-        lastSavedContentByPathRef.current.set(tab.relativePath, tab.content);
+        replaceEditorDocument(currentTab.content);
+        lastSavedContentByPathRef.current.set(
+            currentTab.relativePath,
+            currentTab.content,
+        );
         useEditorStore.getState().clearCurrentSelection();
     }, [replaceEditorDocument, saveFile, tab?.id, tab?.relativePath]);
 
     useEffect(() => {
-        if (!tab) {
+        const currentTab = tabRef.current;
+        if (!currentTab) {
             return;
         }
 
-        if (!lastSavedContentByPathRef.current.has(tab.relativePath)) {
+        if (!lastSavedContentByPathRef.current.has(currentTab.relativePath)) {
             lastSavedContentByPathRef.current.set(
-                tab.relativePath,
-                tab.content,
+                currentTab.relativePath,
+                currentTab.content,
             );
         }
     }, [tab?.content, tab?.relativePath]);

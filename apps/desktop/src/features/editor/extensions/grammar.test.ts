@@ -9,7 +9,26 @@ import {
     findGrammarDiagnosticsAt,
     setActiveGrammarDiagnosticsForTests,
     setCurrentActiveGrammarDiagnosticsNoteForTests,
+    type ResolvedGrammarDiagnostic,
 } from "./grammar";
+
+function makeDiagnostic(
+    overrides: Partial<ResolvedGrammarDiagnostic> &
+        Pick<ResolvedGrammarDiagnostic, "from" | "to" | "message">,
+): ResolvedGrammarDiagnostic {
+    return {
+        start_utf16: overrides.from,
+        end_utf16: overrides.to,
+        short_message: null,
+        replacements: [],
+        rule_id: "TEST_RULE",
+        rule_description: "test rule",
+        issue_type: "misspelling",
+        category_id: "TEST",
+        category_name: "Test",
+        ...overrides,
+    };
+}
 
 describe("grammar extension cache key", () => {
     const version = "doc:abc123";
@@ -76,13 +95,7 @@ describe("grammar extension cache key", () => {
     it("drops diagnostics from previous notes when the active grammar note changes", () => {
         setCurrentActiveGrammarDiagnosticsNoteForTests("note-a");
         setActiveGrammarDiagnosticsForTests("note-a", [
-            {
-                from: 0,
-                to: 4,
-                message: "Issue A",
-                replacements: [],
-                severity: "warning",
-            },
+            makeDiagnostic({ from: 0, to: 4, message: "Issue A" }),
         ]);
 
         expect(findGrammarDiagnosticsAt("note-a", 2)).toHaveLength(1);
@@ -95,24 +108,12 @@ describe("grammar extension cache key", () => {
     it("ignores stale diagnostic writes for notes that are no longer active", () => {
         setCurrentActiveGrammarDiagnosticsNoteForTests("note-a");
         setActiveGrammarDiagnosticsForTests("note-a", [
-            {
-                from: 0,
-                to: 4,
-                message: "Issue A",
-                replacements: [],
-                severity: "warning",
-            },
+            makeDiagnostic({ from: 0, to: 4, message: "Issue A" }),
         ]);
 
         setCurrentActiveGrammarDiagnosticsNoteForTests("note-b");
         setActiveGrammarDiagnosticsForTests("note-a", [
-            {
-                from: 0,
-                to: 4,
-                message: "Stale issue",
-                replacements: [],
-                severity: "warning",
-            },
+            makeDiagnostic({ from: 0, to: 4, message: "Stale issue" }),
         ]);
 
         expect(findGrammarDiagnosticsAt("note-a", 2)).toHaveLength(0);
@@ -121,13 +122,7 @@ describe("grammar extension cache key", () => {
     it("clears all active diagnostics when grammar is disabled", () => {
         setCurrentActiveGrammarDiagnosticsNoteForTests("note-a");
         setActiveGrammarDiagnosticsForTests("note-a", [
-            {
-                from: 0,
-                to: 4,
-                message: "Issue A",
-                replacements: [],
-                severity: "warning",
-            },
+            makeDiagnostic({ from: 0, to: 4, message: "Issue A" }),
         ]);
 
         setCurrentActiveGrammarDiagnosticsNoteForTests(null);

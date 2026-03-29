@@ -6,11 +6,13 @@ import { useDynamicVirtualList } from "./useDynamicVirtualList";
 class TestResizeObserver {
     static instances: TestResizeObserver[] = [];
 
-    constructor(private callback: ResizeObserverCallback) {
+    private callback: ResizeObserverCallback;
+    private elements = new Set<Element>();
+
+    constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
         TestResizeObserver.instances.push(this);
     }
-
-    private elements = new Set<Element>();
 
     observe(element: Element) {
         this.elements.add(element);
