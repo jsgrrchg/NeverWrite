@@ -6,19 +6,20 @@ export const mergeViewTheme = EditorView.baseTheme({
         {
             backgroundColor:
                 "color-mix(in srgb, var(--diff-add) 10%, transparent)",
-            boxShadow: "inset 3px 0 0 0 var(--diff-add)",
+            boxShadow: "inset 1.5px 0 0 0 var(--diff-add)",
             transition: "background-color 160ms ease, box-shadow 160ms ease",
         },
 
     /* ── Inline changed lines (green gutter + tint, same as inserts) */
     "&[data-merge-enabled='true'] .cm-inlineChangedLine": {
         backgroundColor: "color-mix(in srgb, var(--diff-add) 8%, transparent)",
-        boxShadow: "inset 3px 0 0 0 var(--diff-add)",
+        boxShadow: "inset 1.5px 0 0 0 var(--diff-add)",
     },
 
     /* ── Inline changed text highlight ─────────────────────── */
     "&[data-merge-enabled='true'] .cm-changedText": {
-        backgroundColor: "color-mix(in srgb, var(--diff-add) 20%, transparent)",
+        background: "none",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 10%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
     },
@@ -39,7 +40,7 @@ export const mergeViewTheme = EditorView.baseTheme({
         position: "relative",
         backgroundColor:
             "color-mix(in srgb, var(--diff-remove) 7%, transparent)",
-        borderLeft: "3px solid var(--diff-remove)",
+        borderLeft: "1.5px solid var(--diff-remove)",
         padding: "6px 8px 6px 12px",
         margin: "1px 0",
         borderRadius: "0 4px 4px 0",
