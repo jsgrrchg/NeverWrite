@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isFileTab,
     isNoteTab,
+    isReviewTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -4670,6 +4671,73 @@ describe("chatStore", () => {
         });
     });
 
+    it("keeps the review tab open after rejectEditedFile resolves the last pending file", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-reject-one-review-open",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        useEditorStore.getState().openReview(activeSessionId, {
+            title: "Review Codex",
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(activeSessionId, entry.identityKey);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === activeSessionId,
+                ),
+        ).toBeDefined();
+    });
+
     it("skips deleting an agent-created note if the open editor content has changed", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -4979,6 +5047,77 @@ describe("chatStore", () => {
             previousPath: null,
             content: "merged line",
         });
+    });
+
+    it("closes the review tab after resolveEditedFileWithMergedText accepts the last pending file", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-merged-review-close",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        useEditorStore.getState().openReview(activeSessionId, {
+            title: "Review Codex",
+        });
+
+        const workCycleId =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .activeWorkCycleId!;
+        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveEditedFileWithMergedText(
+                activeSessionId,
+                entry.identityKey,
+                "merged line",
+            );
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === activeSessionId,
+                ),
+        ).toBeUndefined();
     });
 
     it("marks mixed hunk resolution as conflict when the applied file changed on disk", async () => {
@@ -5907,6 +6046,74 @@ describe("chatStore", () => {
             useChatStore.getState().sessionsById[activeSessionId]?.actionLog
                 ?.lastRejectUndo,
         ).toBeNull();
+    });
+
+    it("keeps the review tab open after rejectAll resolves the last pending file", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-reject-all-review-open",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        useEditorStore.getState().openReview(activeSessionId, {
+            title: "Review Codex",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String(args.path)
+                        : "";
+                return path === "/vault/src/watcher.rs"
+                    ? hashTextContent(entry.currentText)
+                    : null;
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore.getState().rejectAllEditedFiles(activeSessionId);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === activeSessionId,
+                ),
+        ).toBeDefined();
     });
 
     it("consolidates successful rejects before a later rejectAll failure", async () => {

@@ -1714,6 +1714,21 @@ function setActionLogUndo(
     };
 }
 
+function closeReviewIfSessionHasNoPendingEdits(
+    sessionId: string,
+    session: AIChatSession | null | undefined,
+) {
+    if (!session?.actionLog) {
+        return;
+    }
+
+    if (Object.keys(getTrackedFilesForSession(session.actionLog)).length > 0) {
+        return;
+    }
+
+    useEditorStore.getState().closeReview(sessionId);
+}
+
 async function readTrackedFileLiveText(
     tracked: TrackedFile,
 ): Promise<string | null | undefined> {
@@ -5749,6 +5764,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const updatedSession = get().sessionsById[sessionId];
                 if (updatedSession) {
                     void persistSession(updatedSession);
+                    closeReviewIfSessionHasNoPendingEdits(
+                        sessionId,
+                        updatedSession,
+                    );
                 }
             } catch (error) {
                 get().applySessionError({
@@ -5916,6 +5935,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const updatedSession = get().sessionsById[sessionId];
             if (updatedSession) {
                 void persistSession(updatedSession);
+                closeReviewIfSessionHasNoPendingEdits(
+                    sessionId,
+                    updatedSession,
+                );
             }
         },
 
@@ -5941,6 +5964,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const updatedSession = get().sessionsById[sessionId];
             if (updatedSession) {
                 void persistSession(updatedSession);
+                closeReviewIfSessionHasNoPendingEdits(
+                    sessionId,
+                    updatedSession,
+                );
             }
         },
 
@@ -6099,6 +6126,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const updatedSession = get().sessionsById[sessionId];
             if (updatedSession) {
                 void persistSession(updatedSession);
+                if (decision === "accepted") {
+                    closeReviewIfSessionHasNoPendingEdits(
+                        sessionId,
+                        updatedSession,
+                    );
+                }
             }
         },
 
@@ -6277,6 +6310,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const updatedSession = get().sessionsById[sessionId];
             if (updatedSession) {
                 void persistSession(updatedSession);
+                if (decision === "accepted") {
+                    closeReviewIfSessionHasNoPendingEdits(
+                        sessionId,
+                        updatedSession,
+                    );
+                }
             }
         },
 
