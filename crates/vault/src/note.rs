@@ -8,7 +8,7 @@ use crate::vault::Vault;
 impl Vault {
     /// Lee una nota por su ID, la parsea y devuelve el NoteDocument.
     pub fn read_note(&self, note_id: &str) -> Result<NoteDocument, VaultError> {
-        let path = self.id_to_path(note_id);
+        let path = self.resolve_note_id_path(note_id)?;
         if !path.exists() {
             return Err(VaultError::NoteNotFound(note_id.to_string()));
         }
@@ -17,7 +17,7 @@ impl Vault {
 
     /// Escribe contenido a una nota existente.
     pub fn save_note(&self, note_id: &str, content: &str) -> Result<(), VaultError> {
-        let path = self.id_to_path(note_id);
+        let path = self.resolve_note_id_path(note_id)?;
         if !path.exists() {
             return Err(VaultError::NoteNotFound(note_id.to_string()));
         }
@@ -31,7 +31,7 @@ impl Vault {
         relative_path: &str,
         content: &str,
     ) -> Result<NoteDocument, VaultError> {
-        let path = self.root.join(relative_path);
+        let path = self.resolve_note_relative_markdown_path(relative_path)?;
         if path.exists() {
             return Err(VaultError::NoteAlreadyExists(path));
         }
@@ -45,7 +45,7 @@ impl Vault {
 
     /// Elimina una nota por su ID.
     pub fn delete_note(&self, note_id: &str) -> Result<(), VaultError> {
-        let path = self.id_to_path(note_id);
+        let path = self.resolve_note_id_path(note_id)?;
         if !path.exists() {
             return Err(VaultError::NoteNotFound(note_id.to_string()));
         }
@@ -59,11 +59,11 @@ impl Vault {
         note_id: &str,
         new_relative_path: &str,
     ) -> Result<NoteDocument, VaultError> {
-        let old_path = self.id_to_path(note_id);
+        let old_path = self.resolve_note_id_path(note_id)?;
         if !old_path.exists() {
             return Err(VaultError::NoteNotFound(note_id.to_string()));
         }
-        let new_path = self.root.join(new_relative_path);
+        let new_path = self.resolve_note_relative_markdown_path(new_relative_path)?;
         if new_path.exists() {
             return Err(VaultError::NoteAlreadyExists(new_path));
         }

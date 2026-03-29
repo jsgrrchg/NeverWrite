@@ -2480,6 +2480,18 @@ struct ComputeLineDiffInput {
     new_text: String,
 }
 
+fn resolve_vault_note_id_path(vault: &Vault, note_id: &str) -> Result<PathBuf, String> {
+    vault
+        .resolve_note_id_path(note_id)
+        .map_err(|error| error.to_string())
+}
+
+fn resolve_vault_note_relative_path(vault: &Vault, relative_path: &str) -> Result<PathBuf, String> {
+    vault
+        .resolve_note_relative_markdown_path(relative_path)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn save_vault_binary_file(
     vault_path: String,
@@ -2562,7 +2574,7 @@ fn save_note(
         .ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
-    let path = vault.id_to_path(&note_id);
+    let path = resolve_vault_note_id_path(vault, &note_id)?;
     write_tracker.track_content(path.clone(), &content);
 
     vault
@@ -2612,7 +2624,7 @@ fn create_note(
         .ok_or("No hay vault abierto")?;
     let (note, entry) = {
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        let abs_path = vault.root.join(&path);
+        let abs_path = resolve_vault_note_relative_path(vault, &path)?;
         write_tracker.track_content(abs_path, &content);
 
         let note = vault
@@ -2697,7 +2709,7 @@ fn delete_note(
     let removed_relative_path = format!("{note_id}.md");
     {
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        let path = vault.id_to_path(&note_id);
+        let path = resolve_vault_note_id_path(vault, &note_id)?;
         write_tracker.track_any(path);
         vault.delete_note(&note_id).map_err(|e| e.to_string())?;
     }
@@ -2831,8 +2843,8 @@ fn rename_note(
     let removed_relative_path = format!("{note_id}.md");
     let (note, entry) = {
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        let old_path = vault.id_to_path(&note_id);
-        let new_abs_path = vault.root.join(&new_path);
+        let old_path = resolve_vault_note_id_path(vault, &note_id)?;
+        let new_abs_path = resolve_vault_note_relative_path(vault, &new_path)?;
         write_tracker.track_any(old_path);
         write_tracker.track_any(new_abs_path);
 
@@ -5269,7 +5281,7 @@ pub(crate) fn web_clipper_save_note(
             .as_ref()
             .ok_or("Vault is not loaded.".to_string())?;
         let relative_path = build_web_clipper_relative_note_path(vault, folder, title)?;
-        let abs_path = vault.root.join(&relative_path);
+        let abs_path = resolve_vault_note_relative_path(vault, &relative_path)?;
         write_tracker.track_content(abs_path, content);
 
         let note = vault
@@ -5488,6 +5500,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn setup_note_path_test_vault() -> (PathBuf, Vault) {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-note-path-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(dir.join("folder")).unwrap();
+        fs::write(dir.join("folder/note.md"), b"# Note").unwrap();
+        let vault = Vault::open(dir.clone()).unwrap();
+        (dir, vault)
+    }
 
     #[test]
     fn cleanup_obsolete_snapshot_removes_older_versions() {
@@ -5880,5 +5904,38 @@ mod tests {
         assert_eq!(next_change_op_id(&mut state, "user"), "user-0");
         assert_eq!(next_change_op_id(&mut state, "external"), "external-1");
         assert_eq!(state.next_change_op_id, 2);
+    }
+
+    #[test]
+    fn resolve_vault_note_id_path_rejects_traversal() {
+        let (dir, vault) = setup_note_path_test_vault();
+
+        assert!(resolve_vault_note_id_path(&vault, "../outside").is_err());
+        assert!(resolve_vault_note_id_path(&vault, "..\\outside").is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_vault_note_relative_path_rejects_traversal() {
+        let (dir, vault) = setup_note_path_test_vault();
+
+        assert!(resolve_vault_note_relative_path(&vault, "../outside.md").is_err());
+        assert!(resolve_vault_note_relative_path(&vault, "..\\outside.md").is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_vault_note_paths_accept_nested_markdown_paths() {
+        let (dir, vault) = setup_note_path_test_vault();
+
+        let note_id_path = resolve_vault_note_id_path(&vault, "folder/note").unwrap();
+        let relative_path = resolve_vault_note_relative_path(&vault, "archive/note.md").unwrap();
+
+        assert!(note_id_path.ends_with("folder/note.md"));
+        assert!(relative_path.ends_with("archive/note.md"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
