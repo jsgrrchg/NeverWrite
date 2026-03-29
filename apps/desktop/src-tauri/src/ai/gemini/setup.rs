@@ -215,6 +215,10 @@ pub fn setup_status(app: &AppHandle) -> Result<AiRuntimeSetupStatus, String> {
             .gateway_base_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty()),
+        has_gateway_url: config
+            .gateway_base_url
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty()),
         onboarding_required: !binary_ready || !auth_ready,
         message,
     })

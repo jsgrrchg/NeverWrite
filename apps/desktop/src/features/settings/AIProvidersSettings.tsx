@@ -7,6 +7,7 @@ import {
     aiUpdateSetup,
 } from "../ai/api";
 import { AIAuthTerminalModal } from "../ai/components/AIAuthTerminalModal";
+import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
 import type {
     AIRuntimeDescriptor,
     AIRuntimeSetupStatus,
@@ -86,7 +87,7 @@ function getAuthHelpText(id: string): string {
         case "codex-api-key":
             return "Store a Codex API key locally for VaultAI only.";
         case "gateway":
-            return "Route requests through a custom gateway endpoint.";
+            return "Route requests through a custom gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
         case "login_with_google":
             return "Opens a Gemini sign-in terminal inside the app.";
         case "use_gemini":
@@ -166,6 +167,7 @@ function ProviderExpandedPanel({
     error,
     saving,
     onAuth,
+    onClearGateway,
     onLogout,
 }: {
     setupStatus: AIRuntimeSetupStatus;
@@ -181,6 +183,7 @@ function ProviderExpandedPanel({
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
     }) => void;
+    onClearGateway: () => void;
     onLogout: () => void;
 }) {
     const [selectedMethodId, setSelectedMethodId] = useState(() =>
@@ -198,12 +201,16 @@ function ProviderExpandedPanel({
     const isOpenAi = selectedMethodId === "openai-api-key";
     const isCodex = selectedMethodId === "codex-api-key";
     const isGemini = selectedMethodId === "use_gemini";
+    const gatewayUrlError = gatewaySelected
+        ? getClaudeGatewayUrlValidationMessage(gatewayUrl)
+        : null;
 
     const canSubmit =
         !saving &&
         selectedMethod != null &&
         (!apiKeySelected || apiKey.trim() !== "") &&
-        (!gatewaySelected || gatewayUrl.trim() !== "");
+        (!gatewaySelected ||
+            (gatewayUrl.trim() !== "" && gatewayUrlError == null));
 
     const handleSubmit = () => {
         onAuth({
@@ -325,6 +332,63 @@ function ProviderExpandedPanel({
                         placeholder="Auth token (optional)"
                         style={inputStyle}
                     />
+                    <div
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                            marginTop: -2,
+                        }}
+                    >
+                        Use HTTPS for remote gateways. Plain HTTP is only
+                        allowed for localhost.
+                    </div>
+                    {gatewayUrlError && (
+                        <div
+                            style={{
+                                padding: "10px 12px",
+                                borderRadius: 6,
+                                fontSize: 12,
+                                border: "1px solid #7f1d1d",
+                                backgroundColor:
+                                    "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                                color: "#fecaca",
+                            }}
+                        >
+                            {gatewayUrlError}
+                        </div>
+                    )}
+                    {(setupStatus.hasGatewayConfig ||
+                        setupStatus.hasGatewayUrl) && (
+                        <div
+                            style={{
+                                display: "flex",
+                                justifyContent: "flex-start",
+                            }}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setGatewayUrl("");
+                                    setGatewayHeaders("");
+                                    setGatewayToken("");
+                                    onClearGateway();
+                                }}
+                                disabled={saving}
+                                style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                    color: "var(--text-secondary)",
+                                    border: "1px solid var(--border)",
+                                    backgroundColor: "transparent",
+                                    cursor: saving ? "not-allowed" : "pointer",
+                                    opacity: saving ? 0.5 : 1,
+                                }}
+                            >
+                                Clear gateway settings
+                            </button>
+                        </div>
+                    )}
                 </>
             )}
 
@@ -644,6 +708,40 @@ export function AIProvidersSettings() {
         [refreshRuntime],
     );
 
+    const handleClearGateway = useCallback(
+        async (runtimeId: string) => {
+            setSavingId(runtimeId);
+            try {
+                await aiUpdateSetup({
+                    runtimeId,
+                    codexApiKey: unchangedSecretPatch,
+                    openaiApiKey: unchangedSecretPatch,
+                    geminiApiKey: unchangedSecretPatch,
+                    googleApiKey: unchangedSecretPatch,
+                    googleCloudProject: undefined,
+                    googleCloudLocation: undefined,
+                    gatewayBaseUrl: undefined,
+                    gatewayHeaders: unchangedSecretPatch,
+                    anthropicBaseUrl: "",
+                    anthropicCustomHeaders: clearSecretPatch,
+                    anthropicAuthToken: clearSecretPatch,
+                });
+                await refreshRuntime(runtimeId);
+            } catch (error) {
+                setErrorMap((prev) => ({
+                    ...prev,
+                    [runtimeId]: getErrorMessage(
+                        error,
+                        "Failed to clear gateway settings.",
+                    ),
+                }));
+            } finally {
+                setSavingId(null);
+            }
+        },
+        [refreshRuntime],
+    );
+
     /* ── Derived data ── */
 
     const installedProviders = PROVIDERS.flatMap((p) => {
@@ -828,6 +926,11 @@ export function AIProvidersSettings() {
                                             saving={isSaving}
                                             onAuth={(input) => {
                                                 void handleAuth(input);
+                                            }}
+                                            onClearGateway={() => {
+                                                void handleClearGateway(
+                                                    provider.id,
+                                                );
                                             }}
                                             onLogout={() => {
                                                 void handleLogout(provider.id);

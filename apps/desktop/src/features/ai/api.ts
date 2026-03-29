@@ -206,6 +206,7 @@ function normalizeRuntimeSetupStatus(
         authMethod: status.auth_method ?? undefined,
         authMethods: status.auth_methods,
         hasGatewayConfig: status.has_gateway_config ?? false,
+        hasGatewayUrl: status.has_gateway_url ?? false,
         onboardingRequired: status.onboarding_required,
         message: status.message ?? undefined,
     };

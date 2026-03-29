@@ -1,10 +1,12 @@
 use std::{
     env, fs,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CLAUDE_RUNTIME_ID};
@@ -18,6 +20,13 @@ use crate::ai::secret_store::{
 const SETUP_FILE_NAME: &str = "claude-setup.json";
 const ANTHROPIC_CUSTOM_HEADERS_SECRET: &str = "anthropic_custom_headers";
 const ANTHROPIC_AUTH_TOKEN_SECRET: &str = "anthropic_auth_token";
+const INVALID_GATEWAY_URL_MESSAGE: &str = "Enter a valid gateway URL.";
+const GATEWAY_HTTPS_REQUIRED_MESSAGE: &str = "Gateway URL must use HTTPS.";
+const GATEWAY_LOCAL_HTTP_ONLY_MESSAGE: &str = "HTTP gateways are only allowed for localhost.";
+const GATEWAY_EMBEDDED_CREDENTIALS_MESSAGE: &str =
+    "Gateway URL must not include embedded credentials.";
+const GATEWAY_URL_REQUIRED_MESSAGE: &str =
+    "Enter a gateway base URL before continuing with gateway authentication.";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeSetupConfig {
@@ -43,6 +52,21 @@ struct StoredClaudeSetupConfig {
 pub struct ClaudeSecretBundle {
     pub anthropic_custom_headers: Option<String>,
     pub anthropic_auth_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ValidatedClaudeGatewayUrl(String);
+
+impl ValidatedClaudeGatewayUrl {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GatewayEnvPolicy {
+    managed_base_url: Option<ValidatedClaudeGatewayUrl>,
+    allow_secret_bundle: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,6 +154,9 @@ pub fn save_setup_config(
     let path = setup_file_path(app)?;
     let mut config = load_setup_config_from_path(&path)?;
     config.apply_input(&input);
+    if input.anthropic_base_url.is_some() {
+        validate_gateway_configured(&config)?;
+    }
     apply_secret_patches(&input)?;
     write_setup_config_to_path(&path, &config)?;
     Ok(config)
@@ -141,6 +168,9 @@ pub fn mark_authenticated_method(
 ) -> Result<ClaudeSetupConfig, String> {
     let path = setup_file_path(app)?;
     let mut config = load_setup_config_from_path(&path)?;
+    if method_id == "gateway" {
+        validate_gateway_configured(&config)?;
+    }
     config.auth_method = Some(method_id.to_string());
     config.auth_invalidated_at_ms = None;
     write_setup_config_to_path(&path, &config)?;
@@ -178,6 +208,7 @@ pub fn setup_status(
     vendor_path: PathBuf,
 ) -> Result<AiRuntimeSetupStatus, String> {
     let config = load_setup_config(app)?;
+    let gateway_issue = gateway_validation_error(&config);
     let resolved = resolve_binary_command(
         &config,
         bundled_path.clone(),
@@ -190,12 +221,15 @@ pub fn setup_status(
     let binary_ready = resolved.program.is_some();
     let auth_ready = auth_method.is_some();
     let has_custom_binary_path = config.custom_binary_path.is_some();
-    let has_gateway_config = gateway_is_configured(&config);
+    let has_gateway_url = config.anthropic_base_url.is_some();
+    let has_gateway_config = gateway_issue.is_none() && gateway_is_configured(&config);
 
     let message = if !binary_ready {
         Some(
             "Claude runtime was not found. Install claude-agent-acp, ship a bundled binary, or provide a custom runtime path.".to_string(),
         )
+    } else if !auth_ready && gateway_issue.is_some() {
+        gateway_issue
     } else if !auth_ready {
         Some("Log in with Claude or configure a custom gateway to finish setup.".to_string())
     } else if auth_method.as_deref() == Some("gateway") {
@@ -218,6 +252,7 @@ pub fn setup_status(
         auth_method,
         auth_methods,
         has_gateway_config,
+        has_gateway_url,
         onboarding_required: !binary_ready || !auth_ready,
         message,
     })
@@ -381,9 +416,11 @@ pub fn apply_auth_env(
     let secrets = load_secret_bundle(app)?;
     let external_token_present = env_secret_present("ANTHROPIC_AUTH_TOKEN");
     let external_headers_present = env_secret_present("ANTHROPIC_CUSTOM_HEADERS");
+    let external_base_url_present = env_secret_present("ANTHROPIC_BASE_URL");
+    let policy = gateway_env_policy(config, external_base_url_present);
 
-    if let Some(value) = config.anthropic_base_url.as_ref() {
-        command.env("ANTHROPIC_BASE_URL", value);
+    if let Some(value) = policy.managed_base_url.as_ref() {
+        command.env("ANTHROPIC_BASE_URL", value.as_str());
         if let Some(token) = secrets.anthropic_auth_token.as_ref() {
             if !external_token_present {
                 command.env("ANTHROPIC_AUTH_TOKEN", token);
@@ -391,13 +428,15 @@ pub fn apply_auth_env(
         } else if !external_token_present {
             command.env("ANTHROPIC_AUTH_TOKEN", "");
         }
-    } else if !external_token_present {
+    } else if policy.allow_secret_bundle && !external_token_present {
         if let Some(token) = secrets.anthropic_auth_token.as_ref() {
             command.env("ANTHROPIC_AUTH_TOKEN", token);
         }
+    } else if !external_token_present && !external_base_url_present {
+        command.env_remove("ANTHROPIC_AUTH_TOKEN");
     }
 
-    if !external_headers_present {
+    if !external_headers_present && policy.allow_secret_bundle {
         if let Some(value) = secrets.anthropic_custom_headers.as_ref() {
             command.env("ANTHROPIC_CUSTOM_HEADERS", value);
         }
@@ -510,10 +549,7 @@ fn command_from_existing_path(path: PathBuf, source: AiRuntimeBinarySource) -> R
 }
 
 fn gateway_is_configured(config: &ClaudeSetupConfig) -> bool {
-    config
-        .anthropic_base_url
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty())
+    matches!(validated_gateway_url(config), Ok(Some(_)))
 }
 
 fn claude_login_available(config: &ClaudeSetupConfig) -> bool {
@@ -735,6 +771,85 @@ fn env_secret_present(name: &str) -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn validate_gateway_configured(
+    config: &ClaudeSetupConfig,
+) -> Result<ValidatedClaudeGatewayUrl, String> {
+    match validated_gateway_url(config)? {
+        Some(value) => Ok(value),
+        None => Err(GATEWAY_URL_REQUIRED_MESSAGE.to_string()),
+    }
+}
+
+fn gateway_validation_error(config: &ClaudeSetupConfig) -> Option<String> {
+    match validated_gateway_url(config) {
+        Ok(_) => None,
+        Err(error) => Some(error),
+    }
+}
+
+fn validated_gateway_url(
+    config: &ClaudeSetupConfig,
+) -> Result<Option<ValidatedClaudeGatewayUrl>, String> {
+    config
+        .anthropic_base_url
+        .as_deref()
+        .map(validate_claude_gateway_base_url)
+        .transpose()
+}
+
+fn validate_claude_gateway_base_url(raw: &str) -> Result<ValidatedClaudeGatewayUrl, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(GATEWAY_URL_REQUIRED_MESSAGE.to_string());
+    }
+
+    let parsed = Url::parse(trimmed).map_err(|_| INVALID_GATEWAY_URL_MESSAGE.to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| INVALID_GATEWAY_URL_MESSAGE.to_string())?;
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(GATEWAY_EMBEDDED_CREDENTIALS_MESSAGE.to_string());
+    }
+
+    match parsed.scheme() {
+        "https" => {}
+        "http" if is_loopback_gateway_host(host) => {}
+        "http" => return Err(GATEWAY_LOCAL_HTTP_ONLY_MESSAGE.to_string()),
+        _ => return Err(GATEWAY_HTTPS_REQUIRED_MESSAGE.to_string()),
+    }
+
+    Ok(ValidatedClaudeGatewayUrl(trimmed.to_string()))
+}
+
+fn is_loopback_gateway_host(host: &str) -> bool {
+    let normalized = host
+        .trim_matches(|ch| ch == '[' || ch == ']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if normalized == "localhost" || normalized.ends_with(".localhost") {
+        return true;
+    }
+
+    normalized
+        .parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+fn gateway_env_policy(
+    config: &ClaudeSetupConfig,
+    external_base_url_present: bool,
+) -> GatewayEnvPolicy {
+    let managed_base_url = validated_gateway_url(config).ok().flatten();
+    let invalid_managed_gateway = config.anthropic_base_url.is_some() && managed_base_url.is_none();
+
+    GatewayEnvPolicy {
+        managed_base_url,
+        allow_secret_bundle: !invalid_managed_gateway || external_base_url_present,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +956,74 @@ mod tests {
         };
 
         assert_ne!(detect_auth_method(&config).as_deref(), Some("gateway"));
+    }
+
+    #[test]
+    fn validate_claude_gateway_base_url_allows_https() {
+        assert_eq!(
+            validate_claude_gateway_base_url("https://gateway.example/v1")
+                .unwrap()
+                .as_str(),
+            "https://gateway.example/v1"
+        );
+    }
+
+    #[test]
+    fn validate_claude_gateway_base_url_allows_loopback_http() {
+        for value in [
+            "http://localhost:3000",
+            "http://api.localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(validate_claude_gateway_base_url(value).is_ok(), "{value}");
+        }
+    }
+
+    #[test]
+    fn validate_claude_gateway_base_url_rejects_remote_http() {
+        assert_eq!(
+            validate_claude_gateway_base_url("http://gateway.example").unwrap_err(),
+            GATEWAY_LOCAL_HTTP_ONLY_MESSAGE
+        );
+    }
+
+    #[test]
+    fn validate_claude_gateway_base_url_rejects_non_https_schemes() {
+        assert_eq!(
+            validate_claude_gateway_base_url("ftp://gateway.example").unwrap_err(),
+            GATEWAY_HTTPS_REQUIRED_MESSAGE
+        );
+    }
+
+    #[test]
+    fn validate_claude_gateway_base_url_rejects_embedded_credentials() {
+        assert_eq!(
+            validate_claude_gateway_base_url("https://user:pass@gateway.example").unwrap_err(),
+            GATEWAY_EMBEDDED_CREDENTIALS_MESSAGE
+        );
+    }
+
+    #[test]
+    fn gateway_is_configured_requires_permitted_url() {
+        let config = ClaudeSetupConfig {
+            anthropic_base_url: Some("http://gateway.example".to_string()),
+            ..ClaudeSetupConfig::default()
+        };
+
+        assert!(!gateway_is_configured(&config));
+    }
+
+    #[test]
+    fn gateway_env_policy_blocks_secret_bundle_for_invalid_managed_gateway() {
+        let config = ClaudeSetupConfig {
+            anthropic_base_url: Some("http://gateway.example".to_string()),
+            ..ClaudeSetupConfig::default()
+        };
+        let policy = gateway_env_policy(&config, false);
+
+        assert!(policy.managed_base_url.is_none());
+        assert!(!policy.allow_secret_bundle);
     }
 
     #[test]

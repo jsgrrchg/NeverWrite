@@ -5,6 +5,7 @@ import type {
     AIRuntimeSetupStatus,
     AISecretPatch,
 } from "../types";
+import { getClaudeGatewayUrlValidationMessage } from "../utils/claudeGatewayUrl";
 
 interface AIChatOnboardingCardProps {
     runtime?: AIRuntimeOption | null;
@@ -120,6 +121,9 @@ export function AIChatOnboardingCard({
     const isApiKeyMethod =
         isOpenAiApiKeyMethod || isCodexApiKeyMethod || isGeminiApiKeyMethod;
     const apiKeyPlaceholder = getApiKeyPlaceholder(selectedMethod?.id);
+    const gatewayUrlError = isGatewayMethod
+        ? getClaudeGatewayUrlValidationMessage(gatewayBaseUrl)
+        : null;
     const isSettingsMode = mode === "settings";
     const title = isSettingsMode
         ? `Manage ${runtimeName}`
@@ -302,7 +306,8 @@ export function AIChatOnboardingCard({
                                     )}
                                 </div>
                                 {selectedMethod.id === "gateway" &&
-                                setupStatus.hasGatewayConfig ? (
+                                (setupStatus.hasGatewayConfig ||
+                                    setupStatus.hasGatewayUrl) ? (
                                     <div className="mt-3">
                                         <button
                                             type="button"
@@ -449,8 +454,23 @@ export function AIChatOnboardingCard({
                                             }}
                                         >
                                             Headers are stored locally for
-                                            VaultAI only.
+                                            VaultAI only. Use HTTPS for remote
+                                            gateways. Plain HTTP is only allowed
+                                            for localhost.
                                         </div>
+                                        {gatewayUrlError ? (
+                                            <div
+                                                className="mt-2 rounded-md px-3 py-2 text-[11px]"
+                                                style={{
+                                                    color: "#fecaca",
+                                                    border: "1px solid #7f1d1d",
+                                                    backgroundColor:
+                                                        "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                                                }}
+                                            >
+                                                {gatewayUrlError}
+                                            </div>
+                                        ) : null}
                                     </>
                                 ) : null}
                             </div>
@@ -621,7 +641,8 @@ export function AIChatOnboardingCard({
                             runtimeMissing ||
                             !selectedMethod ||
                             (isApiKeyMethod && !apiKey.trim()) ||
-                            (isGatewayMethod && !gatewayBaseUrl.trim())
+                            (isGatewayMethod &&
+                                (!gatewayBaseUrl.trim() || !!gatewayUrlError))
                         }
                         className="rounded-md px-3 py-1.5 text-xs font-medium"
                         style={{
@@ -632,7 +653,9 @@ export function AIChatOnboardingCard({
                                 runtimeMissing ||
                                 !selectedMethod ||
                                 (isApiKeyMethod && !apiKey.trim()) ||
-                                (isGatewayMethod && !gatewayBaseUrl.trim())
+                                (isGatewayMethod &&
+                                    (!gatewayBaseUrl.trim() ||
+                                        !!gatewayUrlError))
                                     ? 0.45
                                     : 1,
                             background:
@@ -694,7 +717,7 @@ function getAuthMethodHelpText(methodId: string, runtimeName: string) {
         return "VaultAI will open a Gemini sign-in terminal inside the app.";
     }
     if (methodId === "gateway") {
-        return `Configure a custom ${runtimeName} gateway for this app only.`;
+        return `Configure a custom ${runtimeName} gateway for this app only. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.`;
     }
     if (methodId === "codex-api-key") {
         return "Store a Codex API key locally for VaultAI only.";

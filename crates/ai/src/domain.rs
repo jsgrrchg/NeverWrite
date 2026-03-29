@@ -129,6 +129,7 @@ pub struct AiRuntimeSetupStatus {
     pub auth_method: Option<String>,
     pub auth_methods: Vec<AiAuthMethod>,
     pub has_gateway_config: bool,
+    pub has_gateway_url: bool,
     pub onboarding_required: bool,
     pub message: Option<String>,
 }
