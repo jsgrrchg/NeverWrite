@@ -59,6 +59,15 @@ Firefox:
 about:debugging#/runtime/this-firefox -> Load Temporary Add-on -> apps/web-clipper/dist/firefox-mv3/manifest.json
 ```
 
+When developing against the local desktop API, unpacked extension origins are blocked by default.
+To authorize a local unpacked build explicitly, launch the desktop app with:
+
+```bash
+VAULTAI_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" pnpm --dir apps/desktop dev
+```
+
+Use exact origins only. Wildcards are intentionally unsupported.
+
 ## Shortcuts
 
 - Toolbar click opens the dedicated clip window.
@@ -90,5 +99,9 @@ This local API is used to:
 - autocomplete folders and tags from the real vault state
 - save clips directly into the desktop app with explicit success/error feedback
 - open the created note in the editor and show a desktop toast on success
+
+On first successful contact, the clipper pairs with the desktop app and stores a
+local token in `browser.storage.local`. Subsequent requests must send both the
+extension identity and that token.
 
 If the local API is unavailable, the extension falls back to the deep-link handoff flow.

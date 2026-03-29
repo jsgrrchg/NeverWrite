@@ -41,6 +41,7 @@ import VaultSelector from "./components/VaultSelector";
 type ExtractionStatus = "loading" | "ready" | "error";
 type SendStatus = SaveButtonStatus;
 type ClipperView = "clip" | "settings";
+type DesktopConnectionState = "connected" | "offline" | "unauthorized";
 
 interface AppProps {
     surface?: "window" | "sidepanel" | "popup";
@@ -102,7 +103,8 @@ export function App(_props: AppProps) {
     const [sendStatus, setSendStatus] = useState<SendStatus>("idle");
     const [sendMessage, setSendMessage] = useState("");
     const [lastDeepLink, setLastDeepLink] = useState("");
-    const [desktopApiAvailable, setDesktopApiAvailable] = useState(false);
+    const [desktopConnectionState, setDesktopConnectionState] =
+        useState<DesktopConnectionState>("offline");
     const [desktopFolders, setDesktopFolders] = useState<string[]>([]);
     const [desktopTags, setDesktopTags] = useState<string[]>([]);
 
@@ -232,12 +234,18 @@ export function App(_props: AppProps) {
                     vaultNameHint: activeVault.name,
                 });
                 if (cancelled) return;
-                setDesktopApiAvailable(ctx.available);
+                setDesktopConnectionState(
+                    ctx.available ? "connected" : "offline",
+                );
                 setDesktopFolders(ctx.folders);
                 setDesktopTags(ctx.tags);
             } catch (error) {
                 if (cancelled) return;
-                setDesktopApiAvailable(false);
+                setDesktopConnectionState(
+                    error instanceof DesktopApiError && error.isUnauthorized
+                        ? "unauthorized"
+                        : "offline",
+                );
                 setDesktopFolders([]);
                 setDesktopTags([]);
             }
@@ -351,7 +359,11 @@ export function App(_props: AppProps) {
     async function handleSave() {
         if (!clipData || !settings || !activeVault || !resolvedTemplate) return;
 
-        if (sendStatus === "sent" && lastDeepLink && !desktopApiAvailable) {
+        if (
+            sendStatus === "sent" &&
+            lastDeepLink &&
+            desktopConnectionState === "offline"
+        ) {
             openDeepLink(lastDeepLink);
             return;
         }
@@ -397,12 +409,16 @@ export function App(_props: AppProps) {
                 setSettings(persisted);
                 void saveClipperSettings(persisted);
                 setLastDeepLink("");
+                setDesktopConnectionState("connected");
                 setSendStatus("sent");
                 setSendMessage(response.message);
                 setTimeout(() => window.close(), 600);
                 return;
             } catch (error) {
                 if (error instanceof DesktopApiError && !error.isUnavailable) {
+                    setDesktopConnectionState(
+                        error.isUnauthorized ? "unauthorized" : "offline",
+                    );
                     setSendStatus("error");
                     setSendMessage(error.message);
                     return;
@@ -446,7 +462,7 @@ export function App(_props: AppProps) {
 
                 const deepLink = createClipDeepLink(draft.payload);
                 setLastDeepLink(deepLink);
-                setDesktopApiAvailable(false);
+                setDesktopConnectionState("offline");
                 openDeepLink(deepLink);
                 setSendStatus("sent");
                 setSendMessage(
@@ -647,11 +663,18 @@ export function App(_props: AppProps) {
                             </svg>
                         </button>
 
-                        {desktopApiAvailable ? (
+                        {desktopConnectionState === "connected" ? (
                             <div className="inline-flex items-center gap-1 rounded-md bg-success/15 px-2 py-1">
                                 <div className="h-1.5 w-1.5 rounded-full bg-success" />
                                 <span className="text-[10px] font-medium text-success">
                                     Connected
+                                </span>
+                            </div>
+                        ) : desktopConnectionState === "unauthorized" ? (
+                            <div className="inline-flex items-center gap-1 rounded-md bg-danger/15 px-2 py-1">
+                                <div className="h-1.5 w-1.5 rounded-full bg-danger" />
+                                <span className="text-[10px] font-medium text-danger">
+                                    Unauthorized
                                 </span>
                             </div>
                         ) : (

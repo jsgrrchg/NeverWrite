@@ -6,6 +6,7 @@ import type {
 } from "./types";
 
 const CLIPPER_SETTINGS_STORAGE_KEY = "clipperSettings";
+const CLIPPER_DESKTOP_AUTH_STORAGE_KEY = "clipperDesktopAuth";
 const MAX_HISTORY_ITEMS = 50;
 const DEFAULT_TEMPLATE_BODY = "{{content}}";
 const LEGACY_DEFAULT_TEMPLATE_BODY = "# {{title}}\n\n{{content}}";
@@ -224,4 +225,31 @@ export async function saveClipperSettings(
         [CLIPPER_SETTINGS_STORAGE_KEY]: normalized,
     });
     return normalized;
+}
+
+export async function loadDesktopClipperToken(): Promise<string | null> {
+    const stored = await browser.storage.local.get(
+        CLIPPER_DESKTOP_AUTH_STORAGE_KEY,
+    );
+    const token = (
+        stored[CLIPPER_DESKTOP_AUTH_STORAGE_KEY] as
+            | { token?: unknown }
+            | undefined
+    )?.token;
+    return typeof token === "string" && token.trim() ? token.trim() : null;
+}
+
+export async function saveDesktopClipperToken(token: string): Promise<void> {
+    const trimmed = token.trim();
+    if (!trimmed) {
+        await clearDesktopClipperToken();
+        return;
+    }
+    await browser.storage.local.set({
+        [CLIPPER_DESKTOP_AUTH_STORAGE_KEY]: { token: trimmed },
+    });
+}
+
+export async function clearDesktopClipperToken(): Promise<void> {
+    await browser.storage.local.remove(CLIPPER_DESKTOP_AUTH_STORAGE_KEY);
 }
