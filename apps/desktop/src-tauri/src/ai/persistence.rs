@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -108,28 +109,65 @@ struct PersistedTranscriptIndex {
     message_hashes: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct LegacySessionArtifacts {
+    file_path: Option<PathBuf>,
+    dir_path: Option<PathBuf>,
+}
+
 fn sessions_dir(vault_root: &Path) -> PathBuf {
     vault_root.join(SESSIONS_DIR)
 }
 
-fn legacy_session_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    sessions_dir(vault_root).join(format!("{session_id}.json"))
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
 }
 
-fn session_dir(vault_root: &Path, session_id: &str) -> PathBuf {
-    sessions_dir(vault_root).join(session_id)
+// `session_id` remains a logical product identifier; disk layout uses a hashed storage key.
+fn session_storage_key(session_id: &str) -> String {
+    format!("session-{}", sha256_hex(session_id.as_bytes()))
 }
 
-fn session_meta_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_dir(vault_root, session_id).join(SESSION_META_FILE)
+fn storage_session_dir(vault_root: &Path, session_id: &str) -> PathBuf {
+    sessions_dir(vault_root).join(session_storage_key(session_id))
 }
 
-fn session_index_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_dir(vault_root, session_id).join(SESSION_INDEX_FILE)
+fn session_meta_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(SESSION_META_FILE)
 }
 
-fn session_transcript_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_dir(vault_root, session_id).join(SESSION_TRANSCRIPT_FILE)
+fn session_index_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(SESSION_INDEX_FILE)
+}
+
+fn session_transcript_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(SESSION_TRANSCRIPT_FILE)
+}
+
+fn storage_session_meta_file(vault_root: &Path, session_id: &str) -> PathBuf {
+    session_meta_path(&storage_session_dir(vault_root, session_id))
+}
+
+fn storage_session_index_file(vault_root: &Path, session_id: &str) -> PathBuf {
+    session_index_path(&storage_session_dir(vault_root, session_id))
+}
+
+fn storage_session_transcript_file(vault_root: &Path, session_id: &str) -> PathBuf {
+    session_transcript_path(&storage_session_dir(vault_root, session_id))
+}
+
+fn storage_session_is_complete(vault_root: &Path, session_id: &str) -> bool {
+    storage_session_meta_file(vault_root, session_id).exists()
+        && storage_session_index_file(vault_root, session_id).exists()
+        && storage_session_transcript_file(vault_root, session_id).exists()
 }
 
 fn ensure_sessions_root(vault_root: &Path) -> Result<(), String> {
@@ -182,15 +220,7 @@ fn serialize_message_bytes(message: &PersistedMessage) -> Result<Vec<u8>, String
 
 fn hash_message(message: &PersistedMessage) -> Result<String, String> {
     let bytes = serde_json::to_vec(message).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut hex, "{byte:02x}");
-    }
-    Ok(hex)
+    Ok(sha256_hex(&bytes))
 }
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
@@ -202,14 +232,22 @@ fn load_session_metadata(
     vault_root: &Path,
     session_id: &str,
 ) -> Result<PersistedSessionMetadata, String> {
-    read_json_file(&session_meta_file(vault_root, session_id))
+    read_json_file(&storage_session_meta_file(vault_root, session_id))
 }
 
 fn load_session_index(
     vault_root: &Path,
     session_id: &str,
 ) -> Result<PersistedTranscriptIndex, String> {
-    read_json_file(&session_index_file(vault_root, session_id))
+    read_json_file(&storage_session_index_file(vault_root, session_id))
+}
+
+fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
+    read_json_file(&session_meta_path(session_dir))
+}
+
+fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
+    read_json_file(&session_index_path(session_dir))
 }
 
 fn validate_index(index: &PersistedTranscriptIndex) -> Result<(), String> {
@@ -295,17 +333,9 @@ fn history_from_metadata(
     }
 }
 
-fn load_legacy_history(
-    vault_root: &Path,
-    session_id: &str,
-) -> Result<Option<PersistedSessionHistory>, String> {
-    let path = legacy_session_file(vault_root, session_id);
-    if !path.exists() {
-        return Ok(None);
-    }
-
+fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, String> {
     let history = read_json_file::<PersistedSessionHistory>(&path)?;
-    Ok(Some(PersistedSessionHistory {
+    Ok(PersistedSessionHistory {
         version: history.version,
         session_id: history.session_id,
         runtime_id: history.runtime_id,
@@ -323,13 +353,103 @@ fn load_legacy_history(
             .preview
             .or_else(|| derive_preview(&history.messages)),
         messages: history.messages,
-    }))
+    })
 }
 
-fn remove_legacy_history_file(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let legacy_path = legacy_session_file(vault_root, session_id);
-    if legacy_path.exists() {
-        fs::remove_file(legacy_path).map_err(|e| e.to_string())?;
+fn load_history_from_session_dir(
+    session_dir: &Path,
+    include_messages: bool,
+) -> Result<PersistedSessionHistory, String> {
+    let metadata = load_session_metadata_from_dir(session_dir)?;
+    let messages = if include_messages {
+        load_all_lazy_messages_from_dir(session_dir)?
+    } else {
+        vec![]
+    };
+    Ok(history_from_metadata(metadata, messages))
+}
+
+fn legacy_session_priority(vault_root: &Path, path: &Path, session_id: &str) -> u8 {
+    if path == storage_session_dir(vault_root, session_id) {
+        3
+    } else if path.is_dir() {
+        2
+    } else {
+        1
+    }
+}
+
+fn find_legacy_session_artifacts(
+    vault_root: &Path,
+    session_id: &str,
+) -> Result<LegacySessionArtifacts, String> {
+    let dir = sessions_dir(vault_root);
+    if !dir.exists() {
+        return Ok(LegacySessionArtifacts::default());
+    }
+
+    let storage_dir = storage_session_dir(vault_root, session_id);
+    let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let mut artifacts = LegacySessionArtifacts::default();
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path == storage_dir {
+            continue;
+        }
+
+        if path.is_dir() {
+            let metadata = match load_session_metadata_from_dir(&path) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if metadata.session_id == session_id {
+                artifacts.dir_path = Some(path);
+            }
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let history = match load_legacy_history_file(&path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if history.session_id == session_id {
+            artifacts.file_path = Some(path);
+        }
+    }
+
+    Ok(artifacts)
+}
+
+fn load_legacy_history(
+    vault_root: &Path,
+    session_id: &str,
+) -> Result<Option<PersistedSessionHistory>, String> {
+    let artifacts = find_legacy_session_artifacts(vault_root, session_id)?;
+    if let Some(dir_path) = artifacts.dir_path {
+        return load_history_from_session_dir(&dir_path, true).map(Some);
+    }
+    if let Some(file_path) = artifacts.file_path {
+        return load_legacy_history_file(&file_path).map(Some);
+    }
+    Ok(None)
+}
+
+fn remove_legacy_history_artifacts(vault_root: &Path, session_id: &str) -> Result<(), String> {
+    let artifacts = find_legacy_session_artifacts(vault_root, session_id)?;
+    if let Some(file_path) = artifacts.file_path {
+        fs::remove_file(file_path).map_err(|e| e.to_string())?;
+    }
+    if let Some(dir_path) = artifacts.dir_path {
+        fs::remove_dir_all(dir_path).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -344,10 +464,10 @@ fn write_full_lazy_history(
     }
 
     ensure_sessions_root(vault_root)?;
-    let session_dir = session_dir(vault_root, &history.session_id);
+    let session_dir = storage_session_dir(vault_root, &history.session_id);
     fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
 
-    let transcript_path = session_transcript_file(vault_root, &history.session_id);
+    let transcript_path = session_transcript_path(&session_dir);
     let transcript_tmp = transcript_path.with_extension("jsonl.tmp");
     let mut transcript_file = File::create(&transcript_tmp).map_err(|e| e.to_string())?;
 
@@ -379,21 +499,15 @@ fn write_full_lazy_history(
         message_hashes: hashes,
     };
 
-    write_json_atomic(
-        &session_meta_file(vault_root, &history.session_id),
-        &metadata,
-    )?;
-    write_json_atomic(&session_index_file(vault_root, &history.session_id), &index)?;
-    remove_legacy_history_file(vault_root, &history.session_id)?;
+    write_json_atomic(&session_meta_path(&session_dir), &metadata)?;
+    write_json_atomic(&session_index_path(&session_dir), &index)?;
+    remove_legacy_history_artifacts(vault_root, &history.session_id)?;
 
     Ok(())
 }
 
 fn ensure_lazy_session_from_legacy(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    if session_meta_file(vault_root, session_id).exists()
-        && session_index_file(vault_root, session_id).exists()
-        && session_transcript_file(vault_root, session_id).exists()
-    {
+    if storage_session_is_complete(vault_root, session_id) {
         return Ok(());
     }
 
@@ -410,8 +524,17 @@ fn load_lazy_history_page(
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    let metadata = load_session_metadata(vault_root, session_id)?;
-    let index = load_session_index(vault_root, session_id)?;
+    let session_dir = storage_session_dir(vault_root, session_id);
+    load_lazy_history_page_from_dir(&session_dir, start_index, limit)
+}
+
+fn load_lazy_history_page_from_dir(
+    session_dir: &Path,
+    start_index: usize,
+    limit: usize,
+) -> Result<PersistedSessionHistoryPage, String> {
+    let metadata = load_session_metadata_from_dir(session_dir)?;
+    let index = load_session_index_from_dir(session_dir)?;
     validate_index(&index)?;
 
     let total_messages = metadata.message_count;
@@ -419,7 +542,7 @@ fn load_lazy_history_page(
     let end = start.saturating_add(limit).min(total_messages);
 
     let mut transcript =
-        File::open(session_transcript_file(vault_root, session_id)).map_err(|e| e.to_string())?;
+        File::open(session_transcript_path(session_dir)).map_err(|e| e.to_string())?;
     let mut messages = Vec::with_capacity(end.saturating_sub(start));
 
     for idx in start..end {
@@ -451,16 +574,13 @@ fn load_lazy_history_page(
     })
 }
 
-fn load_all_lazy_messages(
-    vault_root: &Path,
-    session_id: &str,
-) -> Result<Vec<PersistedMessage>, String> {
-    let metadata = load_session_metadata(vault_root, session_id)?;
+fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMessage>, String> {
+    let metadata = load_session_metadata_from_dir(session_dir)?;
     if metadata.message_count == 0 {
         return Ok(vec![]);
     }
 
-    Ok(load_lazy_history_page(vault_root, session_id, 0, metadata.message_count)?.messages)
+    Ok(load_lazy_history_page_from_dir(session_dir, 0, metadata.message_count)?.messages)
 }
 
 pub fn save_session_history(
@@ -470,8 +590,8 @@ pub fn save_session_history(
     ensure_lazy_session_from_legacy(vault_root, &history.session_id)?;
     let (start_index, total_count) = history_window_bounds(history)?;
 
-    let metadata_path = session_meta_file(vault_root, &history.session_id);
-    let index_path = session_index_file(vault_root, &history.session_id);
+    let metadata_path = storage_session_meta_file(vault_root, &history.session_id);
+    let index_path = storage_session_index_file(vault_root, &history.session_id);
     if !metadata_path.exists() || !index_path.exists() {
         if start_index != 0 || total_count != history.messages.len() {
             return Err(
@@ -516,7 +636,7 @@ pub fn save_session_history(
         .extend_from_slice(&existing_index.message_hashes[start_index..start_index + common]);
 
     if common < history.messages.len() {
-        let transcript_path = session_transcript_file(vault_root, &history.session_id);
+        let transcript_path = storage_session_transcript_file(vault_root, &history.session_id);
         let mut transcript = OpenOptions::new()
             .create(true)
             .append(true)
@@ -558,7 +678,7 @@ pub fn save_session_history(
 
     write_json_atomic(&metadata_path, &next_metadata)?;
     write_json_atomic(&index_path, &next_index)?;
-    remove_legacy_history_file(vault_root, &history.session_id)?;
+    remove_legacy_history_artifacts(vault_root, &history.session_id)?;
 
     Ok(())
 }
@@ -571,10 +691,7 @@ pub fn load_session_history_page(
 ) -> Result<PersistedSessionHistoryPage, String> {
     ensure_lazy_session_from_legacy(vault_root, session_id)?;
 
-    if session_meta_file(vault_root, session_id).exists()
-        && session_index_file(vault_root, session_id).exists()
-        && session_transcript_file(vault_root, session_id).exists()
-    {
+    if storage_session_is_complete(vault_root, session_id) {
         return load_lazy_history_page(vault_root, session_id, start_index, limit);
     }
 
@@ -602,15 +719,11 @@ pub fn load_session_history_page(
 }
 
 pub fn delete_session_history(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let legacy_path = legacy_session_file(vault_root, session_id);
-    if legacy_path.exists() {
-        fs::remove_file(&legacy_path).map_err(|e| e.to_string())?;
-    }
-
-    let dir = session_dir(vault_root, session_id);
+    let dir = storage_session_dir(vault_root, session_id);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
+    remove_legacy_history_artifacts(vault_root, session_id)?;
 
     Ok(())
 }
@@ -670,11 +783,7 @@ pub fn prune_expired_session_histories(
 
         let path = entry.path();
         if path.is_dir() {
-            let session_id = match path.file_name().and_then(|name| name.to_str()) {
-                Some(value) => value,
-                None => continue,
-            };
-            let metadata = match load_session_metadata(vault_root, session_id) {
+            let metadata = match load_session_metadata_from_dir(&path) {
                 Ok(metadata) => metadata,
                 Err(_) => continue,
             };
@@ -721,7 +830,8 @@ pub fn load_all_session_histories(
     }
 
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    let mut histories = Vec::new();
+    let mut histories_by_session_id: HashMap<String, (u8, PersistedSessionHistory)> =
+        HashMap::new();
 
     for entry in entries {
         let entry = match entry {
@@ -731,26 +841,17 @@ pub fn load_all_session_histories(
 
         let path = entry.path();
         if path.is_dir() {
-            let session_id = match path.file_name().and_then(|name| name.to_str()) {
-                Some(value) => value,
-                None => continue,
-            };
-
-            let metadata = match load_session_metadata(vault_root, session_id) {
-                Ok(metadata) => metadata,
+            let history = match load_history_from_session_dir(&path, include_messages) {
+                Ok(history) => history,
                 Err(_) => continue,
             };
-
-            let messages = if include_messages {
-                match load_all_lazy_messages(vault_root, session_id) {
-                    Ok(messages) => messages,
-                    Err(_) => continue,
-                }
-            } else {
-                vec![]
-            };
-
-            histories.push(history_from_metadata(metadata, messages));
+            let priority = legacy_session_priority(vault_root, &path, &history.session_id);
+            upsert_history(
+                &mut histories_by_session_id,
+                history.session_id.clone(),
+                priority,
+                history,
+            );
             continue;
         }
 
@@ -758,74 +859,107 @@ pub fn load_all_session_histories(
             continue;
         }
 
-        let raw = match fs::read_to_string(&path) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        let history = match serde_json::from_str::<PersistedSessionHistory>(&raw) {
+        let history = match load_legacy_history_file(&path) {
             Ok(history) => history,
             Err(_) => continue,
         };
 
         if include_messages {
-            histories.push(PersistedSessionHistory {
-                version: history.version,
-                session_id: history.session_id,
-                runtime_id: history.runtime_id,
-                model_id: history.model_id,
-                mode_id: history.mode_id,
-                models: history.models,
-                modes: history.modes,
-                config_options: history.config_options,
-                created_at: history.created_at,
-                updated_at: history.updated_at,
-                start_index: Some(0),
-                message_count: Some(history.messages.len()),
-                title: history.title.or_else(|| derive_title(&history.messages)),
-                preview: history
-                    .preview
-                    .or_else(|| derive_preview(&history.messages)),
-                messages: history.messages,
-            });
+            upsert_history(
+                &mut histories_by_session_id,
+                history.session_id.clone(),
+                1,
+                PersistedSessionHistory {
+                    version: history.version,
+                    session_id: history.session_id,
+                    runtime_id: history.runtime_id,
+                    model_id: history.model_id,
+                    mode_id: history.mode_id,
+                    models: history.models,
+                    modes: history.modes,
+                    config_options: history.config_options,
+                    created_at: history.created_at,
+                    updated_at: history.updated_at,
+                    start_index: Some(0),
+                    message_count: Some(history.messages.len()),
+                    title: history.title.or_else(|| derive_title(&history.messages)),
+                    preview: history
+                        .preview
+                        .or_else(|| derive_preview(&history.messages)),
+                    messages: history.messages,
+                },
+            );
         } else {
             let message_count = history.messages.len();
-            histories.push(PersistedSessionHistory {
-                version: history.version,
-                session_id: history.session_id,
-                runtime_id: history.runtime_id,
-                model_id: history.model_id,
-                mode_id: history.mode_id,
-                models: history.models,
-                modes: history.modes,
-                config_options: history.config_options,
-                created_at: history.created_at,
-                updated_at: history.updated_at,
-                start_index: Some(0),
-                message_count: Some(message_count),
-                title: history.title.or_else(|| derive_title(&history.messages)),
-                preview: history
-                    .preview
-                    .or_else(|| derive_preview(&history.messages)),
-                messages: vec![],
-            });
+            upsert_history(
+                &mut histories_by_session_id,
+                history.session_id.clone(),
+                1,
+                PersistedSessionHistory {
+                    version: history.version,
+                    session_id: history.session_id,
+                    runtime_id: history.runtime_id,
+                    model_id: history.model_id,
+                    mode_id: history.mode_id,
+                    models: history.models,
+                    modes: history.modes,
+                    config_options: history.config_options,
+                    created_at: history.created_at,
+                    updated_at: history.updated_at,
+                    start_index: Some(0),
+                    message_count: Some(message_count),
+                    title: history.title.or_else(|| derive_title(&history.messages)),
+                    preview: history
+                        .preview
+                        .or_else(|| derive_preview(&history.messages)),
+                    messages: vec![],
+                },
+            );
         }
     }
 
+    let mut histories = histories_by_session_id
+        .into_values()
+        .map(|(_, history)| history)
+        .collect::<Vec<_>>();
     histories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(histories)
+}
+
+fn upsert_history(
+    histories_by_session_id: &mut HashMap<String, (u8, PersistedSessionHistory)>,
+    session_id: String,
+    priority: u8,
+    history: PersistedSessionHistory,
+) {
+    match histories_by_session_id.get(&session_id) {
+        Some((existing_priority, existing_history))
+            if *existing_priority > priority
+                || (*existing_priority == priority
+                    && existing_history.updated_at >= history.updated_at) => {}
+        _ => {
+            histories_by_session_id.insert(session_id, (priority, history));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn make_temp_dir() -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should move forward")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("vaultai-history-test-{suffix}"));
+        let unique = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "vaultai-history-test-{}-{suffix}-{unique}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).expect("temp dir should be created");
         dir
     }
@@ -881,6 +1015,130 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn sample_history_with_session_id(session_id: &str) -> PersistedSessionHistory {
+        let mut history = sample_history();
+        history.session_id = session_id.to_string();
+        history
+    }
+
+    #[test]
+    fn session_storage_key_is_stable_and_deterministic() {
+        let first = session_storage_key("session-1");
+        let second = session_storage_key("session-1");
+        let third = session_storage_key("session-2");
+
+        assert_eq!(first, second);
+        assert_ne!(first, third);
+        assert!(first.starts_with("session-"));
+    }
+
+    #[test]
+    fn persists_untrusted_session_ids_inside_storage_key_layout() {
+        let dir = make_temp_dir();
+
+        for session_id in ["../outside", "..\\outside", "nested/evil", "nested\\evil"] {
+            let history = sample_history_with_session_id(session_id);
+            save_session_history(&dir, &history).expect("history should persist safely");
+
+            assert!(storage_session_dir(&dir, session_id).exists());
+            assert!(!sessions_dir(&dir).join(session_id).exists());
+
+            let page = load_session_history_page(&dir, session_id, 0, 20)
+                .expect("history page should load from safe storage");
+            assert_eq!(page.total_messages, history.messages.len());
+
+            delete_session_history(&dir, session_id).expect("history should delete safely");
+            assert!(!storage_session_dir(&dir, session_id).exists());
+        }
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn migrates_legacy_flat_file_to_storage_key_layout() {
+        let dir = make_temp_dir();
+        let history = sample_history_with_session_id("legacy-session");
+        let legacy_path = sessions_dir(&dir).join("legacy-safe.json");
+
+        ensure_sessions_root(&dir).expect("sessions root should exist");
+        write_json_atomic(&legacy_path, &history).expect("legacy file should persist");
+
+        let page = load_session_history_page(&dir, "legacy-session", 0, 20)
+            .expect("legacy history should load and migrate");
+        assert_eq!(page.total_messages, history.messages.len());
+        assert!(storage_session_dir(&dir, "legacy-session").exists());
+        assert!(!legacy_path.exists());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_all_session_histories_prefers_storage_layout_over_legacy_file() {
+        let dir = make_temp_dir();
+        let mut storage_history = sample_history_with_session_id("shared-session");
+        storage_history.updated_at = 200;
+        save_session_history(&dir, &storage_history).expect("storage history should persist");
+
+        let mut legacy_history = sample_history_with_session_id("shared-session");
+        legacy_history.updated_at = 100;
+        let legacy_path = sessions_dir(&dir).join("legacy-duplicate.json");
+        write_json_atomic(&legacy_path, &legacy_history).expect("legacy file should persist");
+
+        let histories =
+            load_all_session_histories(&dir, false).expect("session histories should load");
+        assert_eq!(histories.len(), 1);
+        assert_eq!(histories[0].session_id, "shared-session");
+        assert_eq!(histories[0].updated_at, 200);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn delete_all_session_histories_only_clears_sessions_dir() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        let sibling = dir.join(".vaultai/keep.txt");
+
+        save_session_history(&dir, &history).expect("history should persist");
+        fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
+            .expect("sibling parent should exist");
+        fs::write(&sibling, b"keep").expect("sibling file should persist");
+
+        delete_all_session_histories(&dir).expect("histories should delete");
+
+        assert!(sibling.exists());
+        assert!(sessions_dir(&dir).is_dir());
+        assert_eq!(
+            fs::read_dir(sessions_dir(&dir))
+                .expect("sessions dir should be readable")
+                .count(),
+            0
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn prune_expired_session_histories_only_touches_sessions_dir() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.updated_at = 1;
+        let sibling = dir.join(".vaultai/keep-after-prune.txt");
+
+        save_session_history(&dir, &history).expect("history should persist");
+        fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
+            .expect("sibling parent should exist");
+        fs::write(&sibling, b"keep").expect("sibling file should persist");
+
+        let deleted = prune_expired_session_histories(&dir, 1).expect("prune should succeed");
+
+        assert_eq!(deleted, 1);
+        assert!(sibling.exists());
+        assert!(!storage_session_dir(&dir, &history.session_id).exists());
+
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

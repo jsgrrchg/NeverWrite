@@ -7,6 +7,8 @@ use vault_ai_ai::{
     CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
 };
 
+use crate::AppState;
+
 use super::{
     claude::ClaudeSetupInput,
     codex::CodexSetupInput,
@@ -19,6 +21,13 @@ use super::{
 
 fn require_runtime_id(runtime_id: Option<String>, command_name: &str) -> Result<String, String> {
     runtime_id.ok_or_else(|| format!("{command_name} requiere runtimeId explícito"))
+}
+
+// `vault_path` is treated as a logical key from the renderer, not as a filesystem root.
+fn resolve_ai_history_vault_root(state: &AppState, vault_key: &str) -> Result<PathBuf, String> {
+    let instance = state.vaults.get(vault_key).ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    Ok(vault.root.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,19 +386,26 @@ pub async fn ai_respond_user_input(
 pub fn ai_save_session_history(
     vault_path: String,
     history: PersistedSessionHistory,
+    state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
-    persistence::save_session_history(&PathBuf::from(vault_path), &history)
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::save_session_history(&vault_root, &history)
 }
 
 #[tauri::command]
 pub fn ai_load_session_histories(
     vault_path: String,
     include_messages: Option<bool>,
+    state: State<'_, Mutex<AppState>>,
 ) -> Result<Vec<PersistedSessionHistory>, String> {
-    persistence::load_all_session_histories(
-        &PathBuf::from(vault_path),
-        include_messages.unwrap_or(true),
-    )
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::load_all_session_histories(&vault_root, include_messages.unwrap_or(true))
 }
 
 #[tauri::command]
@@ -398,23 +414,38 @@ pub fn ai_load_session_history_page(
     session_id: String,
     start_index: usize,
     limit: usize,
+    state: State<'_, Mutex<AppState>>,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    persistence::load_session_history_page(
-        &PathBuf::from(vault_path),
-        &session_id,
-        start_index,
-        limit,
-    )
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::load_session_history_page(&vault_root, &session_id, start_index, limit)
 }
 
 #[tauri::command]
-pub fn ai_delete_session_history(vault_path: String, session_id: String) -> Result<(), String> {
-    persistence::delete_session_history(&PathBuf::from(vault_path), &session_id)
+pub fn ai_delete_session_history(
+    vault_path: String,
+    session_id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::delete_session_history(&vault_root, &session_id)
 }
 
 #[tauri::command]
-pub fn ai_delete_all_session_histories(vault_path: String) -> Result<(), String> {
-    persistence::delete_all_session_histories(&PathBuf::from(vault_path))
+pub fn ai_delete_all_session_histories(
+    vault_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::delete_all_session_histories(&vault_root)
 }
 
 #[tauri::command]
@@ -442,8 +473,16 @@ pub async fn ai_delete_runtime_sessions_for_vault(
 }
 
 #[tauri::command]
-pub fn ai_prune_session_histories(vault_path: String, max_age_days: u32) -> Result<usize, String> {
-    persistence::prune_expired_session_histories(&PathBuf::from(vault_path), max_age_days)
+pub fn ai_prune_session_histories(
+    vault_path: String,
+    max_age_days: u32,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, String> {
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::prune_expired_session_histories(&vault_root, max_age_days)
 }
 
 #[tauri::command]
@@ -457,4 +496,52 @@ pub async fn ai_register_file_baseline(
         .lock()
         .map_err(|error| format!("Error de estado interno: {error}"))?;
     ai_state.register_file_baseline(&session_id, &display_path, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::VaultInstance;
+    use vault_ai_vault::Vault;
+
+    fn make_open_vault_state(vault_key: &str) -> (PathBuf, AppState) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("vaultai-ai-history-root-test-{suffix}"));
+        fs::create_dir_all(&dir).expect("temp vault dir should exist");
+
+        let mut state = AppState::new();
+        let mut instance = VaultInstance::new();
+        instance.vault = Some(Vault::open(dir.clone()).expect("vault should open"));
+        state.vaults.insert(vault_key.to_string(), instance);
+
+        (dir, state)
+    }
+
+    #[test]
+    fn resolve_ai_history_vault_root_returns_open_vault_root() {
+        let (dir, state) = make_open_vault_state("/vault-a");
+
+        let resolved =
+            resolve_ai_history_vault_root(&state, "/vault-a").expect("vault root should resolve");
+
+        assert_eq!(resolved, dir);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn resolve_ai_history_vault_root_rejects_unknown_vault_key() {
+        let (dir, state) = make_open_vault_state("/vault-a");
+
+        let error = resolve_ai_history_vault_root(&state, "/vault-b")
+            .expect_err("unknown vault key should fail");
+
+        assert!(error.contains("No hay vault abierto"));
+        fs::remove_dir_all(dir).ok();
+    }
 }
