@@ -114,6 +114,69 @@ const claudeRuntimeDescriptor: AIRuntimeDescriptor = {
     configOptions: [],
 };
 
+const populatedRuntimeDescriptor: AIRuntimeDescriptor = {
+    runtime: {
+        id: "codex-acp",
+        name: "Codex ACP",
+        description: "Codex runtime embedded as an ACP sidecar.",
+        capabilities: ["attachments", "permissions", "reasoning"],
+    },
+    models: [
+        {
+            id: "test-model",
+            runtimeId: "codex-acp",
+            name: "Test Model",
+            description: "Default test model.",
+        },
+        {
+            id: "wide-model",
+            runtimeId: "codex-acp",
+            name: "Wide Model",
+            description: "Alternative test model.",
+        },
+    ],
+    modes: [
+        {
+            id: "default",
+            runtimeId: "codex-acp",
+            name: "Default",
+            description: "Default approval preset.",
+        },
+        {
+            id: "review-mode",
+            runtimeId: "codex-acp",
+            name: "Review Mode",
+            description: "Review-focused preset.",
+        },
+    ],
+    configOptions: [
+        {
+            id: "model",
+            runtimeId: "codex-acp",
+            category: "model",
+            label: "Model",
+            type: "select",
+            value: "test-model",
+            options: [
+                { value: "test-model", label: "Test Model" },
+                { value: "wide-model", label: "Wide Model" },
+            ],
+        },
+        {
+            id: "reasoning_effort",
+            runtimeId: "codex-acp",
+            category: "reasoning",
+            label: "Reasoning Effort",
+            type: "select",
+            value: "medium",
+            options: [
+                { value: "medium", label: "Medium" },
+                { value: "high", label: "High" },
+            ],
+        },
+    ],
+};
+
 describe("AIChatPanel tabs lifecycle", () => {
     beforeEach(() => {
         resetChatStore();
@@ -1405,5 +1468,93 @@ describe("AIChatPanel tabs lifecycle", () => {
             expect(reviewTab).toBeTruthy();
             expect(useEditorStore.getState().activeTabId).toBe(reviewTab?.id);
         });
+    });
+
+    it("uses the runtime catalog for restored chats with empty agent options", async () => {
+        const session = createSession(
+            "session-restored",
+            "Restored chat",
+            "idle",
+            {
+                isPersistedSession: true,
+                runtimeState: "persisted_only",
+                models: [],
+                modes: [],
+                configOptions: [],
+                modelId: "test-model",
+                modeId: "default",
+            },
+        );
+        const setMode = vi.fn();
+        const setConfigOption = vi.fn();
+        const resumeSession = vi.fn(async () => session.sessionId);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            runtimes: [populatedRuntimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    runtimeId: "codex-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+            runtimeConnectionByRuntimeId: {
+                "codex-acp": { status: "ready", message: null },
+            },
+            resumeSession,
+            setMode,
+            setConfigOption,
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-restored", sessionId: session.sessionId }],
+            activeTabId: "tab-restored",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        const approvalButton = screen.getByTitle("Approval Preset");
+        const modelButton = screen.getByTitle("Model");
+        const reasoningButton = screen.getByTitle("Reasoning Effort");
+
+        expect(approvalButton).toBeEnabled();
+        expect(modelButton).toBeEnabled();
+        expect(reasoningButton).toBeEnabled();
+
+        fireEvent.click(approvalButton);
+        fireEvent.click(screen.getByRole("button", { name: "Review Mode" }));
+
+        fireEvent.click(modelButton);
+        fireEvent.click(screen.getByRole("button", { name: "Wide Model" }));
+
+        fireEvent.click(reasoningButton);
+        fireEvent.click(screen.getByRole("button", { name: "High" }));
+
+        expect(setMode).toHaveBeenCalledWith("review-mode", session.sessionId);
+        expect(setConfigOption).toHaveBeenNthCalledWith(
+            1,
+            "model",
+            "wide-model",
+            session.sessionId,
+        );
+        expect(setConfigOption).toHaveBeenNthCalledWith(
+            2,
+            "reasoning_effort",
+            "high",
+            session.sessionId,
+        );
     });
 });

@@ -316,6 +316,49 @@ function getRuntimeCatalogSnapshot(
     };
 }
 
+function hydrateSessionCatalogFromRuntime(
+    session: AIChatSession,
+    runtime: AIRuntimeDescriptor | undefined,
+): AIChatSession {
+    if (!runtime) {
+        return session;
+    }
+
+    const optionValues = new Map(
+        session.configOptions.map((option) => [option.id, option.value]),
+    );
+    const models = session.models.length > 0 ? session.models : runtime.models;
+    const modes = session.modes.length > 0 ? session.modes : runtime.modes;
+    const configOptions =
+        session.configOptions.length > 0
+            ? session.configOptions
+            : runtime.configOptions.map((option) => ({
+                  ...option,
+                  value:
+                      optionValues.get(option.id) ??
+                      (option.category === "model"
+                          ? session.modelId
+                          : option.category === "mode"
+                            ? session.modeId
+                            : option.value),
+              }));
+
+    if (
+        models === session.models &&
+        modes === session.modes &&
+        configOptions === session.configOptions
+    ) {
+        return session;
+    }
+
+    return {
+        ...session,
+        models,
+        modes,
+        configOptions,
+    };
+}
+
 function getModelConfigOption(session: Pick<AIChatSession, "configOptions">) {
     return session.configOptions.find((option) => option.category === "model");
 }
@@ -2099,45 +2142,51 @@ function createPersistedSession(
     if (!runtime) return null;
     const runtimeId = history.runtime_id ?? runtime.runtime.id;
     const persistedMessageCount = getPersistedHistoryMessageCount(history);
-    const baseSession: AIChatSession = {
-        sessionId: `persisted:${history.session_id}`,
-        historySessionId: history.session_id,
-        vaultPath,
-        runtimeId,
-        modelId: history.model_id,
-        modeId: history.mode_id,
-        status: "idle",
-        activeWorkCycleId: null,
-        visibleWorkCycleId: null,
-        isResumingSession: false,
-        effortsByModel: {},
-        models: runtime.models,
-        modes: runtime.modes,
-        configOptions: runtime.configOptions.map((option) =>
-            option.category === "model"
-                ? { ...option, value: history.model_id }
-                : option.category === "mode"
-                  ? { ...option, value: history.mode_id }
-                  : option,
-        ),
-        messages: [],
-        attachments: [],
-        isPersistedSession: true,
-        resumeContextPending: persistedMessageCount > 0,
-        runtimeState: "persisted_only",
-        persistedCreatedAt: history.created_at,
-        persistedUpdatedAt: history.updated_at,
-        persistedTitle: history.title ?? null,
-        persistedPreview: history.preview ?? null,
-        persistedMessageCount,
-        loadedPersistedMessageStart:
-            persistedMessageCount === 0
-                ? 0
-                : history.messages.length > 0
-                  ? Math.max(0, persistedMessageCount - history.messages.length)
-                  : null,
-        isLoadingPersistedMessages: false,
-    };
+    const baseSession = hydrateSessionCatalogFromRuntime(
+        {
+            sessionId: `persisted:${history.session_id}`,
+            historySessionId: history.session_id,
+            vaultPath,
+            runtimeId,
+            modelId: history.model_id,
+            modeId: history.mode_id,
+            status: "idle",
+            activeWorkCycleId: null,
+            visibleWorkCycleId: null,
+            isResumingSession: false,
+            effortsByModel: {},
+            models: runtime.models,
+            modes: runtime.modes,
+            configOptions: runtime.configOptions.map((option) =>
+                option.category === "model"
+                    ? { ...option, value: history.model_id }
+                    : option.category === "mode"
+                      ? { ...option, value: history.mode_id }
+                      : option,
+            ),
+            messages: [],
+            attachments: [],
+            isPersistedSession: true,
+            resumeContextPending: persistedMessageCount > 0,
+            runtimeState: "persisted_only",
+            persistedCreatedAt: history.created_at,
+            persistedUpdatedAt: history.updated_at,
+            persistedTitle: history.title ?? null,
+            persistedPreview: history.preview ?? null,
+            persistedMessageCount,
+            loadedPersistedMessageStart:
+                persistedMessageCount === 0
+                    ? 0
+                    : history.messages.length > 0
+                      ? Math.max(
+                            0,
+                            persistedMessageCount - history.messages.length,
+                        )
+                      : null,
+            isLoadingPersistedMessages: false,
+        },
+        runtime,
+    );
 
     if (history.messages.length === 0) {
         return replaceSessionTranscript(baseSession, []);
@@ -3659,9 +3708,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let shouldDrainQueue = false;
             set((state) => {
                 const currentVaultPath = useVaultStore.getState().vaultPath;
-                const scopedSession = stampSessionVaultPath(
+                const stampedSession = stampSessionVaultPath(
                     session,
                     currentVaultPath,
+                );
+                const scopedSession = hydrateSessionCatalogFromRuntime(
+                    stampedSession,
+                    state.runtimes.find(
+                        (runtime) =>
+                            runtime.runtime.id === stampedSession.runtimeId,
+                    ),
                 );
                 const existing = state.sessionsById[scopedSession.sessionId];
                 const isKnown = state.sessionOrder.includes(
@@ -4665,13 +4721,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             if (session.runtimeState !== "live") {
                 set((state) => ({
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [resolvedSessionId]: applyLocalModelSelection(
-                            state.sessionsById[resolvedSessionId]!,
-                            modelId,
-                        ),
-                    },
+                    sessionsById: (() => {
+                        const currentSession =
+                            state.sessionsById[resolvedSessionId]!;
+                        const hydratedSession =
+                            hydrateSessionCatalogFromRuntime(
+                                currentSession,
+                                state.runtimes.find(
+                                    (runtime) =>
+                                        runtime.runtime.id ===
+                                        currentSession.runtimeId,
+                                ),
+                            );
+
+                        return {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: applyLocalModelSelection(
+                                hydratedSession,
+                                modelId,
+                            ),
+                        };
+                    })(),
                 }));
                 saveAiPreferences({ modelId });
                 return;
@@ -4720,13 +4790,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             if (session.runtimeState !== "live") {
                 set((state) => ({
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [resolvedSessionId]: {
-                            ...state.sessionsById[resolvedSessionId]!,
-                            modeId,
-                        },
-                    },
+                    sessionsById: (() => {
+                        const currentSession =
+                            state.sessionsById[resolvedSessionId]!;
+                        const hydratedSession =
+                            hydrateSessionCatalogFromRuntime(
+                                currentSession,
+                                state.runtimes.find(
+                                    (runtime) =>
+                                        runtime.runtime.id ===
+                                        currentSession.runtimeId,
+                                ),
+                            );
+
+                        return {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: {
+                                ...hydratedSession,
+                                modeId,
+                            },
+                        };
+                    })(),
                 }));
                 saveAiPreferences({ modeId });
                 return;
@@ -4767,8 +4851,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             if (session.runtimeState !== "live") {
                 set((state) => {
-                    const currentSession =
-                        state.sessionsById[resolvedSessionId]!;
+                    const currentSession = hydrateSessionCatalogFromRuntime(
+                        state.sessionsById[resolvedSessionId]!,
+                        state.runtimes.find(
+                            (runtime) =>
+                                runtime.runtime.id ===
+                                state.sessionsById[resolvedSessionId]!
+                                    .runtimeId,
+                        ),
+                    );
                     const nextSession =
                         optionId === "model"
                             ? applyLocalModelSelection(currentSession, value)

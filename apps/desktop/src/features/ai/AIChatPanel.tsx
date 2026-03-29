@@ -30,7 +30,9 @@ import {
     listenToAiUserInputRequest,
 } from "./api";
 import {
+    type AIChatSession,
     type AIRuntimeConnectionState,
+    type AIRuntimeDescriptor,
     type AIComposerPart,
     type QueuedChatMessage,
 } from "./types";
@@ -60,6 +62,26 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
     status: "idle",
     message: null,
 };
+
+function getAgentCatalog(
+    session: Pick<AIChatSession, "models" | "modes" | "configOptions"> | null,
+    runtime: AIRuntimeDescriptor | undefined,
+) {
+    return {
+        models:
+            session && session.models.length > 0
+                ? session.models
+                : (runtime?.models ?? []),
+        modes:
+            session && session.modes.length > 0
+                ? session.modes
+                : (runtime?.modes ?? []),
+        configOptions:
+            session && session.configOptions.length > 0
+                ? session.configOptions
+                : (runtime?.configOptions ?? []),
+    };
+}
 
 export function AIChatPanel() {
     const [composerExpanded, setComposerExpanded] = useState(false);
@@ -422,8 +444,10 @@ export function AIChatPanel() {
               IDLE_CONNECTION)
             : IDLE_CONNECTION,
     );
-    const runtimeModels = currentSession?.models ?? activeRuntime?.models ?? [];
-    const runtimeModes = currentSession?.modes ?? activeRuntime?.modes ?? [];
+    const agentCatalog = getAgentCatalog(currentSession ?? null, activeRuntime);
+    const runtimeModels = agentCatalog.models;
+    const runtimeModes = agentCatalog.modes;
+    const runtimeConfigOptions = agentCatalog.configOptions;
     const composerRuntimeLabel =
         (currentSession
             ? runtimes.find(
@@ -894,7 +918,7 @@ export function AIChatPanel() {
                             }
                             models={runtimeModels}
                             modes={runtimeModes}
-                            configOptions={currentSession?.configOptions ?? []}
+                            configOptions={runtimeConfigOptions}
                             onModelChange={(modelId) => {
                                 if (!composerSessionId) return;
                                 void chatActions.setModel(
