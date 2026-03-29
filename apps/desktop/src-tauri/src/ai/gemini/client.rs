@@ -1077,7 +1077,7 @@ impl RuntimeActor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        apply_auth_env(&mut command, &spec.setup);
+        apply_auth_env(&mut command, &self.app, &spec.setup)?;
 
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);
@@ -1274,8 +1274,8 @@ impl RuntimeActor {
         method_id: String,
     ) -> Result<(), String> {
         let connection = self.ensure_initialized(&spec).await?;
-        let request =
-            AuthenticateRequest::new(method_id.clone()).meta(auth_meta(&spec, &method_id));
+        let request = AuthenticateRequest::new(method_id.clone())
+            .meta(auth_meta(&self.app, &spec, &method_id)?);
         connection
             .authenticate(request)
             .await
@@ -1547,12 +1547,16 @@ fn map_loaded_session_state(
     })
 }
 
-fn auth_meta(spec: &GeminiProcessSpec, method_id: &str) -> Option<Meta> {
+fn auth_meta(
+    app: &AppHandle,
+    spec: &GeminiProcessSpec,
+    method_id: &str,
+) -> Result<Option<Meta>, String> {
     let mut entries = Vec::new();
+    let secrets = super::setup::load_secret_bundle(app)?;
 
     if method_id == "use_gemini" {
-        if let Some(api_key) = spec
-            .setup
+        if let Some(api_key) = secrets
             .gemini_api_key
             .as_ref()
             .filter(|value| !value.trim().is_empty())
@@ -1572,13 +1576,13 @@ fn auth_meta(spec: &GeminiProcessSpec, method_id: &str) -> Option<Meta> {
                 "gateway".to_string(),
                 serde_json::json!({
                     "baseUrl": base_url,
-                    "headers": spec.setup.gateway_headers.as_ref(),
+                    "headers": secrets.gateway_headers.as_ref(),
                 }),
             ));
         }
     }
 
-    (!entries.is_empty()).then(|| Meta::from_iter(entries))
+    Ok((!entries.is_empty()).then(|| Meta::from_iter(entries)))
 }
 
 #[derive(Debug, Clone)]

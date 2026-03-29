@@ -1079,7 +1079,7 @@ impl RuntimeActor {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .env("CODEX_HOME", &spec.home_dir);
-        apply_auth_env(&mut command, &spec.setup);
+        apply_auth_env(&mut command)?;
 
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);

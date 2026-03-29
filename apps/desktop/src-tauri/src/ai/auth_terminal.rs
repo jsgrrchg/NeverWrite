@@ -603,8 +603,8 @@ fn resolve_claude_launch_config(
             ClaudeSetupInput {
                 custom_binary_path: Some(custom_binary_path),
                 anthropic_base_url: None,
-                anthropic_custom_headers: None,
-                anthropic_auth_token: None,
+                anthropic_custom_headers: super::secret_store::SecretValuePatch::Unchanged,
+                anthropic_auth_token: super::secret_store::SecretValuePatch::Unchanged,
             },
         )?;
     }
@@ -635,12 +635,12 @@ fn resolve_gemini_launch_config(
             app,
             GeminiSetupInput {
                 custom_binary_path: Some(custom_binary_path),
-                gemini_api_key: None,
-                google_api_key: None,
+                gemini_api_key: super::secret_store::SecretValuePatch::Unchanged,
+                google_api_key: super::secret_store::SecretValuePatch::Unchanged,
                 google_cloud_project: None,
                 google_cloud_location: None,
                 gateway_base_url: None,
-                gateway_headers: None,
+                gateway_headers: super::secret_store::SecretValuePatch::Unchanged,
             },
         )?;
     }

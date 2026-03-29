@@ -7,5 +7,6 @@ pub mod gemini;
 pub mod manager;
 pub mod persistence;
 pub mod runtime;
+pub(crate) mod secret_store;
 
 pub use manager::AiManager;

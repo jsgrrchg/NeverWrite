@@ -8,33 +8,65 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, GEMINI_RUNTIME_ID};
 
+#[cfg(test)]
+use crate::ai::secret_store::TestSecretStore;
+use crate::ai::secret_store::{
+    clear_secret, get_secret, has_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
+};
+
 const SETUP_FILE_NAME: &str = "gemini-setup.json";
 const GEMINI_PROGRAM_NAME: &str = "gemini";
 const GEMINI_AUTH_SETTINGS_RELATIVE_PATH: &str = ".gemini/settings.json";
 const GEMINI_GOOGLE_AUTH_TYPE_ALIASES: &[&str] = &["oauth-personal", "login_with_google", "google"];
+const GEMINI_API_KEY_SECRET: &str = "gemini_api_key";
+const GOOGLE_API_KEY_SECRET: &str = "google_api_key";
+const GATEWAY_HEADERS_SECRET: &str = "gateway_headers";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeminiSetupConfig {
     pub custom_binary_path: Option<String>,
     pub auth_method: Option<String>,
     pub auth_invalidated_at_ms: Option<u64>,
-    pub gemini_api_key: Option<String>,
-    pub google_api_key: Option<String>,
     pub google_cloud_project: Option<String>,
     pub google_cloud_location: Option<String>,
     pub gateway_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StoredGeminiSetupConfig {
+    pub custom_binary_path: Option<String>,
+    pub auth_method: Option<String>,
+    pub auth_invalidated_at_ms: Option<u64>,
+    pub google_cloud_project: Option<String>,
+    pub google_cloud_location: Option<String>,
+    pub gateway_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_headers: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GeminiSecretBundle {
+    pub gemini_api_key: Option<String>,
+    pub google_api_key: Option<String>,
     pub gateway_headers: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GeminiSetupInput {
     pub custom_binary_path: Option<String>,
-    pub gemini_api_key: Option<String>,
-    pub google_api_key: Option<String>,
+    #[serde(default)]
+    pub gemini_api_key: SecretValuePatch,
+    #[serde(default)]
+    pub google_api_key: SecretValuePatch,
     pub google_cloud_project: Option<String>,
     pub google_cloud_location: Option<String>,
     pub gateway_base_url: Option<String>,
-    pub gateway_headers: Option<String>,
+    #[serde(default)]
+    pub gateway_headers: SecretValuePatch,
 }
 
 #[derive(Debug, Clone)]
@@ -46,50 +78,83 @@ pub struct ResolvedBinary {
 }
 
 impl GeminiSetupConfig {
-    pub fn merge_input(mut self, input: GeminiSetupInput) -> Self {
-        if let Some(path) = input.custom_binary_path {
-            self.custom_binary_path = normalize_optional_string(Some(path));
+    fn apply_input(&mut self, input: &GeminiSetupInput) {
+        if let Some(path) = input.custom_binary_path.as_ref() {
+            self.custom_binary_path = normalize_optional_string(Some(path.clone()));
         }
-        if let Some(value) = input.gemini_api_key {
-            self.gemini_api_key = normalize_optional_string(Some(value));
+        if let Some(value) = input.google_cloud_project.as_ref() {
+            self.google_cloud_project = normalize_optional_string(Some(value.clone()));
+        }
+        if let Some(value) = input.google_cloud_location.as_ref() {
+            self.google_cloud_location = normalize_optional_string(Some(value.clone()));
+        }
+        if let Some(value) = input.gateway_base_url.as_ref() {
+            self.gateway_base_url = normalize_optional_string(Some(value.clone()));
+        }
+        if !input.gemini_api_key.is_unchanged() || !input.google_api_key.is_unchanged() {
             self.auth_method = None;
             self.auth_invalidated_at_ms = None;
         }
-        if let Some(value) = input.google_api_key {
-            self.google_api_key = normalize_optional_string(Some(value));
+    }
+}
+
+impl From<StoredGeminiSetupConfig> for GeminiSetupConfig {
+    fn from(value: StoredGeminiSetupConfig) -> Self {
+        Self {
+            custom_binary_path: value.custom_binary_path,
+            auth_method: value.auth_method,
+            auth_invalidated_at_ms: value.auth_invalidated_at_ms,
+            google_cloud_project: value.google_cloud_project,
+            google_cloud_location: value.google_cloud_location,
+            gateway_base_url: value.gateway_base_url,
         }
-        if let Some(value) = input.google_cloud_project {
-            self.google_cloud_project = normalize_optional_string(Some(value));
+    }
+}
+
+impl StoredGeminiSetupConfig {
+    fn from_public(config: &GeminiSetupConfig) -> Self {
+        Self {
+            custom_binary_path: config.custom_binary_path.clone(),
+            auth_method: config.auth_method.clone(),
+            auth_invalidated_at_ms: config.auth_invalidated_at_ms,
+            google_cloud_project: config.google_cloud_project.clone(),
+            google_cloud_location: config.google_cloud_location.clone(),
+            gateway_base_url: config.gateway_base_url.clone(),
+            gemini_api_key: None,
+            google_api_key: None,
+            gateway_headers: None,
         }
-        if let Some(value) = input.google_cloud_location {
-            self.google_cloud_location = normalize_optional_string(Some(value));
-        }
-        if let Some(value) = input.gateway_base_url {
-            self.gateway_base_url = normalize_optional_string(Some(value));
-        }
-        if let Some(value) = input.gateway_headers {
-            self.gateway_headers = normalize_optional_string(Some(value));
-        }
-        self
+    }
+
+    fn has_legacy_secrets(&self) -> bool {
+        self.gemini_api_key.is_some()
+            || self.google_api_key.is_some()
+            || self.gateway_headers.is_some()
     }
 }
 
 pub fn load_setup_config(app: &AppHandle) -> Result<GeminiSetupConfig, String> {
     let path = setup_file_path(app)?;
-    if !path.exists() {
-        return Ok(GeminiSetupConfig::default());
-    }
+    load_setup_config_from_path(&path)
+}
 
-    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&raw).map_err(|error| error.to_string())
+pub fn load_secret_bundle(_app: &AppHandle) -> Result<GeminiSecretBundle, String> {
+    Ok(GeminiSecretBundle {
+        gemini_api_key: get_secret(GEMINI_RUNTIME_ID, GEMINI_API_KEY_SECRET)?,
+        google_api_key: get_secret(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET)?,
+        gateway_headers: get_secret(GEMINI_RUNTIME_ID, GATEWAY_HEADERS_SECRET)?,
+    })
 }
 
 pub fn save_setup_config(
     app: &AppHandle,
     input: GeminiSetupInput,
 ) -> Result<GeminiSetupConfig, String> {
-    let config = load_setup_config(app)?.merge_input(input);
-    write_setup_config(app, &config)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
+    config.apply_input(&input);
+    apply_secret_patches(&input)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
@@ -97,18 +162,20 @@ pub fn mark_authenticated_method(
     app: &AppHandle,
     method_id: &str,
 ) -> Result<GeminiSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
     config.auth_method = Some(method_id.to_string());
     config.auth_invalidated_at_ms = None;
-    write_setup_config(app, &config)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
 pub fn clear_authenticated_method(app: &AppHandle) -> Result<GeminiSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
     config.auth_method = None;
     config.auth_invalidated_at_ms = Some(current_time_millis());
-    write_setup_config(app, &config)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
@@ -116,7 +183,7 @@ pub fn setup_status(app: &AppHandle) -> Result<AiRuntimeSetupStatus, String> {
     let config = load_setup_config(app)?;
     let resolved = resolve_binary_command(&config);
     let auth_methods = available_auth_methods();
-    let auth_method = detect_auth_method(&config);
+    let auth_method = detect_auth_method(&config, app)?;
     let binary_ready = resolved.program.is_some();
     let auth_ready = auth_method.is_some();
 
@@ -180,12 +247,22 @@ pub fn resolve_binary_command(config: &GeminiSetupConfig) -> ResolvedBinary {
     }
 }
 
-pub fn apply_auth_env(command: &mut tokio::process::Command, config: &GeminiSetupConfig) {
-    if let Some(value) = config.gemini_api_key.as_ref() {
-        command.env("GEMINI_API_KEY", value);
+pub fn apply_auth_env(
+    command: &mut tokio::process::Command,
+    app: &AppHandle,
+    config: &GeminiSetupConfig,
+) -> Result<(), String> {
+    let secrets = load_secret_bundle(app)?;
+
+    if !env_secret_present("GEMINI_API_KEY") {
+        if let Some(value) = secrets.gemini_api_key.as_ref() {
+            command.env("GEMINI_API_KEY", value);
+        }
     }
-    if let Some(value) = config.google_api_key.as_ref() {
-        command.env("GOOGLE_API_KEY", value);
+    if !env_secret_present("GOOGLE_API_KEY") {
+        if let Some(value) = secrets.google_api_key.as_ref() {
+            command.env("GOOGLE_API_KEY", value);
+        }
     }
     if let Some(value) = config.google_cloud_project.as_ref() {
         command.env("GOOGLE_CLOUD_PROJECT", value);
@@ -196,28 +273,37 @@ pub fn apply_auth_env(command: &mut tokio::process::Command, config: &GeminiSetu
     if let Some(value) = config.auth_method.as_deref() {
         command.env("GEMINI_DEFAULT_AUTH_TYPE", value);
     }
+
+    Ok(())
 }
 
-fn detect_auth_method(config: &GeminiSetupConfig) -> Option<String> {
-    if config.auth_method.as_deref() == Some("use_gemini") && gemini_api_key_ready(config) {
-        return Some("use_gemini".to_string());
+pub fn has_gemini_api_key(_app: &AppHandle) -> Result<bool, String> {
+    developer_api_key_ready()
+}
+
+fn detect_auth_method(
+    config: &GeminiSetupConfig,
+    app: &AppHandle,
+) -> Result<Option<String>, String> {
+    if config.auth_method.as_deref() == Some("use_gemini") && gemini_api_key_ready(app)? {
+        return Ok(Some("use_gemini".to_string()));
     }
 
     if config.auth_method.as_deref() == Some("login_with_google")
         && gemini_google_login_available(config)
     {
-        return Some("login_with_google".to_string());
+        return Ok(Some("login_with_google".to_string()));
     }
 
-    if gemini_api_key_ready(config) {
-        return Some("use_gemini".to_string());
+    if gemini_api_key_ready(app)? {
+        return Ok(Some("use_gemini".to_string()));
     }
 
     if gemini_google_login_available(config) {
-        return Some("login_with_google".to_string());
+        return Ok(Some("login_with_google".to_string()));
     }
 
-    None
+    Ok(None)
 }
 
 fn available_auth_methods() -> Vec<AiAuthMethod> {
@@ -236,14 +322,21 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
     ]
 }
 
-fn gemini_api_key_ready(config: &GeminiSetupConfig) -> bool {
-    config
-        .gemini_api_key
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty())
-        || env::var("GEMINI_API_KEY")
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
+fn gemini_api_key_ready(_app: &AppHandle) -> Result<bool, String> {
+    developer_api_key_ready()
+}
+
+fn developer_api_key_ready() -> Result<bool, String> {
+    if env_secret_present("GEMINI_API_KEY") {
+        return Ok(true);
+    }
+    if env_secret_present("GOOGLE_API_KEY") {
+        return Ok(true);
+    }
+    if has_secret(GEMINI_RUNTIME_ID, GEMINI_API_KEY_SECRET)? {
+        return Ok(true);
+    }
+    has_secret(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET)
 }
 
 fn gemini_google_login_available(config: &GeminiSetupConfig) -> bool {
@@ -309,14 +402,80 @@ fn setup_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(base.join("ai").join(SETUP_FILE_NAME))
 }
 
-fn write_setup_config(app: &AppHandle, config: &GeminiSetupConfig) -> Result<(), String> {
-    let path = setup_file_path(app)?;
+fn write_setup_config_to_path(path: &Path, config: &GeminiSetupConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
-    let serialized = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
+    let serialized = serde_json::to_string_pretty(&StoredGeminiSetupConfig::from_public(config))
+        .map_err(|error| error.to_string())?;
     fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn load_setup_config_from_path(path: &Path) -> Result<GeminiSetupConfig, String> {
+    let stored = load_stored_setup_config(path)?;
+    if stored.has_legacy_secrets() {
+        migrate_legacy_secrets(path, &stored)?;
+    }
+    Ok(stored.into())
+}
+
+fn load_stored_setup_config(path: &Path) -> Result<StoredGeminiSetupConfig, String> {
+    if !path.exists() {
+        return Ok(StoredGeminiSetupConfig::default());
+    }
+
+    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
+fn migrate_legacy_secrets(path: &Path, stored: &StoredGeminiSetupConfig) -> Result<(), String> {
+    if let Some(value) = normalize_optional_string(stored.gemini_api_key.clone()) {
+        set_secret(GEMINI_RUNTIME_ID, GEMINI_API_KEY_SECRET, &value)?;
+    }
+    if let Some(value) = normalize_optional_string(stored.google_api_key.clone()) {
+        set_secret(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET, &value)?;
+    }
+    if let Some(value) = normalize_optional_string(stored.gateway_headers.clone()) {
+        set_secret(GEMINI_RUNTIME_ID, GATEWAY_HEADERS_SECRET, &value)?;
+    }
+
+    let sanitized: GeminiSetupConfig = stored.clone().into();
+    write_setup_config_to_path(path, &sanitized)
+}
+
+fn apply_secret_patches(input: &GeminiSetupInput) -> Result<(), String> {
+    match input.gemini_api_key.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(GEMINI_RUNTIME_ID, GEMINI_API_KEY_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(GEMINI_RUNTIME_ID, GEMINI_API_KEY_SECRET, &value)?;
+        }
+    }
+
+    match input.google_api_key.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET, &value)?;
+        }
+    }
+
+    match input.gateway_headers.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(GEMINI_RUNTIME_ID, GATEWAY_HEADERS_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(GEMINI_RUNTIME_ID, GATEWAY_HEADERS_SECRET, &value)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
@@ -345,8 +504,7 @@ fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> Resolv
     let looks_like_path = candidate.is_absolute()
         || trimmed.contains(std::path::MAIN_SEPARATOR)
         || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || is_js_path(&candidate);
+        || trimmed.contains('\\');
 
     if looks_like_path {
         if candidate.exists() {
@@ -374,39 +532,24 @@ fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> Resolv
 }
 
 fn command_from_existing_path(path: PathBuf, source: AiRuntimeBinarySource) -> ResolvedBinary {
-    let display = path.display().to_string();
-
-    if is_js_path(&path) {
-        if let Some(node_path) = find_program("node") {
-            return ResolvedBinary {
-                program: Some(node_path.display().to_string()),
-                args: vec![display.clone()],
-                display: Some(display),
-                source,
-            };
-        }
-
-        return ResolvedBinary {
-            program: None,
-            args: Vec::new(),
-            display: Some(display),
-            source,
-        };
-    }
-
     ResolvedBinary {
-        program: Some(display.clone()),
+        program: Some(path.display().to_string()),
         args: Vec::new(),
-        display: Some(display),
+        display: Some(path.display().to_string()),
         source,
     }
 }
 
-fn is_js_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|value| value.to_str()),
-        Some("js" | "mjs" | "cjs")
-    )
+fn home_dir_fallback() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 fn find_program(program: &str) -> Option<PathBuf> {
@@ -444,9 +587,18 @@ fn executable_candidates(directory: &Path, program: &str) -> Vec<PathBuf> {
                 let ext = normalized.strip_prefix('.').unwrap_or(normalized);
                 candidates.push(directory.join(format!("{program}.{ext}")));
             }
+
+            if !candidates.iter().any(|candidate| {
+                candidate
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+            }) {
+                candidates.push(directory.join(format!("{program}.exe")));
+            }
         }
 
-        candidates
+        return candidates;
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -457,38 +609,144 @@ fn executable_candidates(directory: &Path, program: &str) -> Vec<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn windows_path_extensions() -> Vec<String> {
-    env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .map(ToString::to_string)
-        .collect()
+    env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .map(|raw| {
+            raw.split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-fn home_dir_fallback() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        None
-    }
+fn matches_google_login_selected_type(value: &str) -> bool {
+    GEMINI_GOOGLE_AUTH_TYPE_ALIASES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(value))
 }
 
-fn matches_google_login_selected_type(selected_type: &str) -> bool {
-    GEMINI_GOOGLE_AUTH_TYPE_ALIASES.contains(&selected_type)
+fn env_secret_present(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::matches_google_login_selected_type;
+    use super::*;
+    use crate::ai::secret_store::test_lock;
+    use std::{env, sync::Arc};
+
+    fn temp_setup_path(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!(
+            "vaultai-gemini-setup-tests-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(SETUP_FILE_NAME)
+    }
 
     #[test]
-    fn recognizes_supported_google_login_auth_aliases() {
-        assert!(matches_google_login_selected_type("oauth-personal"));
-        assert!(matches_google_login_selected_type("login_with_google"));
-        assert!(matches_google_login_selected_type("google"));
-        assert!(!matches_google_login_selected_type("gemini-api-key"));
+    fn writes_public_config_without_serializing_secrets() {
+        let _guard = test_lock().lock().unwrap();
+        let path = temp_setup_path("public-only");
+        let config = GeminiSetupConfig {
+            gateway_base_url: Some("https://gateway.example".to_string()),
+            ..GeminiSetupConfig::default()
+        };
+
+        write_setup_config_to_path(&path, &config).expect("write setup");
+        let raw = fs::read_to_string(&path).expect("read setup");
+
+        assert!(raw.contains("gateway_base_url"));
+        assert!(!raw.contains("gemini_api_key"));
+        assert!(!raw.contains("gateway_headers"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_legacy_json_secrets_into_secure_store() {
+        let _guard = test_lock().lock().unwrap();
+        let path = temp_setup_path("migrate");
+        let store = Arc::new(TestSecretStore::default());
+        store.install();
+
+        let legacy = serde_json::json!({
+            "gemini_api_key": "gemini-secret",
+            "google_api_key": "google-secret",
+            "gateway_headers": "x-api-key: secret"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let _ = load_setup_config_from_path(&path).expect("load config");
+        let raw = fs::read_to_string(&path).expect("read sanitized setup");
+
+        assert_eq!(
+            store
+                .get_value(GEMINI_RUNTIME_ID, GEMINI_API_KEY_SECRET)
+                .as_deref(),
+            Some("gemini-secret")
+        );
+        assert_eq!(
+            store
+                .get_value(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET)
+                .as_deref(),
+            Some("google-secret")
+        );
+        assert_eq!(
+            store
+                .get_value(GEMINI_RUNTIME_ID, GATEWAY_HEADERS_SECRET)
+                .as_deref(),
+            Some("x-api-key: secret")
+        );
+        assert!(!raw.contains("gemini_api_key"));
+        assert!(!raw.contains("gateway_headers"));
+
+        TestSecretStore::uninstall();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn developer_api_key_ready_accepts_google_api_key_from_secure_store() {
+        let _guard = test_lock().lock().unwrap();
+        let store = Arc::new(TestSecretStore::default());
+        store.install();
+        set_secret(GEMINI_RUNTIME_ID, GOOGLE_API_KEY_SECRET, "google-secret")
+            .expect("seed secure store");
+
+        let ready = developer_api_key_ready().expect("check secure store");
+
+        assert!(ready);
+
+        TestSecretStore::uninstall();
+    }
+
+    #[test]
+    fn apply_input_invalidates_auth_when_google_api_key_changes() {
+        let mut config = GeminiSetupConfig {
+            auth_method: Some("use_gemini".to_string()),
+            auth_invalidated_at_ms: Some(42),
+            ..GeminiSetupConfig::default()
+        };
+
+        config.apply_input(&GeminiSetupInput {
+            custom_binary_path: None,
+            gemini_api_key: SecretValuePatch::Unchanged,
+            google_api_key: SecretValuePatch::Set {
+                value: "google-secret".to_string(),
+            },
+            google_cloud_project: None,
+            google_cloud_location: None,
+            gateway_base_url: None,
+            gateway_headers: SecretValuePatch::Unchanged,
+        });
+
+        assert_eq!(config.auth_method, None);
+        assert_eq!(config.auth_invalidated_at_ms, None);
     }
 }

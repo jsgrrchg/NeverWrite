@@ -109,7 +109,7 @@ Auth invalidation: when the runtime returns errors containing "auth_required" or
 ### Codex
 
 - **`chatgpt`**: Browser-based OAuth (skipped if `NO_BROWSER` env var is set)
-- **`openai-api-key` / `codex-api-key`**: API key stored in config, passed via `CODEX_API_KEY` or `OPENAI_API_KEY` env vars
+- **`openai-api-key` / `codex-api-key`**: API key stored in the OS secure secret store, injected into `CODEX_API_KEY` or `OPENAI_API_KEY` only when spawning the runtime
 
 VaultAI carries a small local patch on `vendor/codex-acp` `v0.10.0` to preserve `SessionModeState` / `Approval Preset` options when upstream Codex expands a `workspace-write` sandbox with additional writable roots. Without this patch, the runtime can stop emitting `modes` even though the session still has a valid approval+sandbox configuration.
 
@@ -124,7 +124,7 @@ Frontend (React) → Tauri command → AiManager → RuntimeAdapter
     → RuntimeHandle.create_session(spec)
     → mpsc channel → actor thread (tokio LocalSet)
     → Command::new(program).args(args).stdin(Piped).stdout(Piped).stderr(Piped)
-    → apply_auth_env(command, config)
+    → apply_auth_env(command, public_setup)
     → child.spawn()
     → ClientSideConnection::new(client, stdin, stdout)
     → JSON-RPC: initialize → session/new → prompt

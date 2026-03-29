@@ -34,6 +34,7 @@ import {
     type AIRuntimeConnectionState,
     type AIRuntimeDescriptor,
     type AIComposerPart,
+    type AISecretPatch,
     type QueuedChatMessage,
 } from "./types";
 import { AIChatAgentControls } from "./components/AIChatAgentControls";
@@ -62,6 +63,7 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
     status: "idle",
     message: null,
 };
+const UNCHANGED_SECRET_PATCH: AISecretPatch = { action: "unchanged" };
 
 function getAgentCatalog(
     session: Pick<AIChatSession, "models" | "modes" | "configOptions"> | null,
@@ -472,14 +474,21 @@ export function AIChatPanel() {
         async (input: {
             runtimeId?: string;
             customBinaryPath?: string;
-            geminiApiKey?: string;
+            codexApiKey: AISecretPatch;
+            openaiApiKey: AISecretPatch;
+            geminiApiKey: AISecretPatch;
             gatewayBaseUrl?: string;
-            gatewayHeaders?: string;
+            gatewayHeaders: AISecretPatch;
             anthropicBaseUrl?: string;
-            anthropicCustomHeaders?: string;
-            anthropicAuthToken?: string;
+            anthropicCustomHeaders: AISecretPatch;
+            anthropicAuthToken: AISecretPatch;
         }) => {
-            await chatActions.saveSetup(input);
+            await chatActions.saveSetup({
+                ...input,
+                googleApiKey: UNCHANGED_SECRET_PATCH,
+                googleCloudProject: undefined,
+                googleCloudLocation: undefined,
+            });
         },
         [chatActions],
     );
@@ -488,14 +497,14 @@ export function AIChatPanel() {
             runtimeId?: string;
             methodId: string;
             customBinaryPath?: string;
-            openaiApiKey?: string;
-            codexApiKey?: string;
-            geminiApiKey?: string;
+            openaiApiKey: AISecretPatch;
+            codexApiKey: AISecretPatch;
+            geminiApiKey: AISecretPatch;
             gatewayBaseUrl?: string;
-            gatewayHeaders?: string;
+            gatewayHeaders: AISecretPatch;
             anthropicBaseUrl?: string;
-            anthropicCustomHeaders?: string;
-            anthropicAuthToken?: string;
+            anthropicCustomHeaders: AISecretPatch;
+            anthropicAuthToken: AISecretPatch;
         }) => {
             const runtimeId = input.runtimeId ?? activeRuntimeId;
             if (!runtimeId) return;
@@ -519,7 +528,13 @@ export function AIChatPanel() {
                 return;
             }
 
-            await chatActions.startAuth({ ...input, runtimeId });
+            await chatActions.startAuth({
+                ...input,
+                runtimeId,
+                googleApiKey: UNCHANGED_SECRET_PATCH,
+                googleCloudProject: undefined,
+                googleCloudLocation: undefined,
+            });
         },
         [activeRuntimeId, chatActions, runtimes],
     );

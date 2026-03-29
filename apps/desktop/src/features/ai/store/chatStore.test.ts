@@ -1318,7 +1318,16 @@ describe("chatStore", () => {
             selectedRuntimeId: "codex-acp",
         });
 
-        await useChatStore.getState().startAuth({ methodId: "openai-api-key" });
+        await useChatStore.getState().startAuth({
+            methodId: "openai-api-key",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "unchanged" },
+            googleApiKey: { action: "unchanged" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
+        });
 
         expect(
             useChatStore.getState().runtimeConnectionByRuntimeId["codex-acp"],

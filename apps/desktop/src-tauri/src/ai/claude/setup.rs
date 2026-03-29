@@ -9,24 +9,50 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CLAUDE_RUNTIME_ID};
 
+#[cfg(test)]
+use crate::ai::secret_store::TestSecretStore;
+use crate::ai::secret_store::{
+    clear_secret, get_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
+};
+
 const SETUP_FILE_NAME: &str = "claude-setup.json";
+const ANTHROPIC_CUSTOM_HEADERS_SECRET: &str = "anthropic_custom_headers";
+const ANTHROPIC_AUTH_TOKEN_SECRET: &str = "anthropic_auth_token";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeSetupConfig {
     pub custom_binary_path: Option<String>,
     pub anthropic_base_url: Option<String>,
-    pub anthropic_custom_headers: Option<String>,
-    pub anthropic_auth_token: Option<String>,
     pub auth_method: Option<String>,
     pub auth_invalidated_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StoredClaudeSetupConfig {
+    pub custom_binary_path: Option<String>,
+    pub anthropic_base_url: Option<String>,
+    pub auth_method: Option<String>,
+    pub auth_invalidated_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_custom_headers: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_auth_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaudeSecretBundle {
+    pub anthropic_custom_headers: Option<String>,
+    pub anthropic_auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClaudeSetupInput {
     pub custom_binary_path: Option<String>,
     pub anthropic_base_url: Option<String>,
-    pub anthropic_custom_headers: Option<String>,
-    pub anthropic_auth_token: Option<String>,
+    #[serde(default)]
+    pub anthropic_custom_headers: SecretValuePatch,
+    #[serde(default)]
+    pub anthropic_auth_token: SecretValuePatch,
 }
 
 #[derive(Debug, Clone)]
@@ -38,49 +64,74 @@ pub struct ResolvedBinary {
 }
 
 impl ClaudeSetupConfig {
-    pub fn merge_input(mut self, input: ClaudeSetupInput) -> Self {
-        if let Some(path) = input.custom_binary_path {
-            self.custom_binary_path = normalize_optional_string(Some(path));
+    fn apply_input(&mut self, input: &ClaudeSetupInput) {
+        if let Some(path) = input.custom_binary_path.as_ref() {
+            self.custom_binary_path = normalize_optional_string(Some(path.clone()));
         }
 
-        if let Some(value) = input.anthropic_base_url {
-            self.anthropic_base_url = normalize_optional_string(Some(value));
+        if let Some(value) = input.anthropic_base_url.as_ref() {
+            self.anthropic_base_url = normalize_optional_string(Some(value.clone()));
+        }
+
+        if input.anthropic_base_url.is_some()
+            || !input.anthropic_custom_headers.is_unchanged()
+            || !input.anthropic_auth_token.is_unchanged()
+        {
             self.auth_method = None;
             self.auth_invalidated_at_ms = None;
         }
+    }
+}
 
-        if let Some(value) = input.anthropic_custom_headers {
-            self.anthropic_custom_headers = normalize_optional_string(Some(value));
-            self.auth_method = None;
-            self.auth_invalidated_at_ms = None;
+impl From<StoredClaudeSetupConfig> for ClaudeSetupConfig {
+    fn from(value: StoredClaudeSetupConfig) -> Self {
+        Self {
+            custom_binary_path: value.custom_binary_path,
+            anthropic_base_url: value.anthropic_base_url,
+            auth_method: value.auth_method,
+            auth_invalidated_at_ms: value.auth_invalidated_at_ms,
         }
+    }
+}
 
-        if let Some(value) = input.anthropic_auth_token {
-            self.anthropic_auth_token = normalize_optional_string(Some(value));
-            self.auth_method = None;
-            self.auth_invalidated_at_ms = None;
+impl StoredClaudeSetupConfig {
+    fn from_public(config: &ClaudeSetupConfig) -> Self {
+        Self {
+            custom_binary_path: config.custom_binary_path.clone(),
+            anthropic_base_url: config.anthropic_base_url.clone(),
+            auth_method: config.auth_method.clone(),
+            auth_invalidated_at_ms: config.auth_invalidated_at_ms,
+            anthropic_custom_headers: None,
+            anthropic_auth_token: None,
         }
+    }
 
-        self
+    fn has_legacy_secrets(&self) -> bool {
+        self.anthropic_custom_headers.is_some() || self.anthropic_auth_token.is_some()
     }
 }
 
 pub fn load_setup_config(app: &AppHandle) -> Result<ClaudeSetupConfig, String> {
     let path = setup_file_path(app)?;
-    if !path.exists() {
-        return Ok(ClaudeSetupConfig::default());
-    }
+    load_setup_config_from_path(&path)
+}
 
-    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&raw).map_err(|error| error.to_string())
+pub fn load_secret_bundle(_app: &AppHandle) -> Result<ClaudeSecretBundle, String> {
+    Ok(ClaudeSecretBundle {
+        anthropic_custom_headers: get_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_CUSTOM_HEADERS_SECRET)?,
+        anthropic_auth_token: get_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_AUTH_TOKEN_SECRET)?,
+    })
 }
 
 pub fn save_setup_config(
     app: &AppHandle,
     input: ClaudeSetupInput,
 ) -> Result<ClaudeSetupConfig, String> {
-    let config = load_setup_config(app)?.merge_input(input);
-    write_setup_config(app, &config)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
+    config.apply_input(&input);
+    apply_secret_patches(&input)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
@@ -88,31 +139,34 @@ pub fn mark_authenticated_method(
     app: &AppHandle,
     method_id: &str,
 ) -> Result<ClaudeSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
     config.auth_method = Some(method_id.to_string());
     config.auth_invalidated_at_ms = None;
-    write_setup_config(app, &config)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
 pub fn clear_authenticated_method(app: &AppHandle) -> Result<ClaudeSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
     config.auth_method = None;
     config.auth_invalidated_at_ms = Some(current_time_millis());
-    write_setup_config(app, &config)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
 pub fn clear_gateway_settings(app: &AppHandle) -> Result<ClaudeSetupConfig, String> {
-    let mut config = load_setup_config(app)?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
     config.anthropic_base_url = None;
-    config.anthropic_custom_headers = None;
-    config.anthropic_auth_token = None;
     if config.auth_method.as_deref() == Some("gateway") {
         config.auth_method = None;
     }
     config.auth_invalidated_at_ms = None;
-    write_setup_config(app, &config)?;
+    clear_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_CUSTOM_HEADERS_SECRET)?;
+    clear_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_AUTH_TOKEN_SECRET)?;
+    write_setup_config_to_path(&path, &config)?;
     Ok(config)
 }
 
@@ -190,9 +244,6 @@ pub fn resolve_binary_command(
         }
     }
 
-    // In debug builds prefer vendor JS (node) over the Bun-compiled binary.
-    // Bun binaries are unreliable when spawned as child processes by Tauri.
-    // Release builds use the compiled binary (signed inside the .app bundle).
     if cfg!(debug_assertions) && vendor_path.exists() {
         return command_from_existing_path(vendor_path, AiRuntimeBinarySource::Vendor);
     }
@@ -322,30 +373,37 @@ pub fn launch_claude_login(resolved: &ResolvedBinary, cwd: Option<&Path>) -> Res
     Err("Claude login is not supported on this platform yet.".to_string())
 }
 
-pub fn apply_auth_env(command: &mut tokio::process::Command, config: &ClaudeSetupConfig) {
+pub fn apply_auth_env(
+    command: &mut tokio::process::Command,
+    app: &AppHandle,
+    config: &ClaudeSetupConfig,
+) -> Result<(), String> {
+    let secrets = load_secret_bundle(app)?;
+    let external_token_present = env_secret_present("ANTHROPIC_AUTH_TOKEN");
+    let external_headers_present = env_secret_present("ANTHROPIC_CUSTOM_HEADERS");
+
     if let Some(value) = config.anthropic_base_url.as_ref() {
         command.env("ANTHROPIC_BASE_URL", value);
-        command.env(
-            "ANTHROPIC_AUTH_TOKEN",
-            config.anthropic_auth_token.as_deref().unwrap_or(""),
-        );
-    } else if let Some(value) = config.anthropic_auth_token.as_ref() {
-        command.env("ANTHROPIC_AUTH_TOKEN", value);
+        if let Some(token) = secrets.anthropic_auth_token.as_ref() {
+            if !external_token_present {
+                command.env("ANTHROPIC_AUTH_TOKEN", token);
+            }
+        } else if !external_token_present {
+            command.env("ANTHROPIC_AUTH_TOKEN", "");
+        }
+    } else if !external_token_present {
+        if let Some(token) = secrets.anthropic_auth_token.as_ref() {
+            command.env("ANTHROPIC_AUTH_TOKEN", token);
+        }
     }
 
-    if let Some(value) = config.anthropic_custom_headers.as_ref() {
-        command.env("ANTHROPIC_CUSTOM_HEADERS", value);
-    }
-}
-
-fn write_setup_config(app: &AppHandle, config: &ClaudeSetupConfig) -> Result<(), String> {
-    let path = setup_file_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    if !external_headers_present {
+        if let Some(value) = secrets.anthropic_custom_headers.as_ref() {
+            command.env("ANTHROPIC_CUSTOM_HEADERS", value);
+        }
     }
 
-    let serialized = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
-    fs::write(path, serialized).map_err(|error| error.to_string())
+    Ok(())
 }
 
 fn detect_auth_method(config: &ClaudeSetupConfig) -> Option<String> {
@@ -607,62 +665,172 @@ fn windows_path_extensions() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn load_setup_config_from_path(path: &Path) -> Result<ClaudeSetupConfig, String> {
+    let stored = load_stored_setup_config(path)?;
+    if stored.has_legacy_secrets() {
+        migrate_legacy_secrets(path, &stored)?;
+    }
+    Ok(stored.into())
+}
+
+fn load_stored_setup_config(path: &Path) -> Result<StoredClaudeSetupConfig, String> {
+    if !path.exists() {
+        return Ok(StoredClaudeSetupConfig::default());
+    }
+
+    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
+fn migrate_legacy_secrets(path: &Path, stored: &StoredClaudeSetupConfig) -> Result<(), String> {
+    if let Some(value) = normalize_optional_string(stored.anthropic_custom_headers.clone()) {
+        set_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_CUSTOM_HEADERS_SECRET, &value)?;
+    }
+
+    if let Some(value) = normalize_optional_string(stored.anthropic_auth_token.clone()) {
+        set_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_AUTH_TOKEN_SECRET, &value)?;
+    }
+
+    let sanitized: ClaudeSetupConfig = stored.clone().into();
+    write_setup_config_to_path(path, &sanitized)
+}
+
+fn write_setup_config_to_path(path: &Path, config: &ClaudeSetupConfig) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let serialized = serde_json::to_string_pretty(&StoredClaudeSetupConfig::from_public(config))
+        .map_err(|error| error.to_string())?;
+    fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn apply_secret_patches(input: &ClaudeSetupInput) -> Result<(), String> {
+    match input.anthropic_custom_headers.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_CUSTOM_HEADERS_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_CUSTOM_HEADERS_SECRET, &value)?;
+        }
+    }
+
+    match input.anthropic_auth_token.normalize() {
+        NormalizedSecretValuePatch::Unchanged => {}
+        NormalizedSecretValuePatch::Clear => {
+            clear_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_AUTH_TOKEN_SECRET)?;
+        }
+        NormalizedSecretValuePatch::Set(value) => {
+            set_secret(CLAUDE_RUNTIME_ID, ANTHROPIC_AUTH_TOKEN_SECRET, &value)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn env_secret_present(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "windows")]
-    use std::{env, sync::Mutex};
+    use crate::ai::secret_store::test_lock;
+    use std::{env, sync::Arc};
 
-    #[cfg(target_os = "windows")]
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn temp_setup_path(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!(
+            "vaultai-claude-setup-tests-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(SETUP_FILE_NAME)
+    }
 
     #[test]
-    fn merge_input_clears_gateway_auth_when_any_gateway_field_changes() {
-        let config = ClaudeSetupConfig {
+    fn save_gateway_input_clears_gateway_auth_metadata() {
+        let mut config = ClaudeSetupConfig {
             anthropic_base_url: Some("https://gateway.example".to_string()),
-            anthropic_custom_headers: Some("x-api-key: secret".to_string()),
-            anthropic_auth_token: Some("token".to_string()),
             auth_method: Some("gateway".to_string()),
             auth_invalidated_at_ms: Some(10),
             ..ClaudeSetupConfig::default()
         };
 
-        let merged = config.merge_input(ClaudeSetupInput {
+        config.apply_input(&ClaudeSetupInput {
             custom_binary_path: None,
             anthropic_base_url: None,
-            anthropic_custom_headers: Some("x-api-key: rotated".to_string()),
-            anthropic_auth_token: None,
+            anthropic_custom_headers: SecretValuePatch::Set {
+                value: "x-api-key: rotated".to_string(),
+            },
+            anthropic_auth_token: SecretValuePatch::Unchanged,
         });
 
-        assert_eq!(merged.auth_method, None);
-        assert_eq!(merged.auth_invalidated_at_ms, None);
-        assert_eq!(
-            merged.anthropic_custom_headers.as_deref(),
-            Some("x-api-key: rotated")
-        );
+        assert_eq!(config.auth_method, None);
+        assert_eq!(config.auth_invalidated_at_ms, None);
     }
 
     #[test]
-    fn merge_input_can_clear_gateway_values() {
-        let config = ClaudeSetupConfig {
+    fn gateway_clear_removes_base_url_and_secret_patches() {
+        let mut config = ClaudeSetupConfig {
             anthropic_base_url: Some("https://gateway.example".to_string()),
-            anthropic_custom_headers: Some("x-api-key: secret".to_string()),
-            anthropic_auth_token: Some("token".to_string()),
             auth_method: Some("gateway".to_string()),
             ..ClaudeSetupConfig::default()
         };
 
-        let merged = config.merge_input(ClaudeSetupInput {
+        config.apply_input(&ClaudeSetupInput {
             custom_binary_path: None,
             anthropic_base_url: Some(String::new()),
-            anthropic_custom_headers: Some(String::new()),
-            anthropic_auth_token: Some(String::new()),
+            anthropic_custom_headers: SecretValuePatch::Clear,
+            anthropic_auth_token: SecretValuePatch::Clear,
         });
 
-        assert_eq!(merged.anthropic_base_url, None);
-        assert_eq!(merged.anthropic_custom_headers, None);
-        assert_eq!(merged.anthropic_auth_token, None);
-        assert_eq!(merged.auth_method, None);
+        assert_eq!(config.anthropic_base_url, None);
+        assert_eq!(config.auth_method, None);
+    }
+
+    #[test]
+    fn migrate_legacy_json_secrets_into_secure_store() {
+        let _guard = test_lock().lock().unwrap();
+        let path = temp_setup_path("migrate");
+        let store = Arc::new(TestSecretStore::default());
+        store.install();
+
+        let legacy = serde_json::json!({
+            "anthropic_base_url": "https://gateway.example",
+            "anthropic_custom_headers": "x-api-key: secret",
+            "anthropic_auth_token": "token"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = load_setup_config_from_path(&path).expect("load config");
+        let raw = fs::read_to_string(&path).expect("read sanitized setup");
+
+        assert_eq!(
+            loaded.anthropic_base_url.as_deref(),
+            Some("https://gateway.example")
+        );
+        assert_eq!(
+            store
+                .get_value(CLAUDE_RUNTIME_ID, ANTHROPIC_CUSTOM_HEADERS_SECRET)
+                .as_deref(),
+            Some("x-api-key: secret")
+        );
+        assert_eq!(
+            store
+                .get_value(CLAUDE_RUNTIME_ID, ANTHROPIC_AUTH_TOKEN_SECRET)
+                .as_deref(),
+            Some("token")
+        );
+        assert!(!raw.contains("anthropic_custom_headers"));
+        assert!(!raw.contains("anthropic_auth_token"));
+
+        TestSecretStore::uninstall();
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -704,6 +872,10 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn find_program_resolves_exe_from_pathext() {
+        use std::sync::Mutex;
+
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+
         let _guard = ENV_LOCK.lock().unwrap();
         let temp_dir = env::temp_dir().join(format!(
             "vaultai-claude-find-program-{}",
@@ -758,7 +930,6 @@ fn build_posix_login_script(
         lines.push(format!("cd {}", shell_quote(&cwd.display().to_string())));
     }
     lines.push(format!("exec {quoted_command}"));
-    lines.push(String::new());
 
     fs::write(&script_path, lines.join("\n")).map_err(|error| error.to_string())?;
     let mut permissions = fs::metadata(&script_path)
@@ -769,18 +940,12 @@ fn build_posix_login_script(
     Ok(script_path)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 fn build_windows_login_script(
     command_parts: &[String],
     cwd: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let script_path = temp_login_script_path("cmd");
-    let quoted_command = command_parts
-        .iter()
-        .map(|part| windows_quote(part))
-        .collect::<Vec<_>>()
-        .join(" ");
-
     let mut lines = vec!["@echo off".to_string()];
     if let Some(cwd) = cwd {
         lines.push(format!(
@@ -788,27 +953,35 @@ fn build_windows_login_script(
             windows_quote(&cwd.display().to_string())
         ));
     }
-    lines.push(quoted_command);
-    lines.push(String::new());
-
+    let command = command_parts
+        .iter()
+        .map(|part| windows_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ");
+    lines.push(command);
+    lines.push("echo.".to_string());
+    lines.push("echo Press any key to close this window...".to_string());
+    lines.push("pause > nul".to_string());
     fs::write(&script_path, lines.join("\r\n")).map_err(|error| error.to_string())?;
     Ok(script_path)
 }
 
 fn temp_login_script_path(extension: &str) -> PathBuf {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    env::temp_dir().join(format!("vaultai-claude-login-{suffix}.{extension}"))
+    let suffix = format!(
+        "vaultai-claude-login-{}-{}.{}",
+        std::process::id(),
+        current_time_millis(),
+        extension
+    );
+    env::temp_dir().join(suffix)
 }
 
 #[cfg(unix)]
 fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 fn windows_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    format!("\"{}\"", value.replace('"', "\\\""))
 }

@@ -7,7 +7,11 @@ import {
     aiUpdateSetup,
 } from "../ai/api";
 import { AIAuthTerminalModal } from "../ai/components/AIAuthTerminalModal";
-import type { AIRuntimeDescriptor, AIRuntimeSetupStatus } from "../ai/types";
+import type {
+    AIRuntimeDescriptor,
+    AIRuntimeSetupStatus,
+    AISecretPatch,
+} from "../ai/types";
 
 /* ── Provider registry ─────────────────────────────────────────── */
 
@@ -141,6 +145,20 @@ const inputStyle: React.CSSProperties = {
     outline: "none",
 };
 
+const unchangedSecretPatch: AISecretPatch = { action: "unchanged" };
+const clearSecretPatch: AISecretPatch = { action: "clear" };
+
+function setSecretPatch(value: string): AISecretPatch {
+    return {
+        action: "set",
+        value,
+    };
+}
+
+function setOptionalSecretPatch(value?: string): AISecretPatch {
+    return value?.trim() ? setSecretPatch(value) : unchangedSecretPatch;
+}
+
 /* ── Expanded panel ─────────────────────────────────────────────── */
 
 function ProviderExpandedPanel({
@@ -156,12 +174,12 @@ function ProviderExpandedPanel({
     onAuth: (input: {
         runtimeId: string;
         methodId: string;
-        codexApiKey?: string;
-        openaiApiKey?: string;
-        geminiApiKey?: string;
+        codexApiKey: AISecretPatch;
+        openaiApiKey: AISecretPatch;
+        geminiApiKey: AISecretPatch;
         anthropicBaseUrl?: string;
-        anthropicCustomHeaders?: string;
-        anthropicAuthToken?: string;
+        anthropicCustomHeaders: AISecretPatch;
+        anthropicAuthToken: AISecretPatch;
     }) => void;
     onLogout: () => void;
 }) {
@@ -191,18 +209,24 @@ function ProviderExpandedPanel({
         onAuth({
             runtimeId: setupStatus.runtimeId,
             methodId: selectedMethodId,
-            openaiApiKey: isOpenAi ? apiKey || undefined : undefined,
-            codexApiKey: isCodex ? apiKey || undefined : undefined,
-            geminiApiKey: isGemini ? apiKey || undefined : undefined,
+            openaiApiKey: isOpenAi
+                ? setSecretPatch(apiKey)
+                : unchangedSecretPatch,
+            codexApiKey: isCodex
+                ? setSecretPatch(apiKey)
+                : unchangedSecretPatch,
+            geminiApiKey: isGemini
+                ? setSecretPatch(apiKey)
+                : unchangedSecretPatch,
             anthropicBaseUrl: gatewaySelected
                 ? gatewayUrl || undefined
                 : undefined,
             anthropicCustomHeaders: gatewaySelected
-                ? gatewayHeaders || undefined
-                : undefined,
+                ? setOptionalSecretPatch(gatewayHeaders)
+                : unchangedSecretPatch,
             anthropicAuthToken: gatewaySelected
-                ? gatewayToken || undefined
-                : undefined,
+                ? setOptionalSecretPatch(gatewayToken)
+                : unchangedSecretPatch,
         });
     };
 
@@ -500,12 +524,12 @@ export function AIProvidersSettings() {
             runtimeId: string;
             methodId: string;
             customBinaryPath?: string;
-            codexApiKey?: string;
-            openaiApiKey?: string;
-            geminiApiKey?: string;
+            codexApiKey: AISecretPatch;
+            openaiApiKey: AISecretPatch;
+            geminiApiKey: AISecretPatch;
             anthropicBaseUrl?: string;
-            anthropicCustomHeaders?: string;
-            anthropicAuthToken?: string;
+            anthropicCustomHeaders: AISecretPatch;
+            anthropicAuthToken: AISecretPatch;
         }) => {
             const runtime = runtimes.find(
                 (r) => r.runtime.id === input.runtimeId,
@@ -533,12 +557,12 @@ export function AIProvidersSettings() {
             try {
                 if (
                     input.customBinaryPath !== undefined ||
-                    input.codexApiKey !== undefined ||
-                    input.openaiApiKey !== undefined ||
-                    input.geminiApiKey !== undefined ||
+                    input.codexApiKey.action !== "unchanged" ||
+                    input.openaiApiKey.action !== "unchanged" ||
+                    input.geminiApiKey.action !== "unchanged" ||
                     input.anthropicBaseUrl !== undefined ||
-                    input.anthropicCustomHeaders !== undefined ||
-                    input.anthropicAuthToken !== undefined
+                    input.anthropicCustomHeaders.action !== "unchanged" ||
+                    input.anthropicAuthToken.action !== "unchanged"
                 ) {
                     const preflight = await aiUpdateSetup({
                         runtimeId: input.runtimeId,
@@ -546,6 +570,11 @@ export function AIProvidersSettings() {
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
                         geminiApiKey: input.geminiApiKey,
+                        googleApiKey: unchangedSecretPatch,
+                        googleCloudProject: undefined,
+                        googleCloudLocation: undefined,
+                        gatewayBaseUrl: undefined,
+                        gatewayHeaders: unchangedSecretPatch,
                         anthropicBaseUrl: input.anthropicBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
@@ -590,12 +619,17 @@ export function AIProvidersSettings() {
             try {
                 await aiUpdateSetup({
                     runtimeId,
-                    codexApiKey: "",
-                    openaiApiKey: "",
-                    geminiApiKey: "",
+                    codexApiKey: clearSecretPatch,
+                    openaiApiKey: clearSecretPatch,
+                    geminiApiKey: clearSecretPatch,
+                    googleApiKey: clearSecretPatch,
+                    googleCloudProject: undefined,
+                    googleCloudLocation: undefined,
+                    gatewayBaseUrl: undefined,
+                    gatewayHeaders: unchangedSecretPatch,
                     anthropicBaseUrl: "",
-                    anthropicCustomHeaders: "",
-                    anthropicAuthToken: "",
+                    anthropicCustomHeaders: clearSecretPatch,
+                    anthropicAuthToken: clearSecretPatch,
                 });
                 await refreshRuntime(runtimeId);
             } catch (error) {

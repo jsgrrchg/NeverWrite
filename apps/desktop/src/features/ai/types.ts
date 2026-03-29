@@ -24,6 +24,11 @@ export interface AIRuntimeConnectionPayload extends AIRuntimeConnectionState {
     runtime_id: string;
 }
 
+export type AISecretPatch =
+    | { action: "unchanged" }
+    | { action: "clear" }
+    | { action: "set"; value: string };
+
 export type AIAuthTerminalStatus = "starting" | "running" | "exited" | "error";
 
 export interface AIAuthTerminalSessionSnapshot {

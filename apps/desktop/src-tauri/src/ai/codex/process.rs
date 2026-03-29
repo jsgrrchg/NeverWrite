@@ -12,7 +12,6 @@ pub struct CodexProcessSpec {
     pub binary_path: PathBuf,
     pub home_dir: PathBuf,
     pub cwd: Option<PathBuf>,
-    pub setup: super::setup::CodexSetupConfig,
 }
 
 #[derive(Debug, Default)]
@@ -112,7 +111,6 @@ impl CodexRuntime {
                 .ok_or_else(|| "No Codex runtime binary is configured.".to_string())?,
             home_dir: self.home_dir(app)?,
             cwd,
-            setup,
         })
     }
 }

@@ -23,6 +23,7 @@ import type {
     AIRuntimeDescriptor,
     AIRuntimeConnectionPayload,
     AIRuntimeSetupStatus,
+    AISecretPatch,
     AISessionErrorPayload,
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
@@ -250,34 +251,34 @@ export async function aiGetSetupStatus(runtimeId: string) {
 export async function aiUpdateSetup(input: {
     runtimeId: string;
     customBinaryPath?: string;
-    codexApiKey?: string;
-    openaiApiKey?: string;
-    geminiApiKey?: string;
-    googleApiKey?: string;
+    codexApiKey: AISecretPatch;
+    openaiApiKey: AISecretPatch;
+    geminiApiKey: AISecretPatch;
+    googleApiKey: AISecretPatch;
     googleCloudProject?: string;
     googleCloudLocation?: string;
     gatewayBaseUrl?: string;
-    gatewayHeaders?: string;
+    gatewayHeaders: AISecretPatch;
     anthropicBaseUrl?: string;
-    anthropicCustomHeaders?: string;
-    anthropicAuthToken?: string;
+    anthropicCustomHeaders: AISecretPatch;
+    anthropicAuthToken: AISecretPatch;
 }) {
     const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
         "ai_update_setup",
         {
             input: {
                 custom_binary_path: input.customBinaryPath ?? null,
-                codex_api_key: input.codexApiKey ?? null,
-                openai_api_key: input.openaiApiKey ?? null,
-                gemini_api_key: input.geminiApiKey ?? null,
-                google_api_key: input.googleApiKey ?? null,
+                codex_api_key: input.codexApiKey,
+                openai_api_key: input.openaiApiKey,
+                gemini_api_key: input.geminiApiKey,
+                google_api_key: input.googleApiKey,
                 google_cloud_project: input.googleCloudProject ?? null,
                 google_cloud_location: input.googleCloudLocation ?? null,
                 gateway_base_url: input.gatewayBaseUrl ?? null,
-                gateway_headers: input.gatewayHeaders ?? null,
+                gateway_headers: input.gatewayHeaders,
                 anthropic_base_url: input.anthropicBaseUrl ?? null,
-                anthropic_custom_headers: input.anthropicCustomHeaders ?? null,
-                anthropic_auth_token: input.anthropicAuthToken ?? null,
+                anthropic_custom_headers: input.anthropicCustomHeaders,
+                anthropic_auth_token: input.anthropicAuthToken,
             },
             runtimeId: input.runtimeId,
         },

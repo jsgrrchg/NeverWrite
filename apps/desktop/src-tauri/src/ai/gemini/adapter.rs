@@ -67,8 +67,7 @@ impl AiRuntimeAdapter for GeminiRuntimeAdapter {
                     .ok()
                     .is_some_and(|value| !value.trim().is_empty())
             {
-                let spec = self.runtime.process_spec(app, vault_root.clone())?;
-                if spec.setup.gemini_api_key.is_none() {
+                if !super::setup::has_gemini_api_key(app)? {
                     return Err("Enter a Gemini API key before continuing.".to_string());
                 }
             }
