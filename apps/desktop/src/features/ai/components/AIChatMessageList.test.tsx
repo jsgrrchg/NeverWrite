@@ -343,4 +343,113 @@ describe("AIChatMessageList streaming run indicator", () => {
 
         expect(scrollContainer.scrollTop).toBe(510);
     });
+
+    it("keeps only the two most recent non-visible diff work cycles as rich cards", () => {
+        const messages: AIChatMessage[] = [
+            {
+                id: "tool:oldest",
+                role: "assistant",
+                kind: "tool",
+                content: "Updated oldest.ts",
+                title: "Edit oldest",
+                timestamp: 1,
+                workCycleId: "cycle-oldest",
+                diffs: [
+                    {
+                        path: "/vault/src/oldest.ts",
+                        kind: "update",
+                        old_text: "oldest old",
+                        new_text: "oldest new",
+                    },
+                ],
+                meta: {
+                    tool: "edit",
+                    status: "completed",
+                    target: "/vault/src/oldest.ts",
+                },
+            },
+            {
+                id: "tool:older",
+                role: "assistant",
+                kind: "tool",
+                content: "Updated older.ts",
+                title: "Edit older",
+                timestamp: 2,
+                workCycleId: "cycle-older",
+                diffs: [
+                    {
+                        path: "/vault/src/older.ts",
+                        kind: "update",
+                        old_text: "older old",
+                        new_text: "older new",
+                    },
+                ],
+                meta: {
+                    tool: "edit",
+                    status: "completed",
+                    target: "/vault/src/older.ts",
+                },
+            },
+            {
+                id: "tool:recent",
+                role: "assistant",
+                kind: "tool",
+                content: "Updated recent.ts",
+                title: "Edit recent",
+                timestamp: 3,
+                workCycleId: "cycle-recent",
+                diffs: [
+                    {
+                        path: "/vault/src/recent.ts",
+                        kind: "update",
+                        old_text: "recent old",
+                        new_text: "recent new",
+                    },
+                ],
+                meta: {
+                    tool: "edit",
+                    status: "completed",
+                    target: "/vault/src/recent.ts",
+                },
+            },
+            {
+                id: "tool:current",
+                role: "assistant",
+                kind: "tool",
+                content: "Updated current.ts",
+                title: "Edit current",
+                timestamp: 4,
+                workCycleId: "cycle-current",
+                diffs: [
+                    {
+                        path: "/vault/src/current.ts",
+                        kind: "update",
+                        old_text: "current old",
+                        new_text: "current new",
+                    },
+                ],
+                meta: {
+                    tool: "edit",
+                    status: "completed",
+                    target: "/vault/src/current.ts",
+                },
+            },
+        ];
+
+        renderComponent(
+            <AIChatMessageList
+                sessionId="session-recent-cycles"
+                messages={messages}
+                status="idle"
+                visibleWorkCycleId="cycle-current"
+            />,
+        );
+
+        expect(screen.getAllByTestId("recent-diff-badge")).toHaveLength(2);
+        expect(screen.getByText("Edited older.ts")).toBeInTheDocument();
+        expect(screen.getByText("Edited recent.ts")).toBeInTheDocument();
+        expect(
+            screen.getByTestId("historical-diff-summary"),
+        ).toHaveTextContent("Edited oldest.ts");
+    });
 });

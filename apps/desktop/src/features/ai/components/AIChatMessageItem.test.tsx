@@ -29,6 +29,7 @@ function renderMessage(
     options: {
         sessionId?: string | null;
         visibleWorkCycleId?: string | null;
+        recentDiffWorkCycleIds?: string[];
     } = {},
 ) {
     return renderComponent(
@@ -37,6 +38,7 @@ function renderMessage(
             sessionId={options.sessionId}
             pillMetrics={pillMetrics}
             visibleWorkCycleId={options.visibleWorkCycleId}
+            recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
         />,
     );
 }
@@ -335,7 +337,7 @@ describe("AIChatMessageItem tool diffs", () => {
                     target: "/vault/src/watcher.rs",
                 },
             },
-            { visibleWorkCycleId: "cycle-new" },
+            { visibleWorkCycleId: "cycle-new", recentDiffWorkCycleIds: [] },
         );
 
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
@@ -346,6 +348,94 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(
             screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("keeps recent non-visible work cycles on the rich diff card in read-only mode", () => {
+        renderMessage(
+            {
+                id: "tool:recent",
+                role: "assistant",
+                kind: "tool",
+                title: "Edit watcher",
+                content: "Updated watcher.rs",
+                timestamp: Date.now(),
+                workCycleId: "cycle-recent",
+                diffs: [
+                    {
+                        path: "/vault/src/watcher.rs",
+                        kind: "update",
+                        old_text: "old line",
+                        new_text: "new line",
+                    },
+                ],
+                meta: {
+                    tool: "edit",
+                    status: "completed",
+                    target: "/vault/src/watcher.rs",
+                },
+            },
+            {
+                visibleWorkCycleId: "cycle-current",
+                recentDiffWorkCycleIds: ["cycle-recent"],
+            },
+        );
+
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.getByTestId("recent-diff-badge")).toHaveTextContent(
+            "Recent change",
+        );
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+    });
+
+    it("keeps recent permission diffs inspectable without rendering decision actions", () => {
+        renderMessage(
+            {
+                id: "permission:recent",
+                role: "assistant",
+                kind: "permission",
+                title: "Permission request",
+                content: "Edit watcher.rs",
+                timestamp: Date.now(),
+                workCycleId: "cycle-recent",
+                permissionRequestId: "req-recent",
+                permissionOptions: [
+                    {
+                        option_id: "allow_once",
+                        name: "Allow once",
+                        kind: "allow_once",
+                    },
+                    {
+                        option_id: "reject_once",
+                        name: "Reject",
+                        kind: "reject_once",
+                    },
+                ],
+                diffs: [
+                    {
+                        path: "/vault/src/watcher.rs",
+                        kind: "update",
+                        old_text: "old line",
+                        new_text: "new line",
+                    },
+                ],
+                meta: {
+                    status: "resolved",
+                    resolved_option: "allow_once",
+                    target: "/vault/src/watcher.rs",
+                },
+            },
+            {
+                visibleWorkCycleId: "cycle-current",
+                recentDiffWorkCycleIds: ["cycle-recent"],
+            },
+        );
+
+        expect(screen.getByTestId("recent-diff-badge")).toHaveTextContent(
+            "Recent change",
+        );
+        expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+        expect(screen.getByText("Decision sent: Allow once")).toBeInTheDocument();
     });
 
     it("keeps tool messages without diffs on the simple file card", () => {

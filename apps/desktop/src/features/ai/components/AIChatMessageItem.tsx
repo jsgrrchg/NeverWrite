@@ -232,6 +232,7 @@ interface AIChatMessageItemProps {
     sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
     visibleWorkCycleId?: string | null;
+    recentDiffWorkCycleIds?: string[];
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
     onUserInputResponse?: (
         requestId: string,
@@ -293,19 +294,30 @@ function useStoredRowExpanded(
     return [expanded, setExpanded] as const;
 }
 
-function shouldShowDiffReview(
+type DiffPresentationMode = "active" | "recent" | "historical" | "none";
+
+function getDiffPresentationMode(
     message: AIChatMessage,
     visibleWorkCycleId?: string | null,
+    recentDiffWorkCycleIds: string[] = [],
 ) {
     if (!message.diffs?.length) {
-        return false;
+        return "none";
     }
 
     if (!visibleWorkCycleId || !message.workCycleId) {
-        return true;
+        return "active";
     }
 
-    return message.workCycleId === visibleWorkCycleId;
+    if (message.workCycleId === visibleWorkCycleId) {
+        return "active";
+    }
+
+    if (recentDiffWorkCycleIds.includes(message.workCycleId)) {
+        return "recent";
+    }
+
+    return "historical";
 }
 
 function ThinkingMessage({
@@ -703,11 +715,11 @@ function FileToolMessage({
 function ToolMessage({
     message,
     sessionId,
-    showDiffReview = true,
+    diffPresentationMode = "active",
 }: {
     message: AIChatMessage;
     sessionId?: string | null;
-    showDiffReview?: boolean;
+    diffPresentationMode?: DiffPresentationMode;
 }) {
     const [expanded, setExpanded] = useStoredRowExpanded(
         sessionId,
@@ -722,12 +734,22 @@ function ToolMessage({
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
 
-    if (shouldRenderHistoricalDiffSummary(message, showDiffReview)) {
+    if (shouldRenderHistoricalDiffSummary(message, diffPresentationMode)) {
         return <HistoricalDiffSummaryMessage message={message} />;
     }
 
-    if (showDiffReview && message.diffs && message.diffs.length > 0) {
-        return <ChangeReviewPanel message={message} sessionId={sessionId} />;
+    if (
+        diffPresentationMode !== "historical" &&
+        message.diffs &&
+        message.diffs.length > 0
+    ) {
+        return (
+            <ChangeReviewPanel
+                message={message}
+                sessionId={sessionId}
+                readOnly={diffPresentationMode === "recent"}
+            />
+        );
     }
 
     // File-mutating tools get card treatment
@@ -1501,9 +1523,9 @@ function getDiffPanelToolLabel(toolKind: string) {
 
 function shouldRenderHistoricalDiffSummary(
     message: AIChatMessage,
-    showDiffReview: boolean,
+    diffPresentationMode: DiffPresentationMode,
 ) {
-    if (showDiffReview || !message.diffs?.length) {
+    if (diffPresentationMode !== "historical" || !message.diffs?.length) {
         return false;
     }
 
@@ -1598,10 +1620,12 @@ function ChangeReviewPanel({
     message,
     sessionId,
     onPermissionResponse,
+    readOnly = false,
 }: {
     message: AIChatMessage;
     sessionId?: string | null;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
+    readOnly?: boolean;
 }) {
     const diffs = message.diffs ?? [];
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
@@ -1938,6 +1962,22 @@ function ChangeReviewPanel({
                             +
                         </button>
                     </div>
+                    {readOnly ? (
+                        <span
+                            className="rounded-md px-2 py-1"
+                            data-testid="recent-diff-badge"
+                            style={{
+                                fontSize: "0.72em",
+                                color: accent,
+                                backgroundColor:
+                                    "color-mix(in srgb, var(--bg-primary) 55%, transparent)",
+                                border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border))`,
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            Recent change
+                        </span>
+                    ) : null}
                     {canOpenFile && openFilePath ? (
                         <button
                             type="button"
@@ -2024,7 +2064,8 @@ function ChangeReviewPanel({
             ) : null}
 
             {/* Actions */}
-            {message.permissionRequestId &&
+            {!readOnly &&
+            message.permissionRequestId &&
             message.permissionOptions?.length ? (
                 <div
                     className="flex items-center gap-2 px-3 py-2"
@@ -2133,13 +2174,13 @@ function PermissionMessage({
     message,
     sessionId,
     pillMetrics,
-    showDiffReview = true,
+    diffPresentationMode = "active",
     onPermissionResponse,
 }: {
     message: AIChatMessage;
     sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
-    showDiffReview?: boolean;
+    diffPresentationMode?: DiffPresentationMode;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
     // Extract first line as title, rest as details
@@ -2157,17 +2198,21 @@ function PermissionMessage({
         !canExpand,
     );
 
-    if (shouldRenderHistoricalDiffSummary(message, showDiffReview)) {
+    if (shouldRenderHistoricalDiffSummary(message, diffPresentationMode)) {
         return <HistoricalDiffSummaryMessage message={message} />;
     }
 
-    // Delegate to Change Review Panel when diffs are present
-    if (showDiffReview && message.diffs && message.diffs.length > 0) {
+    if (
+        diffPresentationMode !== "historical" &&
+        message.diffs &&
+        message.diffs.length > 0
+    ) {
         return (
             <ChangeReviewPanel
                 message={message}
                 sessionId={sessionId}
                 onPermissionResponse={onPermissionResponse}
+                readOnly={diffPresentationMode === "recent"}
             />
         );
     }
@@ -2710,10 +2755,15 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     sessionId,
     pillMetrics,
     visibleWorkCycleId = null,
+    recentDiffWorkCycleIds = [],
     onPermissionResponse,
     onUserInputResponse,
 }: AIChatMessageItemProps) {
-    const showDiffReview = shouldShowDiffReview(message, visibleWorkCycleId);
+    const diffPresentationMode = getDiffPresentationMode(
+        message,
+        visibleWorkCycleId,
+        recentDiffWorkCycleIds,
+    );
 
     // User text — full width, subtle box (Zed style)
     if (message.kind === "text" && message.role === "user") {
@@ -2731,7 +2781,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
             <ToolMessage
                 message={message}
                 sessionId={sessionId}
-                showDiffReview={showDiffReview}
+                diffPresentationMode={diffPresentationMode}
             />
         );
     }
@@ -2762,7 +2812,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 message={message}
                 sessionId={sessionId}
                 pillMetrics={pillMetrics}
-                showDiffReview={showDiffReview}
+                diffPresentationMode={diffPresentationMode}
                 onPermissionResponse={onPermissionResponse}
             />
         );
