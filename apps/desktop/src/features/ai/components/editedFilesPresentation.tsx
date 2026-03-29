@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { LanguageSupport } from "@codemirror/language";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import type { AIFileDiff } from "../types";
 import {
@@ -9,6 +10,8 @@ import {
     type DiffLine,
 } from "../diff/reviewDiff";
 import type { ReviewHunk, ReviewHunkId } from "../diff/reviewProjection";
+import { HighlightedCodeText } from "../../editor/staticCodeHighlight";
+import { useCodeLanguageSupport } from "../../editor/useCodeLanguageSupport";
 
 type HunkDecision = "accepted" | "rejected";
 
@@ -442,13 +445,25 @@ export function DiffLineView({
     line,
     compactLineNumbers = false,
     lineWrapping = true,
+    language = null,
 }: {
     line: DiffLine;
     compactLineNumbers?: boolean;
     lineWrapping?: boolean;
+    language?: LanguageSupport | null;
 }) {
     const isExact = line.exact === true;
     const textStyles = getDiffLineTextStyles(lineWrapping);
+    const lineText = useMemo(
+        () => (
+            <HighlightedCodeText
+                text={line.text}
+                language={language}
+                segmentKeyPrefix={`diff-line:${line.oldLineNumber ?? "n"}:${line.newLineNumber ?? "n"}:${line.text.length}`}
+            />
+        ),
+        [language, line.newLineNumber, line.oldLineNumber, line.text],
+    );
 
     if (isExact) {
         if (line.type === "separator") {
@@ -521,7 +536,7 @@ export function DiffLineView({
                     >
                         {getDisplayedLineNumber(line)}
                     </div>
-                    <div style={{ padding: "0 10px" }}>{line.text}</div>
+                    <div style={{ padding: "0 10px" }}>{lineText}</div>
                 </div>
             );
         }
@@ -585,7 +600,7 @@ export function DiffLineView({
                 >
                     {line.newLineNumber ?? ""}
                 </div>
-                <div style={{ padding: "0 12px" }}>{line.text}</div>
+                <div style={{ padding: "0 12px" }}>{lineText}</div>
             </div>
         );
     }
@@ -660,7 +675,7 @@ export function DiffLineView({
             >
                 {lineNumber}
             </div>
-            <div style={{ padding: "0 8px" }}>{line.text}</div>
+            <div style={{ padding: "0 8px" }}>{lineText}</div>
         </div>
     );
 }
@@ -716,6 +731,10 @@ export function EditedFileDiffPreview({
     const lines = useMemo(
         () => (expanded ? computeDiffLines(diff) : []),
         [diff, expanded],
+    );
+    const languageSupport = useCodeLanguageSupport(
+        file?.path ?? diff.path,
+        null,
     );
     const visualBlocks = useMemo(
         () => (expanded && file ? computeVisualDiffBlocks(diff) : []),
@@ -923,6 +942,7 @@ export function EditedFileDiffPreview({
                                                 compactLineNumbers
                                             }
                                             lineWrapping={lineWrapping}
+                                            language={languageSupport}
                                         />
                                     );
                                 }
@@ -938,6 +958,7 @@ export function EditedFileDiffPreview({
                                                         compactLineNumbers
                                                     }
                                                     lineWrapping={lineWrapping}
+                                                    language={languageSupport}
                                                 />
                                             ))}
                                         </div>
@@ -955,6 +976,7 @@ export function EditedFileDiffPreview({
                                                         compactLineNumbers
                                                     }
                                                     lineWrapping={lineWrapping}
+                                                    language={languageSupport}
                                                 />
                                             ))}
                                         </div>
@@ -1040,6 +1062,9 @@ export function EditedFileDiffPreview({
                                                                         }
                                                                         lineWrapping={
                                                                             lineWrapping
+                                                                        }
+                                                                        language={
+                                                                            languageSupport
                                                                         }
                                                                     />
                                                                 ),
@@ -1175,6 +1200,9 @@ export function EditedFileDiffPreview({
                                                                         }
                                                                         lineWrapping={
                                                                             lineWrapping
+                                                                        }
+                                                                        language={
+                                                                            languageSupport
                                                                         }
                                                                     />
                                                                 ),

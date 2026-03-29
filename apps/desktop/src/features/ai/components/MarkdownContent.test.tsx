@@ -154,6 +154,33 @@ describe("MarkdownContent", () => {
         ).toHaveTextContent(/-beta\s+\+beta 2/);
     });
 
+    it("renders syntax highlighting for fenced programming code blocks", async () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "```c++",
+                    "int main() {",
+                    "  return 0;",
+                    "}",
+                    "```",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.getByText("c++")).toBeInTheDocument();
+
+        await waitFor(() => {
+            expect(
+                document.querySelector(".cm-static-token-keyword"),
+            ).not.toBeNull();
+        });
+
+        expect(screen.getByText("return")).toHaveClass(
+            "cm-static-token-keyword",
+        );
+    });
+
     it("renders markdown tables as semantic table markup", () => {
         renderComponent(
             <MarkdownContent

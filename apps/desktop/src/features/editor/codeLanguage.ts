@@ -6,8 +6,10 @@ import {
 } from "@codemirror/language";
 
 type LanguageKey =
+    | "c"
     | "clojure"
     | "cmake"
+    | "cpp"
     | "css"
     | "d"
     | "diff"
@@ -26,6 +28,7 @@ type LanguageKey =
     | "makefile"
     | "pascal"
     | "perl"
+    | "php"
     | "powershell"
     | "properties"
     | "protobuf"
@@ -36,6 +39,10 @@ type LanguageKey =
     | "sass"
     | "shell"
     | "sql"
+    | "sql-mssql"
+    | "sql-mysql"
+    | "sql-postgresql"
+    | "sql-sqlite"
     | "stex"
     | "stylus"
     | "swift"
@@ -51,8 +58,10 @@ type LanguageKey =
 const languageCache = new Map<LanguageKey, Promise<Extension | null>>();
 
 const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
+    c: ["c"],
     clojure: ["clojure", "clj", "cljs"],
     cmake: ["cmake"],
+    cpp: ["cpp", "c++", "cc", "cxx", "h", "hpp"],
     css: ["css", "scss", "less"],
     d: ["d"],
     diff: ["diff", "patch"],
@@ -71,6 +80,7 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     makefile: ["make", "makefile", "mk"],
     pascal: ["pascal", "delphi"],
     perl: ["perl", "pl"],
+    php: ["php", "php3", "php4", "php5", "phtml"],
     powershell: ["powershell", "ps1", "ps", "pwsh"],
     properties: ["properties", "ini", "cfg", "conf", "dotenv", "env"],
     protobuf: ["protobuf", "proto"],
@@ -81,6 +91,10 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     sass: ["sass"],
     shell: ["shell", "sh", "bash", "zsh", "fish", "shellscript"],
     sql: ["sql"],
+    "sql-mssql": ["mssql", "tsql"],
+    "sql-mysql": ["mysql", "mariadb"],
+    "sql-postgresql": ["postgres", "postgresql", "psql"],
+    "sql-sqlite": ["sqlite", "sqlite3"],
     stex: ["tex", "latex"],
     stylus: ["stylus", "styl"],
     swift: ["swift"],
@@ -127,6 +141,14 @@ export function resolveCodeLanguageKey(
     const fileName = getPathFileName(path);
 
     switch (extension) {
+        case "c":
+            return "c";
+        case "cc":
+        case "cpp":
+        case "cxx":
+        case "h":
+        case "hpp":
+            return "cpp";
         case "rs":
             return "rust";
         case "js":
@@ -207,6 +229,12 @@ export function resolveCodeLanguageKey(
             return "erlang";
         case "pl":
             return "perl";
+        case "php":
+        case "php3":
+        case "php4":
+        case "php5":
+        case "phtml":
+            return "php";
         case "d":
             return "d";
         case "lua":
@@ -285,6 +313,19 @@ export function resolveCodeLanguageKey(
         case "application/yaml":
         case "text/yaml":
             return "yaml";
+        case "application/sql":
+        case "text/x-sql":
+            return "sql";
+        case "application/x-httpd-php":
+        case "text/x-php":
+            return "php";
+        case "text/x-c":
+        case "text/x-csrc":
+            return "c";
+        case "text/x-c++":
+        case "text/x-c++src":
+        case "text/x-c++hdr":
+            return "cpp";
         case "text/x-python":
             return "python";
         case "text/x-java":
@@ -303,6 +344,9 @@ export function resolveCodeLanguageKey(
 
 function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
     switch (key) {
+        case "c":
+        case "cpp":
+            return import("@codemirror/lang-cpp").then(({ cpp }) => cpp());
         case "rust":
             return import("@codemirror/lang-rust").then(({ rust }) => rust());
         case "javascript":
@@ -473,6 +517,8 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
             ]).then(([{ StreamLanguage }, { perl }]) =>
                 StreamLanguage.define(perl),
             );
+        case "php":
+            return import("@codemirror/lang-php").then(({ php }) => php());
         case "d":
             return Promise.all([
                 import("@codemirror/language"),
@@ -500,11 +546,22 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
                 StreamLanguage.define(groovy),
             );
         case "sql":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/sql"),
-            ]).then(([{ StreamLanguage }, m]) =>
-                StreamLanguage.define(m.standardSQL),
+            return import("@codemirror/lang-sql").then(({ sql }) => sql());
+        case "sql-mssql":
+            return import("@codemirror/lang-sql").then(({ MSSQL, sql }) =>
+                sql({ dialect: MSSQL }),
+            );
+        case "sql-mysql":
+            return import("@codemirror/lang-sql").then(({ MySQL, sql }) =>
+                sql({ dialect: MySQL }),
+            );
+        case "sql-postgresql":
+            return import("@codemirror/lang-sql").then(({ PostgreSQL, sql }) =>
+                sql({ dialect: PostgreSQL }),
+            );
+        case "sql-sqlite":
+            return import("@codemirror/lang-sql").then(({ SQLite, sql }) =>
+                sql({ dialect: SQLite }),
             );
         case "diff":
             return Promise.all([
@@ -574,7 +631,7 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
     }
 }
 
-async function loadLanguageSupportByKey(
+export async function loadLanguageSupportByKey(
     key: LanguageKey,
 ): Promise<LanguageSupport | null> {
     const extension = await loadLanguageByKey(key);
@@ -587,7 +644,7 @@ async function loadLanguageSupportByKey(
     return null;
 }
 
-function extractFenceLanguageToken(info: string): string | null {
+export function extractFenceLanguageToken(info: string): string | null {
     const trimmed = info.trim().toLowerCase();
     if (!trimmed) return null;
 
@@ -612,6 +669,16 @@ export function resolveMarkdownCodeLanguageKey(
     const token = extractFenceLanguageToken(info);
     if (!token) return null;
     return markdownFenceAliasToKey.get(token) ?? null;
+}
+
+export async function loadMarkdownCodeLanguageSupport(
+    info: string,
+): Promise<LanguageSupport | null> {
+    const key = resolveMarkdownCodeLanguageKey(info);
+    if (!key) {
+        return null;
+    }
+    return loadLanguageSupportByKey(key);
 }
 
 export function resolveMarkdownCodeLanguage(
@@ -663,4 +730,15 @@ export function loadCodeLanguage(
     });
     languageCache.set(key, loader);
     return loader;
+}
+
+export async function loadCodeLanguageSupport(
+    path: string,
+    mimeType: string | null,
+): Promise<LanguageSupport | null> {
+    const key = resolveCodeLanguageKey(path, mimeType);
+    if (!key) {
+        return null;
+    }
+    return loadLanguageSupportByKey(key);
 }
