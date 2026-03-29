@@ -26,6 +26,9 @@ import {
     openChatPdfByReference,
 } from "../chatFileNavigation";
 import { DiffLineView } from "./editedFilesPresentation";
+import { extractFenceLanguageToken } from "../../editor/codeLanguage";
+import { HighlightedCodeText } from "../../editor/staticCodeHighlight";
+import { useMarkdownCodeLanguageSupport } from "../../editor/useCodeLanguageSupport";
 
 interface MarkdownContentProps {
     content: string;
@@ -88,7 +91,7 @@ function parseTextFileReference(value: string) {
 interface Block {
     type: "code" | "text";
     content: string;
-    language?: string;
+    info?: string;
 }
 
 interface MarkdownTable {
@@ -120,7 +123,7 @@ function parseBlocks(text: string): Block[] {
     }
 
     const blocks: Block[] = [];
-    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    const codeBlockRegex = /```([^\n`]*)\n([\s\S]*?)```/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
@@ -134,7 +137,7 @@ function parseBlocks(text: string): Block[] {
         blocks.push({
             type: "code",
             content: match[2].replace(/\n$/, ""),
-            language: match[1] || undefined,
+            info: match[1]?.trim() || undefined,
         });
         lastIndex = match.index + match[0].length;
     }
@@ -1009,19 +1012,17 @@ function TextBlock({
     );
 }
 
-function CodeBlock({
-    content,
-    language,
-}: {
-    content: string;
-    language?: string;
-}) {
+function CodeBlock({ content, info }: { content: string; info?: string }) {
     const [copied, setCopied] = useState(false);
+    const languageSupport = useMarkdownCodeLanguageSupport(info);
+    const languageToken = extractFenceLanguageToken(info ?? "");
     const languageLabel =
-        language?.toLowerCase() === "md" ? "Markdown" : language;
+        languageToken?.toLowerCase() === "md"
+            ? "Markdown"
+            : (languageToken ?? info?.trim());
     const isUnifiedDiff =
-        language?.toLowerCase() === "diff" ||
-        language?.toLowerCase() === "patch";
+        languageToken?.toLowerCase() === "diff" ||
+        languageToken?.toLowerCase() === "patch";
     const diffLines = useMemo(
         () => (isUnifiedDiff ? computeUnifiedDiffLines(content) : []),
         [content, isUnifiedDiff],
@@ -1049,7 +1050,7 @@ function CodeBlock({
                 title={copied ? "Copied" : "Copy"}
                 className="absolute right-2 z-10 flex items-center justify-center rounded-md"
                 style={{
-                    top: language ? 5 : 8,
+                    top: languageLabel ? 5 : 8,
                     width: 22,
                     height: 22,
                     border: "1px solid var(--border)",
@@ -1080,7 +1081,7 @@ function CodeBlock({
                     )}
                 </svg>
             </button>
-            {language ? (
+            {languageLabel ? (
                 <div
                     className="px-3 py-2 pr-10 text-[0.65em] uppercase tracking-wider"
                     style={{
@@ -1121,7 +1122,11 @@ function CodeBlock({
                             wordBreak: "inherit",
                         }}
                     >
-                        {content}
+                        <HighlightedCodeText
+                            text={content}
+                            language={languageSupport}
+                            segmentKeyPrefix={`chat-code:${languageToken ?? "plain"}:${content.length}`}
+                        />
                     </code>
                 </pre>
             )}
@@ -1151,7 +1156,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                     <CodeBlock
                         key={i}
                         content={block.content}
-                        language={block.language}
+                        info={block.info}
                     />
                 ) : (
                     <TextBlock

@@ -369,6 +369,74 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+.cm-static-code {
+    color: inherit;
+}
+
+.cm-static-token-comment {
+    color: color-mix(in srgb, var(--text-secondary) 92%, transparent);
+    font-style: italic;
+}
+
+.cm-static-token-keyword {
+    color: color-mix(in srgb, var(--diff-update) 82%, var(--text-primary));
+}
+
+.cm-static-token-variable {
+    color: color-mix(in srgb, var(--text-primary) 88%, var(--accent));
+}
+
+.cm-static-token-definition {
+    color: color-mix(in srgb, var(--text-primary) 65%, var(--accent));
+    font-weight: 600;
+}
+
+.cm-static-token-function {
+    color: color-mix(in srgb, #0f766e 86%, var(--text-primary));
+}
+
+.cm-static-token-type {
+    color: color-mix(in srgb, #b45309 78%, var(--text-primary));
+}
+
+.cm-static-token-property {
+    color: color-mix(in srgb, var(--text-primary) 94%, transparent);
+}
+
+.cm-static-token-tag {
+    color: color-mix(in srgb, var(--accent) 62%, var(--text-primary));
+}
+
+.cm-static-token-attribute {
+    color: color-mix(in srgb, var(--diff-update) 70%, var(--text-primary));
+}
+
+.cm-static-token-attribute-value,
+.cm-static-token-string {
+    color: color-mix(in srgb, var(--diff-add) 76%, var(--text-primary));
+}
+
+.cm-static-token-number,
+.cm-static-token-atom {
+    color: color-mix(in srgb, var(--diff-move) 82%, var(--text-primary));
+}
+
+.cm-static-token-operator,
+.cm-static-token-punctuation {
+    color: color-mix(in srgb, var(--text-primary) 80%, var(--text-secondary));
+}
+
+.cm-static-token-meta,
+.cm-static-token-escape {
+    color: color-mix(in srgb, var(--diff-update) 66%, var(--text-secondary));
+}
+
+.cm-static-token-invalid {
+    color: var(--diff-remove);
+    text-decoration: wavy underline
+        color-mix(in srgb, var(--diff-remove) 72%, transparent);
+}
+
 body.resizing-sidebar,
 body.resizing-sidebar * {
     cursor: col-resize !important;

@@ -8,6 +8,10 @@ import {
 
 describe("codeLanguage", () => {
     it("maps supported file extensions to explicit language keys", () => {
+        expect(resolveCodeLanguageKey("/vault/main.c", "text/plain")).toBe("c");
+        expect(resolveCodeLanguageKey("/vault/main.cpp", "text/plain")).toBe(
+            "cpp",
+        );
         expect(resolveCodeLanguageKey("/vault/src/main.rs", "text/plain")).toBe(
             "rust",
         );
@@ -63,6 +67,8 @@ describe("codeLanguage", () => {
         );
         expect(resolveCodeLanguageKey("/vault/lib.ex", null)).toBe("erlang");
         expect(resolveCodeLanguageKey("/vault/script.pl", null)).toBe("perl");
+        expect(resolveCodeLanguageKey("/vault/index.php", null)).toBe("php");
+        expect(resolveCodeLanguageKey("/vault/view.phtml", null)).toBe("php");
         expect(resolveCodeLanguageKey("/vault/main.lua", null)).toBe("lua");
         expect(resolveCodeLanguageKey("/vault/compute.jl", null)).toBe("julia");
         expect(resolveCodeLanguageKey("/vault/query.sql", null)).toBe("sql");
@@ -101,6 +107,16 @@ describe("codeLanguage", () => {
         expect(
             resolveCodeLanguageKey("/vault/envfile", "text/x-shellscript"),
         ).toBe("shell");
+        expect(resolveCodeLanguageKey("/vault/noext", "text/x-csrc")).toBe("c");
+        expect(resolveCodeLanguageKey("/vault/noext", "text/x-c++src")).toBe(
+            "cpp",
+        );
+        expect(resolveCodeLanguageKey("/vault/noext", "text/x-php")).toBe(
+            "php",
+        );
+        expect(resolveCodeLanguageKey("/vault/noext", "text/x-sql")).toBe(
+            "sql",
+        );
     });
 
     it("returns null for unsupported files", () => {
@@ -115,10 +131,19 @@ describe("codeLanguage", () => {
     it("maps fenced code info strings to supported language keys", () => {
         expect(resolveMarkdownCodeLanguageKey("rust")).toBe("rust");
         expect(resolveMarkdownCodeLanguageKey("rs")).toBe("rust");
+        expect(resolveMarkdownCodeLanguageKey("c")).toBe("c");
+        expect(resolveMarkdownCodeLanguageKey("c++")).toBe("cpp");
+        expect(resolveMarkdownCodeLanguageKey("hpp")).toBe("cpp");
         expect(resolveMarkdownCodeLanguageKey("typescript")).toBe("typescript");
         expect(resolveMarkdownCodeLanguageKey("tsx")).toBe("typescript-jsx");
         expect(resolveMarkdownCodeLanguageKey("bash")).toBe("shell");
+        expect(resolveMarkdownCodeLanguageKey("php5")).toBe("php");
         expect(resolveMarkdownCodeLanguageKey("yml")).toBe("yaml");
+        expect(resolveMarkdownCodeLanguageKey("postgresql")).toBe(
+            "sql-postgresql",
+        );
+        expect(resolveMarkdownCodeLanguageKey("mysql")).toBe("sql-mysql");
+        expect(resolveMarkdownCodeLanguageKey("sqlite")).toBe("sql-sqlite");
         expect(resolveMarkdownCodeLanguageKey("{.python}")).toBe("python");
         expect(resolveMarkdownCodeLanguageKey("language-json")).toBe("json");
         expect(resolveMarkdownCodeLanguageKey("rust linenums")).toBe("rust");
@@ -128,28 +153,45 @@ describe("codeLanguage", () => {
     it("builds lazy Markdown language descriptions for fenced code", async () => {
         const rust = resolveMarkdownCodeLanguage("rust");
         const bash = resolveMarkdownCodeLanguage("bash");
+        const cpp = resolveMarkdownCodeLanguage("c++");
+        const php = resolveMarkdownCodeLanguage("php");
+        const postgres = resolveMarkdownCodeLanguage("postgresql");
         const unknown = resolveMarkdownCodeLanguage("plaintext");
 
         expect(rust).not.toBeNull();
         expect(bash).not.toBeNull();
+        expect(cpp).not.toBeNull();
+        expect(php).not.toBeNull();
+        expect(postgres).not.toBeNull();
         expect(unknown).toBeNull();
 
         await expect(rust?.load()).resolves.toBeDefined();
         await expect(bash?.load()).resolves.toBeDefined();
+        await expect(cpp?.load()).resolves.toBeDefined();
+        await expect(php?.load()).resolves.toBeDefined();
+        await expect(postgres?.load()).resolves.toBeDefined();
     });
 
     it("loads modern and legacy CodeMirror languages on demand", async () => {
         const [
+            cLanguage,
+            cppLanguage,
             rustLanguage,
             tsxLanguage,
+            phpLanguage,
+            sqlLanguage,
             swiftLanguage,
             dockerfileLanguage,
             makefileLanguage,
             propertiesLanguage,
             unknownLanguage,
         ] = await Promise.all([
+            loadCodeLanguage("/vault/main.c", "text/plain"),
+            loadCodeLanguage("/vault/main.hpp", "text/plain"),
             loadCodeLanguage("/vault/src/main.rs", "text/plain"),
             loadCodeLanguage("/vault/src/App.tsx", "text/plain"),
+            loadCodeLanguage("/vault/index.php", "text/plain"),
+            loadCodeLanguage("/vault/query.sql", "text/plain"),
             loadCodeLanguage("/vault/Package.swift", "text/plain"),
             loadCodeLanguage("/vault/Dockerfile", null),
             loadCodeLanguage("/vault/Makefile", null),
@@ -157,8 +199,12 @@ describe("codeLanguage", () => {
             loadCodeLanguage("/vault/file.unknown", "text/plain"),
         ]);
 
+        expect(cLanguage).not.toBeNull();
+        expect(cppLanguage).not.toBeNull();
         expect(rustLanguage).not.toBeNull();
         expect(tsxLanguage).not.toBeNull();
+        expect(phpLanguage).not.toBeNull();
+        expect(sqlLanguage).not.toBeNull();
         expect(swiftLanguage).not.toBeNull();
         expect(dockerfileLanguage).not.toBeNull();
         expect(makefileLanguage).not.toBeNull();

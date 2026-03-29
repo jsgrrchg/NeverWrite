@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { javascript } from "@codemirror/lang-javascript";
 import { describe, expect, it } from "vitest";
 import { computeDiffLines, computeFileDiffStats } from "../diff/reviewDiff";
 import { DiffLineView } from "./editedFilesPresentation";
@@ -83,5 +84,23 @@ describe("DiffLineView", () => {
             whiteSpace: "pre-wrap",
             wordBreak: "break-all",
         });
+    });
+
+    it("renders syntax highlighting when a language support is provided", () => {
+        render(
+            <DiffLineView
+                line={{
+                    type: "add",
+                    prefix: "+ ",
+                    text: "const example = 1;",
+                    newLineNumber: 3,
+                }}
+                language={javascript()}
+            />,
+        );
+
+        expect(screen.getByText("const")).toHaveClass(
+            "cm-static-token-keyword",
+        );
     });
 });
