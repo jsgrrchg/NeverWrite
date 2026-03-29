@@ -234,10 +234,14 @@ export async function removeVaultFromList(path: string) {
     }
 
     // Delete AI session histories from disk
-    try {
-        await invoke("ai_delete_all_session_histories", { vaultPath: path });
-    } catch {
-        // No histories — that's fine
+    if (useVaultStore.getState().vaultPath === path) {
+        try {
+            await invoke("ai_delete_all_session_histories", {
+                vaultPath: path,
+            });
+        } catch {
+            // No histories or vault not open — that's fine
+        }
     }
 }
 
