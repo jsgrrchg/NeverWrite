@@ -7,6 +7,7 @@ import {
     createDeferred,
     renderComponent,
     setEditorTabs,
+    setVaultEntries,
 } from "../../test/test-utils";
 
 const { getDocumentMock } = vi.hoisted(() => ({
@@ -73,6 +74,7 @@ describe("PdfTabView", () => {
     beforeEach(() => {
         getDocumentMock.mockReset();
         vi.useRealTimers();
+        setVaultEntries([], "/vault");
     });
 
     it("shows an error state when page rendering fails", async () => {
@@ -99,7 +101,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",
@@ -142,7 +144,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",
@@ -212,7 +214,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",
@@ -248,7 +250,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",
@@ -308,7 +310,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",
@@ -360,7 +362,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",
@@ -436,7 +438,7 @@ describe("PdfTabView", () => {
                 id: "pdf-tab",
                 entryId: "entry-1",
                 title: "Doc",
-                path: "/tmp/doc.pdf",
+                path: "/vault/docs/doc.pdf",
                 page: 1,
                 zoom: 1,
                 viewMode: "single",

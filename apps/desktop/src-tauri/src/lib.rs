@@ -1,6 +1,7 @@
 mod ai;
 mod clipper_api;
 mod devtools;
+mod file_preview_gateway;
 mod maps;
 mod spellcheck;
 
@@ -5344,6 +5345,10 @@ pub(crate) fn web_clipper_save_note(
 
 pub fn run() {
     let builder = tauri::Builder::default()
+        .register_uri_scheme_protocol(
+            file_preview_gateway::FILE_PREVIEW_SCHEME,
+            file_preview_gateway::handle_request,
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(AppState::new()))

@@ -27,10 +27,10 @@
     },
     "app": {
         "security": {
-            "csp": "default-src 'self'; connect-src 'self' asset: https://www.youtube.com; worker-src 'self' blob:; img-src 'self' asset: https: http: data:; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
+            "csp": "default-src 'self'; connect-src 'self' asset: https://www.youtube.com vaultai-file: http://vaultai-file.localhost https://vaultai-file.localhost; worker-src 'self' blob:; img-src 'self' asset: https: http: data: vaultai-file: http://vaultai-file.localhost https://vaultai-file.localhost; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
             "assetProtocol": {
-                "enable": true,
-                "scope": ["**"]
+                "enable": false,
+                "scope": []
             }
         },
         "windows": []

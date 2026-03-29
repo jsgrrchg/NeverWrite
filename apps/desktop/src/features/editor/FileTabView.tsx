@@ -6,7 +6,6 @@ import {
     useState,
     type ReactNode,
 } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
     useEditorStore,
@@ -17,6 +16,8 @@ import {
     isWheelZoomGesture,
     useWheelZoomModifier,
 } from "../../app/hooks/useWheelZoomModifier";
+import { useVaultStore } from "../../app/store/vaultStore";
+import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePreviewUrl";
 import { formatZoomPercentage } from "../../app/utils/zoom";
 import { FileTextTabView } from "./FileTextTabView";
 
@@ -105,6 +106,7 @@ function FileHeader({ tab, children }: { tab: FileTab; children?: ReactNode }) {
 type ImageMode = "fit" | "zoom";
 
 function ImageFileViewer({ tab }: { tab: FileTab }) {
+    const vaultPath = useVaultStore((state) => state.vaultPath);
     const containerRef = useRef<HTMLDivElement>(null);
     const zoomRef = useRef(1);
     const pendingZoomAnchorRef = useRef<{
@@ -120,6 +122,14 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
     const [status, setStatus] = useState<"loading" | "ready" | "error">(
         "loading",
     );
+    const previewUrl = buildVaultPreviewUrlFromAbsolutePath(
+        tab.path,
+        vaultPath,
+    );
+
+    useEffect(() => {
+        setStatus(previewUrl ? "loading" : "error");
+    }, [previewUrl, tab.path]);
 
     const setFit = useCallback(() => setMode("fit"), []);
     const setActual = useCallback(() => {
@@ -254,8 +264,9 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                             Failed to load image
                         </span>
                         <span className="text-[12px] max-w-sm">
-                            This image could not be rendered in the in-app
-                            viewer.
+                            {previewUrl
+                                ? "This image could not be rendered in the in-app viewer."
+                                : "This image can no longer be previewed because it is outside the active vault."}
                         </span>
                     </div>
                 )}
@@ -267,7 +278,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                         }}
                     >
                         <img
-                            src={convertFileSrc(tab.path)}
+                            src={previewUrl ?? ""}
                             alt={tab.title}
                             draggable={false}
                             onLoad={() => setStatus("ready")}
@@ -291,7 +302,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                         }}
                     >
                         <img
-                            src={convertFileSrc(tab.path)}
+                            src={previewUrl ?? ""}
                             alt={tab.title}
                             draggable={false}
                             onLoad={() => setStatus("ready")}
