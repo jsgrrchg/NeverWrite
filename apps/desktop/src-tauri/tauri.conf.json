@@ -27,7 +27,7 @@
     },
     "app": {
         "security": {
-            "csp": "default-src 'self'; connect-src 'self' asset: https: http:; worker-src 'self' blob:; img-src 'self' asset: https: http: data:; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
+            "csp": "default-src 'self'; connect-src 'self' asset: https://www.youtube.com; worker-src 'self' blob:; img-src 'self' asset: https: http: data:; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
             "assetProtocol": {
                 "enable": true,
                 "scope": ["**"]
