@@ -7823,6 +7823,58 @@ describe("chatStore", () => {
         ).toHaveLength(0);
     });
 
+    it("hydrates a restored session catalog before applying local session settings", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const secondSessionId = "codex-session-restored";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, secondSessionId, {
+                runtimeState: "persisted_only",
+                isPersistedSession: true,
+                modelId: "test-model",
+                modeId: "default",
+                models: [],
+                modes: [],
+                configOptions: [],
+            }),
+            true,
+        );
+
+        await useChatStore.getState().setModel("wide-model", secondSessionId);
+        await useChatStore.getState().setMode("review-mode", secondSessionId);
+        await useChatStore
+            .getState()
+            .setConfigOption("reasoning_effort", "high", secondSessionId);
+
+        const restored = useChatStore.getState().sessionsById[secondSessionId];
+
+        expect(restored?.models.length).toBeGreaterThan(0);
+        expect(restored?.modes.length).toBeGreaterThan(0);
+        expect(restored?.modelId).toBe("wide-model");
+        expect(restored?.modeId).toBe("review-mode");
+        expect(
+            restored?.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("wide-model");
+        expect(
+            restored?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) =>
+                    command === "ai_set_model" ||
+                    command === "ai_set_mode" ||
+                    command === "ai_set_config_option",
+            ),
+        ).toHaveLength(0);
+    });
+
     it("supports targeting a non-active live session for send, user input and stop actions", async () => {
         await useChatStore.getState().initialize();
 
