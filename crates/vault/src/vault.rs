@@ -32,6 +32,14 @@ pub struct Vault {
     pub root: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopedPathIntent {
+    ReadExisting,
+    WriteExisting,
+    CreateTarget,
+    CreateDirectoryTarget,
+}
+
 impl Vault {
     /// Abre un vault en el directorio dado. Valida que exista.
     pub fn open(path: PathBuf) -> Result<Self, VaultError> {
@@ -177,23 +185,17 @@ impl Vault {
     }
 
     pub fn resolve_relative_path(&self, relative_path: &str) -> Result<PathBuf, VaultError> {
+        self.resolve_scoped_path(relative_path, ScopedPathIntent::CreateTarget)
+    }
+
+    pub fn resolve_scoped_path(
+        &self,
+        relative_path: &str,
+        intent: ScopedPathIntent,
+    ) -> Result<PathBuf, VaultError> {
         let path = validate_untrusted_relative_path(relative_path, true)
             .map_err(|_| VaultError::InvalidVaultPath(relative_path.to_string()))?;
-        let joined = self.root.join(path);
-
-        // If the path exists on disk, verify its canonical form stays inside the vault.
-        // This catches symlinks that escape the vault boundary.
-        if let Ok(canonical) = joined.canonicalize() {
-            let vault_root = self
-                .root
-                .canonicalize()
-                .map_err(|_| VaultError::InvalidVaultPath(relative_path.to_string()))?;
-            if !canonical.starts_with(&vault_root) {
-                return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
-            }
-        }
-
-        Ok(joined)
+        self.resolve_validated_scoped_path(&path, relative_path, intent)
     }
 
     /// Resuelve un note_id relativo sin extensión `.md` dentro del vault.
@@ -208,10 +210,10 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(note_id.to_string()));
         }
 
-        Ok(self.root.join(path).with_extension("md"))
+        let relative_path = path.with_extension("md");
+        self.resolve_validated_scoped_path(&relative_path, note_id, ScopedPathIntent::CreateTarget)
     }
 
-    /// Resuelve un path relativo con extensión `.md` dentro del vault.
     pub fn resolve_note_relative_markdown_path(
         &self,
         relative_path: &str,
@@ -226,10 +228,9 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
         }
 
-        self.resolve_relative_path(relative_path)
+        self.resolve_scoped_path(relative_path, ScopedPathIntent::CreateTarget)
     }
 
-    /// Valida un nombre de archivo leaf dentro del vault sin permitir traversal ni separadores.
     pub fn validate_vault_leaf_file_name(&self, file_name: &str) -> Result<(), VaultError> {
         let path = validate_untrusted_relative_path(file_name, false)
             .map_err(|_| VaultError::InvalidVaultPath(file_name.to_string()))?;
@@ -241,7 +242,7 @@ impl Vault {
     }
 
     pub fn read_text_file(&self, relative_path: &str) -> Result<String, VaultError> {
-        let path = self.resolve_relative_path(relative_path)?;
+        let path = self.resolve_scoped_path(relative_path, ScopedPathIntent::ReadExisting)?;
         if !path.exists() || !path.is_file() || path_is_ignored(&self.root, &path) {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
         }
@@ -254,7 +255,7 @@ impl Vault {
         relative_path: &str,
         content: &str,
     ) -> Result<VaultEntryDto, VaultError> {
-        let path = self.resolve_relative_path(relative_path)?;
+        let path = self.resolve_scoped_path(relative_path, ScopedPathIntent::WriteExisting)?;
 
         if !path.exists()
             || !path.is_file()
@@ -273,8 +274,9 @@ impl Vault {
         relative_path: &str,
         new_relative_path: &str,
     ) -> Result<VaultEntryDto, VaultError> {
-        let old_path = self.resolve_relative_path(relative_path)?;
-        let new_path = self.resolve_relative_path(new_relative_path)?;
+        let old_path = self.resolve_scoped_path(relative_path, ScopedPathIntent::WriteExisting)?;
+        let new_path =
+            self.resolve_scoped_path(new_relative_path, ScopedPathIntent::CreateTarget)?;
 
         if is_markdown_path(&old_path) || is_markdown_path(&new_path) {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
@@ -313,7 +315,8 @@ impl Vault {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<(PathBuf, VaultEntryDto), VaultError> {
-        let dir_path = self.resolve_relative_path(relative_dir)?;
+        let dir_path =
+            self.resolve_scoped_path(relative_dir, ScopedPathIntent::CreateDirectoryTarget)?;
         if path_is_ignored(&self.root, &dir_path) {
             return Err(VaultError::InvalidVaultPath(relative_dir.to_string()));
         }
@@ -347,7 +350,8 @@ impl Vault {
     }
 
     pub fn create_folder(&self, relative_path: &str) -> Result<VaultEntryDto, VaultError> {
-        let path = self.resolve_relative_path(relative_path)?;
+        let path =
+            self.resolve_scoped_path(relative_path, ScopedPathIntent::CreateDirectoryTarget)?;
 
         if path_is_ignored(&self.root, &path) {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
@@ -377,8 +381,9 @@ impl Vault {
         relative_path: &str,
         new_relative_path: &str,
     ) -> Result<(), VaultError> {
-        let old_path = self.resolve_relative_path(relative_path)?;
-        let new_path = self.resolve_relative_path(new_relative_path)?;
+        let old_path = self.resolve_scoped_path(relative_path, ScopedPathIntent::ReadExisting)?;
+        let new_path =
+            self.resolve_scoped_path(new_relative_path, ScopedPathIntent::CreateDirectoryTarget)?;
 
         if !old_path.exists() || !old_path.is_dir() || path_is_ignored(&self.root, &old_path) {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
@@ -409,8 +414,9 @@ impl Vault {
         relative_path: &str,
         new_relative_path: &str,
     ) -> Result<VaultEntryDto, VaultError> {
-        let source = self.resolve_relative_path(relative_path)?;
-        let target = self.resolve_relative_path(new_relative_path)?;
+        let source = self.resolve_scoped_path(relative_path, ScopedPathIntent::ReadExisting)?;
+        let target =
+            self.resolve_scoped_path(new_relative_path, ScopedPathIntent::CreateDirectoryTarget)?;
 
         if !source.exists() || !source.is_dir() || path_is_ignored(&self.root, &source) {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
@@ -422,6 +428,10 @@ impl Vault {
 
         if self.id_to_path(new_relative_path).exists() {
             return Err(VaultError::EntryAlreadyExists(target));
+        }
+
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
         }
 
         // Create the target directory atomically — fails if it already exists,
@@ -439,7 +449,7 @@ impl Vault {
     }
 
     pub fn delete_folder(&self, relative_path: &str) -> Result<(), VaultError> {
-        let path = self.resolve_relative_path(relative_path)?;
+        let path = self.resolve_scoped_path(relative_path, ScopedPathIntent::ReadExisting)?;
 
         if !path.exists() || !path.is_dir() {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
@@ -495,6 +505,64 @@ impl Vault {
 
     pub fn read_vault_entry_from_path(&self, path: &Path) -> Result<VaultEntryDto, VaultError> {
         build_vault_entry(path, entry_kind(path).to_string(), self)
+    }
+}
+
+impl Vault {
+    fn resolve_validated_scoped_path(
+        &self,
+        relative_path: &Path,
+        raw_input: &str,
+        intent: ScopedPathIntent,
+    ) -> Result<PathBuf, VaultError> {
+        let candidate = self.root.join(relative_path);
+        let canonical_root = self
+            .root
+            .canonicalize()
+            .map_err(|_| VaultError::InvalidVaultPath(raw_input.to_string()))?;
+
+        let nearest_existing_ancestor =
+            nearest_existing_ancestor(&candidate).map_err(VaultError::from)?;
+        let canonical_ancestor = nearest_existing_ancestor
+            .canonicalize()
+            .map_err(|_| VaultError::InvalidVaultPath(raw_input.to_string()))?;
+        if !canonical_ancestor.starts_with(&canonical_root) {
+            return Err(VaultError::InvalidVaultPath(raw_input.to_string()));
+        }
+
+        self.reject_forbidden_existing_components(relative_path, raw_input)?;
+
+        if matches!(
+            intent,
+            ScopedPathIntent::ReadExisting | ScopedPathIntent::WriteExisting
+        ) && !candidate.exists()
+        {
+            return Err(VaultError::InvalidVaultPath(raw_input.to_string()));
+        }
+
+        Ok(candidate)
+    }
+
+    fn reject_forbidden_existing_components(
+        &self,
+        relative_path: &Path,
+        raw_input: &str,
+    ) -> Result<(), VaultError> {
+        let mut current = self.root.clone();
+        for component in relative_path.components() {
+            current.push(component.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    if metadata_has_forbidden_link_behavior(&metadata) {
+                        return Err(VaultError::InvalidVaultPath(raw_input.to_string()));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -641,6 +709,41 @@ fn build_vault_entry(
     })
 }
 
+fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, std::io::Error> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        match std::fs::symlink_metadata(candidate) {
+            Ok(_) => return Ok(candidate.to_path_buf()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                current = candidate.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "No existing ancestor found for vault path",
+    ))
+}
+
+fn metadata_has_forbidden_link_behavior(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink() || metadata_is_windows_reparse_point(metadata)
+}
+
+#[cfg(windows)]
+fn metadata_is_windows_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_windows_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), VaultError> {
     std::fs::create_dir_all(target)?;
 
@@ -649,7 +752,14 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), VaultError> {
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
 
-        if entry.file_type()?.is_dir() {
+        let metadata = std::fs::symlink_metadata(&source_path)?;
+        if metadata_has_forbidden_link_behavior(&metadata) {
+            return Err(VaultError::InvalidVaultPath(
+                source_path.to_string_lossy().to_string(),
+            ));
+        }
+
+        if metadata.is_dir() {
             copy_dir_recursive(&source_path, &target_path)?;
         } else {
             std::fs::copy(&source_path, &target_path)?;

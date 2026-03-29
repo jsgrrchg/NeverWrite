@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 use vault_ai_vault::pdf;
 use vault_ai_vault::Vault;
@@ -28,6 +30,16 @@ fn setup_vault() -> (TempDir, Vault) {
 
     let vault = Vault::open(dir.path().to_path_buf()).unwrap();
     (dir, vault)
+}
+
+#[cfg(unix)]
+fn setup_vault_with_symlinked_dir() -> (TempDir, TempDir, Vault) {
+    let (dir, vault) = setup_vault();
+    let outside = TempDir::new().unwrap();
+    fs::create_dir_all(outside.path().join("external")).unwrap();
+    fs::write(dir.path().join("image.png"), b"image").unwrap();
+    symlink(outside.path().join("external"), dir.path().join("linked")).unwrap();
+    (dir, outside, vault)
 }
 
 #[test]
@@ -270,6 +282,76 @@ fn save_binary_file_rejects_invalid_file_names() {
     assert!(vault
         .save_binary_file("assets", "nested\\evil.bin", bytes)
         .is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn create_folder_rejects_symlinked_parent() {
+    let (_dir, _outside, vault) = setup_vault_with_symlinked_dir();
+    assert!(vault.create_folder("linked/new-folder").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn move_vault_entry_rejects_symlinked_destination_parent() {
+    let (_dir, _outside, vault) = setup_vault_with_symlinked_dir();
+    assert!(vault
+        .move_vault_entry("image.png", "linked/moved-image.png")
+        .is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn move_folder_rejects_symlinked_destination_parent() {
+    let (_dir, _outside, vault) = setup_vault_with_symlinked_dir();
+    assert!(vault.move_folder("carpeta", "linked/moved-folder").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_folder_rejects_symlinked_destination_parent() {
+    let (_dir, _outside, vault) = setup_vault_with_symlinked_dir();
+    assert!(vault
+        .copy_folder("carpeta", "linked/copied-folder")
+        .is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn save_binary_file_rejects_symlinked_directory_parent() {
+    let (_dir, _outside, vault) = setup_vault_with_symlinked_dir();
+    assert!(vault.save_binary_file("linked", "evil.bin", b"x").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn save_text_file_rejects_symlinked_existing_file() {
+    let (dir, vault) = setup_vault();
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("external.txt"), "outside").unwrap();
+    symlink(
+        outside.path().join("external.txt"),
+        dir.path().join("linked-file.txt"),
+    )
+    .unwrap();
+
+    assert!(vault.save_text_file("linked-file.txt", "updated").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_folder_rejects_symlink_descendants_in_source_tree() {
+    let (dir, vault) = setup_vault();
+    let outside = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join("assets/subdir")).unwrap();
+    fs::write(outside.path().join("outside.txt"), "outside").unwrap();
+    symlink(
+        outside.path().join("outside.txt"),
+        dir.path().join("assets/subdir/link.txt"),
+    )
+    .unwrap();
+
+    assert!(vault.copy_folder("assets", "assets copy").is_err());
 }
 
 #[test]
