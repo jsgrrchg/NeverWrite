@@ -1595,6 +1595,9 @@ describe("chatStore", () => {
                     {
                         ...sessionPayload,
                         session_id: "codex-session-existing",
+                        models: [],
+                        modes: [],
+                        config_options: [],
                     },
                 ];
             }
@@ -1607,6 +1610,9 @@ describe("chatStore", () => {
                         runtime_id: "codex-acp",
                         model_id: "test-model",
                         mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
                         created_at: 10,
                         updated_at: 20,
                         messages: [
@@ -1682,6 +1688,173 @@ describe("chatStore", () => {
         expect(session.lastTurnStartedMessageId).toBe("status:init-turn");
         expect(session.lastAssistantMessageId).toBe("assistant:init");
         expect(session.activePlanMessageId).toBe("plan:init");
+        expect(session.models).toEqual([
+            {
+                id: "test-model",
+                runtimeId: "codex-acp",
+                name: "Test Model",
+                description: "A test model for unit tests.",
+            },
+        ]);
+        expect(session.modes).toEqual([
+            {
+                id: "default",
+                runtimeId: "codex-acp",
+                name: "Default",
+                description: "Prompt for actions that need explicit approval.",
+                disabled: false,
+            },
+        ]);
+        expect(
+            session.configOptions.find((option) => option.id === "model"),
+        ).toMatchObject({
+            id: "model",
+            runtimeId: "codex-acp",
+            category: "model",
+            value: "test-model",
+        });
+    });
+
+    it("refreshes the active live session catalog on initialize when ACP lists it empty", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [];
+            }
+
+            if (command === "ai_load_session") {
+                expect(
+                    (args as { sessionId?: string } | undefined)?.sessionId,
+                ).toBe("codex-session-existing");
+                return {
+                    ...sessionPayload,
+                    session_id: "codex-session-existing",
+                };
+            }
+
+            if (command === "ai_create_session") {
+                throw new Error("Should not create a new session");
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+
+        expect(session.models).toHaveLength(1);
+        expect(session.modes).toHaveLength(1);
+        expect(session.configOptions).not.toHaveLength(0);
+        expect(invokeMock).toHaveBeenCalledWith("ai_load_session", {
+            sessionId: "codex-session-existing",
+        });
+    });
+
+    it("rehydrates a restored live session from the workspace history id when startup ACP data is empty", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 20,
+                        messages: [
+                            {
+                                id: "m1",
+                                role: "user",
+                                kind: "text",
+                                content: "Recovered from disk",
+                                timestamp: 20,
+                            },
+                        ],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session") {
+                expect(
+                    (args as { sessionId?: string } | undefined)?.sessionId,
+                ).toBe("codex-session-existing");
+                return {
+                    ...sessionPayload,
+                    session_id: "codex-session-existing",
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs([
+            {
+                sessionId: "codex-session-existing",
+                historySessionId: "history-1",
+                runtimeId: "codex-acp",
+            },
+        ]);
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(session.historySessionId).toBe("history-1");
+        expect(session.models).toHaveLength(1);
+        expect(session.modes).toHaveLength(1);
+        expect(session.configOptions).not.toHaveLength(0);
     });
 
     it("loads only the latest persisted transcript page for the active live session on initialize", async () => {
@@ -6608,6 +6781,13 @@ describe("chatStore", () => {
             notes: [],
         });
 
+        const emptyCatalogSessionPayload = {
+            ...sessionPayload,
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") return runtimePayload;
             if (command === "ai_get_setup_status") return readySetupStatus;
@@ -6620,6 +6800,9 @@ describe("chatStore", () => {
                         runtime_id: "codex-acp",
                         model_id: "test-model",
                         mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
                         created_at: 10,
                         updated_at: 20,
                         messages: [
@@ -6639,8 +6822,9 @@ describe("chatStore", () => {
                     "initialize should not refetch a fully hydrated persisted transcript",
                 );
             }
-            if (command === "ai_create_session") return sessionPayload;
-            return sessionPayload;
+            if (command === "ai_create_session")
+                return emptyCatalogSessionPayload;
+            return emptyCatalogSessionPayload;
         });
 
         await useChatStore.getState().initialize();
@@ -7001,6 +7185,123 @@ describe("chatStore", () => {
         });
     });
 
+    it("restores persisted agent catalogs for history-only sessions when ACP descriptors are empty", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "zzz-live",
+                    },
+                ];
+            }
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 0,
+                        message_count: 1,
+                        title: "Recovered chat",
+                        preview: "Recovered message",
+                        messages: [],
+                    },
+                ];
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const state = useChatStore.getState();
+        expect(state.activeSessionId).toBe("zzz-live");
+        expect(state.sessionsById["persisted:history-1"]).toMatchObject({
+            historySessionId: "history-1",
+            runtimeId: "codex-acp",
+            modelId: "test-model",
+            modeId: "default",
+            isPersistedSession: true,
+            runtimeState: "persisted_only",
+            resumeContextPending: true,
+            models: [
+                {
+                    id: "test-model",
+                    runtimeId: "codex-acp",
+                    name: "Test Model",
+                    description: "A test model for unit tests.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtimeId: "codex-acp",
+                    name: "Default",
+                    description:
+                        "Prompt for actions that need explicit approval.",
+                    disabled: false,
+                },
+            ],
+            configOptions: [
+                {
+                    id: "model",
+                    runtimeId: "codex-acp",
+                    category: "model",
+                    label: "Model",
+                    type: "select",
+                    value: "test-model",
+                    options: [
+                        {
+                            value: "test-model",
+                            label: "Test Model",
+                        },
+                        {
+                            value: "wide-model",
+                            label: "Wide Model",
+                        },
+                    ],
+                },
+                {
+                    id: "reasoning_effort",
+                    runtimeId: "codex-acp",
+                    category: "reasoning",
+                    label: "Reasoning Effort",
+                    type: "select",
+                    value: "medium",
+                    options: [
+                        {
+                            value: "medium",
+                            label: "Medium",
+                        },
+                        {
+                            value: "high",
+                            label: "High",
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
+    });
+
     it("persists tool diffs when saving session history", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -7054,6 +7355,22 @@ describe("chatStore", () => {
             vaultPath: "/vault",
             history: expect.objectContaining({
                 runtime_id: "codex-acp",
+                models: acpModels,
+                modes: acpModes,
+                config_options: expect.arrayContaining([
+                    expect.objectContaining({
+                        id: "model",
+                        runtime_id: "codex-acp",
+                        category: "model",
+                        value: "test-model",
+                    }),
+                    expect.objectContaining({
+                        id: "reasoning_effort",
+                        runtime_id: "codex-acp",
+                        category: "reasoning",
+                        value: "medium",
+                    }),
+                ]),
                 messages: expect.arrayContaining([
                     expect.objectContaining({
                         kind: "tool",
@@ -7688,6 +8005,269 @@ describe("chatStore", () => {
         ).toEqual(["low", "medium", "high", "xhigh"]);
     });
 
+    it("preserves a fresher session-updated model change when ai_set_config_option returns stale data", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const existing = useChatStore.getState().sessionsById[sessionId]!;
+        const deferred = createDeferred<typeof sessionPayload>();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_set_config_option") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (args.input as {
+                              option_id?: string;
+                              value?: string;
+                          })
+                        : undefined;
+
+                expect(input?.option_id).toBe("model");
+                expect(input?.value).toBe("wide-model");
+                return deferred.promise;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const actionPromise = useChatStore
+            .getState()
+            .setConfigOption("model", "wide-model", sessionId);
+
+        useChatStore.getState().upsertSession({
+            ...existing,
+            modelId: "wide-model",
+            configOptions: existing.configOptions.map((option) =>
+                option.id === "model"
+                    ? { ...option, value: "wide-model" }
+                    : option.id === "reasoning_effort"
+                      ? {
+                            ...option,
+                            value: "low",
+                            options: [
+                                { value: "low", label: "Low" },
+                                { value: "medium", label: "Medium" },
+                                { value: "high", label: "High" },
+                                { value: "xhigh", label: "Extra High" },
+                            ],
+                        }
+                      : option,
+            ),
+        });
+
+        deferred.resolve({
+            ...sessionPayload,
+            session_id: sessionId,
+            model_id: existing.modelId,
+            mode_id: existing.modeId,
+            config_options: acpConfigOptions,
+        });
+
+        await actionPromise;
+
+        const finalSession = useChatStore.getState().sessionsById[sessionId]!;
+
+        expect(finalSession.modelId).toBe("wide-model");
+        expect(
+            finalSession.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("wide-model");
+        expect(
+            finalSession.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("low");
+    });
+
+    it("accepts updates for the active workspace session even when its stored vault path is stale", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const existing = useChatStore.getState().sessionsById[sessionId]!;
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: {
+                    ...existing,
+                    vaultPath: "/stale-vault",
+                },
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "tab-active",
+                    sessionId,
+                    historySessionId: existing.historySessionId,
+                    runtimeId: existing.runtimeId,
+                },
+            ],
+            activeTabId: "tab-active",
+        });
+
+        useChatStore.getState().upsertSession({
+            ...existing,
+            modelId: "wide-model",
+            configOptions: existing.configOptions.map((option) =>
+                option.id === "model"
+                    ? { ...option, value: "wide-model" }
+                    : option,
+            ),
+        });
+
+        const updated = useChatStore.getState().sessionsById[sessionId]!;
+        expect(updated.modelId).toBe("wide-model");
+        expect(updated.vaultPath).toBe("/vault");
+    });
+
+    it("continues ignoring updates for non-workspace sessions from another vault", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+        const foreignSessionId = "codex-session-foreign";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [foreignSessionId]: {
+                    ...cloneSessionForTest(activeSession, foreignSessionId, {
+                        vaultPath: "/other-vault",
+                    }),
+                },
+            },
+            sessionOrder: [...state.sessionOrder, foreignSessionId],
+        }));
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "tab-active",
+                    sessionId: activeSessionId,
+                    historySessionId: activeSession.historySessionId,
+                    runtimeId: activeSession.runtimeId,
+                },
+            ],
+            activeTabId: "tab-active",
+        });
+
+        const before = useChatStore.getState().sessionsById[foreignSessionId]!;
+
+        useChatStore.getState().upsertSession({
+            ...before,
+            modelId: "wide-model",
+            configOptions: before.configOptions.map((option) =>
+                option.id === "model"
+                    ? { ...option, value: "wide-model" }
+                    : option,
+            ),
+        });
+
+        const after = useChatStore.getState().sessionsById[foreignSessionId]!;
+        expect(after.modelId).toBe(before.modelId);
+        expect(after.vaultPath).toBe("/other-vault");
+    });
+
+    it("preserves restored agent catalogs when a live ACP session update arrives empty", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const existing = useChatStore.getState().sessionsById[sessionId]!;
+
+        useChatStore.getState().upsertSession({
+            ...existing,
+            models: [],
+            modes: [],
+            configOptions: [],
+        });
+
+        const merged = useChatStore.getState().sessionsById[sessionId]!;
+
+        expect(merged.models).toEqual(existing.models);
+        expect(merged.modes).toEqual(existing.modes);
+        expect(merged.configOptions).toEqual(existing.configOptions);
+    });
+
+    it("keeps model and mode config option values aligned with incoming session updates", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const existing = useChatStore.getState().sessionsById[sessionId]!;
+
+        useChatStore.getState().upsertSession({
+            ...existing,
+            modelId: "wide-model",
+            modeId: "review-mode",
+            configOptions: existing.configOptions.map((option) =>
+                option.category === "model"
+                    ? { ...option, value: "test-model" }
+                    : option.category === "mode"
+                      ? { ...option, value: "default" }
+                      : option,
+            ),
+        });
+
+        const merged = useChatStore.getState().sessionsById[sessionId]!;
+
+        expect(merged.modelId).toBe("wide-model");
+        expect(merged.modeId).toBe("review-mode");
+        expect(
+            merged.configOptions.find((option) => option.category === "model")
+                ?.value,
+        ).toBe("wide-model");
+    });
+
+    it("refreshes the agent catalog when loading an existing live session with empty options", async () => {
+        await useChatStore.getState().initialize();
+
+        const emptyLiveSessionId = "codex-session-empty";
+        useChatStore.getState().upsertSession(
+            {
+                ...cloneSessionForTest(
+                    useChatStore.getState().sessionsById[getActiveSessionId()]!,
+                    emptyLiveSessionId,
+                    {
+                        historySessionId: "history-empty",
+                        runtimeState: "live",
+                        isPersistedSession: false,
+                        models: [],
+                        modes: [],
+                        configOptions: [],
+                    },
+                ),
+            },
+            true,
+        );
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session") {
+                expect(
+                    (args as { sessionId?: string } | undefined)?.sessionId,
+                ).toBe(emptyLiveSessionId);
+                return {
+                    ...sessionPayload,
+                    session_id: emptyLiveSessionId,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().loadSession(emptyLiveSessionId);
+
+        const session =
+            useChatStore.getState().sessionsById[emptyLiveSessionId]!;
+        expect(useChatStore.getState().activeSessionId).toBe(
+            emptyLiveSessionId,
+        );
+        expect(session.models).toHaveLength(1);
+        expect(session.modes).toHaveLength(1);
+        expect(session.configOptions).not.toHaveLength(0);
+    });
+
     it("supports targeting a non-active session for local draft and attachment mutations", async () => {
         await useChatStore.getState().initialize();
 
@@ -7823,13 +8403,48 @@ describe("chatStore", () => {
         ).toHaveLength(0);
     });
 
-    it("hydrates a restored session catalog before applying local session settings", async () => {
+    it("resumes a restored session before applying agent settings", async () => {
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
         const secondSessionId = "codex-session-restored";
+        const resumedSessionId = "codex-session-restored-live";
         const activeSession =
             useChatStore.getState().sessionsById[activeSessionId]!;
+        const resumeSession = vi.fn(async (sessionId: string) => {
+            const persistedSession =
+                useChatStore.getState().sessionsById[sessionId]!;
+            useChatStore.setState((state) => {
+                const resumedSession = cloneSessionForTest(
+                    activeSession,
+                    resumedSessionId,
+                    {
+                        historySessionId:
+                            persistedSession.historySessionId ?? sessionId,
+                        runtimeState: "live",
+                        isPersistedSession: false,
+                        modelId: persistedSession.modelId,
+                        modeId: persistedSession.modeId,
+                    },
+                );
+                const nextSessionsById = { ...state.sessionsById };
+                delete nextSessionsById[sessionId];
+                nextSessionsById[resumedSessionId] = resumedSession;
+
+                return {
+                    sessionsById: nextSessionsById,
+                    sessionOrder: state.sessionOrder.map((id) =>
+                        id === sessionId ? resumedSessionId : id,
+                    ),
+                    activeSessionId:
+                        state.activeSessionId === sessionId
+                            ? resumedSessionId
+                            : state.activeSessionId,
+                };
+            });
+
+            return resumedSessionId;
+        });
 
         useChatStore.getState().upsertSession(
             cloneSessionForTest(activeSession, secondSessionId, {
@@ -7843,17 +8458,113 @@ describe("chatStore", () => {
             }),
             true,
         );
+        useChatStore.setState({ resumeSession });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_set_mode") {
+                expect(
+                    (
+                        args as
+                            | { sessionId?: string; modeId?: string }
+                            | undefined
+                    )?.sessionId,
+                ).toBe(resumedSessionId);
+                expect(
+                    (
+                        args as
+                            | { sessionId?: string; modeId?: string }
+                            | undefined
+                    )?.modeId,
+                ).toBe("review-mode");
+                return {
+                    ...sessionPayload,
+                    session_id: resumedSessionId,
+                    model_id: "wide-model",
+                    mode_id: "review-mode",
+                    config_options: [
+                        {
+                            ...acpConfigOptions[0],
+                            value: "wide-model",
+                        },
+                        {
+                            ...acpConfigOptions[1],
+                            value: "medium",
+                        },
+                    ],
+                };
+            }
+
+            if (command === "ai_set_config_option") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (args.input as {
+                              session_id?: string;
+                              option_id?: string;
+                              value?: string;
+                          })
+                        : undefined;
+
+                expect(input?.session_id).toBe(resumedSessionId);
+
+                if (input?.option_id === "model") {
+                    expect(input.value).toBe("wide-model");
+                    return {
+                        ...sessionPayload,
+                        session_id: resumedSessionId,
+                        model_id: "wide-model",
+                        mode_id: "default",
+                        config_options: [
+                            {
+                                ...acpConfigOptions[0],
+                                value: "wide-model",
+                            },
+                            {
+                                ...acpConfigOptions[1],
+                                value: "medium",
+                            },
+                        ],
+                    };
+                }
+
+                expect(input?.option_id).toBe("reasoning_effort");
+                expect(input?.value).toBe("high");
+                return {
+                    ...sessionPayload,
+                    session_id: resumedSessionId,
+                    model_id: "wide-model",
+                    mode_id: "review-mode",
+                    config_options: [
+                        {
+                            ...acpConfigOptions[0],
+                            value: "wide-model",
+                        },
+                        {
+                            ...acpConfigOptions[1],
+                            value: "high",
+                        },
+                    ],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
 
         await useChatStore.getState().setModel("wide-model", secondSessionId);
-        await useChatStore.getState().setMode("review-mode", secondSessionId);
+
+        const liveSessionId = useChatStore.getState().activeSessionId;
+        expect(liveSessionId).toBe(resumedSessionId);
+
+        await useChatStore.getState().setMode("review-mode", liveSessionId!);
         await useChatStore
             .getState()
-            .setConfigOption("reasoning_effort", "high", secondSessionId);
+            .setConfigOption("reasoning_effort", "high", liveSessionId!);
 
-        const restored = useChatStore.getState().sessionsById[secondSessionId];
+        const restored = useChatStore.getState().sessionsById[resumedSessionId];
 
-        expect(restored?.models.length).toBeGreaterThan(0);
-        expect(restored?.modes.length).toBeGreaterThan(0);
+        expect(resumeSession).toHaveBeenCalledWith(secondSessionId);
+        expect(useChatStore.getState().sessionsById[secondSessionId]).toBe(
+            undefined,
+        );
         expect(restored?.modelId).toBe("wide-model");
         expect(restored?.modeId).toBe("review-mode");
         expect(
@@ -7872,7 +8583,7 @@ describe("chatStore", () => {
                     command === "ai_set_mode" ||
                     command === "ai_set_config_option",
             ),
-        ).toHaveLength(0);
+        ).toHaveLength(3);
     });
 
     it("supports targeting a non-active live session for send, user input and stop actions", async () => {

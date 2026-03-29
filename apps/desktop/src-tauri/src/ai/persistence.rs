@@ -49,6 +49,12 @@ pub struct PersistedSessionHistory {
     pub runtime_id: Option<String>,
     pub model_id: String,
     pub mode_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modes: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_options: Option<serde_json::Value>,
     pub created_at: u64,
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,6 +85,12 @@ struct PersistedSessionMetadata {
     runtime_id: Option<String>,
     model_id: String,
     mode_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    models: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modes: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_options: Option<serde_json::Value>,
     created_at: u64,
     updated_at: u64,
     message_count: usize,
@@ -243,6 +255,9 @@ fn metadata_from_history(
         runtime_id: history.runtime_id.clone(),
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
+        models: history.models.clone(),
+        modes: history.modes.clone(),
+        config_options: history.config_options.clone(),
         created_at: history.created_at,
         updated_at: history.updated_at,
         message_count: total_count,
@@ -267,6 +282,9 @@ fn history_from_metadata(
         runtime_id: metadata.runtime_id,
         model_id: metadata.model_id,
         mode_id: metadata.mode_id,
+        models: metadata.models,
+        modes: metadata.modes,
+        config_options: metadata.config_options,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
         start_index: Some(0),
@@ -293,6 +311,9 @@ fn load_legacy_history(
         runtime_id: history.runtime_id,
         model_id: history.model_id,
         mode_id: history.mode_id,
+        models: history.models,
+        modes: history.modes,
+        config_options: history.config_options,
         created_at: history.created_at,
         updated_at: history.updated_at,
         start_index: Some(0),
@@ -754,6 +775,9 @@ pub fn load_all_session_histories(
                 runtime_id: history.runtime_id,
                 model_id: history.model_id,
                 mode_id: history.mode_id,
+                models: history.models,
+                modes: history.modes,
+                config_options: history.config_options,
                 created_at: history.created_at,
                 updated_at: history.updated_at,
                 start_index: Some(0),
@@ -772,6 +796,9 @@ pub fn load_all_session_histories(
                 runtime_id: history.runtime_id,
                 model_id: history.model_id,
                 mode_id: history.mode_id,
+                models: history.models,
+                modes: history.modes,
+                config_options: history.config_options,
                 created_at: history.created_at,
                 updated_at: history.updated_at,
                 start_index: Some(0),
@@ -810,6 +837,9 @@ mod tests {
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
+            models: None,
+            modes: None,
+            config_options: None,
             created_at: 10,
             updated_at: 20,
             start_index: Some(0),
@@ -878,6 +908,63 @@ mod tests {
     }
 
     #[test]
+    fn preserves_agent_catalog_metadata_across_lazy_history_roundtrips() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.models = Some(serde_json::json!([
+            {
+                "id": "test-model",
+                "runtime_id": "codex-acp",
+                "name": "Test Model",
+                "description": "A test model for unit tests."
+            }
+        ]));
+        history.modes = Some(serde_json::json!([
+            {
+                "id": "default",
+                "runtime_id": "codex-acp",
+                "name": "Default",
+                "description": "Prompt for actions that need explicit approval.",
+                "disabled": false
+            }
+        ]));
+        history.config_options = Some(serde_json::json!([
+            {
+                "id": "model",
+                "runtime_id": "codex-acp",
+                "category": "model",
+                "label": "Model",
+                "type": "select",
+                "value": "test-model",
+                "options": [
+                    {
+                        "value": "test-model",
+                        "label": "Test Model",
+                        "description": null
+                    }
+                ]
+            }
+        ]));
+
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let summaries =
+            load_all_session_histories(&dir, false).expect("history summaries should load");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].models, history.models);
+        assert_eq!(summaries[0].modes, history.modes);
+        assert_eq!(summaries[0].config_options, history.config_options);
+
+        let full = load_all_session_histories(&dir, true).expect("full history should load");
+        assert_eq!(full.len(), 1);
+        assert_eq!(full[0].models, history.models);
+        assert_eq!(full[0].modes, history.modes);
+        assert_eq!(full[0].config_options, history.config_options);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn appends_only_the_changed_suffix_for_partial_windows() {
         let dir = make_temp_dir();
         let history = sample_history();
@@ -890,6 +977,9 @@ mod tests {
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
+            models: None,
+            modes: None,
+            config_options: None,
             created_at: 10,
             updated_at: 30,
             start_index: Some(1),
@@ -1067,6 +1157,9 @@ mod tests {
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
+            models: None,
+            modes: None,
+            config_options: None,
             created_at: 10,
             updated_at: 50,
             start_index: Some(1),

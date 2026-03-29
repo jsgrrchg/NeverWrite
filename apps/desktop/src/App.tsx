@@ -1590,6 +1590,13 @@ export default function App() {
                 })),
                 chatState.activeSessionId,
             );
+            await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+                useChatTabsStore.getState().tabs.map((tab) => ({
+                    sessionId: tab.sessionId,
+                    historySessionId: tab.historySessionId ?? null,
+                    runtimeId: tab.runtimeId ?? null,
+                })),
+            );
             markChatTabsReady();
         })();
 
