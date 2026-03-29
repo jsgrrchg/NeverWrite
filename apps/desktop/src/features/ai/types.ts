@@ -65,6 +65,7 @@ export interface AIRuntimeSetupStatus {
     authMethod?: string;
     authMethods: AIAuthMethod[];
     hasGatewayConfig?: boolean;
+    hasGatewayUrl?: boolean;
     onboardingRequired: boolean;
     message?: string;
 }
@@ -382,6 +383,7 @@ export interface AIBackendRuntimeSetupStatusPayload {
     auth_method?: string | null;
     auth_methods: AIAuthMethod[];
     has_gateway_config?: boolean;
+    has_gateway_url?: boolean;
     onboarding_required: boolean;
     message?: string | null;
 }

@@ -163,6 +163,7 @@ pub fn setup_status(
         auth_method,
         auth_methods,
         has_gateway_config: false,
+        has_gateway_url: false,
         onboarding_required: !binary_ready || !auth_ready,
         message,
     })

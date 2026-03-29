@@ -126,6 +126,122 @@ describe("AIChatOnboardingCard", () => {
         });
     });
 
+    it("can clear an invalid stored gateway configuration", () => {
+        const onSaveSetup = vi.fn();
+
+        renderComponent(
+            <AIChatOnboardingCard
+                runtime={{
+                    id: "claude-acp",
+                    name: "Claude ACP",
+                    description: "",
+                    capabilities: [],
+                }}
+                setupStatus={{
+                    ...baseSetupStatus,
+                    hasGatewayConfig: false,
+                    hasGatewayUrl: true,
+                    message: "HTTP gateways are only allowed for localhost.",
+                }}
+                onSaveSetup={onSaveSetup}
+                onAuthenticate={vi.fn()}
+            />,
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /Custom gateway/i }),
+        );
+        fireEvent.click(
+            screen.getByRole("button", { name: "Clear gateway settings" }),
+        );
+
+        expect(onSaveSetup).toHaveBeenCalledWith({
+            runtimeId: "claude-acp",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
+            anthropicBaseUrl: "",
+            geminiApiKey: { action: "unchanged" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "clear" },
+            anthropicAuthToken: { action: "clear" },
+        });
+    });
+
+    it("blocks remote HTTP Claude gateways in the onboarding UI", () => {
+        const onAuthenticate = vi.fn();
+
+        renderComponent(
+            <AIChatOnboardingCard
+                runtime={{
+                    id: "claude-acp",
+                    name: "Claude ACP",
+                    description: "",
+                    capabilities: [],
+                }}
+                setupStatus={baseSetupStatus}
+                onSaveSetup={vi.fn()}
+                onAuthenticate={onAuthenticate}
+            />,
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /Custom gateway/i }),
+        );
+        fireEvent.change(screen.getByPlaceholderText("Gateway base URL"), {
+            target: { value: "http://gateway.example" },
+        });
+
+        expect(
+            screen.getByText("HTTP gateways are only allowed for localhost."),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Save gateway" }),
+        ).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Save gateway" }));
+        expect(onAuthenticate).not.toHaveBeenCalled();
+    });
+
+    it("allows localhost HTTP Claude gateways in the onboarding UI", () => {
+        const onAuthenticate = vi.fn();
+
+        renderComponent(
+            <AIChatOnboardingCard
+                runtime={{
+                    id: "claude-acp",
+                    name: "Claude ACP",
+                    description: "",
+                    capabilities: [],
+                }}
+                setupStatus={baseSetupStatus}
+                onSaveSetup={vi.fn()}
+                onAuthenticate={onAuthenticate}
+            />,
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /Custom gateway/i }),
+        );
+        fireEvent.change(screen.getByPlaceholderText("Gateway base URL"), {
+            target: { value: "http://localhost:3000" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save gateway" }));
+
+        expect(onAuthenticate).toHaveBeenCalledWith({
+            runtimeId: "claude-acp",
+            methodId: "gateway",
+            customBinaryPath: undefined,
+            openaiApiKey: { action: "unchanged" },
+            codexApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "unchanged" },
+            gatewayBaseUrl: "http://localhost:3000",
+            gatewayHeaders: { action: "unchanged" },
+            anthropicBaseUrl: "http://localhost:3000",
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
+        });
+    });
+
     it("shows Gemini-specific auth copy and submits a Gemini API key", () => {
         const onAuthenticate = vi.fn();
 

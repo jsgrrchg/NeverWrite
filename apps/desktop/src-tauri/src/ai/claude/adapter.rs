@@ -9,7 +9,7 @@ use super::{
     client::ClaudeRuntimeHandle,
     process::ClaudeRuntime,
     setup::{
-        clear_authenticated_method, clear_gateway_settings, launch_claude_login, load_setup_config,
+        clear_authenticated_method, clear_gateway_settings, launch_claude_login,
         mark_authenticated_method, save_setup_config,
     },
     ClaudeSetupInput,
@@ -70,18 +70,6 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
     ) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
         match method_id {
             "gateway" => {
-                let config = load_setup_config(app)?;
-                if config
-                    .anthropic_base_url
-                    .as_ref()
-                    .is_none_or(|value| value.trim().is_empty())
-                {
-                    return Err(
-                        "Enter a gateway base URL before continuing with gateway authentication."
-                            .to_string(),
-                    );
-                }
-
                 let _ = mark_authenticated_method(app, "gateway")?;
                 self.runtime.setup_status(app)
             }
