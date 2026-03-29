@@ -36,7 +36,9 @@ use vault_ai_types::{
     VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto, WikilinkSuggestionDto,
 };
 use vault_ai_vault::vault::is_supported_text_path;
-use vault_ai_vault::{start_watcher, DiscoveredNoteFile, Vault, VaultEvent, WriteTracker};
+use vault_ai_vault::{
+    start_watcher, DiscoveredNoteFile, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
+};
 
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
 const MENU_ACTION_EVENT: &str = "menu-action";
@@ -558,44 +560,26 @@ fn emit_vault_note_change(app: &AppHandle, _context: &str, change: VaultNoteChan
     let _ = app.emit(VAULT_NOTE_CHANGED_EVENT, change);
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
-}
-
-fn resolve_vault_scoped_path(vault_root: &Path, path: &str) -> Result<PathBuf, String> {
-    let candidate = PathBuf::from(path);
-    let resolved = if candidate.is_absolute() {
-        normalize_path(&candidate)
-    } else {
-        normalize_path(&vault_root.join(candidate))
-    };
-
-    if !resolved.starts_with(vault_root) {
-        return Err("Path fuera del vault".to_string());
-    }
-
-    Ok(resolved)
-}
-
-fn build_unique_trash_target_path(
-    vault_root: &Path,
-    source_path: &Path,
+fn resolve_vault_scoped_path(
+    vault: &Vault,
+    path: &str,
+    intent: ScopedPathIntent,
 ) -> Result<PathBuf, String> {
+    vault
+        .resolve_scoped_path(path, intent)
+        .map_err(|error| error.to_string())
+}
+
+fn build_unique_trash_target_path(vault: &Vault, source_path: &Path) -> Result<PathBuf, String> {
     let relative_path = source_path
-        .strip_prefix(vault_root)
+        .strip_prefix(&vault.root)
         .map_err(|_| "Path fuera del vault".to_string())?;
-    let trash_root = vault_root.join(".trash");
-    let initial_target = trash_root.join(relative_path);
+    let relative_target = Path::new(".trash")
+        .join(relative_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let initial_target =
+        resolve_vault_scoped_path(vault, &relative_target, ScopedPathIntent::CreateTarget)?;
 
     if !initial_target.exists() {
         return Ok(initial_target);
@@ -620,7 +604,17 @@ fn build_unique_trash_target_path(
             Some(ext) if !ext.is_empty() => format!("{stem} {index}.{ext}"),
             _ => format!("{stem} {index}"),
         };
-        let candidate = parent.join(candidate_name);
+        let candidate_relative = Path::new(".trash")
+            .join(
+                parent
+                    .strip_prefix(vault.root.join(".trash"))
+                    .map_err(|_| "Path fuera del vault".to_string())?,
+            )
+            .join(candidate_name)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let candidate =
+            resolve_vault_scoped_path(vault, &candidate_relative, ScopedPathIntent::CreateTarget)?;
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -2679,7 +2673,8 @@ fn create_folder(
         .ok_or("No hay vault abierto")?;
     let entry = {
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        let abs_path = vault.root.join(&path);
+        let abs_path =
+            resolve_vault_scoped_path(vault, &path, ScopedPathIntent::CreateDirectoryTarget)?;
         write_tracker.track_any(abs_path);
         vault.create_folder(&path).map_err(|e| e.to_string())?
     };
@@ -2784,8 +2779,13 @@ fn move_folder(
         .ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
-    let old_path = vault.root.join(&relative_path);
-    let new_path = vault.root.join(&new_relative_path);
+    let old_path =
+        resolve_vault_scoped_path(vault, &relative_path, ScopedPathIntent::ReadExisting)?;
+    let new_path = resolve_vault_scoped_path(
+        vault,
+        &new_relative_path,
+        ScopedPathIntent::CreateDirectoryTarget,
+    )?;
     write_tracker.track_any(old_path);
     write_tracker.track_any(new_path);
 
@@ -2813,7 +2813,11 @@ fn copy_folder(
         .ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
-    let new_path = vault.root.join(&new_relative_path);
+    let new_path = resolve_vault_scoped_path(
+        vault,
+        &new_relative_path,
+        ScopedPathIntent::CreateDirectoryTarget,
+    )?;
     write_tracker.track_any(new_path);
 
     let entry = vault
@@ -2942,7 +2946,8 @@ fn move_vault_entry_to_trash(
         .ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
 
-    let source_path = resolve_vault_scoped_path(&vault.root, &relative_path)?;
+    let source_path =
+        resolve_vault_scoped_path(vault, &relative_path, ScopedPathIntent::ReadExisting)?;
     if !source_path.exists() {
         return Err("Archivo no encontrado".to_string());
     }
@@ -2957,7 +2962,7 @@ fn move_vault_entry_to_trash(
         return Err("Las notas deben eliminarse con Delete Note".to_string());
     }
 
-    let trash_target = build_unique_trash_target_path(&vault.root, &source_path)?;
+    let trash_target = build_unique_trash_target_path(vault, &source_path)?;
     if let Some(parent) = trash_target.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -2985,7 +2990,7 @@ fn ai_get_text_file_hash(
         .get(&vault_path)
         .ok_or("No hay vault abierto")?;
     let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-    let resolved_path = resolve_vault_scoped_path(&vault.root, &path)?;
+    let resolved_path = resolve_vault_scoped_path(vault, &path, ScopedPathIntent::ReadExisting)?;
 
     match fs::read(&resolved_path) {
         Ok(bytes) => Ok(Some(fnv1a_hash_hex(&bytes))),
@@ -3010,10 +3015,10 @@ fn ai_restore_text_file(
             .get(&vault_path)
             .ok_or("No hay vault abierto")?;
         let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
-        let current_path = resolve_vault_scoped_path(&vault.root, &path)?;
+        let current_path = resolve_vault_scoped_path(vault, &path, ScopedPathIntent::CreateTarget)?;
         let restore_path = previous_path
             .as_deref()
-            .map(|value| resolve_vault_scoped_path(&vault.root, value))
+            .map(|value| resolve_vault_scoped_path(vault, value, ScopedPathIntent::CreateTarget))
             .transpose()?;
         let op_id = next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_AGENT);
 
@@ -5500,6 +5505,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     fn setup_note_path_test_vault() -> (PathBuf, Vault) {
         let dir = std::env::temp_dir().join(format!(
@@ -5511,6 +5518,28 @@ mod tests {
         fs::write(dir.join("folder/note.md"), b"# Note").unwrap();
         let vault = Vault::open(dir.clone()).unwrap();
         (dir, vault)
+    }
+
+    #[cfg(unix)]
+    fn setup_symlink_boundary_test_vault() -> (PathBuf, PathBuf, Vault) {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-symlink-boundary-test-{}-{}-{}",
+            std::process::id(),
+            now_ms(),
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "vault-ai-symlink-boundary-outside-{}-{}-{}",
+            std::process::id(),
+            now_ms(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(outside.join("external")).unwrap();
+        fs::write(dir.join("file.txt"), b"note").unwrap();
+        symlink(outside.join("external"), dir.join("linked")).unwrap();
+        let vault = Vault::open(dir.clone()).unwrap();
+        (dir, outside, vault)
     }
 
     #[test]
@@ -5526,6 +5555,40 @@ mod tests {
         cleanup_obsolete_snapshot(&dir, SNAPSHOT_SCHEMA_VERSION - 1);
 
         assert!(!dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_vault_scoped_path_rejects_symlinked_existing_targets() {
+        let (dir, outside, vault) = setup_symlink_boundary_test_vault();
+        fs::write(outside.join("outside.txt"), b"outside").unwrap();
+        symlink(outside.join("outside.txt"), dir.join("linked-file.txt")).unwrap();
+
+        assert!(resolve_vault_scoped_path(
+            &vault,
+            "linked-file.txt",
+            ScopedPathIntent::ReadExisting
+        )
+        .is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_vault_scoped_path_rejects_creates_under_symlinked_parents() {
+        let (dir, outside, vault) = setup_symlink_boundary_test_vault();
+
+        assert!(resolve_vault_scoped_path(
+            &vault,
+            "linked/new-file.txt",
+            ScopedPathIntent::CreateTarget,
+        )
+        .is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
