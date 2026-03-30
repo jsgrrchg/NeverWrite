@@ -25,6 +25,7 @@ import {
     mockInvoke,
     renderComponent,
     setEditorTabs,
+    setVaultEntries,
     setVaultNotes,
 } from "../../test/test-utils";
 
@@ -2460,5 +2461,84 @@ describe("Editor", () => {
         expect(view.state.doc.toString()).toBe("[[System/CodeMirror]]");
         expect(view.state.doc.toString()).not.toContain("\n");
         expect(screen.queryByText("CodeMirror")).not.toBeInTheDocument();
+    });
+
+    it("commits a text file wikilink suggestion on Enter in all-files mode", async () => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+        });
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "suggest_wikilinks") {
+                return [];
+            }
+            return undefined;
+        });
+
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 12,
+                mime_type: "text/typescript",
+                is_text_like: true,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        Object.defineProperty(view, "hasFocus", {
+            configurable: true,
+            get: () => true,
+        });
+        vi.spyOn(view, "coordsAtPos").mockImplementation(() => ({
+            left: 40,
+            right: 140,
+            top: 24,
+            bottom: 44,
+        }));
+
+        await act(async () => {
+            view.focus();
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: "[[main]]",
+                },
+                selection: EditorSelection.cursor(6),
+                annotations: activateWikilinkSuggesterAnnotation.of(true),
+                userEvent: "input",
+            });
+            await flushPromises();
+        });
+
+        expect(await screen.findByText("main.ts")).toBeInTheDocument();
+
+        await act(async () => {
+            fireEvent.keyDown(view.contentDOM, {
+                key: "Enter",
+                bubbles: true,
+            });
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("[[/src/main.ts]]");
+        expect(screen.queryByText("main.ts")).not.toBeInTheDocument();
     });
 });

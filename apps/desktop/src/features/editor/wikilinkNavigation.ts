@@ -5,28 +5,45 @@ import {
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
-import { findNoteByWikilink } from "./wikilinkResolution";
+import { openVaultFileEntry } from "../../app/utils/vaultEntries";
+import { findWikilinkResource } from "./wikilinkResolution";
 
 export async function navigateWikilink(target: string) {
-    const note = await findNoteByWikilink(target);
-    if (note) {
+    const resource = await findWikilinkResource(target);
+    if (resource?.kind === "note") {
         const { tabs, openNote } = useEditorStore.getState();
         const existing = tabs.find(
-            (t): t is NoteTab => isNoteTab(t) && t.noteId === note.id,
+            (t): t is NoteTab => isNoteTab(t) && t.noteId === resource.id,
         );
         if (existing) {
-            openNote(note.id, note.title ?? target, existing.content);
+            openNote(resource.id, resource.title ?? target, existing.content);
             return;
         }
         try {
             const detail = await vaultInvoke<{ content: string }>("read_note", {
-                noteId: note.id,
+                noteId: resource.id,
             });
             useEditorStore
                 .getState()
-                .openNote(note.id, note.title ?? target, detail.content);
+                .openNote(
+                    resource.id,
+                    resource.title ?? target,
+                    detail.content,
+                );
         } catch (e) {
             console.error("Error reading linked note:", e);
+        }
+    } else if (resource?.kind === "file") {
+        const entry =
+            useVaultStore
+                .getState()
+                .entries.find(
+                    (candidate) =>
+                        candidate.kind === "file" &&
+                        candidate.relative_path === resource.relativePath,
+                ) ?? null;
+        if (entry) {
+            await openVaultFileEntry(entry);
         }
     } else {
         // Broken link: create the note
@@ -39,19 +56,34 @@ export async function navigateWikilink(target: string) {
 }
 
 export async function openWikilinkInNewTab(target: string) {
-    const note = await findNoteByWikilink(target);
-    if (!note) return;
+    const resource = await findWikilinkResource(target);
+    if (!resource) return;
+
+    if (resource.kind === "file") {
+        const entry =
+            useVaultStore
+                .getState()
+                .entries.find(
+                    (candidate) =>
+                        candidate.kind === "file" &&
+                        candidate.relative_path === resource.relativePath,
+                ) ?? null;
+        if (entry) {
+            await openVaultFileEntry(entry, { newTab: true });
+        }
+        return;
+    }
 
     const { tabs, insertExternalTab } = useEditorStore.getState();
     const existing = tabs.find(
-        (tab): tab is NoteTab => isNoteTab(tab) && tab.noteId === note.id,
+        (tab): tab is NoteTab => isNoteTab(tab) && tab.noteId === resource.id,
     );
 
     if (existing) {
         insertExternalTab({
             id: crypto.randomUUID(),
-            noteId: note.id,
-            title: note.title ?? target,
+            noteId: resource.id,
+            title: resource.title ?? target,
             content: existing.content,
         });
         return;
@@ -59,12 +91,12 @@ export async function openWikilinkInNewTab(target: string) {
 
     try {
         const detail = await vaultInvoke<{ content: string }>("read_note", {
-            noteId: note.id,
+            noteId: resource.id,
         });
         useEditorStore.getState().insertExternalTab({
             id: crypto.randomUUID(),
-            noteId: note.id,
-            title: note.title ?? target,
+            noteId: resource.id,
+            title: resource.title ?? target,
             content: detail.content,
         });
     } catch (error) {
@@ -114,7 +146,8 @@ export function getNoteLinkTarget(href: string): string | null {
     const activeTab = useEditorStore
         .getState()
         .tabs.find((tab) => tab.id === activeTabId);
-    const activeNoteId = activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
+    const activeNoteId =
+        activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
 
     const resolvedPath = resolveRelativeNotePath(
         activeNoteId,
