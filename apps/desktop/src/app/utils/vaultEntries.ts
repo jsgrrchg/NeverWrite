@@ -208,8 +208,14 @@ export function isExcalidrawVaultPath(path: string) {
 }
 
 export function isTextLikeVaultEntry(
-    entry: Pick<VaultEntryDto, "extension" | "mime_type" | "file_name">,
+    entry: Pick<
+        VaultEntryDto,
+        "extension" | "mime_type" | "file_name" | "is_text_like"
+    >,
 ) {
+    if ("is_text_like" in entry && entry.is_text_like != null) {
+        return entry.is_text_like;
+    }
     if (isTextLikeVaultPath(entry.file_name)) {
         return true;
     }
@@ -217,16 +223,53 @@ export function isTextLikeVaultEntry(
 }
 
 export function isImageLikeVaultEntry(
-    entry: Pick<VaultEntryDto, "extension" | "mime_type">,
+    entry: Pick<VaultEntryDto, "extension" | "mime_type" | "is_image_like">,
 ) {
+    if ("is_image_like" in entry && entry.is_image_like != null) {
+        return entry.is_image_like;
+    }
     if (isImageLikeVaultPath(entry.extension)) return true;
     return entry.mime_type?.startsWith("image/") ?? false;
 }
 
 export function canOpenVaultFileEntryInApp(
-    entry: Pick<VaultEntryDto, "extension" | "mime_type" | "file_name">,
+    entry: Pick<
+        VaultEntryDto,
+        | "extension"
+        | "mime_type"
+        | "file_name"
+        | "open_in_app"
+        | "is_image_like"
+        | "is_text_like"
+    >,
 ) {
+    if ("open_in_app" in entry && entry.open_in_app != null) {
+        return entry.open_in_app;
+    }
     return isImageLikeVaultEntry(entry) || isTextLikeVaultEntry(entry);
+}
+
+function getVaultEntryViewerKind(
+    entry: Pick<
+        VaultEntryDto,
+        | "kind"
+        | "extension"
+        | "mime_type"
+        | "file_name"
+        | "viewer_kind"
+        | "is_image_like"
+        | "is_text_like"
+    >,
+) {
+    if (entry.viewer_kind) {
+        return entry.viewer_kind;
+    }
+    if (entry.kind === "note") return "markdown";
+    if (entry.kind === "pdf") return "pdf";
+    if (isExcalidrawVaultEntry(entry)) return "map";
+    if (isImageLikeVaultEntry(entry)) return "image";
+    if (isTextLikeVaultEntry(entry)) return "text";
+    return "external";
 }
 
 export function getVaultEntryDisplayName(
@@ -281,7 +324,7 @@ async function buildVaultEntryTab(
         };
     }
 
-    if (isImageLikeVaultEntry(entry)) {
+    if (getVaultEntryViewerKind(entry) === "image") {
         return {
             id: crypto.randomUUID(),
             kind: "file",
@@ -356,7 +399,7 @@ export async function openVaultFileEntry(
         return;
     }
 
-    if (isImageLikeVaultEntry(entry)) {
+    if (getVaultEntryViewerKind(entry) === "image") {
         useEditorStore
             .getState()
             .openFile(

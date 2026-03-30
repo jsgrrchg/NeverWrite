@@ -1,5 +1,6 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useEditorStore } from "../../../app/store/editorStore";
 import {
@@ -9,6 +10,15 @@ import {
 } from "../../../test/test-utils";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
 import { AIChatComposer } from "./AIChatComposer";
+
+afterEach(() => {
+    act(() => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeShowExtensions: false,
+        });
+    });
+});
 
 function renderComposer({
     parts = [],
@@ -89,6 +99,50 @@ describe("AIChatComposer mention picker", () => {
         await waitFor(() => {
             expect(screen.getByText("fetch")).toBeInTheDocument();
             expect(screen.getByText("Alpha")).toBeInTheDocument();
+        });
+    });
+
+    it("shows note file names in the @ picker when all-files mode is active", async () => {
+        act(() => {
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeShowExtensions: true,
+            });
+        });
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[
+                    {
+                        id: "notes/project-alpha.md",
+                        title: "Roadmap",
+                        path: "/vault/notes/project-alpha.md",
+                    },
+                ]}
+                status="idle"
+                runtimeName="Assistant"
+                runtimeId={undefined}
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message VaultAI",
+        });
+        composer.textContent = "@alpha";
+        setCaret(composer.firstChild as Text, 6);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("project-alpha.md")).toBeInTheDocument();
+            expect(screen.queryByText("Roadmap")).not.toBeInTheDocument();
         });
     });
 

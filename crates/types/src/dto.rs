@@ -64,6 +64,14 @@ pub struct VaultEntryDto {
     pub created_at: u64,
     pub size: u64,
     pub mime_type: Option<String>,
+    #[serde(default)]
+    pub is_text_like: Option<bool>,
+    #[serde(default)]
+    pub is_image_like: Option<bool>,
+    #[serde(default)]
+    pub open_in_app: Option<bool>,
+    #[serde(default)]
+    pub viewer_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

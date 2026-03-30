@@ -1,5 +1,6 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { SearchPanel } from "./SearchPanel";
 import {
     flushPromises,
@@ -13,6 +14,15 @@ import {
     isNoteTab,
     useEditorStore,
 } from "../../app/store/editorStore";
+
+afterEach(() => {
+    act(() => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeShowExtensions: false,
+        });
+    });
+});
 
 describe("SearchPanel", () => {
     it("debounces the query and renders returned results", async () => {
@@ -135,6 +145,56 @@ describe("SearchPanel", () => {
 
         expect(getClipboardMock().writeText).toHaveBeenCalledWith(
             "notes/roadmap",
+        );
+    });
+
+    it("shows note file names in all-files mode while keeping the note title as context", async () => {
+        vi.useFakeTimers();
+        const invokeMock = mockInvoke();
+        act(() => {
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeShowExtensions: true,
+            });
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "search_notes") {
+                return [
+                    {
+                        id: "notes/project-alpha.md",
+                        path: "/vault/notes/project-alpha.md",
+                        title: "Roadmap",
+                        score: 42,
+                    },
+                ];
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        renderComponent(<SearchPanel />);
+
+        fireEvent.change(
+            screen.getByPlaceholderText("Search files and notes..."),
+            {
+                target: { value: "alpha" },
+            },
+        );
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(300);
+        });
+        await flushPromises();
+
+        expect(screen.getByText("project-alpha.md")).toBeInTheDocument();
+        expect(
+            screen.getByText("Roadmap · notes/project-alpha.md"),
+        ).toBeInTheDocument();
+        expect(invokeMock).toHaveBeenCalledWith(
+            "search_notes",
+            expect.objectContaining({
+                preferFileName: true,
+            }),
         );
     });
 

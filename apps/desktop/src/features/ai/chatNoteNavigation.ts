@@ -80,6 +80,19 @@ async function openResolvedNote(
     return true;
 }
 
+export async function openChatResolvedNote(
+    noteId: string,
+    title: string,
+    options?: { newTab?: boolean },
+) {
+    try {
+        return await openResolvedNote(noteId, title, !!options?.newTab);
+    } catch (error) {
+        console.error("Error opening chat note:", error);
+        return false;
+    }
+}
+
 export async function openChatNoteById(
     noteId: string,
     options?: { newTab?: boolean },
@@ -89,12 +102,7 @@ export async function openChatNoteById(
         .notes.find((entry) => entry.id === noteId);
     if (!note) return false;
 
-    try {
-        return await openResolvedNote(note.id, note.title, !!options?.newTab);
-    } catch (error) {
-        console.error("Error opening chat note:", error);
-        return false;
-    }
+    return openChatResolvedNote(note.id, note.title, options);
 }
 
 export async function openChatNoteByReference(
@@ -104,12 +112,7 @@ export async function openChatNoteByReference(
     const note = findNoteByReference(reference);
     if (!note) return false;
 
-    try {
-        return await openResolvedNote(note.id, note.title, !!options?.newTab);
-    } catch (error) {
-        console.error("Error opening chat note:", error);
-        return false;
-    }
+    return openChatResolvedNote(note.id, note.title, options);
 }
 
 export async function openChatNoteByAbsolutePath(
@@ -121,12 +124,7 @@ export async function openChatNoteByAbsolutePath(
         .notes.find((entry) => entry.path === absPath);
     if (!note) return false;
 
-    try {
-        return await openResolvedNote(note.id, note.title, !!options?.newTab);
-    } catch (error) {
-        console.error("Error opening chat note:", error);
-        return false;
-    }
+    return openChatResolvedNote(note.id, note.title, options);
 }
 
 interface MapEntry {

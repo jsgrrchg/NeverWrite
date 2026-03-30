@@ -36,6 +36,39 @@ interface SearchResultDto {
     score: number;
 }
 
+function getSearchResultDisplayTitle(
+    result: SearchResultDto,
+    showExtensions: boolean,
+    fileTreeContentMode: "notes_only" | "all_files",
+) {
+    const fileName = result.path.split("/").pop() ?? result.title;
+    if (result.kind === "pdf" || result.kind === "file") {
+        return showExtensions ? fileName : result.title;
+    }
+    if (fileTreeContentMode !== "all_files") {
+        return result.title;
+    }
+    return showExtensions ? fileName : fileName.replace(/\.md$/i, "");
+}
+
+function getSearchResultSubtitle(
+    result: SearchResultDto,
+    fileTreeContentMode: "notes_only" | "all_files",
+) {
+    if (result.kind === "pdf" || result.kind === "file") {
+        return result.path.split("/vault/").pop() ?? result.path;
+    }
+    if (fileTreeContentMode !== "all_files") {
+        return result.id;
+    }
+
+    const fileName = result.path.split("/").pop()?.replace(/\.md$/i, "");
+    if (fileName && fileName !== result.title) {
+        return `${result.title} · ${result.id}`;
+    }
+    return result.id;
+}
+
 function formatRelativeTime(unixSeconds: number): string {
     const diff = Date.now() / 1000 - unixSeconds;
     if (diff < 60) return "just now";
@@ -73,6 +106,7 @@ export function NewTabView() {
 
     const entries = useVaultStore((s) => s.entries);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
+    const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const openPdf = useEditorStore((s) => s.openPdf);
 
     const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() =>
@@ -99,23 +133,30 @@ export function NewTabView() {
 
     const isSearching = searchQuery.trim().length > 0;
 
-    const doSearch = useCallback(async (q: string) => {
-        const trimmed = q.trim();
-        const requestId = ++searchRequestIdRef.current;
-        if (!trimmed) return;
-        try {
-            const res = await vaultInvoke<SearchResultDto[]>("search_notes", {
-                query: trimmed,
-            });
-            if (requestId !== searchRequestIdRef.current) return;
-            setSearchResults(res);
-            setHasSearched(true);
-        } catch {
-            if (requestId !== searchRequestIdRef.current) return;
-            setSearchResults([]);
-            setHasSearched(true);
-        }
-    }, []);
+    const doSearch = useCallback(
+        async (q: string) => {
+            const trimmed = q.trim();
+            const requestId = ++searchRequestIdRef.current;
+            if (!trimmed) return;
+            try {
+                const res = await vaultInvoke<SearchResultDto[]>(
+                    "search_notes",
+                    {
+                        query: trimmed,
+                        preferFileName: fileTreeContentMode === "all_files",
+                    },
+                );
+                if (requestId !== searchRequestIdRef.current) return;
+                setSearchResults(res);
+                setHasSearched(true);
+            } catch {
+                if (requestId !== searchRequestIdRef.current) return;
+                setSearchResults([]);
+                setHasSearched(true);
+            }
+        },
+        [fileTreeContentMode],
+    );
 
     useEffect(() => {
         if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -539,13 +580,11 @@ export function NewTabView() {
                                                         color: "var(--text-primary)",
                                                     }}
                                                 >
-                                                    {showExtensions &&
-                                                    (r.kind === "pdf" ||
-                                                        r.kind === "file")
-                                                        ? (r.path
-                                                              .split("/")
-                                                              .pop() ?? r.title)
-                                                        : r.title}
+                                                    {getSearchResultDisplayTitle(
+                                                        r,
+                                                        showExtensions,
+                                                        fileTreeContentMode,
+                                                    )}
                                                 </div>
                                                 <div
                                                     className="text-[11px] truncate mt-0.5"
@@ -553,12 +592,10 @@ export function NewTabView() {
                                                         color: "var(--text-secondary)",
                                                     }}
                                                 >
-                                                    {r.kind === "pdf" ||
-                                                    r.kind === "file"
-                                                        ? (r.path
-                                                              .split("/vault/")
-                                                              .pop() ?? r.path)
-                                                        : r.id}
+                                                    {getSearchResultSubtitle(
+                                                        r,
+                                                        fileTreeContentMode,
+                                                    )}
                                                 </div>
                                             </div>
                                         </button>

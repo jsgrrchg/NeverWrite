@@ -36,7 +36,7 @@ use vault_ai_types::{
     NoteDto, NoteId, NoteMetadata, ResolvedWikilinkDto, SearchResultDto, VaultEntryDto,
     VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto, WikilinkSuggestionDto,
 };
-use vault_ai_vault::vault::is_supported_text_path;
+use vault_ai_vault::vault::{is_ignored_dir_name, is_supported_text_path};
 use vault_ai_vault::{
     start_watcher, DiscoveredNoteFile, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
 };
@@ -996,19 +996,6 @@ fn remove_subtree_from_cache(entries: &mut Vec<VaultEntryDto>, relative_path: &s
 }
 
 fn path_is_hidden_from_entries(vault_root: &Path, path: &Path) -> bool {
-    const HIDDEN_DIR_NAMES: &[&str] = &[
-        ".obsidian",
-        ".git",
-        ".vaultai",
-        ".vaultai-cache",
-        ".trash",
-        "target",
-        "node_modules",
-        "vendor",
-        ".cargo-home",
-        ".claude",
-    ];
-
     let Ok(relative_path) = path.strip_prefix(vault_root) else {
         return false;
     };
@@ -1016,7 +1003,7 @@ fn path_is_hidden_from_entries(vault_root: &Path, path: &Path) -> bool {
     relative_path.components().any(|component| match component {
         std::path::Component::Normal(name) => {
             let value = name.to_string_lossy();
-            HIDDEN_DIR_NAMES.contains(&value.as_ref())
+            is_ignored_dir_name(&value)
         }
         _ => false,
     })
@@ -2338,6 +2325,26 @@ fn list_vault_entries(
     vault.discover_vault_entries().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn read_vault_entry(
+    vault_path: String,
+    relative_path: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultEntryDto, String> {
+    let state = lock!(state)?;
+    let instance = state
+        .vaults
+        .get(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+    let path = vault
+        .resolve_scoped_path(&relative_path, ScopedPathIntent::ReadExisting)
+        .map_err(|error| error.to_string())?;
+    vault
+        .read_vault_entry_from_path(&path)
+        .map_err(|error| error.to_string())
+}
+
 #[derive(serde::Serialize)]
 struct VaultFileDetail {
     path: String,
@@ -3278,6 +3285,7 @@ fn compute_tracked_file_patches(
 fn search_notes(
     vault_path: String,
     query: String,
+    prefer_file_name: Option<bool>,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<SearchResultDto>, String> {
     let state = lock!(state)?;
@@ -3303,17 +3311,20 @@ fn search_notes(
             fallback_non_note_search_index.as_slice()
         };
 
-    let mut results: Vec<SearchResultDto> = index
-        .search(&query)
-        .into_iter()
-        .map(|r| SearchResultDto {
-            id: r.metadata.id.0.clone(),
-            path: r.metadata.path.0.to_string_lossy().to_string(),
-            title: r.metadata.title.clone(),
-            kind: "note".to_string(),
-            score: r.score,
-        })
-        .collect();
+    let mut results: Vec<SearchResultDto> = if prefer_file_name.unwrap_or(false) {
+        index.search_by_file_name(&query)
+    } else {
+        index.search(&query)
+    }
+    .into_iter()
+    .map(|r| SearchResultDto {
+        id: r.metadata.id.0.clone(),
+        path: r.metadata.path.0.to_string_lossy().to_string(),
+        title: r.metadata.title.clone(),
+        kind: "note".to_string(),
+        score: r.score,
+    })
+    .collect();
 
     results.extend(non_note_search_index.into_iter().filter_map(|entry| {
         let score = compute_non_note_search_score(&query_lower, entry);
@@ -4359,6 +4370,7 @@ fn suggest_wikilinks(
     note_id: String,
     query: String,
     limit: usize,
+    prefer_file_name: Option<bool>,
     state: tauri::State<Mutex<AppState>>,
 ) -> Result<Vec<WikilinkSuggestionDto>, String> {
     let state = lock!(state)?;
@@ -4369,7 +4381,12 @@ fn suggest_wikilinks(
     let index = instance.index.as_ref().ok_or("No hay vault abierto")?;
 
     Ok(index
-        .suggest_wikilinks(&query, &NoteId(note_id), limit.max(1))
+        .suggest_wikilinks(
+            &query,
+            &NoteId(note_id),
+            limit.max(1),
+            prefer_file_name.unwrap_or(false),
+        )
         .into_iter()
         .filter_map(|note_id| {
             let metadata = index.metadata.get(&note_id)?;
@@ -5417,6 +5434,7 @@ pub fn run() {
             list_notes,
             get_graph_revision,
             list_vault_entries,
+            read_vault_entry,
             read_vault_file,
             save_vault_file,
             save_vault_binary_file,
@@ -5627,6 +5645,10 @@ mod tests {
                 created_at: 0,
                 size: 0,
                 mime_type: None,
+                is_text_like: None,
+                is_image_like: None,
+                open_in_app: None,
+                viewer_kind: None,
             },
             VaultEntryDto {
                 id: "docs/file.txt".to_string(),
@@ -5640,6 +5662,10 @@ mod tests {
                 created_at: 0,
                 size: 0,
                 mime_type: Some("text/plain".to_string()),
+                is_text_like: None,
+                is_image_like: None,
+                open_in_app: None,
+                viewer_kind: None,
             },
             VaultEntryDto {
                 id: "notes/test".to_string(),
@@ -5653,6 +5679,10 @@ mod tests {
                 created_at: 0,
                 size: 0,
                 mime_type: Some("text/markdown".to_string()),
+                is_text_like: None,
+                is_image_like: None,
+                open_in_app: None,
+                viewer_kind: None,
             },
         ];
 
@@ -5706,6 +5736,10 @@ mod tests {
                 created_at: 0,
                 size: 0,
                 mime_type: Some("text/markdown".to_string()),
+                is_text_like: None,
+                is_image_like: None,
+                open_in_app: None,
+                viewer_kind: None,
             },
             VaultEntryDto {
                 id: "Docs/Guide.pdf".to_string(),
@@ -5719,6 +5753,10 @@ mod tests {
                 created_at: 0,
                 size: 0,
                 mime_type: Some("application/pdf".to_string()),
+                is_text_like: None,
+                is_image_like: None,
+                open_in_app: None,
+                viewer_kind: None,
             },
         ];
 

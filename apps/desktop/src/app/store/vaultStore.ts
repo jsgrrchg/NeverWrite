@@ -25,6 +25,10 @@ export interface VaultEntryDto {
     created_at: number;
     size: number;
     mime_type: string | null;
+    is_text_like?: boolean | null;
+    is_image_like?: boolean | null;
+    open_in_app?: boolean | null;
+    viewer_kind?: string | null;
 }
 
 export interface RecentVault {

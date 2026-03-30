@@ -530,7 +530,13 @@ impl VaultIndex {
         }
     }
 
-    pub fn suggest_wikilinks(&self, query: &str, from_note: &NoteId, limit: usize) -> Vec<NoteId> {
+    pub fn suggest_wikilinks(
+        &self,
+        query: &str,
+        from_note: &NoteId,
+        limit: usize,
+        prefer_file_name: bool,
+    ) -> Vec<NoteId> {
         if limit == 0 {
             return Vec::new();
         }
@@ -571,20 +577,38 @@ impl VaultIndex {
                 let normalized_id = normalize_alias(&metadata.id.0);
                 let rank = if normalized_query.is_empty() {
                     100
-                } else if normalized_title.starts_with(&normalized_query) {
-                    0
-                } else if normalized_basename.starts_with(&normalized_query) {
-                    1
-                } else if normalized_id.starts_with(&normalized_query) {
-                    2
-                } else if normalized_title.contains(&normalized_query) {
-                    3
-                } else if normalized_basename.contains(&normalized_query) {
-                    4
-                } else if normalized_id.contains(&normalized_query) {
-                    5
+                } else if prefer_file_name {
+                    if normalized_basename.starts_with(&normalized_query) {
+                        0
+                    } else if normalized_id.starts_with(&normalized_query) {
+                        1
+                    } else if normalized_basename.contains(&normalized_query) {
+                        2
+                    } else if normalized_id.contains(&normalized_query) {
+                        3
+                    } else if normalized_title.starts_with(&normalized_query) {
+                        4
+                    } else if normalized_title.contains(&normalized_query) {
+                        5
+                    } else {
+                        return None;
+                    }
                 } else {
-                    return None;
+                    if normalized_title.starts_with(&normalized_query) {
+                        0
+                    } else if normalized_basename.starts_with(&normalized_query) {
+                        1
+                    } else if normalized_id.starts_with(&normalized_query) {
+                        2
+                    } else if normalized_title.contains(&normalized_query) {
+                        3
+                    } else if normalized_basename.contains(&normalized_query) {
+                        4
+                    } else if normalized_id.contains(&normalized_query) {
+                        5
+                    } else {
+                        return None;
+                    }
                 };
 
                 let target_parent_dir = self
