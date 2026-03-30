@@ -403,10 +403,12 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         let resolvedPdf: pdfjsLib.PDFDocumentProxy | null = null;
 
         if (!previewUrl) {
-            setLoadedPdf(null);
-            setPdfError(
-                "This PDF can no longer be previewed because it is outside the active vault.",
-            );
+            queueMicrotask(() => {
+                setLoadedPdf(null);
+                setPdfError(
+                    "This PDF can no longer be previewed because it is outside the active vault.",
+                );
+            });
             return;
         }
 

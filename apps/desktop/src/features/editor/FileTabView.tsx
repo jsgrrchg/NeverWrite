@@ -128,7 +128,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
     );
 
     useEffect(() => {
-        setStatus(previewUrl ? "loading" : "error");
+        queueMicrotask(() => setStatus(previewUrl ? "loading" : "error"));
     }, [previewUrl, tab.path]);
 
     const setFit = useCallback(() => setMode("fit"), []);

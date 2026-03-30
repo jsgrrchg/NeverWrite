@@ -1619,7 +1619,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     hydrateTabs: (tabs, activeTabId) => {
         const hydratedTabs: Tab[] = tabs
             .filter((tab) => tab.kind !== "ai-review")
-            .flatMap((tab) => {
+            .flatMap((tab): Tab[] => {
                 if (tab.kind === "pdf") {
                     return [ensurePdfTabDefaults(tab)];
                 }
