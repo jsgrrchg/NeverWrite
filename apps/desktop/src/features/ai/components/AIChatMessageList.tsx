@@ -565,42 +565,51 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     useLayoutEffect(() => {
         const container = containerRef.current;
         if (!container) return;
+        const scrollContainer: HTMLElement = container;
 
-        let prevWidth = container.clientWidth;
-        let anchorSnapshot = captureVisibleChatAnchor(container, isNearBottom);
+        let prevWidth = scrollContainer.clientWidth;
+        let anchorSnapshot = captureVisibleChatAnchor(
+            scrollContainer,
+            isNearBottom,
+        );
 
         function captureAnchor() {
-            anchorSnapshot = captureVisibleChatAnchor(container, isNearBottom);
+            anchorSnapshot = captureVisibleChatAnchor(
+                scrollContainer,
+                isNearBottom,
+            );
         }
 
-        container.addEventListener("scroll", captureAnchor, { passive: true });
+        scrollContainer.addEventListener("scroll", captureAnchor, {
+            passive: true,
+        });
         captureAnchor();
 
         const ro = new ResizeObserver(() => {
-            const newWidth = container.clientWidth;
+            const newWidth = scrollContainer.clientWidth;
             if (newWidth === prevWidth) return;
             prevWidth = newWidth;
 
             if (anchorSnapshot.nearBottom) {
-                container.scrollTop = container.scrollHeight;
+                scrollContainer.scrollTop = scrollContainer.scrollHeight;
             } else if (anchorSnapshot.rowKey) {
                 const anchorNode = findChatRowByKey(
-                    container,
+                    scrollContainer,
                     anchorSnapshot.rowKey,
                 );
                 if (!anchorNode) {
                     return;
                 }
-                const containerRect = container.getBoundingClientRect();
+                const containerRect = scrollContainer.getBoundingClientRect();
                 const rect = anchorNode.getBoundingClientRect();
-                container.scrollTop +=
+                scrollContainer.scrollTop +=
                     rect.top - containerRect.top - anchorSnapshot.offset;
             }
         });
 
-        ro.observe(container);
+        ro.observe(scrollContainer);
         return () => {
-            container.removeEventListener("scroll", captureAnchor);
+            scrollContainer.removeEventListener("scroll", captureAnchor);
             ro.disconnect();
         };
     }, []);

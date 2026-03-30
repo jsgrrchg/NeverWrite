@@ -1911,7 +1911,8 @@ function DevelopersSettings() {
                 >
                     File-oriented search is active. Search Files & Notes, New
                     Tab, `@` mentions, and wikilink suggestions now match notes
-                    by file name and path before note title.
+                    by file name and path before note title, and text files can
+                    also appear in `@` mentions and `[[ ]]` suggestions.
                 </div>
             )}
         </div>
