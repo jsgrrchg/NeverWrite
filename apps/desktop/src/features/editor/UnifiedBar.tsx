@@ -67,6 +67,7 @@ import { getDesktopPlatform } from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 
 const appWindow = getCurrentWindow();
+const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
 
 function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) return;
@@ -371,6 +372,8 @@ interface UnifiedBarProps {
 
 export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const desktopPlatform = getDesktopPlatform();
+    const trailingDragZoneWidth =
+        windowMode === "main" ? 152 : desktopPlatform === "windows" ? 16 : 8;
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const switchTab = useEditorStore((s) => s.switchTab);
@@ -1559,7 +1562,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                             ? "1px solid color-mix(in srgb, var(--accent) 12%, var(--border))"
                                                             : "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
                                                         opacity: isDragging
-                                                            ? 0
+                                                            ? DRAGGING_TAB_PLACEHOLDER_OPACITY
                                                             : 1,
                                                         zIndex: isDragging
                                                             ? 20
@@ -1688,6 +1691,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             ? createPortal(
                                   <div
                                       ref={dragPreviewNodeRef}
+                                      data-tab-drag-preview="true"
                                       style={{
                                           position: "fixed",
                                           left: 0,
@@ -1730,9 +1734,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             : null}
 
                         <div
+                            data-window-drag-trailing-spacer="true"
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end shrink-0"
-                            style={{ width: 152 }}
+                            style={{ width: trailingDragZoneWidth }}
                         >
                             <div style={controlsGroupStyle}>
                                 {windowMode === "main" && (
@@ -1894,11 +1899,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             }}
                         />
                         <div
+                            data-window-drag-trailing-spacer="true"
                             onMouseDown={startWindowDrag}
                             className="flex items-center justify-end shrink-0"
-                            style={{
-                                width: desktopPlatform === "windows" ? 16 : 152,
-                            }}
+                            style={{ width: trailingDragZoneWidth }}
                         >
                             {windowMode === "main" && (
                                 <div style={controlsGroupStyle}>
