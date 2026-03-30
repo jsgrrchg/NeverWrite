@@ -112,50 +112,6 @@ function deriveRecentHistoricalDiffWorkCycleIds(
     return recentWorkCycleIds;
 }
 
-function getTimelineDiffPresentationMode(
-    message: AIChatMessage,
-    visibleWorkCycleId?: string | null,
-    recentDiffWorkCycleIds: string[] = [],
-) {
-    if (!message.diffs?.length) {
-        return "none" as const;
-    }
-
-    if (!visibleWorkCycleId || !message.workCycleId) {
-        return "active" as const;
-    }
-
-    if (message.workCycleId === visibleWorkCycleId) {
-        return "active" as const;
-    }
-
-    if (recentDiffWorkCycleIds.includes(message.workCycleId)) {
-        return "recent" as const;
-    }
-
-    return "historical" as const;
-}
-
-function shouldRenderHistoricalTimelineDiffSummary(
-    message: AIChatMessage,
-    diffPresentationMode: "active" | "recent" | "historical" | "none",
-) {
-    if (diffPresentationMode !== "historical" || !message.diffs?.length) {
-        return false;
-    }
-
-    const status = String(message.meta?.status ?? "");
-    if (message.kind === "tool") {
-        return status === "completed";
-    }
-
-    if (message.kind === "permission") {
-        return status === "resolved";
-    }
-
-    return false;
-}
-
 function StreamingRunIndicator({
     timestamp,
     active,

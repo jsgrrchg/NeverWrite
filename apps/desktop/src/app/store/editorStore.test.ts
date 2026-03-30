@@ -7,7 +7,7 @@ import {
     readPersistedSession,
     useEditorStore,
     type MapTab,
-    type TabInput,
+    type MapTabInput,
 } from "./editorStore";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
@@ -342,18 +342,19 @@ describe("editorStore map tabs", () => {
     });
 
     it("hydrates legacy map tabs from an absolute file path inside the active vault", () => {
-        useEditorStore.getState().hydrateTabs(
-            [
-                {
-                    id: "map-1",
-                    kind: "map",
-                    title: "Legacy",
-                    relativePath: "",
-                    filePath: "/vaults/maps-2026/Excalidraw/Legacy.excalidraw",
-                },
-            ] as TabInput[],
-            "map-1",
-        );
+        const legacyMapTabs = [
+            {
+                id: "map-1",
+                kind: "map" as const,
+                title: "Legacy",
+                relativePath: "",
+                filePath: "/vaults/maps-2026/Excalidraw/Legacy.excalidraw",
+            },
+        ] satisfies Array<MapTabInput & { filePath: string }>;
+
+        useEditorStore
+            .getState()
+            .hydrateTabs(legacyMapTabs as unknown as MapTabInput[], "map-1");
 
         const activeTab = useEditorStore
             .getState()
