@@ -1,14 +1,17 @@
-import { act, fireEvent } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { useState } from "react";
 import {
     renderComponent,
     flushPromises,
     setEditorTabs,
     setVaultEntries,
+    setVaultNotes,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
+import type { AIComposerPart } from "../ai/types";
 
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
@@ -85,8 +88,50 @@ function rect({
     } as DOMRect;
 }
 
+function defineElementMetric<T extends keyof HTMLElement>(
+    element: HTMLElement,
+    property: T,
+    value: HTMLElement[T],
+) {
+    Object.defineProperty(element, property, {
+        configurable: true,
+        value,
+    });
+}
+
 describe("UnifiedBar tab strip drop", () => {
     beforeEach(() => {
+        if (typeof window.PointerEvent === "undefined") {
+            class MockPointerEvent extends MouseEvent {
+                pointerId: number;
+                pointerType: string;
+                isPrimary: boolean;
+
+                constructor(
+                    type: string,
+                    init: MouseEventInit & {
+                        pointerId?: number;
+                        pointerType?: string;
+                        isPrimary?: boolean;
+                    } = {},
+                ) {
+                    super(type, init);
+                    this.pointerId = init.pointerId ?? 1;
+                    this.pointerType = init.pointerType ?? "mouse";
+                    this.isPrimary = init.isPrimary ?? true;
+                }
+            }
+
+            Object.defineProperty(window, "PointerEvent", {
+                configurable: true,
+                value: MockPointerEvent,
+            });
+            Object.defineProperty(globalThis, "PointerEvent", {
+                configurable: true,
+                value: MockPointerEvent,
+            });
+        }
+
         onDragDropEventMock.mockReset();
         onDragDropEventMock.mockResolvedValue(vi.fn());
         minimizeMock.mockClear();
@@ -376,5 +421,190 @@ describe("UnifiedBar tab strip drop", () => {
 
         expect(useEditorStore.getState().tabs).toHaveLength(0);
         expect(useEditorStore.getState().activeTabId).toBeNull();
+    });
+
+    it("keeps the trailing drag spacer compact on macOS note windows", async () => {
+        Object.defineProperty(window.navigator, "userAgent", {
+            configurable: true,
+            value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15",
+        });
+        Object.defineProperty(window.navigator, "platform", {
+            configurable: true,
+            value: "MacIntel",
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="note" />);
+        await flushPromises();
+
+        expect(
+            container.querySelector(
+                '[data-window-drag-trailing-spacer="true"]',
+            ),
+        ).toHaveStyle({
+            width: "8px",
+        });
+    });
+
+    it("keeps a visible drag placeholder while dropping a tab into the AI composer", async () => {
+        setVaultNotes([
+            {
+                id: "notes/alpha.md",
+                title: "Alpha",
+                path: "/vault/notes/alpha.md",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+            {
+                id: "tab-b",
+                kind: "note",
+                noteId: "notes/beta.md",
+                title: "Beta",
+                content: "beta",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { AIChatComposer } =
+            await import("../ai/components/AIChatComposer");
+
+        function ComposerHarness() {
+            const [parts, setParts] = useState<AIComposerPart[]>([]);
+
+            return (
+                <>
+                    <UnifiedBar windowMode="main" />
+                    <div style={{ paddingTop: 96 }}>
+                        <AIChatComposer
+                            parts={parts}
+                            notes={[
+                                {
+                                    id: "notes/alpha.md",
+                                    title: "Alpha",
+                                    path: "/vault/notes/alpha.md",
+                                },
+                            ]}
+                            status="idle"
+                            runtimeName="Assistant"
+                            onChange={setParts}
+                            onMentionAttach={vi.fn()}
+                            onFolderAttach={vi.fn()}
+                            onSubmit={vi.fn()}
+                            onStop={vi.fn()}
+                        />
+                    </div>
+                </>
+            );
+        }
+
+        const { container } = renderComponent(<ComposerHarness />);
+        await flushPromises();
+
+        const strip = container.querySelector(
+            '[data-tab-strip="true"]',
+        ) as HTMLElement | null;
+        const sourceTab = container.querySelector(
+            '[data-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        const secondTab = container.querySelector(
+            '[data-tab-id="tab-b"]',
+        ) as HTMLElement | null;
+        const composerDropZone = container.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        ) as HTMLElement | null;
+
+        expect(strip).not.toBeNull();
+        expect(sourceTab).not.toBeNull();
+        expect(secondTab).not.toBeNull();
+        expect(composerDropZone).not.toBeNull();
+
+        vi.spyOn(strip!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 360, height: 30 }),
+        );
+        vi.spyOn(sourceTab!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 160, height: 30 }),
+        );
+        vi.spyOn(secondTab!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 264, top: 10, width: 160, height: 30 }),
+        );
+        vi.spyOn(composerDropZone!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 120, top: 120, width: 520, height: 140 }),
+        );
+
+        defineElementMetric(strip!, "scrollLeft", 0);
+        defineElementMetric(strip!, "clientWidth", 360);
+        defineElementMetric(strip!, "scrollWidth", 360);
+        defineElementMetric(sourceTab!, "offsetLeft", 0);
+        defineElementMetric(sourceTab!, "offsetWidth", 160);
+        defineElementMetric(secondTab!, "offsetLeft", 164);
+        defineElementMetric(secondTab!, "offsetWidth", 160);
+
+        fireEvent.pointerDown(sourceTab!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 1,
+            clientX: 148,
+            clientY: 24,
+            screenX: 148,
+            screenY: 24,
+        });
+
+        fireEvent.pointerMove(sourceTab!, {
+            pointerId: 1,
+            buttons: 1,
+            clientX: 220,
+            clientY: 164,
+            screenX: 220,
+            screenY: 164,
+        });
+
+        await waitFor(() => {
+            expect(
+                container.querySelector('[data-tab-id="tab-a"]'),
+            ).toHaveAttribute("data-dragging", "true");
+        });
+        expect(container.querySelector('[data-tab-id="tab-a"]')).toHaveStyle({
+            opacity: "0.18",
+        });
+
+        fireEvent.pointerUp(sourceTab!, {
+            pointerId: 1,
+            buttons: 0,
+            clientX: 220,
+            clientY: 164,
+            screenX: 220,
+            screenY: 164,
+        });
+
+        await flushPromises();
+
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
+        expect(
+            composerDropZone!.querySelector(
+                '[data-kind="mention"][data-note-id="notes/alpha.md"]',
+            ),
+        ).not.toBeNull();
     });
 });
