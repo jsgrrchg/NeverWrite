@@ -725,8 +725,8 @@ function TextBlock({
                     <table
                         style={{
                             width: "100%",
+                            tableLayout: "fixed",
                             borderCollapse: "collapse",
-                            minWidth: "max-content",
                             fontSize: "0.92em",
                         }}
                     >
@@ -744,6 +744,8 @@ function TextBlock({
                                             background:
                                                 "color-mix(in srgb, var(--bg-tertiary) 78%, transparent)",
                                             verticalAlign: "top",
+                                            overflowWrap: "anywhere",
+                                            wordBreak: "break-word",
                                         }}
                                     >
                                         {renderInlineMarkdown(

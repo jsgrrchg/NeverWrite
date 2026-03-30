@@ -206,6 +206,38 @@ describe("MarkdownContent", () => {
         ).toBeInTheDocument();
     });
 
+    it("prefers cell wrapping over expanding markdown tables horizontally", () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "| File | Notes |",
+                    "| --- | --- |",
+                    "| watcher.rs | This cell should wrap across multiple lines instead of forcing the table wider than the chat column. |",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const table = screen.getByRole("table");
+        const header = screen.getByRole("columnheader", { name: "Notes" });
+        const cell = screen.getByRole("cell", {
+            name: /This cell should wrap across multiple lines/i,
+        });
+
+        expect(table).toHaveStyle({
+            width: "100%",
+            tableLayout: "fixed",
+        });
+        expect(header).toHaveStyle({
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+        });
+        expect(cell).toHaveStyle({
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+        });
+    });
+
     it("renders inline markdown inside table cells", () => {
         setVaultNotes([
             {
