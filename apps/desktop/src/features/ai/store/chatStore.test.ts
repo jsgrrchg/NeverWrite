@@ -2074,6 +2074,32 @@ describe("chatStore", () => {
         ).toHaveLength(1);
     });
 
+    it("prevents duplicate vault file attachments for the same path", async () => {
+        await useChatStore.getState().initialize();
+
+        const file = {
+            id: "src/main.ts",
+            title: "main",
+            path: "/vault/src/main.ts",
+            relativePath: "src/main.ts",
+            fileName: "main.ts",
+            mimeType: "text/typescript",
+        };
+
+        useChatStore.getState().attachVaultFile(file);
+        useChatStore.getState().attachVaultFile(file);
+
+        const activeSessionId = getActiveSessionId();
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toEqual([
+            expect.objectContaining({
+                type: "file",
+                path: "/vault/src/main.ts",
+            }),
+        ]);
+    });
+
     it("serializes mention parts into the current session draft", async () => {
         await useChatStore.getState().initialize();
 
@@ -2098,6 +2124,42 @@ describe("chatStore", () => {
             [];
 
         expect(serializeComposerParts(parts)).toBe("Use [@README.md]");
+    });
+
+    it("prunes composer-backed vault file attachments when the file mention is removed", async () => {
+        await useChatStore.getState().initialize();
+
+        const file = {
+            id: "src/watcher.rs",
+            title: "watcher",
+            path: "/vault/src/watcher.rs",
+            relativePath: "src/watcher.rs",
+            fileName: "watcher.rs",
+            mimeType: "text/rust",
+        };
+
+        useChatStore.getState().attachVaultFile(file);
+        useChatStore.getState().setComposerParts([
+            {
+                id: "file-mention-1",
+                type: "file_mention",
+                label: "watcher.rs",
+                path: "/vault/src/watcher.rs",
+                relativePath: "src/watcher.rs",
+                mimeType: "text/rust",
+            },
+        ]);
+
+        const activeSessionId = getActiveSessionId();
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toHaveLength(1);
+
+        useChatStore.getState().setComposerParts(createTextParts("Check this"));
+
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toHaveLength(0);
     });
 
     it("moves the updated session to the top of the history order", async () => {

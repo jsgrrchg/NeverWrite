@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
@@ -6,6 +7,7 @@ import { useEditorStore } from "../../../app/store/editorStore";
 import {
     renderComponent,
     setEditorTabs,
+    setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
@@ -146,6 +148,63 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("shows text-like vault files in the @ picker when all-files mode is active", async () => {
+        act(() => {
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeShowExtensions: true,
+            });
+        });
+
+        const onFileMentionAttach = vi.fn();
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[]}
+                files={[
+                    {
+                        id: "src/main.ts",
+                        title: "main",
+                        path: "/vault/src/main.ts",
+                        relativePath: "src/main.ts",
+                        fileName: "main.ts",
+                        mimeType: "text/typescript",
+                    },
+                ]}
+                status="idle"
+                runtimeName="Assistant"
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFileMentionAttach={onFileMentionAttach}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message VaultAI",
+        });
+        composer.textContent = "@main";
+        setCaret(composer.firstChild as Text, 5);
+        fireEvent.input(composer);
+
+        const suggestion = await screen.findByText("main.ts");
+        fireEvent.mouseDown(suggestion);
+
+        await waitFor(() => {
+            expect(onFileMentionAttach).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    path: "/vault/src/main.ts",
+                    relativePath: "src/main.ts",
+                }),
+            );
+        });
+    });
+
     it("does not show /plan in the @ picker", async () => {
         const { composer } = renderComposer();
         composer.textContent = "@pl";
@@ -265,6 +324,69 @@ describe("AIChatComposer mention picker", () => {
 
         await waitFor(() => {
             expect(useEditorStore.getState().tabs).toHaveLength(2);
+        });
+    });
+
+    it("opens a file mention pill in a new tab from the context menu", async () => {
+        const invokeMock = vi.mocked(invoke);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "src/watcher.rs",
+                });
+                return {
+                    path: "/vault/src/watcher.rs",
+                    relative_path: "src/watcher.rs",
+                    file_name: "watcher.rs",
+                    mime_type: "text/rust",
+                    content: "fn main() {}",
+                };
+            }
+            throw new Error(`Unexpected invoke call: ${command}`);
+        });
+
+        setVaultEntries([
+            {
+                id: "src/watcher.rs",
+                path: "/vault/src/watcher.rs",
+                relative_path: "src/watcher.rs",
+                title: "watcher",
+                file_name: "watcher.rs",
+                extension: "rs",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 12,
+                mime_type: "text/rust",
+            },
+        ]);
+
+        renderComposer({
+            parts: [
+                {
+                    id: "file-mention-1",
+                    type: "file_mention",
+                    label: "watcher.rs",
+                    path: "/vault/src/watcher.rs",
+                    relativePath: "src/watcher.rs",
+                    mimeType: "text/rust",
+                },
+            ],
+        });
+
+        fireEvent.contextMenu(screen.getByText("watcher.rs"), {
+            clientX: 40,
+            clientY: 60,
+        });
+
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(1);
+        });
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            kind: "file",
+            path: "/vault/src/watcher.rs",
         });
     });
 

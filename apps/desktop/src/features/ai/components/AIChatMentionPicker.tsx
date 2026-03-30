@@ -6,9 +6,9 @@ import type { AIMentionSuggestion } from "../types";
 function suggestionKey(item: AIMentionSuggestion) {
     if (item.kind === "fetch") return "fetch";
     if (item.kind === "plan") return "plan";
-    return item.kind === "note"
-        ? `note:${item.note.id}`
-        : `folder:${item.folderPath}`;
+    if (item.kind === "note") return `note:${item.note.id}`;
+    if (item.kind === "file") return `file:${item.file.path}`;
+    return `folder:${item.folderPath}`;
 }
 
 function FolderIcon() {
@@ -50,6 +50,10 @@ function NoteIcon({ color = "var(--text-secondary)" }: { color?: string }) {
             <path d="M8 1.5V5h3.5" />
         </svg>
     );
+}
+
+function FileIcon() {
+    return <NoteIcon color="var(--accent)" />;
 }
 
 function FetchIcon() {
@@ -214,6 +218,7 @@ export function AIChatMentionPicker({
                         const isFetch = item.kind === "fetch";
                         const isPlan = item.kind === "plan";
                         const isNote = item.kind === "note";
+                        const isFile = item.kind === "file";
                         return (
                             <button
                                 key={suggestionKey(item)}
@@ -239,7 +244,9 @@ export function AIChatMentionPicker({
                                               ? "color-mix(in srgb, var(--accent) 12%, var(--bg-secondary))"
                                               : isNote
                                                 ? "color-mix(in srgb, #d97706 10%, var(--bg-secondary))"
-                                                : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
+                                                : isFile
+                                                  ? "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
+                                                  : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
                                         : "transparent",
                                     padding: "6px 10px",
                                     textAlign: "left",
@@ -254,6 +261,8 @@ export function AIChatMentionPicker({
                                     <PlanIcon />
                                 ) : item.kind === "folder" ? (
                                     <FolderIcon />
+                                ) : item.kind === "file" ? (
+                                    <FileIcon />
                                 ) : (
                                     <NoteIcon color="#d97706" />
                                 )}
@@ -265,10 +274,15 @@ export function AIChatMentionPicker({
                                               ? "var(--accent)"
                                               : isNote
                                                 ? "#d97706"
-                                                : "var(--text-primary)",
+                                                : isFile
+                                                  ? "var(--accent)"
+                                                  : "var(--text-primary)",
                                         fontSize: 13,
                                         fontWeight:
-                                            isFetch || isPlan || isNote
+                                            isFetch ||
+                                            isPlan ||
+                                            isNote ||
+                                            isFile
                                                 ? 600
                                                 : 500,
                                         whiteSpace: "nowrap",
@@ -284,7 +298,9 @@ export function AIChatMentionPicker({
                                           ? "/plan"
                                           : item.kind === "note"
                                             ? item.label
-                                            : item.name}
+                                            : item.kind === "file"
+                                              ? item.label
+                                              : item.name}
                                 </span>
                                 {(isFetch || isPlan) && (
                                     <span

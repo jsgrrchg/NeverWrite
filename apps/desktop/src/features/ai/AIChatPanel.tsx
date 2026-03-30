@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useMemo,
     useRef,
     useState,
     type MutableRefObject,
@@ -11,6 +12,7 @@ import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { isTextLikeVaultEntry } from "../../app/utils/vaultEntries";
 import {
     listenToAiAvailableCommandsUpdated,
     listenToAiMessageCompleted,
@@ -266,6 +268,7 @@ export function AIChatPanel() {
     const setActiveTab = useChatTabsStore((state) => state.setActiveTab);
 
     const notes = useVaultStore((state) => state.notes);
+    const entries = useVaultStore((state) => state.entries);
     const createNote = useVaultStore((state) => state.createNote);
     const openNote = useEditorStore((state) => state.openNote);
     const activeEditorNoteId = useEditorStore((state) => {
@@ -311,6 +314,23 @@ export function AIChatPanel() {
         }),
     );
     const composerSessionId = currentSession?.sessionId ?? null;
+    const fileOptions = useMemo(
+        () =>
+            entries
+                .filter(
+                    (entry) =>
+                        entry.kind === "file" && isTextLikeVaultEntry(entry),
+                )
+                .map((entry) => ({
+                    id: entry.id,
+                    title: entry.title,
+                    path: entry.path,
+                    relativePath: entry.relative_path,
+                    fileName: entry.file_name,
+                    mimeType: entry.mime_type,
+                })),
+        [entries],
+    );
 
     useEffect(() => {
         const timers = screenshotTimersRef.current;
@@ -856,6 +876,7 @@ export function AIChatPanel() {
                     key={composerSessionId ?? "no-session"}
                     parts={composerParts}
                     notes={noteOptions}
+                    files={fileOptions}
                     status={currentSession?.status ?? "idle"}
                     runtimeName={composerRuntimeLabel}
                     runtimeId={currentSession?.runtimeId}
@@ -886,6 +907,10 @@ export function AIChatPanel() {
                                                     (p.type === "mention" &&
                                                         p.noteId ===
                                                             a.noteId) ||
+                                                    (p.type ===
+                                                        "file_mention" &&
+                                                        a.type === "file" &&
+                                                        a.path === p.path) ||
                                                     (p.type ===
                                                         "folder_mention" &&
                                                         a.type === "folder" &&
@@ -968,6 +993,10 @@ export function AIChatPanel() {
                     onMentionAttach={(note) => {
                         if (!composerSessionId) return;
                         chatActions.attachNote(note, composerSessionId);
+                    }}
+                    onFileMentionAttach={(file) => {
+                        if (!composerSessionId) return;
+                        chatActions.attachVaultFile(file, composerSessionId);
                     }}
                     onFolderAttach={(folderPath, name) => {
                         if (!composerSessionId) return;

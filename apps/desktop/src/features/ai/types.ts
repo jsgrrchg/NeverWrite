@@ -476,6 +476,15 @@ export interface AIChatNoteSummary {
     path: string;
 }
 
+export interface AIChatFileSummary {
+    id: string;
+    title: string;
+    path: string;
+    relativePath: string;
+    fileName: string;
+    mimeType: string | null;
+}
+
 export type AIComposerPart =
     | {
           id: string;
@@ -488,6 +497,14 @@ export type AIComposerPart =
           noteId: string;
           label: string;
           path: string;
+      }
+    | {
+          id: string;
+          type: "file_mention";
+          label: string;
+          path: string;
+          relativePath: string;
+          mimeType: string | null;
       }
     | {
           id: string;
@@ -530,6 +547,7 @@ export type AIComposerPart =
 
 export type AIMentionSuggestion =
     | { kind: "note"; note: AIChatNoteSummary; label: string }
+    | { kind: "file"; file: AIChatFileSummary; label: string }
     | { kind: "folder"; folderPath: string; name: string }
     | { kind: "fetch" }
     | { kind: "plan" };

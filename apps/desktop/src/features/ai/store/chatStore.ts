@@ -87,6 +87,7 @@ import {
     buildSelectionLabel,
     type AIChatAttachment,
     type AIAvailableCommandsPayload,
+    type AIChatFileSummary,
     type AIChatMessage,
     type AIChatMessageKind,
     type AIFileDiff,
@@ -954,6 +955,7 @@ interface ChatStore {
     deleteSession: (sessionId: string) => Promise<void>;
     deleteAllSessions: () => Promise<void>;
     attachNote: (note: AIChatNoteSummary, sessionId?: string) => void;
+    attachVaultFile: (file: AIChatFileSummary, sessionId?: string) => void;
     attachFolder: (
         folderPath: string,
         name: string,
@@ -2604,6 +2606,14 @@ function withUniqueAttachment(
             (attachment) =>
                 attachment.type === next.type &&
                 attachment.noteId === next.noteId,
+        );
+        if (duplicate) return attachments;
+    }
+
+    if (next.path) {
+        const duplicate = attachments.some(
+            (attachment) =>
+                attachment.type === next.type && attachment.path === next.path,
         );
         if (duplicate) return attachments;
     }
@@ -5554,11 +5564,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         )
                         .map((p) => p.folderPath),
                 );
+                const fileMentionPaths = new Set(
+                    parts
+                        .filter(
+                            (
+                                p,
+                            ): p is Extract<
+                                AIComposerPart,
+                                { type: "file_mention" }
+                            > => p.type === "file_mention",
+                        )
+                        .map((p) => p.path),
+                );
 
                 const prunedAttachments = session
                     ? session.attachments.filter((a) => {
                           if (a.type === "note")
                               return mentionIds.has(a.noteId!);
+                          if (a.type === "file" && a.path)
+                              return fileMentionPaths.has(a.path);
                           if (a.type === "folder")
                               return folderPaths.has(a.noteId!);
                           return true;
@@ -7435,6 +7459,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }),
                 ),
                 notePickerOpen: false,
+            }));
+        },
+
+        attachVaultFile: (file, sessionId) => {
+            const resolvedSessionId = sessionId ?? get().activeSessionId;
+            if (!resolvedSessionId) return;
+            set((state) => ({
+                sessionsById: updateSessionById(
+                    state,
+                    resolvedSessionId,
+                    (session) => ({
+                        ...session,
+                        attachments: withUniqueAttachment(session.attachments, {
+                            id: crypto.randomUUID(),
+                            type: "file",
+                            noteId: null,
+                            label: file.fileName,
+                            path: file.path,
+                            filePath: file.path,
+                            mimeType: file.mimeType ?? undefined,
+                            status: "ready",
+                        }),
+                    }),
+                ),
             }));
         },
 
