@@ -16,6 +16,15 @@ import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import type { AIChatMessage, AIChatSessionStatus } from "../types";
 import { getChatPillMetrics } from "./chatPillMetrics";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
+import {
+    captureVisibleChatAnchor,
+    findChatRowByKey,
+    persistChatMessageListViewState,
+    readPersistedChatMessageListViewState,
+    resolveChatMessageListViewStateScope,
+    restoreChatMessageListViewState,
+    type PersistedChatViewState,
+} from "./chatMessageListViewState";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -310,6 +319,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     }> | null>(null);
     const previousMessagesRef = useRef(messages);
     const previousStatusRef = useRef(status);
+    const restoredScopeRef = useRef<string | null>(null);
+    const viewStateScope = resolveChatMessageListViewStateScope(sessionId);
+    const pendingRestoreRef = useRef<PersistedChatViewState | null>(
+        readPersistedChatMessageListViewState(viewStateScope),
+    );
 
     const scrollToBottom = useCallback(() => {
         const container = containerRef.current;
@@ -330,6 +344,12 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             setShowScrollButton(true);
         }
 
+        persistChatMessageListViewState(
+            viewStateScope,
+            container,
+            isNearBottom,
+        );
+
         if (
             container.scrollTop <= LOAD_OLDER_THRESHOLD &&
             hasOlderMessages &&
@@ -343,7 +363,12 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             };
             onLoadOlderMessages();
         }
-    }, [hasOlderMessages, isLoadingOlderMessages, onLoadOlderMessages]);
+    }, [
+        hasOlderMessages,
+        isLoadingOlderMessages,
+        onLoadOlderMessages,
+        viewStateScope,
+    ]);
 
     const handleContextMenu = useCallback((event: React.MouseEvent) => {
         event.preventDefault();
@@ -372,6 +397,109 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             ),
         [messages, visibleWorkCycleId],
     );
+    const timelineRows = useMemo(() => {
+        const rows: TimelineRow[] = [];
+
+        for (const message of messages) {
+            if (message.kind === "plan" && message.id === pinnedPlan?.id) {
+                continue;
+            }
+
+            rows.push({
+                key: scopeTimelineRowKey(sessionId, message.id),
+                kind: "message",
+                message,
+            });
+        }
+
+        if (runIndicatorAnchor) {
+            rows.push({
+                key: scopeTimelineRowKey(
+                    sessionId,
+                    `run-indicator:${runIndicatorAnchor.id}`,
+                ),
+                kind: "run-indicator",
+                timestamp: runIndicatorAnchor.timestamp,
+                active: status === "streaming",
+            });
+        }
+
+        return rows;
+    }, [messages, pinnedPlan?.id, runIndicatorAnchor, sessionId, status]);
+
+    const rowRenderOptions = useMemo(
+        () => ({
+            sessionId,
+            pillMetrics,
+            chatFontSize,
+            chatFontFamily,
+            visibleWorkCycleId,
+            recentDiffWorkCycleIds,
+            onPermissionResponse,
+            onUserInputResponse,
+        }),
+        [
+            chatFontFamily,
+            chatFontSize,
+            onPermissionResponse,
+            onUserInputResponse,
+            pillMetrics,
+            recentDiffWorkCycleIds,
+            sessionId,
+            visibleWorkCycleId,
+        ],
+    );
+
+    useLayoutEffect(() => {
+        if (restoredScopeRef.current === viewStateScope) {
+            return;
+        }
+
+        restoredScopeRef.current = viewStateScope;
+        pendingRestoreRef.current =
+            readPersistedChatMessageListViewState(viewStateScope);
+        wasNearBottomRef.current =
+            pendingRestoreRef.current?.nearBottom ?? true;
+        previousMessagesRef.current = messages;
+        previousStatusRef.current = status;
+        pendingPrependAdjustmentRef.current = null;
+    }, [messages, status, viewStateScope]);
+
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        const pendingState = pendingRestoreRef.current;
+        if (!container || !pendingState) {
+            return;
+        }
+
+        const restored = restoreChatMessageListViewState(
+            container,
+            pendingState,
+        );
+        if (
+            !restored &&
+            !pendingState.nearBottom &&
+            timelineRows.length === 0
+        ) {
+            return;
+        }
+
+        pendingRestoreRef.current = null;
+        wasNearBottomRef.current = pendingState.nearBottom;
+        setShowScrollButton(!pendingState.nearBottom);
+    }, [timelineRows, viewStateScope]);
+
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        return () => {
+            const persistedState = persistChatMessageListViewState(
+                viewStateScope,
+                container,
+                isNearBottom,
+            );
+            wasNearBottomRef.current = persistedState?.nearBottom ?? true;
+        };
+    }, [viewStateScope]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
@@ -439,29 +567,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         if (!container) return;
 
         let prevWidth = container.clientWidth;
-        let anchorNode: HTMLElement | null = null;
-        let anchorOffset = 0;
-        let anchorNearBottom = true;
+        let anchorSnapshot = captureVisibleChatAnchor(container, isNearBottom);
 
         function captureAnchor() {
-            anchorNearBottom = isNearBottom(container!);
-            if (anchorNearBottom) {
-                anchorNode = null;
-                return;
-            }
-
-            const containerRect = container!.getBoundingClientRect();
-            const rows =
-                container!.querySelectorAll<HTMLElement>("[data-chat-row]");
-            for (const row of rows) {
-                const rect = row.getBoundingClientRect();
-                if (rect.bottom > containerRect.top) {
-                    anchorNode = row;
-                    anchorOffset = rect.top - containerRect.top;
-                    return;
-                }
-            }
-            anchorNode = null;
+            anchorSnapshot = captureVisibleChatAnchor(container, isNearBottom);
         }
 
         container.addEventListener("scroll", captureAnchor, { passive: true });
@@ -472,13 +581,20 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             if (newWidth === prevWidth) return;
             prevWidth = newWidth;
 
-            if (anchorNearBottom) {
+            if (anchorSnapshot.nearBottom) {
                 container.scrollTop = container.scrollHeight;
-            } else if (anchorNode?.isConnected) {
+            } else if (anchorSnapshot.rowKey) {
+                const anchorNode = findChatRowByKey(
+                    container,
+                    anchorSnapshot.rowKey,
+                );
+                if (!anchorNode) {
+                    return;
+                }
                 const containerRect = container.getBoundingClientRect();
                 const rect = anchorNode.getBoundingClientRect();
                 container.scrollTop +=
-                    rect.top - containerRect.top - anchorOffset;
+                    rect.top - containerRect.top - anchorSnapshot.offset;
             }
         });
 
@@ -488,59 +604,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             ro.disconnect();
         };
     }, []);
-
-    const timelineRows = useMemo(() => {
-        const rows: TimelineRow[] = [];
-
-        for (const message of messages) {
-            if (message.kind === "plan" && message.id === pinnedPlan?.id) {
-                continue;
-            }
-
-            rows.push({
-                key: scopeTimelineRowKey(sessionId, message.id),
-                kind: "message",
-                message,
-            });
-        }
-
-        if (runIndicatorAnchor) {
-            rows.push({
-                key: scopeTimelineRowKey(
-                    sessionId,
-                    `run-indicator:${runIndicatorAnchor.id}`,
-                ),
-                kind: "run-indicator",
-                timestamp: runIndicatorAnchor.timestamp,
-                active: status === "streaming",
-            });
-        }
-
-        return rows;
-    }, [messages, pinnedPlan?.id, runIndicatorAnchor, sessionId, status]);
-
-    const rowRenderOptions = useMemo(
-        () => ({
-            sessionId,
-            pillMetrics,
-            chatFontSize,
-            chatFontFamily,
-            visibleWorkCycleId,
-            recentDiffWorkCycleIds,
-            onPermissionResponse,
-            onUserInputResponse,
-        }),
-        [
-            chatFontFamily,
-            chatFontSize,
-            onPermissionResponse,
-            onUserInputResponse,
-            pillMetrics,
-            recentDiffWorkCycleIds,
-            sessionId,
-            visibleWorkCycleId,
-        ],
-    );
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">

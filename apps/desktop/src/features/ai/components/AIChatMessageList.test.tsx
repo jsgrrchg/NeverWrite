@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
+import { resetChatMessageListViewState } from "./chatMessageListViewState";
 
 function createMessages(): AIChatMessage[] {
     return [
@@ -48,7 +49,7 @@ function configureScrollableViewport(
         getScrollHeight?: () => number;
     },
 ) {
-    let currentScrollTop = 0;
+    let currentScrollTop = container.scrollTop;
 
     Object.defineProperty(container, "clientHeight", {
         configurable: true,
@@ -86,6 +87,7 @@ function getScrollContainer(root: HTMLElement) {
 describe("AIChatMessageList streaming run indicator", () => {
     afterEach(() => {
         vi.useRealTimers();
+        resetChatMessageListViewState();
     });
 
     it("renders the elapsed timer during streaming and hides it when the run ends", () => {
@@ -342,6 +344,46 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         expect(scrollContainer.scrollTop).toBe(510);
+    });
+
+    it("restores the previous scroll position when the chat list remounts for the same session", () => {
+        const messages = createLongTranscript(140);
+        const firstMount = renderComponent(
+            <AIChatMessageList
+                sessionId="session-remount"
+                messages={messages}
+                status="idle"
+            />,
+        );
+        const firstScrollContainer = getScrollContainer(firstMount.container);
+        configureScrollableViewport(firstScrollContainer);
+
+        act(() => {
+            firstScrollContainer.scrollTop = 4_320;
+            firstScrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        firstMount.unmount();
+
+        const secondMount = renderComponent(
+            <AIChatMessageList
+                sessionId="session-remount"
+                messages={messages}
+                status="idle"
+            />,
+        );
+        const secondScrollContainer = getScrollContainer(secondMount.container);
+        configureScrollableViewport(secondScrollContainer);
+
+        secondMount.rerender(
+            <AIChatMessageList
+                sessionId="session-remount"
+                messages={[...messages]}
+                status="idle"
+            />,
+        );
+
+        expect(secondScrollContainer.scrollTop).toBe(4_320);
     });
 
     it("keeps only the two most recent non-visible diff work cycles as rich cards", () => {
