@@ -24,6 +24,7 @@ interface UseDynamicVirtualListOptions<T> {
     estimateSize: (item: T, index: number) => number;
     itemGap?: number;
     overscan?: number;
+    measurementVersion?: string | number;
 }
 
 function findFirstEndAfter(ends: number[], value: number) {
@@ -65,6 +66,7 @@ export function useDynamicVirtualList<T>({
     estimateSize,
     itemGap = 0,
     overscan = 6,
+    measurementVersion,
 }: UseDynamicVirtualListOptions<T>): DynamicVirtualListWindow<T> {
     const [scrollTop, setScrollTop] = useState(0);
     const [viewportHeight, setViewportHeight] = useState(0);
@@ -110,6 +112,15 @@ export function useDynamicVirtualList<T>({
         },
         [],
     );
+
+    useEffect(() => {
+        setMeasuredSizes((current) => {
+            if (Object.keys(current).length === 0) {
+                return current;
+            }
+            return {};
+        });
+    }, [measurementVersion]);
 
     useEffect(() => {
         const activeKeys = new Set(

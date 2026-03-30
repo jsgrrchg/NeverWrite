@@ -13,6 +13,7 @@
         "tauri": "node scripts/run-tauri.mjs"
     },
     "dependencies": {
+        "@chenglou/pretext": "^0.0.3",
         "@codemirror/commands": "^6.10.2",
         "@codemirror/lang-cpp": "^6.0.3",
         "@codemirror/lang-css": "^6.3.1",

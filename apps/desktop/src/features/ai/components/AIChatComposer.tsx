@@ -37,6 +37,14 @@ import type {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
+import {
+    getPretextMeasurementRevision,
+    subscribePretextInvalidation,
+} from "../../../app/services/pretextService";
+import { estimateComposerTextHeight } from "./chatTextPretext";
+
+const MIN_COMPOSER_HEIGHT = 64;
+const MAX_COMPOSER_HEIGHT = 480;
 
 interface AIChatComposerProps {
     parts: AIComposerPart[];
@@ -788,6 +796,10 @@ export function AIChatComposer({
         [runtimeId],
     );
     const [customHeight, setCustomHeight] = useState<number | null>(null);
+    const [composerContentWidth, setComposerContentWidth] = useState(0);
+    const [pretextRevision, setPretextRevision] = useState(() =>
+        getPretextMeasurementRevision(),
+    );
     const resizeSession = useRef<{
         startY: number;
         startHeight: number;
@@ -796,6 +808,21 @@ export function AIChatComposer({
     const resizeHandleRef = useRef<HTMLDivElement>(null);
     const serializedValue = useMemo(
         () => serializeComposerParts(parts),
+        [parts],
+    );
+    const isPlainTextComposer = useMemo(
+        () => parts.every((part) => part.type === "text"),
+        [parts],
+    );
+    const plainComposerText = useMemo(
+        () =>
+            parts
+                .filter(
+                    (part): part is Extract<AIComposerPart, { type: "text" }> =>
+                        part.type === "text",
+                )
+                .map((part) => part.text)
+                .join(""),
         [parts],
     );
     const folderPaths = useMemo(() => extractFolderPaths(notes), [notes]);
@@ -807,12 +834,105 @@ export function AIChatComposer({
         () => getPillMetricsSignature(pillMetrics),
         [pillMetrics],
     );
+    const composerPadding = useMemo(
+        () =>
+            expanded
+                ? {
+                      top: 14,
+                      right: 36,
+                      bottom: 18,
+                      left: 16,
+                  }
+                : {
+                      top: 10,
+                      right: 36,
+                      bottom: 10,
+                      left: 14,
+                  },
+        [expanded],
+    );
+    const estimatedComposerMinHeight = useMemo(() => {
+        if (
+            expanded ||
+            customHeight != null ||
+            !isPlainTextComposer ||
+            composerContentWidth <= 0
+        ) {
+            return null;
+        }
+
+        const contentWidth =
+            composerContentWidth - composerPadding.left - composerPadding.right;
+        if (contentWidth <= 0) {
+            return null;
+        }
+
+        return Math.max(
+            MIN_COMPOSER_HEIGHT,
+            estimateComposerTextHeight({
+                content: plainComposerText,
+                contentWidth,
+                fontSize: composerFontSize,
+                fontFamily: composerFontFamily,
+                lineHeight: composerFontSize * 1.5,
+                paddingY: composerPadding.top + composerPadding.bottom,
+                minHeight: MIN_COMPOSER_HEIGHT,
+            }),
+        );
+    }, [
+        composerContentWidth,
+        composerFontFamily,
+        composerFontSize,
+        composerPadding.bottom,
+        composerPadding.left,
+        composerPadding.right,
+        composerPadding.top,
+        customHeight,
+        expanded,
+        isPlainTextComposer,
+        plainComposerText,
+        pretextRevision,
+    ]);
     const bindComposerRef = useCallback((element: HTMLDivElement | null) => {
         composerRef.current = element;
         setComposerElement((current) =>
             current === element ? current : element,
         );
     }, []);
+
+    useEffect(() => {
+        return subscribePretextInvalidation(() => {
+            setPretextRevision(getPretextMeasurementRevision());
+        });
+    }, []);
+
+    useEffect(() => {
+        const composer = composerRef.current;
+        if (!composer) return;
+
+        const sync = () => {
+            setComposerContentWidth(composer.clientWidth);
+        };
+
+        let resizeObserver: ResizeObserver | null = null;
+        sync();
+
+        if (typeof ResizeObserver === "function") {
+            resizeObserver = new ResizeObserver(() => {
+                sync();
+            });
+            resizeObserver.observe(composer);
+        } else {
+            window.addEventListener("resize", sync);
+        }
+
+        return () => {
+            resizeObserver?.disconnect();
+            if (!resizeObserver) {
+                window.removeEventListener("resize", sync);
+            }
+        };
+    }, [bindComposerRef, composerFontFamily, composerFontSize, expanded]);
 
     useEffect(() => {
         const composer = composerRef.current;
@@ -1257,9 +1377,6 @@ export function AIChatComposer({
         };
     }, [focusComposerAtEnd]);
 
-    const MIN_COMPOSER_HEIGHT = 64;
-    const MAX_COMPOSER_HEIGHT = 480;
-
     const onResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
         e.preventDefault();
         const box = e.currentTarget.parentElement;
@@ -1630,16 +1747,15 @@ export function AIChatComposer({
                             ? undefined
                             : customHeight != null
                               ? 0
-                              : 64,
+                              : (estimatedComposerMinHeight ??
+                                MIN_COMPOSER_HEIGHT),
                         maxHeight: expanded
                             ? undefined
                             : customHeight != null
                               ? undefined
                               : 200,
                         overflowY: "auto",
-                        padding: expanded
-                            ? "14px 36px 18px 16px"
-                            : "10px 36px 10px 14px",
+                        padding: `${composerPadding.top}px ${composerPadding.right}px ${composerPadding.bottom}px ${composerPadding.left}px`,
                         lineHeight: 1.5,
                         fontSize: composerFontSize,
                         fontFamily: getEditorFontFamily(composerFontFamily),

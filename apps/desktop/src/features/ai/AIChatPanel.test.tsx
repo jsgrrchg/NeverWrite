@@ -1553,4 +1553,78 @@ describe("AIChatPanel tabs lifecycle", () => {
             session.sessionId,
         );
     });
+
+    it("keeps agent controls enabled while the session is streaming", () => {
+        const session = createSession(
+            "streaming-session",
+            "Streaming session",
+            "streaming",
+            {
+                models: restoredSessionModels,
+                modes: restoredSessionModes,
+                configOptions: restoredSessionConfigOptions,
+                effortsByModel: {
+                    "test-model": ["medium", "high"],
+                    "wide-model": ["medium", "high"],
+                },
+            },
+        );
+        const setMode = vi.fn();
+        const setConfigOption = vi.fn();
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimeConnection: { status: "ready", message: null },
+            runtimes: [runtimeDescriptor],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                [session.sessionId]: [],
+            },
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    runtimeId: "codex-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+            runtimeConnectionByRuntimeId: {
+                "codex-acp": { status: "ready", message: null },
+            },
+            setMode,
+            setConfigOption,
+        }));
+        useChatTabsStore.setState({
+            tabs: [{ id: "tab-streaming", sessionId: session.sessionId }],
+            activeTabId: "tab-streaming",
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        const approvalButton = screen.getByTitle("Approval Preset");
+        const reasoningButton = screen.getByTitle("Reasoning Effort");
+
+        expect(approvalButton).toBeEnabled();
+        expect(reasoningButton).toBeEnabled();
+
+        fireEvent.click(approvalButton);
+        fireEvent.click(screen.getByRole("button", { name: "Review Mode" }));
+
+        fireEvent.click(reasoningButton);
+        fireEvent.click(screen.getByRole("button", { name: "High" }));
+
+        expect(setMode).toHaveBeenCalledWith("review-mode", session.sessionId);
+        expect(setConfigOption).toHaveBeenCalledWith(
+            "reasoning_effort",
+            "high",
+            session.sessionId,
+        );
+    });
 });
