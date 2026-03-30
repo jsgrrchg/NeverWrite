@@ -1,6 +1,7 @@
 import type { EditorState } from "@codemirror/state";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import { LruCache } from "../lruCache";
 
@@ -12,6 +13,7 @@ export type WikilinkContext = {
 
 export type WikilinkSuggestionItem = {
     id: string;
+    kind: "note" | "file";
     title: string;
     subtitle: string;
     insertText: string;
@@ -23,6 +25,61 @@ type WikilinkSuggestionDto = {
     subtitle: string;
     insert_text: string;
 };
+
+function normalizeForSearch(value: string): string {
+    return value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+}
+
+function getFileSuggestions(
+    query: string,
+    limit: number,
+): WikilinkSuggestionItem[] {
+    const normalizedQuery = normalizeForSearch(query);
+
+    return useVaultStore
+        .getState()
+        .entries.filter(
+            (entry) => entry.kind === "file" && isTextLikeVaultEntry(entry),
+        )
+        .map((entry) => {
+            const normalizedFileName = normalizeForSearch(entry.file_name);
+            const normalizedPath = normalizeForSearch(entry.relative_path);
+            const rank = !normalizedQuery
+                ? 100
+                : normalizedFileName.startsWith(normalizedQuery)
+                  ? 0
+                  : normalizedPath.startsWith(normalizedQuery)
+                    ? 1
+                    : normalizedFileName.includes(normalizedQuery)
+                      ? 2
+                      : normalizedPath.includes(normalizedQuery)
+                        ? 3
+                        : Number.POSITIVE_INFINITY;
+
+            return {
+                id: entry.id,
+                kind: "file" as const,
+                title: entry.file_name,
+                subtitle: entry.relative_path,
+                insertText: `/${entry.relative_path}`,
+                rank,
+            };
+        })
+        .filter((item) => Number.isFinite(item.rank))
+        .sort((left, right) => {
+            if (left.rank !== right.rank) {
+                return left.rank - right.rank;
+            }
+
+            return left.subtitle.localeCompare(right.subtitle);
+        })
+        .slice(0, limit)
+        .map(({ rank: _rank, ...item }) => item);
+}
 
 export const MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES = 256;
 
@@ -108,10 +165,55 @@ export async function getWikilinkSuggestions(
 
     const items = suggestions.map((item) => ({
         id: item.id,
+        kind: "note" as const,
         title: item.title,
         subtitle: item.subtitle,
         insertText: item.insert_text,
     }));
-    suggestionCache.set(cacheKey, items);
-    return items;
+
+    const merged = preferFileName
+        ? [...items, ...getFileSuggestions(query, limit)]
+              .map((item) => {
+                  const normalizedTitle = normalizeForSearch(item.title);
+                  const normalizedSubtitle = normalizeForSearch(item.subtitle);
+                  const normalizedBaseName = normalizeForSearch(
+                      item.subtitle.split("/").pop() ?? item.title,
+                  );
+                  const rank = !query
+                      ? 100
+                      : normalizedBaseName.startsWith(normalizeForSearch(query))
+                        ? 0
+                        : normalizedSubtitle.startsWith(
+                                normalizeForSearch(query),
+                            )
+                          ? 1
+                          : normalizedBaseName.includes(
+                                  normalizeForSearch(query),
+                              )
+                            ? 2
+                            : normalizedSubtitle.includes(
+                                    normalizeForSearch(query),
+                                )
+                              ? 3
+                              : normalizedTitle.includes(
+                                      normalizeForSearch(query),
+                                  )
+                                ? 4
+                                : 5;
+
+                  return { item, rank };
+              })
+              .sort((left, right) => {
+                  if (left.rank !== right.rank) {
+                      return left.rank - right.rank;
+                  }
+
+                  return left.item.subtitle.localeCompare(right.item.subtitle);
+              })
+              .slice(0, limit)
+              .map(({ item }) => item)
+        : items;
+
+    suggestionCache.set(cacheKey, merged);
+    return merged;
 }

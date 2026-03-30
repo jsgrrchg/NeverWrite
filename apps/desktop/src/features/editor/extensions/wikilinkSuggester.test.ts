@@ -3,6 +3,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { mockInvoke } from "../../../test/test-utils";
 import {
     getWikilinkSuggestions,
@@ -16,6 +17,9 @@ describe("wikilinkSuggester", () => {
             vaultPath: `/vault-${crypto.randomUUID()}`,
             resolverRevision: state.resolverRevision + 1,
         }));
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+        });
     });
 
     it("reuses cached suggestions for the same query", async () => {
@@ -56,11 +60,7 @@ describe("wikilinkSuggester", () => {
             index < MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES + 1;
             index += 1
         ) {
-            await getWikilinkSuggestions(
-                "note/current",
-                `query-${index}`,
-                8,
-            );
+            await getWikilinkSuggestions("note/current", `query-${index}`, 8);
         }
 
         expect(mockInvoke()).toHaveBeenCalledTimes(
@@ -72,5 +72,42 @@ describe("wikilinkSuggester", () => {
         expect(mockInvoke()).toHaveBeenCalledTimes(
             MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES + 2,
         );
+    });
+
+    it("includes text files in wikilink suggestions when all-files mode is active", async () => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+        });
+        useVaultStore.setState((state) => ({
+            ...state,
+            entries: [
+                {
+                    id: "src/main.ts",
+                    path: "/vault/src/main.ts",
+                    relative_path: "src/main.ts",
+                    title: "main",
+                    file_name: "main.ts",
+                    extension: "ts",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 12,
+                    mime_type: "text/typescript",
+                    is_text_like: true,
+                },
+            ],
+        }));
+        mockInvoke().mockResolvedValue([]);
+
+        const items = await getWikilinkSuggestions("notes/current", "main");
+
+        expect(items).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                title: "main.ts",
+                subtitle: "src/main.ts",
+                insertText: "/src/main.ts",
+            }),
+        ]);
     });
 });

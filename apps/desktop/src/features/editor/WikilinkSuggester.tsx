@@ -136,18 +136,40 @@ export function WikilinkSuggester({
                                     minWidth: 0,
                                 }}
                             >
-                                <span
+                                <div
                                     style={{
-                                        color: "var(--text-primary)",
-                                        fontSize: 13,
-                                        fontWeight: 500,
-                                        whiteSpace: "nowrap",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        minWidth: 0,
                                     }}
                                 >
-                                    {item.title}
-                                </span>
+                                    <span
+                                        style={{
+                                            color:
+                                                item.kind === "file"
+                                                    ? "var(--accent)"
+                                                    : "var(--text-primary)",
+                                            fontSize: 13,
+                                            fontWeight: 500,
+                                            whiteSpace: "nowrap",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                        }}
+                                    >
+                                        {item.title}
+                                    </span>
+                                    <span
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                            fontSize: 11,
+                                            whiteSpace: "nowrap",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                        }}
+                                    >
+                                        {item.subtitle}
+                                    </span>
+                                </div>
                             </button>
                         );
                     })
@@ -160,7 +182,7 @@ export function WikilinkSuggester({
                             textAlign: "center",
                         }}
                     >
-                        No notes found
+                        No matches found
                     </div>
                 )}
             </div>

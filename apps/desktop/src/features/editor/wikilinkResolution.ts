@@ -1,5 +1,6 @@
 import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { isTextLikeVaultEntry } from "../../app/utils/vaultEntries";
 import {
     perfCount,
     perfMeasure,
@@ -20,9 +21,24 @@ type ResolvedNoteMatch = {
 };
 
 type CachedResolution = {
+    kind: "note" | "file" | "broken";
     noteId: string | null;
     title: string | null;
+    filePath: string | null;
+    fileRelativePath: string | null;
 };
+
+export type ResolvedWikilinkResourceMatch =
+    | {
+          kind: "note";
+          id: string;
+          title: string | null;
+      }
+    | {
+          kind: "file";
+          path: string;
+          relativePath: string;
+      };
 
 export type WikilinkResolutionState = "valid" | "broken" | "pending";
 
@@ -79,6 +95,55 @@ function makeCacheKey(
     return `${resolverRevision}\u0000${noteId ?? ""}\u0000${target}`;
 }
 
+function normalizeFileTarget(target: string) {
+    return target
+        .trim()
+        .split(/[?#^]/, 1)[0]
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .trim();
+}
+
+function resolveRelativeTargetPath(
+    baseNoteId: string | null,
+    target: string,
+): string {
+    const cleanedTarget = target.replace(/\\/g, "/");
+    const segments = cleanedTarget.startsWith("/")
+        ? []
+        : (baseNoteId?.split("/").slice(0, -1) ?? []);
+
+    for (const segment of cleanedTarget.split("/")) {
+        if (!segment || segment === ".") continue;
+        if (segment === "..") {
+            if (segments.length > 0) segments.pop();
+            continue;
+        }
+        segments.push(segment);
+    }
+
+    return segments.join("/");
+}
+
+function findFileByWikilinkTarget(target: string, noteId: string | null) {
+    const normalizedDirectTarget = normalizeFileTarget(target);
+    const normalizedRelativeTarget = resolveRelativeTargetPath(noteId, target);
+    const candidateTargets = new Set(
+        [normalizedDirectTarget, normalizedRelativeTarget].filter(Boolean),
+    );
+
+    return (
+        useVaultStore
+            .getState()
+            .entries.find(
+                (entry) =>
+                    entry.kind === "file" &&
+                    isTextLikeVaultEntry(entry) &&
+                    candidateTargets.has(entry.relative_path),
+            ) ?? null
+    );
+}
+
 function scheduleBatchResolution(
     noteId: string | null,
     targets: readonly string[],
@@ -107,7 +172,8 @@ function scheduleBatchResolution(
         noteId,
         targets: missingTargets,
     })
-        .then((results) => {
+        .then((payload) => {
+            const results = Array.isArray(payload) ? payload : [];
             const activeState = ensureFreshResolverCache();
             if (
                 activeState.vaultPath !== vaultPath ||
@@ -126,9 +192,19 @@ function scheduleBatchResolution(
                 const wasPending = pendingCacheKeys.delete(cacheKey);
 
                 const resolved = resolvedByTarget.get(target);
+                const resolvedFile = resolved?.resolved_note_id
+                    ? null
+                    : findFileByWikilinkTarget(target, noteId);
                 cacheResolution(cacheKey, {
+                    kind: resolved?.resolved_note_id
+                        ? "note"
+                        : resolvedFile
+                          ? "file"
+                          : "broken",
                     noteId: resolved?.resolved_note_id ?? null,
                     title: resolved?.resolved_title ?? null,
+                    filePath: resolvedFile?.path ?? null,
+                    fileRelativePath: resolvedFile?.relative_path ?? null,
                 });
 
                 if (wasPending) anyNewResult = true;
@@ -209,7 +285,7 @@ export function resolveWikilinksBatch(
             continue;
         }
 
-        results.set(target, cached.noteId ? "valid" : "broken");
+        results.set(target, cached.kind === "broken" ? "broken" : "valid");
     }
 
     scheduleBatchResolution(noteId, uniqueTargets, onResolved);
@@ -237,21 +313,32 @@ export async function findNoteByWikilink(
     }
 
     const startMs = perfNow();
-    const results = await vaultInvoke<ResolvedWikilinkDto[]>(
+    const payload = await vaultInvoke<ResolvedWikilinkDto[] | undefined>(
         "resolve_wikilinks_batch",
         {
             noteId,
             targets: [target],
         },
     );
+    const results = Array.isArray(payload) ? payload : [];
     perfMeasure("editor.wikilinkResolver.backend.single.duration", startMs, {
         targetCount: 1,
     });
 
     const resolved = results[0];
+    const resolvedFile = resolved?.resolved_note_id
+        ? null
+        : findFileByWikilinkTarget(target, noteId);
     cacheResolution(cacheKey, {
+        kind: resolved?.resolved_note_id
+            ? "note"
+            : resolvedFile
+              ? "file"
+              : "broken",
         noteId: resolved?.resolved_note_id ?? null,
         title: resolved?.resolved_title ?? null,
+        filePath: resolvedFile?.path ?? null,
+        fileRelativePath: resolvedFile?.relative_path ?? null,
     });
 
     return resolved?.resolved_note_id
@@ -260,6 +347,58 @@ export async function findNoteByWikilink(
               title: resolved.resolved_title,
           }
         : null;
+}
+
+export async function findWikilinkResource(
+    target: string,
+    noteId: string | null = getActiveNoteId(),
+): Promise<ResolvedWikilinkResourceMatch | null> {
+    if (!noteId) return null;
+
+    const { resolverRevision } = ensureFreshResolverCache();
+    const cacheKey = makeCacheKey(noteId, target, resolverRevision);
+    const cached = resolutionCache.get(cacheKey);
+    if (cached) {
+        if (cached.kind === "note" && cached.noteId) {
+            return { kind: "note", id: cached.noteId, title: cached.title };
+        }
+        if (
+            cached.kind === "file" &&
+            cached.filePath &&
+            cached.fileRelativePath
+        ) {
+            return {
+                kind: "file",
+                path: cached.filePath,
+                relativePath: cached.fileRelativePath,
+            };
+        }
+        return null;
+    }
+
+    const note = await findNoteByWikilink(target, noteId);
+    if (note) {
+        return { kind: "note", id: note.id, title: note.title };
+    }
+
+    const file = findFileByWikilinkTarget(target, noteId);
+    if (!file) {
+        return null;
+    }
+
+    cacheResolution(cacheKey, {
+        kind: "file",
+        noteId: null,
+        title: null,
+        filePath: file.path,
+        fileRelativePath: file.relative_path,
+    });
+
+    return {
+        kind: "file",
+        path: file.path,
+        relativePath: file.relative_path,
+    };
 }
 
 export function matchesRevealTarget(target: string, revealTargets: string[]) {

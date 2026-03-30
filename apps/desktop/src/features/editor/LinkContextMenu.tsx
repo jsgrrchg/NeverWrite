@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
-import { findNoteByWikilink } from "./wikilinkResolution";
+import { findWikilinkResource } from "./wikilinkResolution";
 import { navigateWikilink, openWikilinkInNewTab } from "./wikilinkNavigation";
 import type { LinkContextMenuState } from "./editorExtensions";
 
@@ -16,10 +16,10 @@ export function LinkContextMenu({
     const [position, setPosition] = useState({ x: menu.x, y: menu.y });
     const [resolvedLinkState, setResolvedLinkState] = useState<{
         target: string | null;
-        noteId: string | null;
+        kind: "note" | "file" | null;
     }>({
         target: null,
-        noteId: null,
+        kind: null,
     });
 
     useLayoutEffect(() => {
@@ -80,11 +80,11 @@ export function LinkContextMenu({
 
         if (!menu.noteTarget) return;
 
-        void findNoteByWikilink(menu.noteTarget).then((linkedNote) => {
+        void findWikilinkResource(menu.noteTarget).then((linkedResource) => {
             if (!cancelled) {
                 setResolvedLinkState({
                     target: menu.noteTarget ?? null,
-                    noteId: linkedNote?.id ?? null,
+                    kind: linkedResource?.kind ?? null,
                 });
             }
         });
@@ -94,9 +94,9 @@ export function LinkContextMenu({
         };
     }, [menu.noteTarget]);
 
-    const linkedNoteId =
+    const linkedResourceKind =
         resolvedLinkState.target === menu.noteTarget
-            ? resolvedLinkState.noteId
+            ? resolvedLinkState.kind
             : null;
 
     const menuItem = (label: string, action: () => void) => (
@@ -141,15 +141,18 @@ export function LinkContextMenu({
             }}
         >
             {menu.noteTarget
-                ? menuItem("Open note", () => {
-                      void navigateWikilink(menu.noteTarget ?? menu.href);
-                  })
+                ? menuItem(
+                      linkedResourceKind === "file" ? "Open file" : "Open note",
+                      () => {
+                          void navigateWikilink(menu.noteTarget ?? menu.href);
+                      },
+                  )
                 : menuItem("Open link", () => {
                       void openUrl(menu.href);
                   })}
-            {linkedNoteId &&
+            {linkedResourceKind &&
                 menuItem("Open in new tab", () => {
-                    void openWikilinkInNewTab(menu.noteTarget ?? linkedNoteId);
+                    void openWikilinkInNewTab(menu.noteTarget ?? menu.href);
                 })}
             {menuItem("Copy link", () => {
                 void navigator.clipboard.writeText(menu.href);
