@@ -1,5 +1,6 @@
 import type { EditorState } from "@codemirror/state";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import { LruCache } from "../lruCache";
 
@@ -87,7 +88,9 @@ export async function getWikilinkSuggestions(
     limit = 8,
 ): Promise<WikilinkSuggestionItem[]> {
     const resolverRevision = ensureFreshSuggestionCache();
-    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${query}`;
+    const preferFileName =
+        useSettingsStore.getState().fileTreeContentMode === "all_files";
+    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${query}`;
     const cached = suggestionCache.get(cacheKey);
     if (cached) {
         return cached;
@@ -99,6 +102,7 @@ export async function getWikilinkSuggestions(
             noteId,
             query,
             limit,
+            preferFileName,
         },
     );
 

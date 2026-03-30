@@ -10,7 +10,12 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import { isTextLikeVaultPath } from "../../../app/utils/vaultEntries";
+import {
+    canOpenVaultFileEntryInApp,
+    isImageLikeVaultPath,
+    isTextLikeVaultPath,
+} from "../../../app/utils/vaultEntries";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import {
     DIFF_PANEL_MAX_HEIGHT,
     computeUnifiedDiffLines,
@@ -80,7 +85,19 @@ function parseTextFileReference(value: string) {
     ) {
         return null;
     }
-    if (!isTextLikeVaultPath(trimmed)) return null;
+    const entry = useVaultStore
+        .getState()
+        .entries.find((candidate) => candidate.path === trimmed);
+    if (entry) {
+        if (entry.kind !== "file" || !canOpenVaultFileEntryInApp(entry)) {
+            return null;
+        }
+    } else if (
+        !isTextLikeVaultPath(trimmed) &&
+        !isImageLikeVaultPath(trimmed)
+    ) {
+        return null;
+    }
 
     return {
         path: trimmed,

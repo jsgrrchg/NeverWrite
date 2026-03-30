@@ -283,7 +283,7 @@ export function AIChatMentionPicker({
                                         : isPlan
                                           ? "/plan"
                                           : item.kind === "note"
-                                            ? item.note.title
+                                            ? item.label
                                             : item.name}
                                 </span>
                                 {(isFetch || isPlan) && (

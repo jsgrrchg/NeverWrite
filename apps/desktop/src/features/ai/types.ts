@@ -529,7 +529,7 @@ export type AIComposerPart =
       };
 
 export type AIMentionSuggestion =
-    | { kind: "note"; note: AIChatNoteSummary }
+    | { kind: "note"; note: AIChatNoteSummary; label: string }
     | { kind: "folder"; folderPath: string; name: string }
     | { kind: "fetch" }
     | { kind: "plan" };

@@ -611,7 +611,7 @@ fn looks_like_windows_prefix(value: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
-pub(crate) fn is_ignored_dir_name(name: &str) -> bool {
+pub fn is_ignored_dir_name(name: &str) -> bool {
     IGNORED_DIR_NAMES.contains(&name)
 }
 
@@ -632,11 +632,7 @@ pub fn is_supported_text_path(path: &Path) -> bool {
         return false;
     };
 
-    mime_type.starts_with("text/")
-        || matches!(
-            mime_type.as_str(),
-            "application/json" | "application/yaml" | "application/toml" | "application/xml"
-        )
+    is_text_like_mime_type(&mime_type)
 }
 
 fn entry_kind(path: &Path) -> &'static str {
@@ -648,6 +644,55 @@ fn entry_kind(path: &Path) -> &'static str {
         "pdf"
     } else {
         "file"
+    }
+}
+
+fn is_excalidraw_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("excalidraw"))
+}
+
+fn is_text_like_mime_type(mime_type: &str) -> bool {
+    mime_type.starts_with("text/")
+        || matches!(
+            mime_type,
+            "application/json" | "application/yaml" | "application/toml" | "application/xml"
+        )
+}
+
+#[derive(Debug, Clone)]
+struct VaultEntryClassification {
+    mime_type: Option<String>,
+    is_text_like: bool,
+    is_image_like: bool,
+    open_in_app: bool,
+    viewer_kind: String,
+}
+
+fn classify_vault_entry_path(path: &Path, kind: &str) -> VaultEntryClassification {
+    let mime_type = guess_mime_type(path);
+    let is_text_like = mime_type.as_deref().is_some_and(is_text_like_mime_type);
+    let is_image_like = mime_type
+        .as_deref()
+        .is_some_and(|mime_type| mime_type.starts_with("image/"));
+
+    let (open_in_app, viewer_kind) = match kind {
+        "folder" => (false, "folder"),
+        "note" => (true, "markdown"),
+        "pdf" => (true, "pdf"),
+        _ if is_excalidraw_path(path) => (true, "map"),
+        _ if is_image_like => (true, "image"),
+        _ if is_text_like => (true, "text"),
+        _ => (false, "external"),
+    };
+
+    VaultEntryClassification {
+        mime_type,
+        is_text_like,
+        is_image_like,
+        open_in_app,
+        viewer_kind: viewer_kind.to_string(),
     }
 }
 
@@ -675,6 +720,7 @@ fn build_vault_entry(
         .created()
         .map(system_time_to_secs)
         .unwrap_or(modified_at);
+    let classification = classify_vault_entry_path(path, &kind);
     let id = match kind.as_str() {
         "file" | "folder" => relative_path.clone(),
         _ => vault.path_to_entry_id(path),
@@ -705,7 +751,11 @@ fn build_vault_entry(
         modified_at,
         created_at,
         size: metadata.len(),
-        mime_type: guess_mime_type(path),
+        mime_type: classification.mime_type,
+        is_text_like: Some(classification.is_text_like),
+        is_image_like: Some(classification.is_image_like),
+        open_in_app: Some(classification.open_in_app),
+        viewer_kind: Some(classification.viewer_kind),
     })
 }
 
@@ -770,24 +820,11 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), VaultError> {
 }
 
 pub(crate) fn is_supported_image_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "png"
-                    | "jpg"
-                    | "jpeg"
-                    | "jpe"
-                    | "jfif"
-                    | "gif"
-                    | "webp"
-                    | "svg"
-                    | "avif"
-                    | "bmp"
-                    | "ico"
-            )
-        })
+    let Some(mime_type) = guess_mime_type(path) else {
+        return false;
+    };
+
+    mime_type.starts_with("image/")
 }
 
 pub(crate) fn path_is_ignored(root: &Path, path: &Path) -> bool {

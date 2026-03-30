@@ -119,6 +119,21 @@ describe("MarkdownContent", () => {
         });
     });
 
+    it("renders text file pills even before the vault entries store refreshes", () => {
+        setVaultEntries([]);
+
+        renderComponent(
+            <MarkdownContent
+                content="Review `/vault/src/main.ts`."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "main.ts" }),
+        ).toBeInTheDocument();
+    });
+
     it("renders unified diff code blocks with exact line gutters", () => {
         renderComponent(
             <MarkdownContent

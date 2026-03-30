@@ -235,7 +235,7 @@ fn suggest_wikilinks_by_prefix_without_full_scan() {
         make_note("nota1", "Primera Nota", vec![], vec![]),
     ]);
 
-    let suggestions = index.suggest_wikilinks("rus", &NoteId("nota1".into()), 5);
+    let suggestions = index.suggest_wikilinks("rus", &NoteId("nota1".into()), 5, false);
     let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
 
     assert!(ids.contains(&"refs/rust-book"));
@@ -251,7 +251,8 @@ fn suggest_wikilinks_prefers_closest_path_on_ties() {
         make_note("work/project/current", "Current", vec![], vec![]),
     ]);
 
-    let suggestions = index.suggest_wikilinks("alpha", &NoteId("work/project/current".into()), 2);
+    let suggestions =
+        index.suggest_wikilinks("alpha", &NoteId("work/project/current".into()), 2, false);
     let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
 
     assert_eq!(ids.first().copied(), Some("work/alpha"));
@@ -266,7 +267,7 @@ fn suggest_wikilinks_empty_query_uses_sorted_order() {
         make_note("refs/current", "Current", vec![], vec![]),
     ]);
 
-    let suggestions = index.suggest_wikilinks("", &NoteId("refs/current".into()), 4);
+    let suggestions = index.suggest_wikilinks("", &NoteId("refs/current".into()), 4, false);
     let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
 
     assert_eq!(
@@ -285,10 +286,23 @@ fn reindex_updates_empty_query_suggestion_order() {
 
     index.reindex_note(make_note("refs/zulu", "Able Note", vec![], vec![]));
 
-    let suggestions = index.suggest_wikilinks("", &NoteId("refs/current".into()), 3);
+    let suggestions = index.suggest_wikilinks("", &NoteId("refs/current".into()), 3, false);
     let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
 
     assert_eq!(ids, vec!["refs/zulu", "refs/alpha", "refs/current"]);
+}
+
+#[test]
+fn suggest_wikilinks_can_prefer_file_name_over_title() {
+    let index = VaultIndex::build(vec![
+        make_note("docs/invoice-template", "Billing Guide", vec![], vec![]),
+        make_note("docs/current", "Current", vec![], vec![]),
+    ]);
+
+    let suggestions = index.suggest_wikilinks("invoice", &NoteId("docs/current".into()), 5, true);
+    let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
+
+    assert_eq!(ids, vec!["docs/invoice-template"]);
 }
 
 #[test]

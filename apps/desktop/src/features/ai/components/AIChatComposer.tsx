@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { EditorFontFamily } from "../../../app/store/settingsStore";
+import {
+    useSettingsStore,
+    type EditorFontFamily,
+} from "../../../app/store/settingsStore";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -676,10 +679,28 @@ function getInlineTriggerMatch(root: HTMLElement, pattern: RegExp) {
 }
 
 const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
+function getNoteFileNameForSearch(note: AIChatNoteSummary) {
+    return note.path.split("/").pop() ?? note.path;
+}
+
+function getNoteMentionLabel(
+    note: AIChatNoteSummary,
+    showExtensions: boolean,
+    preferFileName: boolean,
+) {
+    if (!preferFileName) {
+        return note.title;
+    }
+
+    const fileName = getNoteFileNameForSearch(note);
+    return showExtensions ? fileName : fileName.replace(/\.md$/i, "");
+}
+
 function getNoteMentionSuggestions(
     notes: AIChatNoteSummary[],
     query: string,
     limit: number,
+    preferFileName: boolean,
 ) {
     const normalizedQuery = normalizeForSearch(query);
 
@@ -687,21 +708,28 @@ function getNoteMentionSuggestions(
         .map((note) => {
             const normalizedTitle = normalizeForSearch(note.title);
             const normalizedPath = normalizeForSearch(note.path);
-            const titleStartsWith =
+            const normalizedFileName = normalizeForSearch(
+                getNoteFileNameForSearch(note),
+            );
+            const primaryStartsWith =
                 normalizedQuery.length > 0 &&
-                normalizedTitle.startsWith(normalizedQuery);
+                (preferFileName
+                    ? normalizedFileName.startsWith(normalizedQuery)
+                    : normalizedTitle.startsWith(normalizedQuery));
             const pathStartsWith =
                 normalizedQuery.length > 0 &&
                 normalizedPath.startsWith(normalizedQuery);
             const matches =
                 !normalizedQuery ||
-                normalizedTitle.includes(normalizedQuery) ||
+                (preferFileName
+                    ? normalizedFileName.includes(normalizedQuery)
+                    : normalizedTitle.includes(normalizedQuery)) ||
                 normalizedPath.includes(normalizedQuery);
 
             return {
                 note,
                 matches,
-                rank: titleStartsWith ? 0 : pathStartsWith ? 1 : 2,
+                rank: primaryStartsWith ? 0 : pathStartsWith ? 1 : 2,
             };
         })
         .filter((item) => item.matches)
@@ -709,7 +737,13 @@ function getNoteMentionSuggestions(
             if (left.rank !== right.rank) {
                 return left.rank - right.rank;
             }
-            return left.note.title.localeCompare(right.note.title);
+            const leftPrimary = preferFileName
+                ? getNoteFileNameForSearch(left.note)
+                : left.note.title;
+            const rightPrimary = preferFileName
+                ? getNoteFileNameForSearch(right.note)
+                : right.note.title;
+            return leftPrimary.localeCompare(rightPrimary);
         })
         .slice(0, limit)
         .map((item) => item.note);
@@ -719,6 +753,8 @@ function getMentionSuggestions(
     notes: AIChatNoteSummary[],
     folderPaths: string[],
     query: string,
+    preferFileName: boolean,
+    showExtensions: boolean,
     limit = 10,
 ): AIMentionSuggestion[] {
     const nq = normalizeForSearch(query);
@@ -745,9 +781,18 @@ function getMentionSuggestions(
     }
 
     // Match notes
-    const noteSuggestions = getNoteMentionSuggestions(notes, query, limit);
+    const noteSuggestions = getNoteMentionSuggestions(
+        notes,
+        query,
+        limit,
+        preferFileName,
+    );
     for (const note of noteSuggestions) {
-        results.push({ kind: "note", note });
+        results.push({
+            kind: "note",
+            note,
+            label: getNoteMentionLabel(note, showExtensions, preferFileName),
+        });
     }
 
     // Folders first, then notes, limited
@@ -780,6 +825,10 @@ export function AIChatComposer({
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
+    const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
+    const fileTreeShowExtensions = useSettingsStore(
+        (s) => s.fileTreeShowExtensions,
+    );
     const [attachMenuOpen, setAttachMenuOpen] = useState(false);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
@@ -1009,6 +1058,8 @@ export function AIChatComposer({
             notes,
             folderPaths,
             trigger.query,
+            fileTreeContentMode === "all_files",
+            fileTreeShowExtensions,
             10,
         );
         const rect = trigger.range.getBoundingClientRect();
@@ -1085,7 +1136,7 @@ export function AIChatComposer({
                     id: crypto.randomUUID(),
                     type: "mention",
                     noteId: item.note.id,
-                    label: item.note.title,
+                    label: item.label,
                     path: item.note.path,
                 },
                 pillMetrics,

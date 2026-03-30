@@ -1900,6 +1900,20 @@ function DevelopersSettings() {
                     />
                 }
             />
+            {fileTreeContentMode === "all_files" && (
+                <div
+                    className="mx-4 mt-3 rounded-lg px-3 py-2 text-[12px]"
+                    style={{
+                        border: "1px solid var(--border)",
+                        backgroundColor: "var(--bg-secondary)",
+                        color: "var(--text-secondary)",
+                    }}
+                >
+                    File-oriented search is active. Search Files & Notes, New
+                    Tab, `@` mentions, and wikilink suggestions now match notes
+                    by file name and path before note title.
+                </div>
+            )}
         </div>
     );
 }

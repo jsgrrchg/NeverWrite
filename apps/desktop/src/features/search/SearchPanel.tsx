@@ -29,6 +29,39 @@ interface SearchResultDto {
     score: number;
 }
 
+function getSearchResultDisplayTitle(
+    result: SearchResultDto,
+    showExtensions: boolean,
+    fileTreeContentMode: "notes_only" | "all_files",
+) {
+    const fileName = result.path.split("/").pop() ?? result.title;
+    if (result.kind === "pdf" || result.kind === "file") {
+        return showExtensions ? fileName : result.title;
+    }
+    if (fileTreeContentMode !== "all_files") {
+        return result.title;
+    }
+    return showExtensions ? fileName : fileName.replace(/\.md$/i, "");
+}
+
+function getSearchResultSubtitle(
+    result: SearchResultDto,
+    fileTreeContentMode: "notes_only" | "all_files",
+) {
+    if (result.kind === "pdf" || result.kind === "file") {
+        return result.path.split("/vault/").pop() ?? result.path;
+    }
+    if (fileTreeContentMode !== "all_files") {
+        return result.id;
+    }
+
+    const fileName = result.path.split("/").pop()?.replace(/\.md$/i, "");
+    if (fileName && fileName !== result.title) {
+        return `${result.title} · ${result.id}`;
+    }
+    return result.id;
+}
+
 const DEBOUNCE_MS = 300;
 const SEARCH_ROW_HEIGHT = 44;
 
@@ -46,27 +79,35 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
 
     const entries = useVaultStore((s) => s.entries);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
+    const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const openNote = useEditorStore((s) => s.openNote);
     const openPdf = useEditorStore((s) => s.openPdf);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
 
-    const doSearch = useCallback(async (q: string) => {
-        const trimmed = q.trim();
-        const requestId = ++searchRequestIdRef.current;
-        if (!trimmed) return;
-        try {
-            const res = await vaultInvoke<SearchResultDto[]>("search_notes", {
-                query: trimmed,
-            });
-            if (requestId !== searchRequestIdRef.current) return;
-            setResults(res);
-            setHasSearched(true);
-        } catch {
-            if (requestId !== searchRequestIdRef.current) return;
-            setResults([]);
-            setHasSearched(true);
-        }
-    }, []);
+    const doSearch = useCallback(
+        async (q: string) => {
+            const trimmed = q.trim();
+            const requestId = ++searchRequestIdRef.current;
+            if (!trimmed) return;
+            try {
+                const res = await vaultInvoke<SearchResultDto[]>(
+                    "search_notes",
+                    {
+                        query: trimmed,
+                        preferFileName: fileTreeContentMode === "all_files",
+                    },
+                );
+                if (requestId !== searchRequestIdRef.current) return;
+                setResults(res);
+                setHasSearched(true);
+            } catch {
+                if (requestId !== searchRequestIdRef.current) return;
+                setResults([]);
+                setHasSearched(true);
+            }
+        },
+        [fileTreeContentMode],
+    );
 
     useEffect(() => {
         if (timerRef.current) clearTimeout(timerRef.current);
@@ -228,7 +269,8 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                 </div>
                 <button
                     onClick={() => {
-                        const { tabs, insertExternalTab, openNote } = useEditorStore.getState();
+                        const { tabs, insertExternalTab, openNote } =
+                            useEditorStore.getState();
                         const existing = tabs.find(
                             (t): t is NoteTab =>
                                 isNoteTab(t) && t.noteId === "__search__",
@@ -272,7 +314,10 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
             </div>
 
             {/* Results */}
-            <div ref={resultsRef} className="flex-1 overflow-y-auto overflow-x-hidden px-1">
+            <div
+                ref={resultsRef}
+                className="flex-1 overflow-y-auto overflow-x-hidden px-1"
+            >
                 {!query.trim() && (
                     <div
                         className="px-3 py-4 text-xs text-center"
@@ -339,10 +384,11 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                                     }
                                 >
                                     <span className="text-xs truncate">
-                                        {showExtensions &&
-                                        (r.kind === "pdf" || r.kind === "file")
-                                            ? (r.path.split("/").pop() ?? r.title)
-                                            : r.title}
+                                        {getSearchResultDisplayTitle(
+                                            r,
+                                            showExtensions,
+                                            fileTreeContentMode,
+                                        )}
                                     </span>
                                     <span
                                         className="text-xs truncate"
@@ -351,10 +397,10 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                                             fontSize: 10,
                                         }}
                                     >
-                                        {r.kind === "pdf" || r.kind === "file"
-                                            ? (r.path.split("/vault/").pop() ??
-                                                r.path)
-                                            : r.id}
+                                        {getSearchResultSubtitle(
+                                            r,
+                                            fileTreeContentMode,
+                                        )}
                                     </span>
                                 </button>
                             ))}

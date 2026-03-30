@@ -113,6 +113,10 @@ impl VaultIndex {
         self.search_internal(query, SearchScope::PathOnly)
     }
 
+    pub fn search_by_file_name(&self, query: &str) -> Vec<SearchResult<'_>> {
+        self.search_internal(query, SearchScope::FileNameAndPath)
+    }
+
     pub fn search(&self, query: &str) -> Vec<SearchResult<'_>> {
         self.search_internal(query, SearchScope::TitleAndPath)
     }
@@ -540,7 +544,22 @@ impl VaultIndex {
                         0.0
                     };
 
-                let score = title_score.max(path_score);
+                let file_name_lower = metadata
+                    .path
+                    .0
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.to_lowercase())
+                    .unwrap_or_else(|| metadata.id.0.to_lowercase());
+                let file_name_score = if matches!(scope, SearchScope::FileNameAndPath)
+                    && file_name_lower.contains(&query_lower)
+                {
+                    compute_score(&query_lower, &file_name_lower)
+                } else {
+                    0.0
+                };
+
+                let score = title_score.max(path_score).max(file_name_score);
                 if score > 0.0 {
                     Some(SearchResult {
                         note_id,
@@ -585,6 +604,7 @@ enum SearchScope {
     TitleOnly,
     PathOnly,
     TitleAndPath,
+    FileNameAndPath,
 }
 
 fn compute_score(query: &str, target: &str) -> f64 {

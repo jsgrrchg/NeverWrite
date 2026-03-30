@@ -5,15 +5,17 @@ import {
     toVaultRelativePath,
 } from "../../app/utils/vaultPaths";
 import {
+    canOpenVaultFileEntryInApp,
     isExcalidrawVaultPath,
-    isImageLikeVaultEntry,
     isImageLikeVaultPath,
-    isTextLikeVaultEntry,
     isTextLikeVaultPath,
     openVaultFileEntry,
 } from "../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
-import { openChatNoteByAbsolutePath } from "./chatNoteNavigation";
+import {
+    openChatNoteByAbsolutePath,
+    openChatResolvedNote,
+} from "./chatNoteNavigation";
 
 function getVaultEntryByAbsolutePath(absPath: string) {
     return (
@@ -27,18 +29,44 @@ function getFileNameFromAbsolutePath(absPath: string) {
     return normalizeVaultPathMatch(absPath).split("/").pop() ?? absPath;
 }
 
-function canOpenAiEditedFileByPathFallback(absPath: string) {
-    if (!toVaultRelativePath(absPath, useVaultStore.getState().vaultPath)) {
-        return false;
+function getFallbackNoteTitle(absPath: string) {
+    return getFileNameFromAbsolutePath(absPath).replace(/\.md$/i, "");
+}
+
+function canOpenFallbackAbsolutePath(absPath: string) {
+    return (
+        /\.md$/i.test(absPath) ||
+        /\.pdf$/i.test(absPath) ||
+        isExcalidrawVaultPath(absPath) ||
+        isTextLikeVaultPath(absPath) ||
+        isImageLikeVaultPath(absPath)
+    );
+}
+
+async function openResolvedNoteEntry(
+    entry: Pick<VaultEntryDto, "id" | "title" | "path">,
+    options?: { newTab?: boolean },
+) {
+    const title = entry.title || getFallbackNoteTitle(entry.path);
+    return openChatResolvedNote(entry.id, title, options);
+}
+
+async function readVaultEntryByAbsolutePath(absPath: string) {
+    const relativePath = toVaultRelativePath(
+        absPath,
+        useVaultStore.getState().vaultPath,
+    );
+    if (!relativePath) {
+        return null;
     }
 
-    const normalizedPath = normalizeVaultPathMatch(absPath).toLowerCase();
-    return (
-        normalizedPath.endsWith(".pdf") ||
-        isExcalidrawVaultPath(absPath) ||
-        isImageLikeVaultPath(absPath) ||
-        isTextLikeVaultPath(absPath)
-    );
+    try {
+        return await vaultInvoke<VaultEntryDto>("read_vault_entry", {
+            relativePath,
+        });
+    } catch {
+        return null;
+    }
 }
 
 export function canOpenAiEditedFileEntry(entry: VaultEntryDto | null) {
@@ -50,11 +78,15 @@ export function canOpenAiEditedFileEntry(entry: VaultEntryDto | null) {
         return true;
     }
 
-    if (entry.kind !== "file") {
-        return false;
+    if (entry.kind === "pdf") {
+        return true;
     }
 
-    return isTextLikeVaultEntry(entry) || isImageLikeVaultEntry(entry);
+    if (entry.viewer_kind === "map" || entry.extension === "excalidraw") {
+        return true;
+    }
+
+    return entry.open_in_app ?? canOpenVaultFileEntryInApp(entry);
 }
 
 export function canOpenAiEditedFileByAbsolutePath(absPath: string) {
@@ -70,7 +102,7 @@ export function canOpenAiEditedFileByAbsolutePath(absPath: string) {
         return true;
     }
 
-    return canOpenAiEditedFileByPathFallback(absPath);
+    return canOpenFallbackAbsolutePath(absPath);
 }
 
 export async function openAiEditedFileByAbsolutePath(
@@ -87,105 +119,25 @@ export async function openAiEditedFileByAbsolutePath(
     const entry = getVaultEntryByAbsolutePath(absPath);
     if (entry && canOpenAiEditedFileEntry(entry)) {
         if (entry.kind === "note") {
-            return openChatNoteByAbsolutePath(absPath, options);
+            return openResolvedNoteEntry(entry, options);
         }
 
         await openVaultFileEntry(entry, options);
         return true;
     }
 
-    const relativePath = toVaultRelativePath(
-        absPath,
-        useVaultStore.getState().vaultPath,
-    );
-    if (!relativePath) {
+    const resolvedEntry = await readVaultEntryByAbsolutePath(absPath);
+    if (!resolvedEntry || !canOpenAiEditedFileEntry(resolvedEntry)) {
         return false;
     }
 
+    if (resolvedEntry.kind === "note") {
+        return openResolvedNoteEntry(resolvedEntry, options);
+    }
     const title = getFileNameFromAbsolutePath(absPath);
-    const normalizedPath = normalizeVaultPathMatch(absPath).toLowerCase();
-
-    if (normalizedPath.endsWith(".pdf")) {
-        if (options?.newTab) {
-            useEditorStore.getState().insertExternalTab({
-                id: crypto.randomUUID(),
-                kind: "pdf",
-                entryId: relativePath,
-                title,
-                path: absPath,
-                page: 1,
-                zoom: 1,
-                viewMode: "continuous",
-            });
-        } else {
-            useEditorStore.getState().openPdf(relativePath, title, absPath);
-        }
-        return true;
-    }
-
-    if (isExcalidrawVaultPath(absPath)) {
-        useEditorStore.getState().openMap(relativePath, title);
-        return true;
-    }
-
-    if (isImageLikeVaultPath(absPath)) {
-        if (options?.newTab) {
-            useEditorStore.getState().insertExternalTab({
-                id: crypto.randomUUID(),
-                kind: "file",
-                relativePath,
-                title,
-                path: absPath,
-                mimeType: null,
-                viewer: "image",
-                content: "",
-            });
-        } else {
-            useEditorStore
-                .getState()
-                .openFile(relativePath, title, absPath, "", null, "image");
-        }
-        return true;
-    }
-
-    if (!isTextLikeVaultPath(absPath)) {
-        return false;
-    }
-
-    const detail = await vaultInvoke<{
-        path: string;
-        relative_path: string;
-        file_name: string;
-        mime_type: string | null;
-        content: string;
-    }>("read_vault_file", {
-        relativePath,
-    });
-
-    if (options?.newTab) {
-        useEditorStore.getState().insertExternalTab({
-            id: crypto.randomUUID(),
-            kind: "file",
-            relativePath: detail.relative_path,
-            title: detail.file_name,
-            path: detail.path,
-            mimeType: detail.mime_type,
-            viewer: "text",
-            content: detail.content,
-        });
-    } else {
-        useEditorStore
-            .getState()
-            .openFile(
-                detail.relative_path,
-                detail.file_name,
-                detail.path,
-                detail.content,
-                detail.mime_type,
-                "text",
-            );
-    }
-
+    resolvedEntry.title ||= title.replace(/\.[^/.]+$/, "");
+    resolvedEntry.file_name ||= title;
+    await openVaultFileEntry(resolvedEntry, options);
     return true;
 }
 
