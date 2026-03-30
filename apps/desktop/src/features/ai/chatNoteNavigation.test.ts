@@ -18,7 +18,6 @@ describe("openChatMapByReference", () => {
             vaultPath: "/vault",
             notes: [],
             entries: [],
-            tags: [],
             vaultRevision: 0,
             structureRevision: 0,
         });
@@ -47,7 +46,9 @@ describe("openChatMapByReference", () => {
         expect(opened).toBe(true);
         const activeTab = useEditorStore
             .getState()
-            .tabs.find((tab) => tab.id === useEditorStore.getState().activeTabId);
+            .tabs.find(
+                (tab) => tab.id === useEditorStore.getState().activeTabId,
+            );
         expect(activeTab && isMapTab(activeTab)).toBe(true);
         expect(activeTab && isMapTab(activeTab) && activeTab.relativePath).toBe(
             "Excalidraw/Architecture.excalidraw",

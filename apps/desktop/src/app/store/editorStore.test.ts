@@ -6,6 +6,8 @@ import {
     markSessionReady,
     readPersistedSession,
     useEditorStore,
+    type MapTab,
+    type TabInput,
 } from "./editorStore";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
@@ -330,7 +332,9 @@ describe("editorStore map tabs", () => {
         store.openMap("Excalidraw/Architecture.excalidraw", "Architecture");
         store.openMap("Excalidraw/Architecture.excalidraw", "Architecture");
 
-        const mapTabs = useEditorStore.getState().tabs.filter(isMapTab);
+        const mapTabs = useEditorStore
+            .getState()
+            .tabs.filter((tab): tab is MapTab => isMapTab(tab));
         expect(mapTabs).toHaveLength(1);
         expect(mapTabs[0]?.relativePath).toBe(
             "Excalidraw/Architecture.excalidraw",
@@ -347,7 +351,7 @@ describe("editorStore map tabs", () => {
                     relativePath: "",
                     filePath: "/vaults/maps-2026/Excalidraw/Legacy.excalidraw",
                 },
-            ] as any,
+            ] as TabInput[],
             "map-1",
         );
 

@@ -91,7 +91,7 @@ function resolveAbsoluteNotePathForNoteId(noteId: string): string {
         ? normalizedNoteId
         : `${normalizedNoteId}.md`;
 
-    return resolveAbsolutePath(notePath, vaultPath);
+    return resolveVaultAbsolutePath(notePath, vaultPath);
 }
 
 export function findOpenNoteTarget(path: string): NoteEditorTarget | null {
