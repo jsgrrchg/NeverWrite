@@ -53,6 +53,8 @@ const PRETEXT_RESERVE_SETTLE_MS = 120;
 
 interface UserMentionContextMenuPayload {
     label: string;
+    kind: "note" | "file";
+    path?: string;
 }
 
 interface ToolTargetContextMenuPayload {
@@ -63,13 +65,16 @@ interface ToolTargetContextMenuPayload {
 function renderUserContent(
     text: string,
     pillMetrics: ChatPillMetrics,
-    onNoteContextMenu: (event: MouseEvent<HTMLElement>, label: string) => void,
+    onMentionContextMenu: (
+        event: MouseEvent<HTMLElement>,
+        payload: UserMentionContextMenuPayload,
+    ) => void,
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
-    // New bracketed format: [@note], [@📁 folder], [Screenshot ...], [📎 file]
+    // New bracketed format: [@note], [@📄 /path/file.ts], [@📁 folder], [Screenshot ...], [📎 file]
     // Legacy format (backward compat): @fetch, /plan, @📁word, @word
     const mentionRegex =
-        /(\[@📁 [^\]]+\]|\[@[^\]]+\]|\[Screenshot [^\]]+\]|\[📎 [^\]]+\]|@fetch\b|\/plan\b|@📁[^\s]+|@[^\s@]+)/g;
+        /(\[@📄 [^\]]+\]|\[@📁 [^\]]+\]|\[@[^\]]+\]|\[Screenshot [^\]]+\]|\[📎 [^\]]+\]|@fetch\b|\/plan\b|@📁[^\s]+|@[^\s@]+)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
@@ -135,6 +140,32 @@ function renderUserContent(
             continue;
         }
 
+        if (token.startsWith("[@📄 ")) {
+            const filePath = token.slice(4, -1).trim();
+            const fileLabel = filePath.split("/").pop() || filePath;
+            parts.push(
+                <ChatInlinePill
+                    key={key++}
+                    label={fileLabel}
+                    metrics={pillMetrics}
+                    interactive
+                    variant="file"
+                    onClick={() => {
+                        void openAiEditedFileByAbsolutePath(filePath);
+                    }}
+                    onContextMenu={(event) =>
+                        onMentionContextMenu(event, {
+                            kind: "file",
+                            label: fileLabel,
+                            path: filePath,
+                        })
+                    }
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
         // [@NoteName] (new) or @NoteName (legacy) — note/folder mention
         let noteLabel: string;
         let variant: ChatPillVariant = "accent";
@@ -163,7 +194,11 @@ function renderUserContent(
                 }
                 onContextMenu={
                     isNote
-                        ? (event) => onNoteContextMenu(event, noteLabel)
+                        ? (event) =>
+                              onMentionContextMenu(event, {
+                                  kind: "note",
+                                  label: noteLabel,
+                              })
                         : undefined
                 }
             />,
@@ -375,38 +410,65 @@ function UserTextMessage({
                 wordBreak: "break-word",
             }}
         >
-            {renderUserContent(message.content, pillMetrics, (event, label) => {
-                event.preventDefault();
-                event.stopPropagation();
-                setContextMenu({
-                    x: event.clientX,
-                    y: event.clientY,
-                    payload: { label },
-                });
-            })}
+            {renderUserContent(
+                message.content,
+                pillMetrics,
+                (event, payload) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        payload,
+                    });
+                },
+            )}
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
-                    entries={[
-                        {
-                            label: "Open",
-                            action: () => {
-                                void openChatNoteByReference(
-                                    contextMenu.payload.label,
-                                );
-                            },
-                        },
-                        {
-                            label: "Open in New Tab",
-                            action: () => {
-                                void openChatNoteByReference(
-                                    contextMenu.payload.label,
-                                    { newTab: true },
-                                );
-                            },
-                        },
-                    ]}
+                    entries={
+                        contextMenu.payload.kind === "file" &&
+                        contextMenu.payload.path
+                            ? [
+                                  {
+                                      label: "Open",
+                                      action: () => {
+                                          void openAiEditedFileByAbsolutePath(
+                                              contextMenu.payload.path!,
+                                          );
+                                      },
+                                  },
+                                  {
+                                      label: "Open in New Tab",
+                                      action: () => {
+                                          void openAiEditedFileByAbsolutePath(
+                                              contextMenu.payload.path!,
+                                              { newTab: true },
+                                          );
+                                      },
+                                  },
+                              ]
+                            : [
+                                  {
+                                      label: "Open",
+                                      action: () => {
+                                          void openChatNoteByReference(
+                                              contextMenu.payload.label,
+                                          );
+                                      },
+                                  },
+                                  {
+                                      label: "Open in New Tab",
+                                      action: () => {
+                                          void openChatNoteByReference(
+                                              contextMenu.payload.label,
+                                              { newTab: true },
+                                          );
+                                      },
+                                  },
+                              ]
+                    }
                 />
             ) : null}
         </PretextReservedTextMessage>

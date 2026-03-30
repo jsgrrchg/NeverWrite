@@ -283,7 +283,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.getByText("new line")).toBeInTheDocument();
     });
 
-    it("hides Open File when the diff target is not an openable note", () => {
+    it("shows Open when the diff target is an openable text file", () => {
         renderMessage({
             id: "tool:non-note",
             role: "assistant",
@@ -309,8 +309,8 @@ describe("AIChatMessageItem tool diffs", () => {
 
         expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
         expect(
-            screen.queryByRole("button", { name: "Open" }),
-        ).not.toBeInTheDocument();
+            screen.getByRole("button", { name: "Open" }),
+        ).toBeInTheDocument();
     });
 
     it("hides diff review panels for non-visible work cycles", () => {
@@ -435,7 +435,9 @@ describe("AIChatMessageItem tool diffs", () => {
         );
         expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
         expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
-        expect(screen.getByText("Decision sent: Allow once")).toBeInTheDocument();
+        expect(
+            screen.getByText("Decision sent: Allow once"),
+        ).toBeInTheDocument();
     });
 
     it("keeps tool messages without diffs on the simple file card", () => {
@@ -856,6 +858,66 @@ describe("AIChatMessageItem user mention pills", () => {
 
         await waitFor(() => {
             expect(useEditorStore.getState().tabs).toHaveLength(2);
+        });
+    });
+
+    it("opens file mention pills in a new tab from the context menu", async () => {
+        const invokeMock = vi.mocked(invoke);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "src/watcher.rs",
+                });
+                return {
+                    path: "/vault/src/watcher.rs",
+                    relative_path: "src/watcher.rs",
+                    file_name: "watcher.rs",
+                    mime_type: "text/rust",
+                    content: "fn main() {}",
+                };
+            }
+            throw new Error(`Unexpected invoke call: ${command}`);
+        });
+
+        setVaultEntries([
+            {
+                id: "src/watcher.rs",
+                path: "/vault/src/watcher.rs",
+                relative_path: "src/watcher.rs",
+                title: "watcher",
+                file_name: "watcher.rs",
+                extension: "rs",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 12,
+                mime_type: "text/rust",
+            },
+        ]);
+
+        renderMessage({
+            id: "user:file-mention",
+            role: "user",
+            kind: "text",
+            content: "Check [@📄 /vault/src/watcher.rs]",
+            timestamp: Date.now(),
+        });
+
+        fireEvent.contextMenu(
+            screen.getByRole("button", { name: "watcher.rs" }),
+            {
+                clientX: 24,
+                clientY: 36,
+            },
+        );
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(1);
+        });
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            kind: "file",
+            path: "/vault/src/watcher.rs",
         });
     });
 });

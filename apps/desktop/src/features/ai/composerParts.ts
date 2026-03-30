@@ -7,6 +7,10 @@ import type { AIComposerPart } from "./types";
 export function cleanPillMarkers(text: string): string {
     return text
         .replace(/\[@📁 ([^\]]+)\]/g, "$1")
+        .replace(/\[@📄 ([^\]]+)\]/g, (_match, value: string) => {
+            const normalized = String(value).split("/").pop();
+            return normalized || String(value);
+        })
         .replace(/\[@([^\]]+)\]/g, "$1")
         .replace(/\[Screenshot ([^\]]+)\]/g, "Screenshot $1")
         .replace(/\[📎 ([^\]]+)\]/g, "$1")
@@ -57,6 +61,7 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
             if (part.type === "fetch_mention") return "@fetch";
             if (part.type === "plan_mention") return "/plan";
             if (part.type === "folder_mention") return `[@📁 ${part.label}]`;
+            if (part.type === "file_mention") return `[@📄 ${part.path}]`;
             if (part.type === "mention") return `[@${part.label}]`;
             if (part.type === "selection_mention") return `[@${part.label}]`;
             if (part.type === "screenshot") return `[${part.label}]`;
@@ -77,6 +82,8 @@ export function serializeComposerPartsForAI(
             if (part.type === "plan_mention") return "/plan";
             if (part.type === "folder_mention")
                 return normalizePathForAI(part.folderPath, options);
+            if (part.type === "file_mention")
+                return normalizePathForAI(part.path, options);
             if (part.type === "mention")
                 return normalizePathForAI(part.path, options);
             if (part.type === "selection_mention")
@@ -173,6 +180,50 @@ export function appendMentionParts(
             id: crypto.randomUUID(),
             type: "text",
             text: index === mentions.length - 1 ? " " : " ",
+        });
+    });
+
+    return normalizeComposerParts(next);
+}
+
+export function appendFileMentionParts(
+    parts: AIComposerPart[],
+    files: Array<{
+        label: string;
+        path: string;
+        relativePath: string;
+        mimeType: string | null;
+    }>,
+): AIComposerPart[] {
+    const next = [...parts];
+
+    const last = next.at(-1);
+    if (!last || last.type !== "text") {
+        next.push({
+            id: crypto.randomUUID(),
+            type: "text",
+            text: "",
+        });
+    }
+
+    const currentLast = next.at(-1);
+    if (currentLast?.type === "text" && currentLast.text.length > 0) {
+        currentLast.text += currentLast.text.endsWith(" ") ? "" : " ";
+    }
+
+    files.forEach((file, index) => {
+        next.push({
+            id: crypto.randomUUID(),
+            type: "file_mention",
+            label: file.label,
+            path: file.path,
+            relativePath: file.relativePath,
+            mimeType: file.mimeType,
+        });
+        next.push({
+            id: crypto.randomUUID(),
+            type: "text",
+            text: index === files.length - 1 ? " " : " ",
         });
     });
 

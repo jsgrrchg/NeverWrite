@@ -91,9 +91,11 @@ function formatAttachmentLine(
     const typeLabel =
         sessionAttachment.type === "folder"
             ? "Carpeta"
-            : sessionAttachment.type === "selection"
-              ? "Selección"
-              : "Nota";
+            : sessionAttachment.type === "file"
+              ? "Archivo"
+              : sessionAttachment.type === "selection"
+                ? "Selección"
+                : "Nota";
 
     const detail = sessionAttachment.path ?? sessionAttachment.noteId ?? "";
     return detail

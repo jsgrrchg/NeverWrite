@@ -32,6 +32,7 @@ import {
 } from "./chatPillMetrics";
 import type {
     AIAvailableCommand,
+    AIChatFileSummary,
     AIChatNoteSummary,
     AIChatSessionStatus,
     AIComposerPart,
@@ -39,12 +40,15 @@ import type {
 } from "../types";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
+import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import {
     getPretextMeasurementRevision,
     subscribePretextInvalidation,
 } from "../../../app/services/pretextService";
 import { estimateComposerTextHeight } from "./chatTextPretext";
+import { useVaultStore } from "../../../app/store/vaultStore";
+import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
@@ -52,6 +56,7 @@ const MAX_COMPOSER_HEIGHT = 480;
 interface AIChatComposerProps {
     parts: AIComposerPart[];
     notes: AIChatNoteSummary[];
+    files?: AIChatFileSummary[];
     status: AIChatSessionStatus;
     runtimeName: string;
     runtimeId?: string;
@@ -67,6 +72,7 @@ interface AIChatComposerProps {
     footer?: ReactNode;
     onChange: (parts: AIComposerPart[]) => void;
     onMentionAttach: (note: AIChatNoteSummary) => void;
+    onFileMentionAttach?: (file: AIChatFileSummary) => void;
     onFolderAttach: (folderPath: string, name: string) => void;
     onToggleAutoContext?: () => void;
     onToggleExpanded?: () => void;
@@ -90,6 +96,7 @@ interface ComposerContextMenuPayload {
     hasSelection: boolean;
     hasContent: boolean;
     mentionNoteId: string | null;
+    mentionFilePath: string | null;
 }
 
 interface SlashState {
@@ -234,6 +241,24 @@ function createMentionNode(
     return element;
 }
 
+function createFileMentionNode(
+    part: Extract<AIComposerPart, { type: "file_mention" }>,
+    metrics: ChatPillMetrics,
+) {
+    const element = document.createElement("span");
+    element.dataset.kind = "file_mention";
+    element.dataset.label = part.label;
+    element.dataset.path = part.path;
+    element.dataset.relativePath = part.relativePath;
+    if (part.mimeType) {
+        element.dataset.mimeType = part.mimeType;
+    }
+    element.contentEditable = "false";
+    element.textContent = truncatePillLabel(part.label);
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    return element;
+}
+
 function createFolderMentionNode(
     part: Extract<AIComposerPart, { type: "folder_mention" }>,
     metrics: ChatPillMetrics,
@@ -345,6 +370,23 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
             noteId: node.dataset.noteId,
             label: node.dataset.label,
             path: node.dataset.path,
+        });
+        return;
+    }
+
+    if (
+        node.dataset.kind === "file_mention" &&
+        node.dataset.label &&
+        node.dataset.path &&
+        node.dataset.relativePath
+    ) {
+        parts.push({
+            id: crypto.randomUUID(),
+            type: "file_mention",
+            label: node.dataset.label,
+            path: node.dataset.path,
+            relativePath: node.dataset.relativePath,
+            mimeType: node.dataset.mimeType ?? null,
         });
         return;
     }
@@ -500,6 +542,8 @@ function syncComposerDom(
             root.append(document.createTextNode(part.text));
         } else if (part.type === "mention") {
             root.append(createMentionNode(part, metrics));
+        } else if (part.type === "file_mention") {
+            root.append(createFileMentionNode(part, metrics));
         } else if (part.type === "folder_mention") {
             root.append(createFolderMentionNode(part, metrics));
         } else if (part.type === "fetch_mention") {
@@ -522,6 +566,7 @@ function isMentionElement(node: Node): node is HTMLElement {
     return (
         node instanceof HTMLElement &&
         (node.dataset.kind === "mention" ||
+            node.dataset.kind === "file_mention" ||
             node.dataset.kind === "folder_mention" ||
             node.dataset.kind === "fetch_mention" ||
             node.dataset.kind === "plan_mention" ||
@@ -573,29 +618,46 @@ function extractFolderPaths(notes: AIChatNoteSummary[]): string[] {
     return [...folders].sort();
 }
 
-function getMentionElementFromNode(node: EventTarget | null) {
+function getComposerPillElementFromNode(node: EventTarget | null) {
     const element =
         node instanceof HTMLElement
             ? node
             : node instanceof Text
               ? node.parentElement
               : null;
-    return element?.closest<HTMLElement>("[data-kind='mention']") ?? null;
+    return (
+        element?.closest<HTMLElement>(
+            "[data-kind='mention'], [data-kind='file_mention']",
+        ) ?? null
+    );
 }
 
-function getMentionNoteIdFromContextMenuEvent(
+function getComposerPillTargetFromContextMenuEvent(
     event: ReactMouseEvent<HTMLElement>,
 ) {
     const path = event.nativeEvent.composedPath?.() ?? [];
     for (const node of path) {
-        const mention = getMentionElementFromNode(node);
-        if (mention?.dataset.noteId) {
-            return mention.dataset.noteId;
+        const mention = getComposerPillElementFromNode(node);
+        if (mention) {
+            return {
+                noteId: mention.dataset.noteId ?? null,
+                filePath:
+                    mention.dataset.kind === "file_mention"
+                        ? (mention.dataset.path ?? null)
+                        : null,
+            };
         }
     }
 
     const hovered = document.elementFromPoint(event.clientX, event.clientY);
-    return getMentionElementFromNode(hovered)?.dataset.noteId ?? null;
+    const mention = getComposerPillElementFromNode(hovered);
+    return {
+        noteId: mention?.dataset.noteId ?? null,
+        filePath:
+            mention?.dataset.kind === "file_mention"
+                ? (mention.dataset.path ?? null)
+                : null,
+    };
 }
 
 function normalizeForSearch(value: string): string {
@@ -696,6 +758,14 @@ function getNoteMentionLabel(
     return showExtensions ? fileName : fileName.replace(/\.md$/i, "");
 }
 
+function getFileMentionLabel(file: AIChatFileSummary, showExtensions: boolean) {
+    if (showExtensions) {
+        return file.fileName;
+    }
+
+    return file.title || file.fileName;
+}
+
 function getNoteMentionSuggestions(
     notes: AIChatNoteSummary[],
     query: string,
@@ -751,6 +821,7 @@ function getNoteMentionSuggestions(
 
 function getMentionSuggestions(
     notes: AIChatNoteSummary[],
+    files: AIChatFileSummary[],
     folderPaths: string[],
     query: string,
     preferFileName: boolean,
@@ -795,13 +866,55 @@ function getMentionSuggestions(
         });
     }
 
-    // Folders first, then notes, limited
+    if (preferFileName) {
+        const fileSuggestions = [...files]
+            .map((file) => {
+                const normalizedFileName = normalizeForSearch(file.fileName);
+                const normalizedRelativePath = normalizeForSearch(
+                    file.relativePath,
+                );
+                const primaryStartsWith =
+                    nq.length > 0 && normalizedFileName.startsWith(nq);
+                const pathStartsWith =
+                    nq.length > 0 && normalizedRelativePath.startsWith(nq);
+                const matches =
+                    !nq ||
+                    normalizedFileName.includes(nq) ||
+                    normalizedRelativePath.includes(nq);
+
+                return {
+                    file,
+                    matches,
+                    rank: primaryStartsWith ? 0 : pathStartsWith ? 1 : 2,
+                };
+            })
+            .filter((item) => item.matches)
+            .sort((left, right) => {
+                if (left.rank !== right.rank) {
+                    return left.rank - right.rank;
+                }
+
+                return left.file.fileName.localeCompare(right.file.fileName);
+            })
+            .slice(0, limit);
+
+        for (const item of fileSuggestions) {
+            results.push({
+                kind: "file",
+                file: item.file,
+                label: getFileMentionLabel(item.file, showExtensions),
+            });
+        }
+    }
+
+    // Fetch first, then folders, then matching notes/files, limited.
     return results.slice(0, limit);
 }
 
 export function AIChatComposer({
     parts,
     notes,
+    files,
     status,
     runtimeName,
     runtimeId,
@@ -817,6 +930,7 @@ export function AIChatComposer({
     footer,
     onChange,
     onMentionAttach,
+    onFileMentionAttach,
     onFolderAttach,
     onToggleAutoContext,
     onToggleExpanded,
@@ -829,6 +943,7 @@ export function AIChatComposer({
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
+    const fallbackEntries = useVaultStore((state) => state.entries);
     const [attachMenuOpen, setAttachMenuOpen] = useState(false);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
@@ -875,6 +990,24 @@ export function AIChatComposer({
         [parts],
     );
     const folderPaths = useMemo(() => extractFolderPaths(notes), [notes]);
+    const mentionableFiles = useMemo(() => {
+        if (files) {
+            return files;
+        }
+
+        return fallbackEntries
+            .filter(
+                (entry) => entry.kind === "file" && isTextLikeVaultEntry(entry),
+            )
+            .map((entry) => ({
+                id: entry.id,
+                title: entry.title,
+                path: entry.path,
+                relativePath: entry.relative_path,
+                fileName: entry.file_name,
+                mimeType: entry.mime_type,
+            }));
+    }, [fallbackEntries, files]);
     const pillMetrics = useMemo(
         () => getChatPillMetrics(composerFontSize),
         [composerFontSize],
@@ -1008,14 +1141,16 @@ export function AIChatComposer({
     const partsRef = useRef(parts);
     const onChangeRef = useRef(onChange);
     const onMentionAttachRef = useRef(onMentionAttach);
+    const onFileMentionAttachRef = useRef(onFileMentionAttach);
     const onFolderAttachRef = useRef(onFolderAttach);
 
     useEffect(() => {
         partsRef.current = parts;
         onChangeRef.current = onChange;
         onMentionAttachRef.current = onMentionAttach;
+        onFileMentionAttachRef.current = onFileMentionAttach;
         onFolderAttachRef.current = onFolderAttach;
-    }, [onChange, onFolderAttach, onMentionAttach, parts]);
+    }, [onChange, onFileMentionAttach, onFolderAttach, onMentionAttach, parts]);
 
     const syncFromDom = () => {
         const composer = composerRef.current;
@@ -1056,6 +1191,7 @@ export function AIChatComposer({
 
         const suggestions = getMentionSuggestions(
             notes,
+            mentionableFiles,
             folderPaths,
             trigger.query,
             fileTreeContentMode === "all_files",
@@ -1141,6 +1277,18 @@ export function AIChatComposer({
                 },
                 pillMetrics,
             );
+        } else if (item.kind === "file") {
+            span = createFileMentionNode(
+                {
+                    id: crypto.randomUUID(),
+                    type: "file_mention",
+                    label: item.label,
+                    path: item.file.path,
+                    relativePath: item.file.relativePath,
+                    mimeType: item.file.mimeType,
+                },
+                pillMetrics,
+            );
         } else if (item.kind === "folder") {
             span = createFolderMentionNode(
                 {
@@ -1166,6 +1314,8 @@ export function AIChatComposer({
 
         if (item.kind === "note") {
             onMentionAttach(item.note);
+        } else if (item.kind === "file") {
+            onFileMentionAttachRef.current?.(item.file);
         } else if (item.kind === "folder") {
             onFolderAttach(item.folderPath, item.name);
         }
@@ -1609,14 +1759,16 @@ export function AIChatComposer({
                             !!selection &&
                             !selection.isCollapsed &&
                             composer.contains(selection.anchorNode);
+                        const pillTarget =
+                            getComposerPillTargetFromContextMenuEvent(event);
                         setContextMenu({
                             x: event.clientX,
                             y: event.clientY,
                             payload: {
                                 hasSelection,
                                 hasContent: serializedValue.trim().length > 0,
-                                mentionNoteId:
-                                    getMentionNoteIdFromContextMenuEvent(event),
+                                mentionNoteId: pillTarget.noteId,
+                                mentionFilePath: pillTarget.filePath,
                             },
                         });
                     }}
@@ -2123,6 +2275,30 @@ export function AIChatComposer({
                                               void openChatNoteById(
                                                   contextMenu.payload
                                                       .mentionNoteId!,
+                                                  { newTab: true },
+                                              );
+                                          },
+                                      } as const,
+                                      { type: "separator" as const },
+                                  ]
+                                : []),
+                            ...(contextMenu.payload.mentionFilePath
+                                ? [
+                                      {
+                                          label: "Open",
+                                          action: () => {
+                                              void openAiEditedFileByAbsolutePath(
+                                                  contextMenu.payload
+                                                      .mentionFilePath!,
+                                              );
+                                          },
+                                      } as const,
+                                      {
+                                          label: "Open in New Tab",
+                                          action: () => {
+                                              void openAiEditedFileByAbsolutePath(
+                                                  contextMenu.payload
+                                                      .mentionFilePath!,
                                                   { newTab: true },
                                               );
                                           },
