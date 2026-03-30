@@ -7923,7 +7923,7 @@ describe("chatStore", () => {
         ).toBeUndefined();
     });
 
-    it("ignores agent changes while the session is busy", async () => {
+    it("applies agent changes while the session is busy", async () => {
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
@@ -7937,7 +7937,7 @@ describe("chatStore", () => {
             },
         }));
 
-        await useChatStore.getState().setModel("test-model");
+        await useChatStore.getState().setModel("wide-model");
         await useChatStore.getState().setMode("default");
         await useChatStore
             .getState()
@@ -7952,12 +7952,12 @@ describe("chatStore", () => {
             invokeMock.mock.calls.filter(
                 ([command]) => command === "ai_set_mode",
             ),
-        ).toHaveLength(0);
+        ).toHaveLength(1);
         expect(
             invokeMock.mock.calls.filter(
                 ([command]) => command === "ai_set_config_option",
             ),
-        ).toHaveLength(0);
+        ).toHaveLength(2);
         expect(
             useChatStore
                 .getState()
@@ -7965,7 +7965,7 @@ describe("chatStore", () => {
                     activeSessionId
                 ]?.configOptions.find((option) => option.id === "reasoning_effort")
                 ?.value,
-        ).toBe("medium");
+        ).toBe("high");
     });
 
     it("keeps session state aligned when the ACP model config changes", async () => {

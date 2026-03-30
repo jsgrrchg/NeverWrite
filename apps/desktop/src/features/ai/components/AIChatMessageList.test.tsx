@@ -200,7 +200,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         });
     });
 
-    it("renders long transcripts without dropping rows", () => {
+    it("renders long transcripts while keeping the scrolled region accessible", () => {
         const messages = createLongTranscript(140);
         const view = renderComponent(
             <AIChatMessageList
@@ -448,8 +448,8 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(screen.getAllByTestId("recent-diff-badge")).toHaveLength(2);
         expect(screen.getByText("Edited older.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited recent.ts")).toBeInTheDocument();
-        expect(
-            screen.getByTestId("historical-diff-summary"),
-        ).toHaveTextContent("Edited oldest.ts");
+        expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
+            "Edited oldest.ts",
+        );
     });
 });

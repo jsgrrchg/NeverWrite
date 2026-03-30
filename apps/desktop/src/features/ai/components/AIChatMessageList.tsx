@@ -103,14 +103,57 @@ function deriveRecentHistoricalDiffWorkCycleIds(
         seen.add(workCycleId);
         recentWorkCycleIds.push(workCycleId);
         if (
-            recentWorkCycleIds.length >=
-            RECENT_HISTORICAL_DIFF_WORK_CYCLE_LIMIT
+            recentWorkCycleIds.length >= RECENT_HISTORICAL_DIFF_WORK_CYCLE_LIMIT
         ) {
             break;
         }
     }
 
     return recentWorkCycleIds;
+}
+
+function getTimelineDiffPresentationMode(
+    message: AIChatMessage,
+    visibleWorkCycleId?: string | null,
+    recentDiffWorkCycleIds: string[] = [],
+) {
+    if (!message.diffs?.length) {
+        return "none" as const;
+    }
+
+    if (!visibleWorkCycleId || !message.workCycleId) {
+        return "active" as const;
+    }
+
+    if (message.workCycleId === visibleWorkCycleId) {
+        return "active" as const;
+    }
+
+    if (recentDiffWorkCycleIds.includes(message.workCycleId)) {
+        return "recent" as const;
+    }
+
+    return "historical" as const;
+}
+
+function shouldRenderHistoricalTimelineDiffSummary(
+    message: AIChatMessage,
+    diffPresentationMode: "active" | "recent" | "historical" | "none",
+) {
+    if (diffPresentationMode !== "historical" || !message.diffs?.length) {
+        return false;
+    }
+
+    const status = String(message.meta?.status ?? "");
+    if (message.kind === "tool") {
+        return status === "completed";
+    }
+
+    if (message.kind === "permission") {
+        return status === "resolved";
+    }
+
+    return false;
 }
 
 function StreamingRunIndicator({
@@ -251,6 +294,8 @@ function renderTimelineRow(
     options: {
         sessionId?: string | null;
         pillMetrics: ReturnType<typeof getChatPillMetrics>;
+        chatFontSize: number;
+        chatFontFamily: EditorFontFamily;
         visibleWorkCycleId?: string | null;
         recentDiffWorkCycleIds?: string[];
         onPermissionResponse?: (requestId: string, optionId?: string) => void;
@@ -274,6 +319,8 @@ function renderTimelineRow(
             sessionId={options.sessionId}
             message={row.message}
             pillMetrics={options.pillMetrics}
+            chatFontSize={options.chatFontSize}
+            chatFontFamily={options.chatFontFamily}
             visibleWorkCycleId={options.visibleWorkCycleId}
             recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
             onPermissionResponse={options.onPermissionResponse}
@@ -428,6 +475,64 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         }
     }, [isLoadingOlderMessages, messages.length]);
 
+    // Anchor scroll position when container width changes (e.g. sidebar resize).
+    // Tracks the topmost visible chat row and its viewport offset on every scroll,
+    // then corrects scrollTop after text reflow so content stays visually stable.
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        let prevWidth = container.clientWidth;
+        let anchorNode: HTMLElement | null = null;
+        let anchorOffset = 0;
+        let anchorNearBottom = true;
+
+        function captureAnchor() {
+            anchorNearBottom = isNearBottom(container!);
+            if (anchorNearBottom) {
+                anchorNode = null;
+                return;
+            }
+
+            const containerRect = container!.getBoundingClientRect();
+            const rows =
+                container!.querySelectorAll<HTMLElement>("[data-chat-row]");
+            for (const row of rows) {
+                const rect = row.getBoundingClientRect();
+                if (rect.bottom > containerRect.top) {
+                    anchorNode = row;
+                    anchorOffset = rect.top - containerRect.top;
+                    return;
+                }
+            }
+            anchorNode = null;
+        }
+
+        container.addEventListener("scroll", captureAnchor, { passive: true });
+        captureAnchor();
+
+        const ro = new ResizeObserver(() => {
+            const newWidth = container.clientWidth;
+            if (newWidth === prevWidth) return;
+            prevWidth = newWidth;
+
+            if (anchorNearBottom) {
+                container.scrollTop = container.scrollHeight;
+            } else if (anchorNode?.isConnected) {
+                const containerRect = container.getBoundingClientRect();
+                const rect = anchorNode.getBoundingClientRect();
+                container.scrollTop +=
+                    rect.top - containerRect.top - anchorOffset;
+            }
+        });
+
+        ro.observe(container);
+        return () => {
+            container.removeEventListener("scroll", captureAnchor);
+            ro.disconnect();
+        };
+    }, []);
+
     const timelineRows = useMemo(() => {
         const rows: TimelineRow[] = [];
 
@@ -462,12 +567,16 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         () => ({
             sessionId,
             pillMetrics,
+            chatFontSize,
+            chatFontFamily,
             visibleWorkCycleId,
             recentDiffWorkCycleIds,
             onPermissionResponse,
             onUserInputResponse,
         }),
         [
+            chatFontFamily,
+            chatFontSize,
             onPermissionResponse,
             onUserInputResponse,
             pillMetrics,
@@ -502,7 +611,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 data-scrollbar-active="true"
             >
                 <div
-                    className="flex min-w-0 flex-col gap-2"
+                    className="min-w-0"
                     data-selectable="true"
                     style={{
                         fontSize: chatFontSize,
@@ -522,15 +631,17 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                                 : "Scroll up to load earlier messages"}
                         </div>
                     )}
-                    {timelineRows.map((row) => (
-                        <div
-                            key={row.key}
-                            data-chat-row="true"
-                            data-chat-row-key={row.key}
-                        >
-                            {renderTimelineRow(row, rowRenderOptions)}
-                        </div>
-                    ))}
+                    <div className="min-w-0 space-y-2">
+                        {timelineRows.map((row) => (
+                            <div
+                                key={row.key}
+                                data-chat-row="true"
+                                data-chat-row-key={row.key}
+                            >
+                                {renderTimelineRow(row, rowRenderOptions)}
+                            </div>
+                        ))}
+                    </div>
                 </div>
             </div>
             {showScrollButton && (

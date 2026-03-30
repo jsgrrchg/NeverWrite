@@ -5250,12 +5250,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!resolvedSessionId) return;
             let session = get().sessionsById[resolvedSessionId];
             if (!session) return;
-            if (
-                session.status === "streaming" ||
-                session.status === "waiting_permission" ||
-                session.status === "waiting_user_input" ||
-                session.isResumingSession
-            ) {
+            if (session.isResumingSession) {
                 return;
             }
 
@@ -5348,12 +5343,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!resolvedSessionId) return;
             let session = get().sessionsById[resolvedSessionId];
             if (!session) return;
-            if (
-                session.status === "streaming" ||
-                session.status === "waiting_permission" ||
-                session.status === "waiting_user_input" ||
-                session.isResumingSession
-            ) {
+            if (session.isResumingSession) {
                 return;
             }
 
@@ -5438,12 +5428,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!resolvedSessionId) return;
             let session = get().sessionsById[resolvedSessionId];
             if (!session) return;
-            if (
-                session.status === "streaming" ||
-                session.status === "waiting_permission" ||
-                session.status === "waiting_user_input" ||
-                session.isResumingSession
-            ) {
+            if (session.isResumingSession) {
                 return;
             }
 
