@@ -28,28 +28,6 @@ import type {
     TextRangePatch,
     TrackedFile,
 } from "../diff/actionLogTypes";
-import {
-    applyNonConflictingEditsFallback,
-    applyRejectUndoFallback,
-    buildPatchFromTextsFallback,
-    buildTextRangePatchFromTextsFallback,
-    computeWordDiffsForHunkFallback,
-    deriveLinePatchFromTextRangesFallback,
-    keepEditsInRangeFallback,
-    keepExactSpansFallback,
-    mapAgentSpanThroughTextEditsFallback,
-    mapTextPositionThroughEditsFallback,
-    partitionSpansByOverlapFallback,
-    rebuildDiffBaseFromPendingSpansFallback,
-    rejectAllEditsFallback,
-    rejectEditsInRangesFallback,
-    rejectExactSpansFallback,
-    syncDerivedLinePatchFallback,
-} from "./actionLogJsFallback";
-
-let rustEngineReady = false;
-let rustEngineInitError: unknown = null;
-let rustEngineRuntimeFallbackWarned = false;
 
 async function initActionLogRustEngine() {
     if (import.meta.env.MODE === "test") {
@@ -95,18 +73,7 @@ async function initActionLogRustEngine() {
     await initActionLogWasm({ module_or_path: wasmUrl });
 }
 
-await (async () => {
-    try {
-        await initActionLogRustEngine();
-        rustEngineReady = true;
-    } catch (error) {
-        rustEngineInitError = error;
-        console.warn(
-            "Failed to initialize the Rust/WASM action log engine; using the JS emergency fallback.",
-            error,
-        );
-    }
-})();
+await initActionLogRustEngine();
 
 type RejectEditsResult = {
     file: TrackedFile;
@@ -122,34 +89,11 @@ function parseJson<T>(json: string): T {
     return JSON.parse(json) as T;
 }
 
-function callWithFallback<T>(rustCall: () => T, fallbackCall: () => T): T {
-    if (!rustEngineReady) {
-        return fallbackCall();
-    }
-
-    try {
-        return rustCall();
-    } catch (error) {
-        if (!rustEngineRuntimeFallbackWarned) {
-            rustEngineRuntimeFallbackWarned = true;
-            console.warn(
-                "Rust/WASM action log call failed; using the JS emergency fallback for this session.",
-                error,
-                rustEngineInitError,
-            );
-        }
-        return fallbackCall();
-    }
-}
-
 export function buildPatchFromTextsRust(
     oldText: string,
     newText: string,
 ): LinePatch {
-    return callWithFallback(
-        () => parseJson(build_patch_from_texts_json(oldText, newText)),
-        () => buildPatchFromTextsFallback(oldText, newText),
-    );
+    return parseJson(build_patch_from_texts_json(oldText, newText));
 }
 
 export function buildTextRangePatchFromTextsRust(
@@ -157,16 +101,12 @@ export function buildTextRangePatchFromTextsRust(
     newText: string,
     linePatch?: LinePatch,
 ): TextRangePatch {
-    return callWithFallback(
-        () =>
-            parseJson(
-                build_text_range_patch_from_texts_json(
-                    oldText,
-                    newText,
-                    linePatch ? JSON.stringify(linePatch) : undefined,
-                ),
-            ),
-        () => buildTextRangePatchFromTextsFallback(oldText, newText, linePatch),
+    return parseJson(
+        build_text_range_patch_from_texts_json(
+            oldText,
+            newText,
+            linePatch ? JSON.stringify(linePatch) : undefined,
+        ),
     );
 }
 
@@ -184,24 +124,14 @@ export function computeWordDiffsForHunkRust(
         maxChars?: number;
     } = {},
 ): HunkWordDiffs | null {
-    return callWithFallback(
-        () =>
-            parseJson(
-                compute_word_diffs_for_hunk_json(
-                    baseText,
-                    currentText,
-                    JSON.stringify(edit),
-                    options.maxLines ?? 5,
-                    options.maxChars ?? 240,
-                ),
-            ),
-        () =>
-            computeWordDiffsForHunkFallback(
-                baseText,
-                currentText,
-                edit,
-                options,
-            ),
+    return parseJson(
+        compute_word_diffs_for_hunk_json(
+            baseText,
+            currentText,
+            JSON.stringify(edit),
+            options.maxLines ?? 5,
+            options.maxChars ?? 240,
+        ),
     );
 }
 
@@ -210,25 +140,17 @@ export function deriveLinePatchFromTextRangesRust(
     currentText: string,
     spans: AgentTextSpan[],
 ): LinePatch {
-    return callWithFallback(
-        () =>
-            parseJson(
-                derive_line_patch_from_text_ranges_json(
-                    baseText,
-                    currentText,
-                    JSON.stringify(spans),
-                ),
-            ),
-        () =>
-            deriveLinePatchFromTextRangesFallback(baseText, currentText, spans),
+    return parseJson(
+        derive_line_patch_from_text_ranges_json(
+            baseText,
+            currentText,
+            JSON.stringify(spans),
+        ),
     );
 }
 
 export function syncDerivedLinePatchRust(file: TrackedFile): TrackedFile {
-    return callWithFallback(
-        () => parseJson(sync_derived_line_patch_json(JSON.stringify(file))),
-        () => syncDerivedLinePatchFallback(file),
-    );
+    return parseJson(sync_derived_line_patch_json(JSON.stringify(file)));
 }
 
 export function applyNonConflictingEditsRust(
@@ -236,16 +158,12 @@ export function applyNonConflictingEditsRust(
     userEdits: TextEdit[],
     newFullText: string,
 ): TrackedFile {
-    return callWithFallback(
-        () =>
-            parseJson(
-                apply_non_conflicting_edits_json(
-                    JSON.stringify(file),
-                    JSON.stringify(userEdits),
-                    newFullText,
-                ),
-            ),
-        () => applyNonConflictingEditsFallback(file, userEdits, newFullText),
+    return parseJson(
+        apply_non_conflicting_edits_json(
+            JSON.stringify(file),
+            JSON.stringify(userEdits),
+            newFullText,
+        ),
     );
 }
 
@@ -254,16 +172,8 @@ export function keepEditsInRangeRust(
     startLine: number,
     endLine: number,
 ): TrackedFile {
-    return callWithFallback(
-        () =>
-            parseJson(
-                keep_edits_in_range_json(
-                    JSON.stringify(file),
-                    startLine,
-                    endLine,
-                ),
-            ),
-        () => keepEditsInRangeFallback(file, startLine, endLine),
+    return parseJson(
+        keep_edits_in_range_json(JSON.stringify(file), startLine, endLine),
     );
 }
 
@@ -271,38 +181,24 @@ export function keepExactSpansRust(
     file: TrackedFile,
     spans: AgentTextSpan[],
 ): TrackedFile {
-    return callWithFallback(
-        () =>
-            parseJson(
-                keep_exact_spans_json(
-                    JSON.stringify(file),
-                    JSON.stringify(spans),
-                ),
-            ),
-        () => keepExactSpansFallback(file, spans),
+    return parseJson(
+        keep_exact_spans_json(JSON.stringify(file), JSON.stringify(spans)),
     );
 }
 
 export function rejectAllEditsRust(file: TrackedFile): RejectEditsResult {
-    return callWithFallback(
-        () => parseJson(reject_all_edits_json(JSON.stringify(file))),
-        () => rejectAllEditsFallback(file),
-    );
+    return parseJson(reject_all_edits_json(JSON.stringify(file)));
 }
 
 export function rejectEditsInRangesRust(
     file: TrackedFile,
     ranges: Array<{ start: number; end: number }>,
 ): RejectEditsResult {
-    return callWithFallback(
-        () =>
-            parseJson(
-                reject_edits_in_ranges_json(
-                    JSON.stringify(file),
-                    JSON.stringify(ranges),
-                ),
-            ),
-        () => rejectEditsInRangesFallback(file, ranges),
+    return parseJson(
+        reject_edits_in_ranges_json(
+            JSON.stringify(file),
+            JSON.stringify(ranges),
+        ),
     );
 }
 
@@ -310,15 +206,8 @@ export function rejectExactSpansRust(
     file: TrackedFile,
     spans: AgentTextSpan[],
 ): RejectEditsResult {
-    return callWithFallback(
-        () =>
-            parseJson(
-                reject_exact_spans_json(
-                    JSON.stringify(file),
-                    JSON.stringify(spans),
-                ),
-            ),
-        () => rejectExactSpansFallback(file, spans),
+    return parseJson(
+        reject_exact_spans_json(JSON.stringify(file), JSON.stringify(spans)),
     );
 }
 
@@ -326,15 +215,8 @@ export function applyRejectUndoRust(
     file: TrackedFile,
     undo: PerFileUndo,
 ): TrackedFile {
-    return callWithFallback(
-        () =>
-            parseJson(
-                apply_reject_undo_json(
-                    JSON.stringify(file),
-                    JSON.stringify(undo),
-                ),
-            ),
-        () => applyRejectUndoFallback(file, undo),
+    return parseJson(
+        apply_reject_undo_json(JSON.stringify(file), JSON.stringify(undo)),
     );
 }
 
@@ -343,14 +225,10 @@ export function mapTextPositionThroughEditsRust(
     edits: TextEdit[],
     assoc: -1 | 1,
 ): number {
-    return callWithFallback(
-        () =>
-            map_text_position_through_edits_json(
-                position,
-                JSON.stringify(edits),
-                assoc,
-            ),
-        () => mapTextPositionThroughEditsFallback(position, edits, assoc),
+    return map_text_position_through_edits_json(
+        position,
+        JSON.stringify(edits),
+        assoc,
     );
 }
 
@@ -358,15 +236,11 @@ export function mapAgentSpanThroughTextEditsRust(
     span: AgentTextSpan,
     edits: TextEdit[],
 ): AgentTextSpan | null {
-    return callWithFallback(
-        () =>
-            parseJson(
-                map_agent_span_through_text_edits_json(
-                    JSON.stringify(span),
-                    JSON.stringify(edits),
-                ),
-            ),
-        () => mapAgentSpanThroughTextEditsFallback(span, edits),
+    return parseJson(
+        map_agent_span_through_text_edits_json(
+            JSON.stringify(span),
+            JSON.stringify(edits),
+        ),
     );
 }
 
@@ -375,19 +249,10 @@ export function rebuildDiffBaseFromPendingSpansRust(
     currentText: string,
     spans: AgentTextSpan[],
 ): string {
-    return callWithFallback(
-        () =>
-            rebuild_diff_base_from_pending_spans_json(
-                originalDiffBase,
-                currentText,
-                JSON.stringify(spans),
-            ),
-        () =>
-            rebuildDiffBaseFromPendingSpansFallback(
-                originalDiffBase,
-                currentText,
-                spans,
-            ),
+    return rebuild_diff_base_from_pending_spans_json(
+        originalDiffBase,
+        currentText,
+        JSON.stringify(spans),
     );
 }
 
@@ -397,22 +262,12 @@ export function partitionSpansByOverlapRust(
     baseText: string,
     currentText: string,
 ): PartitionedSpans {
-    return callWithFallback(
-        () =>
-            parseJson(
-                partition_spans_by_overlap_json(
-                    JSON.stringify(spans),
-                    JSON.stringify(ranges),
-                    baseText,
-                    currentText,
-                ),
-            ),
-        () =>
-            partitionSpansByOverlapFallback(
-                spans,
-                ranges,
-                baseText,
-                currentText,
-            ),
+    return parseJson(
+        partition_spans_by_overlap_json(
+            JSON.stringify(spans),
+            JSON.stringify(ranges),
+            baseText,
+            currentText,
+        ),
     );
 }

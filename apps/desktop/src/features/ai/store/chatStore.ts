@@ -61,11 +61,9 @@ import {
     getTrackedFileReviewState,
     getTrackedFilesForSession,
     hashTextContent,
-    keepEditsInRange,
     keepReviewHunks,
     patchIsEmpty,
     rejectAllEdits as actionLogRejectAll,
-    rejectEditsInRanges,
     rejectReviewHunks,
     setTrackedFilesForWorkCycle,
     type RestoreAction,
@@ -949,13 +947,6 @@ interface ChatStore {
     rejectAllEditedFiles: (sessionId: string) => Promise<void>;
     keepEditedFile: (sessionId: string, identityKey: string) => void;
     keepAllEditedFiles: (sessionId: string) => void;
-    resolveHunkEdits: (
-        sessionId: string,
-        identityKey: string,
-        decision: "accepted" | "rejected",
-        hunkNewStart: number,
-        hunkNewEnd: number,
-    ) => Promise<void>;
     resolveReviewHunks: (
         sessionId: string,
         identityKey: string,
@@ -7368,170 +7359,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     sessionId,
                     updatedSession,
                 );
-            }
-        },
-
-        resolveHunkEdits: async (
-            sessionId,
-            identityKey,
-            decision,
-            hunkNewStart,
-            hunkNewEnd,
-        ) => {
-            const { sessionsById } = get();
-            const session = sessionsById[sessionId];
-            if (!session?.actionLog) {
-                return;
-            }
-
-            const tracked = findTrackedFileInAccumulatedSession(
-                session,
-                identityKey,
-            );
-            if (!tracked) {
-                return;
-            }
-
-            let updatedFile: TrackedFile;
-            let hunkUndoSnapshot: {
-                identityKey: string;
-                snapshot: TrackedFile;
-            } | null = null;
-
-            if (decision === "accepted") {
-                // Accept: absorb hunk into diffBase, no disk write needed
-                updatedFile = keepEditsInRange(
-                    tracked,
-                    hunkNewStart,
-                    hunkNewEnd,
-                );
-            } else {
-                const vaultPath = useVaultStore.getState().vaultPath;
-                if (vaultPath) {
-                    const restoreCheck = await hasConflict(vaultPath, tracked);
-
-                    if (restoreCheck.conflict) {
-                        set((state) => {
-                            const currentSession =
-                                state.sessionsById[sessionId];
-                            if (!currentSession) return state;
-
-                            return {
-                                sessionsById: {
-                                    ...state.sessionsById,
-                                    [sessionId]: markTrackedConflict(
-                                        currentSession,
-                                        identityKey,
-                                        restoreCheck.currentHash,
-                                    ),
-                                },
-                            };
-                        });
-
-                        const updatedSession = get().sessionsById[sessionId];
-                        if (updatedSession) {
-                            void persistSession(updatedSession);
-                        }
-                        return;
-                    }
-                }
-
-                // Reject: revert hunk in currentText, write to disk
-                const { file } = rejectEditsInRanges(tracked, [
-                    { start: hunkNewStart, end: hunkNewEnd },
-                ]);
-                updatedFile = file;
-                // Store undo snapshot so the reject can be undone
-                hunkUndoSnapshot = { identityKey, snapshot: tracked };
-
-                if (vaultPath) {
-                    const change = await aiRestoreTextFile({
-                        vaultPath,
-                        path: tracked.path,
-                        previousPath:
-                            tracked.originPath !== tracked.path
-                                ? tracked.originPath
-                                : null,
-                        content: updatedFile.currentText,
-                    });
-                    reloadOpenEditorContent(
-                        tracked.path,
-                        updatedFile.currentText,
-                        change,
-                    );
-                }
-            }
-
-            set((state) => {
-                const currentSession = state.sessionsById[sessionId];
-                if (!currentSession?.actionLog) return state;
-
-                if (
-                    patchIsEmpty(updatedFile.unreviewedEdits) &&
-                    updatedFile.path === updatedFile.originPath
-                ) {
-                    // All hunks resolved and no move remains pending — remove from tracking
-                    let cleaned = removeTrackedFileFromActionLog(
-                        currentSession,
-                        identityKey,
-                    );
-                    if (hunkUndoSnapshot) {
-                        cleaned = setActionLogUndo(cleaned, {
-                            buffers: [],
-                            snapshots: {
-                                [hunkUndoSnapshot.identityKey]:
-                                    hunkUndoSnapshot.snapshot,
-                            },
-                            timestamp: Date.now(),
-                        });
-                    }
-                    return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [sessionId]: cleaned,
-                        },
-                    };
-                }
-
-                // Partial resolution — update TrackedFile in ActionLog
-                const files = {
-                    ...getAccumulatedTrackedFiles(currentSession),
-                };
-                files[identityKey] = updatedFile;
-
-                let updated: AIChatSession = replaceTrackedFilesInActionLog(
-                    currentSession,
-                    files,
-                );
-
-                if (hunkUndoSnapshot) {
-                    updated = setActionLogUndo(updated, {
-                        buffers: [],
-                        snapshots: {
-                            [hunkUndoSnapshot.identityKey]:
-                                hunkUndoSnapshot.snapshot,
-                        },
-                        timestamp: Date.now(),
-                    });
-                }
-
-                return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [sessionId]: updated,
-                    },
-                };
-            });
-
-            const updatedSession = get().sessionsById[sessionId];
-            if (updatedSession) {
-                void persistSession(updatedSession);
-                if (decision === "accepted") {
-                    closeReviewIfSessionHasNoPendingEdits(
-                        sessionId,
-                        updatedSession,
-                    );
-                }
             }
         },
 

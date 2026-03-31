@@ -1845,6 +1845,38 @@ describe("keepEditsInRange with pure deletions", () => {
         expect(result.diffBase).toBe("aaa\nccc");
         expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
     });
+
+    it("accepts only the selected point-range when multiple pure deletions remain pending", () => {
+        const tracked: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "aaa\nbbb\nccc\nddd\neee",
+            currentText: "aaa\nccc\neee",
+            unreviewedEdits: buildPatchFromTexts(
+                "aaa\nbbb\nccc\nddd\neee",
+                "aaa\nccc\neee",
+            ),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(tracked.unreviewedEdits.edits).toEqual([
+            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 1 },
+            { oldStart: 3, oldEnd: 4, newStart: 2, newEnd: 2 },
+        ]);
+
+        const result = keepEditsInRange(tracked, 1, 1);
+
+        expect(result.diffBase).toBe("aaa\nccc\nddd\neee");
+        expect(result.currentText).toBe("aaa\nccc\neee");
+        expect(result.unreviewedEdits.edits).toEqual([
+            { oldStart: 2, oldEnd: 3, newStart: 2, newEnd: 2 },
+        ]);
+    });
 });
 
 describe("rejectEditsInRanges with pure deletions", () => {
@@ -1874,6 +1906,42 @@ describe("rejectEditsInRanges with pure deletions", () => {
         expect(result.currentText).toBe("aaa\nbbb\nccc");
         expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
         expect(undoData.editsToRestore.length).toBe(1);
+    });
+
+    it("rejects a point-range deletion without reverting a neighboring non-point edit", () => {
+        const tracked: TrackedFile = {
+            identityKey: "test.md",
+            originPath: "test.md",
+            path: "test.md",
+            previousPath: null,
+            status: { kind: "modified" },
+            diffBase: "aaa\nbbb\nccc\nddd\neee",
+            currentText: "aaa\nBBB\nccc\neee",
+            unreviewedEdits: buildPatchFromTexts(
+                "aaa\nbbb\nccc\nddd\neee",
+                "aaa\nBBB\nccc\neee",
+            ),
+            version: 1,
+            isText: true,
+            updatedAt: 1000,
+        };
+
+        expect(tracked.unreviewedEdits.edits).toEqual([
+            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
+            { oldStart: 3, oldEnd: 4, newStart: 3, newEnd: 3 },
+        ]);
+
+        const { file: result, undoData } = rejectEditsInRanges(tracked, [
+            { start: 3, end: 3 },
+        ]);
+
+        expect(result.currentText).toBe("aaa\nBBB\nccc\nddd\neee");
+        expect(result.unreviewedEdits.edits).toEqual([
+            { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
+        ]);
+        expect(undoData.editsToRestore).toEqual([
+            { startLine: 3, endLine: 3, text: "" },
+        ]);
     });
 });
 
