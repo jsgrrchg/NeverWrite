@@ -14,13 +14,13 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.22.2) | Rust (`codex-acp` v0.10.0) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.23.1) | Rust (`codex-acp` v0.10.0) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-login`, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
 | **VaultAI adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
 | **Session RPC used by VaultAI** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
-| **ACP SDK version** | `@agentclientprotocol/sdk` 0.16.1 | `agent-client-protocol` 0.10.2 | Gemini CLI ACP implementation |
+| **ACP SDK version** | `@agentclientprotocol/sdk` 0.17.0 | `agent-client-protocol` 0.10.2 | Gemini CLI ACP implementation |
 | **Vendor dir** | `vendor/Claude-agent-acp-upstream/` | `vendor/codex-acp/` | N/A |
 
 Notes:
@@ -28,6 +28,7 @@ Notes:
 - `Gemini` is fully wired into `AiManager`, Tauri commands, setup, process, client and adapter layers.
 - Gemini emits plans and available-command updates from the ACP stream, but VaultAI currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
+- The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.83`.
 
 ---
 
@@ -185,6 +186,14 @@ Auth invalidation:
 
 - on explicit config changes affecting gateway/auth
 - when the runtime returns auth-style failures such as `auth_required` or “you were signed out”
+
+Current Claude vendor notes (`0.23.1`):
+
+- prompt end-of-turn now also follows Claude SDK `session_state_changed -> idle`
+- local-only slash commands such as `/context` are handled more explicitly upstream
+- Bash tool result output now joins `stdout` + `stderr`
+- `ExitPlanMode` restores plan content into the tool payload
+- upstream now disposes `SettingsManager` on session close / process death
 
 ### Codex
 
@@ -393,7 +402,7 @@ apps/desktop/src-tauri/
 │       └── adapter.rs
 │
 vendor/
-├── Claude-agent-acp-upstream/        # @zed-industries/claude-agent-acp v0.22.2
+├── Claude-agent-acp-upstream/        # @zed-industries/claude-agent-acp v0.23.1
 │   ├── dist/index.js
 │   ├── node_modules/
 │   └── package.json
@@ -456,4 +465,7 @@ External auth state also used:
 - Gemini is integrated end-to-end in VaultAI, but it is **not** currently bundled by `build.rs` / Tauri resources.
 - Claude is the only ACP runtime whose stderr is currently captured and surfaced in disconnect errors.
 - Codex `user_input` is supported in VaultAI; Gemini `user_input` is not.
+- VaultAI does **not** yet surface Claude `usage_update` in the app, even though newer Claude ACP upstream emits it.
+- VaultAI currently consumes Claude terminal metadata and session config/mode updates, but does **not** yet expose richer Claude tool metadata such as `_meta.claudeCode.toolName`, `toolResponse` or `parentToolUseId`.
+- VaultAI keeps a small local patch on Claude vendor labels so model display text maps `"Default (recommended)"` to `"Opus"` in the exposed model list.
 - The document should be kept aligned with `apps/desktop/src-tauri/src/ai/{claude,codex,gemini}/` whenever runtime behavior changes, because the app now has runtime-specific differences that matter operationally.

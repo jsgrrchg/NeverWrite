@@ -1148,7 +1148,7 @@ describe("stop reason propagation", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
-            settingsManager: {},
+            settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
                 outputTokens: 0,
@@ -1209,6 +1209,7 @@ describe("stop reason propagation", () => {
         const agent = createMockAgent();
         injectSession(agent, [
             createResultMessage({ subtype: "success", stop_reason: null, is_error: false }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
         ]);
         const response = await agent.prompt({
             sessionId: "test-session",
@@ -1249,6 +1250,7 @@ describe("stop reason propagation", () => {
             };
             // Then the prompt's own result
             yield promptResult;
+            yield { type: "system", subtype: "session_state_changed", state: "idle" };
         }
         agent.sessions["test-session"] = {
             query: messageGenerator(),
@@ -1263,7 +1265,7 @@ describe("stop reason propagation", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
-            settingsManager: {},
+            settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
                 outputTokens: 0,
@@ -1324,7 +1326,7 @@ describe("session/close", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
-            settingsManager: {},
+            settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
                 outputTokens: 0,
@@ -1347,6 +1349,7 @@ describe("session/close", () => {
         expect(result).toEqual({});
         expect(agent.sessions["session-1"]).toBeUndefined();
         expect(session.query.interrupt).toHaveBeenCalled();
+        expect(session.settingsManager.dispose).toHaveBeenCalled();
     });
     it("should abort the session's abort controller", async () => {
         const agent = createMockAgent();
