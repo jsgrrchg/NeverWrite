@@ -69,6 +69,7 @@ pub trait AiRuntimeAdapter: Send {
         &mut self,
         app: &AppHandle,
         vault_root: Option<PathBuf>,
+        additional_roots: Option<Vec<String>>,
     ) -> Result<AiSession, String>;
     fn get_session(&self, session_id: &str) -> Option<AiSession>;
     fn sync_state(&mut self) -> Result<(), String> {

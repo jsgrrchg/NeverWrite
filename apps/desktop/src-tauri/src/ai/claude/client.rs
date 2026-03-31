@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     process::Stdio,
@@ -14,11 +14,12 @@ use std::{
 use agent_client_protocol::{
     Agent, Client, ClientCapabilities, ClientSideConnection, ContentBlock, ContentChunk,
     FileSystemCapabilities, ForkSessionRequest, Implementation, InitializeRequest,
-    ListSessionsRequest, LoadSessionRequest, NewSessionRequest, PermissionOption, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    Result as AcpResult, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    ListSessionsRequest, LoadSessionRequest, Meta, NewSessionRequest, PermissionOption,
+    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, Result as AcpResult, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -28,14 +29,14 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio::sync::mpsc as tokio_mpsc;
 use vault_ai_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
-    AiRuntimeSessionSummary, CLAUDE_RUNTIME_ID,
+    AiRuntimeSessionSummary, AiSession, CLAUDE_RUNTIME_ID,
 };
 
 use crate::ai::emit::{
     emit_available_commands_updated, emit_message_completed, emit_message_delta,
     emit_message_started, emit_permission_request, emit_plan_update, emit_runtime_connection,
-    emit_session_error, emit_status_event, emit_thinking_completed, emit_thinking_delta,
-    emit_thinking_started, emit_tool_activity, AiAvailableCommandPayload,
+    emit_session_error, emit_session_updated, emit_status_event, emit_thinking_completed,
+    emit_thinking_delta, emit_thinking_started, emit_tool_activity, AiAvailableCommandPayload,
     AiAvailableCommandsPayload, AiFileDiffHunkPayload, AiFileDiffPayload,
     AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
     AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
@@ -56,6 +57,7 @@ const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 enum RuntimeCommand {
     CreateSession {
         spec: ClaudeProcessSpec,
+        additional_roots: Option<Vec<String>>,
         response_tx: mpsc::Sender<Result<ClaudeSessionState, String>>,
     },
     LoadSession {
@@ -97,6 +99,10 @@ enum RuntimeCommand {
         session_id: String,
         content: String,
         response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    PromptFinished {
+        session_id: String,
+        result: Result<(), String>,
     },
     Cancel {
         session_id: String,
@@ -202,6 +208,63 @@ impl StreamingState {
         if let Ok(mut guard) = self.current_thought_ids.lock() {
             guard.clear();
         }
+    }
+}
+
+struct PendingPrompt {
+    content: String,
+    response_tx: mpsc::Sender<Result<(), String>>,
+}
+
+#[derive(Default)]
+struct PromptQueueState {
+    active_sessions: HashSet<String>,
+    pending_by_session: HashMap<String, VecDeque<PendingPrompt>>,
+}
+
+impl PromptQueueState {
+    fn pop_next(&mut self, session_id: &str) -> Option<PendingPrompt> {
+        let next = self
+            .pending_by_session
+            .get_mut(session_id)
+            .and_then(VecDeque::pop_front);
+
+        if self
+            .pending_by_session
+            .get(session_id)
+            .is_some_and(VecDeque::is_empty)
+        {
+            self.pending_by_session.remove(session_id);
+        }
+
+        next
+    }
+
+    fn clear_session(&mut self, session_id: &str) -> Vec<PendingPrompt> {
+        self.active_sessions.remove(session_id);
+        self.pending_by_session
+            .remove(session_id)
+            .map(VecDeque::into_iter)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    fn clear_queued_session(&mut self, session_id: &str) -> Vec<PendingPrompt> {
+        self.pending_by_session
+            .remove(session_id)
+            .map(VecDeque::into_iter)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    fn clear_all(&mut self) -> Vec<PendingPrompt> {
+        self.active_sessions.clear();
+        self.pending_by_session
+            .drain()
+            .flat_map(|(_, queue)| queue.into_iter())
+            .collect()
     }
 }
 
@@ -673,10 +736,12 @@ impl PermissionState {
 /// spawned prompt task panics or is cancelled.
 struct TurnCompletionGuard {
     app: AppHandle,
+    command_tx: tokio_mpsc::UnboundedSender<RuntimeCommand>,
     streaming: StreamingState,
     session_id: String,
     fallback_message_id: String,
     completed: bool,
+    queue_drained: bool,
 }
 
 impl Drop for TurnCompletionGuard {
@@ -693,6 +758,12 @@ impl Drop for TurnCompletionGuard {
             .end_turn(&self.session_id)
             .unwrap_or_else(|| self.fallback_message_id.clone());
         emit_message_completed(&self.app, self.session_id.clone(), completed_id);
+        if !self.queue_drained {
+            let _ = self.command_tx.send(RuntimeCommand::PromptFinished {
+                session_id: self.session_id.clone(),
+                result: Err("Claude prompt task ended unexpectedly.".to_string()),
+            });
+        }
     }
 }
 
@@ -701,6 +772,7 @@ struct VaultAiAcpClient {
     streaming: StreamingState,
     tools: ToolState,
     permissions: PermissionState,
+    session_cache: ClaudeSessionCache,
 }
 
 #[derive(Debug, Clone)]
@@ -713,6 +785,55 @@ pub struct ClaudeSessionState {
     pub config_options: Vec<AiConfigOption>,
     /// Maps display model id to the effort levels the ACP supports for it.
     pub efforts_by_model: std::collections::HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClaudeSessionCache {
+    sessions: Arc<Mutex<HashMap<String, AiSession>>>,
+}
+
+impl ClaudeSessionCache {
+    pub(crate) fn contains(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .ok()
+            .is_some_and(|guard| guard.contains_key(session_id))
+    }
+
+    pub(crate) fn get(&self, session_id: &str) -> Option<AiSession> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(session_id).cloned())
+    }
+
+    pub(crate) fn upsert(&self, session: AiSession) {
+        if let Ok(mut guard) = self.sessions.lock() {
+            guard.insert(session.session_id.clone(), session);
+        }
+    }
+
+    pub(crate) fn update<F>(&self, session_id: &str, f: F) -> Option<AiSession>
+    where
+        F: FnOnce(&mut AiSession),
+    {
+        let mut guard = self.sessions.lock().ok()?;
+        let session = guard.get_mut(session_id)?;
+        f(session);
+        Some(session.clone())
+    }
+
+    pub(crate) fn remove(&self, session_id: &str) {
+        if let Ok(mut guard) = self.sessions.lock() {
+            guard.remove(session_id);
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Ok(mut guard) = self.sessions.lock() {
+            guard.clear();
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -861,16 +982,30 @@ impl Client for VaultAiAcpClient {
                     map_available_commands_update(&session_id, update),
                 );
             }
+            SessionUpdate::ConfigOptionUpdate(update) => {
+                let config_options = map_session_config_options(update.config_options);
+                if let Some(session) = self.session_cache.update(&session_id, |session| {
+                    apply_config_options_to_session(session, config_options.clone());
+                }) {
+                    emit_session_updated(&self.app, &session);
+                }
+            }
             SessionUpdate::CurrentModeUpdate(update) => {
+                let mode_id = update.current_mode_id.0.to_string();
+                if let Some(session) = self.session_cache.update(&session_id, |session| {
+                    apply_mode_update_to_session(session, &mode_id);
+                }) {
+                    emit_session_updated(&self.app, &session);
+                }
                 emit_status_event(
                     &self.app,
                     AiStatusEventPayload {
                         session_id,
-                        event_id: format!("mode:{}", update.current_mode_id.0),
+                        event_id: format!("mode:{mode_id}"),
                         kind: "mode_changed".to_string(),
                         status: "completed".to_string(),
                         title: "Mode changed".to_string(),
-                        detail: Some(update.current_mode_id.0.to_string()),
+                        detail: Some(mode_id),
                         emphasis: "neutral".to_string(),
                     },
                 );
@@ -888,8 +1023,9 @@ pub struct ClaudeRuntimeHandle {
 }
 
 impl ClaudeRuntimeHandle {
-    pub fn spawn(app: AppHandle) -> Self {
+    pub fn spawn(app: AppHandle, session_cache: ClaudeSessionCache) -> Self {
         let (command_tx, command_rx) = tokio_mpsc::unbounded_channel::<RuntimeCommand>();
+        let actor_command_tx = command_tx.clone();
 
         thread::spawn(move || {
             let app_for_error = app.clone();
@@ -907,7 +1043,9 @@ impl ClaudeRuntimeHandle {
 
             let local = LocalSet::new();
             local.block_on(&runtime, async move {
-                if let Err(error) = run_actor(command_rx, app).await {
+                if let Err(error) =
+                    run_actor(command_rx, app, actor_command_tx, session_cache).await
+                {
                     emit_session_error(&app_for_error, None, error);
                 }
             });
@@ -916,10 +1054,18 @@ impl ClaudeRuntimeHandle {
         Self { command_tx }
     }
 
-    pub fn create_session(&self, spec: ClaudeProcessSpec) -> Result<ClaudeSessionState, String> {
+    pub fn create_session(
+        &self,
+        spec: ClaudeProcessSpec,
+        additional_roots: Option<Vec<String>>,
+    ) -> Result<ClaudeSessionState, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
-            .send(RuntimeCommand::CreateSession { spec, response_tx })
+            .send(RuntimeCommand::CreateSession {
+                spec,
+                additional_roots,
+                response_tx,
+            })
             .map_err(|error| error.to_string())?;
         response_rx.recv().map_err(|error| error.to_string())?
     }
@@ -1116,8 +1262,10 @@ impl ClaudeRuntimeHandle {
 async fn run_actor(
     mut command_rx: tokio_mpsc::UnboundedReceiver<RuntimeCommand>,
     app: AppHandle,
+    command_tx: tokio_mpsc::UnboundedSender<RuntimeCommand>,
+    session_cache: ClaudeSessionCache,
 ) -> Result<(), String> {
-    let mut actor = RuntimeActor::new(app);
+    let mut actor = RuntimeActor::new(app, command_tx, session_cache);
     while let Some(command) = command_rx.recv().await {
         actor.handle(command).await;
     }
@@ -1126,24 +1274,34 @@ async fn run_actor(
 
 struct RuntimeActor {
     app: AppHandle,
+    command_tx: tokio_mpsc::UnboundedSender<RuntimeCommand>,
     connection: Option<Rc<ClientSideConnection>>,
     _io_task_done: Option<oneshot::Receiver<Result<(), String>>>,
+    prompt_queue: PromptQueueState,
     streaming: StreamingState,
     tools: ToolState,
     permissions: PermissionState,
+    session_cache: ClaudeSessionCache,
     initialized: bool,
     stderr_tail: Arc<Mutex<String>>,
 }
 
 impl RuntimeActor {
-    fn new(app: AppHandle) -> Self {
+    fn new(
+        app: AppHandle,
+        command_tx: tokio_mpsc::UnboundedSender<RuntimeCommand>,
+        session_cache: ClaudeSessionCache,
+    ) -> Self {
         Self {
             app,
+            command_tx,
             connection: None,
             _io_task_done: None,
+            prompt_queue: PromptQueueState::default(),
             streaming: StreamingState::new(),
             tools: ToolState::default(),
             permissions: PermissionState::default(),
+            session_cache,
             initialized: false,
             stderr_tail: Arc::new(Mutex::new(String::new())),
         }
@@ -1153,6 +1311,7 @@ impl RuntimeActor {
         self.connection = None;
         self._io_task_done = None;
         self.initialized = false;
+        self.fail_pending_prompts("The AI runtime process disconnected unexpectedly.".to_string());
         self.streaming.clear_all();
         self.tools.clear_all();
         self.permissions.clear_all();
@@ -1162,6 +1321,8 @@ impl RuntimeActor {
     }
 
     fn clear_session_state(&mut self, session_id: &str) {
+        let pending = self.prompt_queue.clear_session(session_id);
+        self.resolve_pending_prompts(pending, Ok(()));
         self.streaming.clear_session(session_id);
         self.tools.clear_session(session_id);
         self.permissions.clear_session(session_id);
@@ -1193,8 +1354,12 @@ impl RuntimeActor {
 
     async fn handle(&mut self, command: RuntimeCommand) {
         match command {
-            RuntimeCommand::CreateSession { spec, response_tx } => {
-                let result = self.create_session(spec).await;
+            RuntimeCommand::CreateSession {
+                spec,
+                additional_roots,
+                response_tx,
+            } => {
+                let result = self.create_session(spec, additional_roots).await;
                 let _ = response_tx.send(result);
             }
             RuntimeCommand::LoadSession {
@@ -1255,12 +1420,17 @@ impl RuntimeActor {
                 content,
                 response_tx,
             } => {
-                self.spawn_prompt(session_id, content, response_tx);
+                self.enqueue_prompt(session_id, content, response_tx);
+            }
+            RuntimeCommand::PromptFinished { session_id, result } => {
+                self.handle_prompt_finished(session_id, result);
             }
             RuntimeCommand::Cancel {
                 session_id,
                 response_tx,
             } => {
+                let pending = self.prompt_queue.clear_queued_session(&session_id);
+                self.resolve_pending_prompts(pending, Ok(()));
                 let result = self.cancel(session_id).await;
                 let _ = response_tx.send(result);
             }
@@ -1331,6 +1501,7 @@ impl RuntimeActor {
             streaming: self.streaming.clone(),
             tools: self.tools.clone(),
             permissions: self.permissions.clone(),
+            session_cache: self.session_cache.clone(),
         });
 
         let (connection, io_task) =
@@ -1409,7 +1580,11 @@ impl RuntimeActor {
                     .fs(FileSystemCapabilities::new()
                         .read_text_file(true)
                         .write_text_file(true))
-                    .terminal(false),
+                    .terminal(false)
+                    .meta(Meta::from_iter([(
+                        "terminal_output".to_string(),
+                        serde_json::json!(true),
+                    )])),
             )
             .client_info(
                 Implementation::new("vaultai", env!("CARGO_PKG_VERSION")).title("VaultAI"),
@@ -1427,6 +1602,7 @@ impl RuntimeActor {
     async fn create_session(
         &mut self,
         spec: ClaudeProcessSpec,
+        additional_roots: Option<Vec<String>>,
     ) -> Result<ClaudeSessionState, String> {
         let cwd = spec
             .cwd
@@ -1435,7 +1611,7 @@ impl RuntimeActor {
 
         let connection = self.ensure_initialized(&spec).await?;
         let response = connection
-            .new_session(NewSessionRequest::new(cwd.clone()))
+            .new_session(build_new_session_request(cwd.clone(), additional_roots))
             .await
             .map_err(|error| error.to_string())?;
 
@@ -1640,25 +1816,51 @@ impl RuntimeActor {
             .map_err(|error| error.to_string())
     }
 
-    fn spawn_prompt(
+    fn enqueue_prompt(
         &mut self,
         session_id: String,
         content: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     ) {
+        let pending = PendingPrompt {
+            content,
+            response_tx,
+        };
+
+        if self.prompt_queue.active_sessions.insert(session_id.clone()) {
+            self.start_prompt(session_id, pending);
+            return;
+        }
+
+        self.prompt_queue
+            .pending_by_session
+            .entry(session_id)
+            .or_default()
+            .push_back(pending);
+    }
+
+    fn start_prompt(&mut self, session_id: String, pending: PendingPrompt) {
         if let Err(error) = self.poll_connection_health() {
-            let _ = response_tx.send(Err(error));
+            let _ = pending.response_tx.send(Err(error.clone()));
+            self.fail_queued_prompts_for_session(&session_id, error);
+            self.prompt_queue.active_sessions.remove(&session_id);
             return;
         }
         let connection = match self.connection.as_ref() {
             Some(c) => c.clone(),
             None => {
-                let _ = response_tx.send(Err("ACP runtime is not initialized.".to_string()));
+                let error = "ACP runtime is not initialized.".to_string();
+                let _ = pending.response_tx.send(Err(error.clone()));
+                self.fail_queued_prompts_for_session(&session_id, error);
+                self.prompt_queue.active_sessions.remove(&session_id);
                 return;
             }
         };
         let streaming = self.streaming.clone();
         let app = self.app.clone();
+        let command_tx = self.command_tx.clone();
+        let response_tx = pending.response_tx;
+        let content = pending.content;
 
         tokio::task::spawn_local(async move {
             let message_id = streaming.begin_turn(&session_id);
@@ -1667,10 +1869,12 @@ impl RuntimeActor {
             // Guard ensures emit_message_completed fires even on panic/drop.
             let mut guard = TurnCompletionGuard {
                 app: app.clone(),
+                command_tx: command_tx.clone(),
                 streaming: streaming.clone(),
                 session_id: session_id.clone(),
                 fallback_message_id: message_id,
                 completed: false,
+                queue_drained: false,
             };
 
             let result = connection
@@ -1679,19 +1883,58 @@ impl RuntimeActor {
                     vec![ContentBlock::from(content)],
                 ))
                 .await
-                .map(|_| ());
+                .map(|_| ())
+                .map_err(|error| error.to_string());
 
             if let Some(thinking_id) = streaming.end_thought(&session_id) {
                 emit_thinking_completed(&app, session_id.clone(), thinking_id);
             }
             let completed_id = streaming.end_turn(&session_id).unwrap_or_default();
             if !completed_id.is_empty() {
-                emit_message_completed(&app, session_id, completed_id);
+                emit_message_completed(&app, session_id.clone(), completed_id);
             }
             guard.completed = true;
+            guard.queue_drained = true;
 
-            let _ = response_tx.send(result.map_err(|e| e.to_string()));
+            let drain_result = result.clone();
+            let _ = response_tx.send(result);
+            let _ = command_tx.send(RuntimeCommand::PromptFinished {
+                session_id,
+                result: drain_result,
+            });
         });
+    }
+
+    fn handle_prompt_finished(&mut self, session_id: String, result: Result<(), String>) {
+        self.prompt_queue.active_sessions.remove(&session_id);
+
+        match result {
+            Ok(()) => {
+                if let Some(next) = self.prompt_queue.pop_next(&session_id) {
+                    self.prompt_queue.active_sessions.insert(session_id.clone());
+                    self.start_prompt(session_id, next);
+                }
+            }
+            Err(error) => {
+                self.fail_queued_prompts_for_session(&session_id, error);
+            }
+        }
+    }
+
+    fn resolve_pending_prompts(&self, pending: Vec<PendingPrompt>, result: Result<(), String>) {
+        for pending_prompt in pending {
+            let _ = pending_prompt.response_tx.send(result.clone());
+        }
+    }
+
+    fn fail_queued_prompts_for_session(&mut self, session_id: &str, error: String) {
+        let pending = self.prompt_queue.clear_queued_session(session_id);
+        self.resolve_pending_prompts(pending, Err(error));
+    }
+
+    fn fail_pending_prompts(&mut self, error: String) {
+        let pending = self.prompt_queue.clear_all();
+        self.resolve_pending_prompts(pending, Err(error));
     }
 
     async fn cancel(&mut self, session_id: String) -> Result<(), String> {
@@ -1944,6 +2187,58 @@ fn map_session_config_options(
             })
         })
         .collect()
+}
+
+fn build_new_session_request(
+    cwd: PathBuf,
+    additional_roots: Option<Vec<String>>,
+) -> NewSessionRequest {
+    let additional_roots = additional_roots
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|root| !root.is_empty())
+        .collect::<Vec<_>>();
+
+    let request = NewSessionRequest::new(cwd);
+    if additional_roots.is_empty() {
+        request
+    } else {
+        request.meta(Meta::from_iter([(
+            "additionalRoots".to_string(),
+            serde_json::json!(additional_roots),
+        )]))
+    }
+}
+
+fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
+    session.mode_id = mode_id.to_string();
+    if let Some(option) = session
+        .config_options
+        .iter_mut()
+        .find(|option| option.id == "mode")
+    {
+        option.value = mode_id.to_string();
+    }
+}
+
+fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<AiConfigOption>) {
+    let mode_id = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+        .map(|option| option.value.clone());
+    let model_id = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|option| option.value.clone());
+
+    session.config_options = config_options;
+
+    if let Some(mode_id) = mode_id {
+        session.mode_id = mode_id;
+    }
+    if let Some(model_id) = model_id {
+        session.model_id = model_id;
+    }
 }
 
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
@@ -2462,11 +2757,218 @@ fn collect_tool_call_diffs(tool_call: &ToolCall, cwd: Option<&Path>) -> Vec<AiFi
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use agent_client_protocol::{Content, Diff, Meta, ToolCallId, ToolCallUpdateFields, ToolKind};
 
     use super::*;
+
+    fn test_select_option(value: &str) -> AiConfigSelectOption {
+        AiConfigSelectOption {
+            value: value.to_string(),
+            label: value.to_string(),
+            description: None,
+        }
+    }
+
+    fn test_config_option(
+        id: &str,
+        category: AiConfigOptionCategory,
+        value: &str,
+        options: Vec<AiConfigSelectOption>,
+    ) -> AiConfigOption {
+        AiConfigOption {
+            id: id.to_string(),
+            runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+            category,
+            label: id.to_string(),
+            description: None,
+            kind: "select".to_string(),
+            value: value.to_string(),
+            options,
+        }
+    }
+
+    fn test_session() -> AiSession {
+        AiSession {
+            session_id: "session-1".to_string(),
+            runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+            model_id: "claude-3-5-sonnet".to_string(),
+            mode_id: "default".to_string(),
+            status: vault_ai_ai::AiSessionStatus::Idle,
+            efforts_by_model: HashMap::new(),
+            models: Vec::new(),
+            modes: Vec::new(),
+            config_options: vec![
+                test_config_option(
+                    "model",
+                    AiConfigOptionCategory::Model,
+                    "claude-3-5-sonnet",
+                    vec![
+                        test_select_option("claude-3-5-sonnet"),
+                        test_select_option("claude-3-7-sonnet"),
+                    ],
+                ),
+                test_config_option(
+                    "mode",
+                    AiConfigOptionCategory::Mode,
+                    "default",
+                    vec![test_select_option("default"), test_select_option("plan")],
+                ),
+            ],
+        }
+    }
+
+    fn test_pending_prompt(content: &str) -> (PendingPrompt, mpsc::Receiver<Result<(), String>>) {
+        let (response_tx, response_rx) = mpsc::channel();
+        (
+            PendingPrompt {
+                content: content.to_string(),
+                response_tx,
+            },
+            response_rx,
+        )
+    }
+
+    #[test]
+    fn apply_mode_update_updates_session_and_mode_config_option() {
+        let mut session = test_session();
+
+        apply_mode_update_to_session(&mut session, "plan");
+
+        assert_eq!(session.mode_id, "plan");
+        assert_eq!(
+            session
+                .config_options
+                .iter()
+                .find(|option| option.id == "mode")
+                .map(|option| option.value.as_str()),
+            Some("plan")
+        );
+    }
+
+    #[test]
+    fn apply_config_options_updates_config_options_and_derived_ids() {
+        let mut session = test_session();
+        let updated_options = vec![
+            test_config_option(
+                "model",
+                AiConfigOptionCategory::Model,
+                "claude-3-7-sonnet",
+                vec![
+                    test_select_option("claude-3-5-sonnet"),
+                    test_select_option("claude-3-7-sonnet"),
+                ],
+            ),
+            test_config_option(
+                "mode",
+                AiConfigOptionCategory::Mode,
+                "plan",
+                vec![test_select_option("default"), test_select_option("plan")],
+            ),
+            test_config_option(
+                "reasoning",
+                AiConfigOptionCategory::Reasoning,
+                "high",
+                vec![test_select_option("medium"), test_select_option("high")],
+            ),
+        ];
+
+        apply_config_options_to_session(&mut session, updated_options.clone());
+
+        assert_eq!(session.model_id, "claude-3-7-sonnet");
+        assert_eq!(session.mode_id, "plan");
+        assert_eq!(session.config_options, updated_options);
+    }
+
+    #[test]
+    fn prompt_queue_pop_next_preserves_order_and_cleans_empty_queue() {
+        let mut queue = PromptQueueState::default();
+        queue.active_sessions.insert("session-1".to_string());
+        let (first, _) = test_pending_prompt("first");
+        let (second, _) = test_pending_prompt("second");
+        queue
+            .pending_by_session
+            .entry("session-1".to_string())
+            .or_default()
+            .push_back(first);
+        queue
+            .pending_by_session
+            .entry("session-1".to_string())
+            .or_default()
+            .push_back(second);
+
+        let first = queue.pop_next("session-1").unwrap();
+        let second = queue.pop_next("session-1").unwrap();
+
+        assert_eq!(first.content, "first");
+        assert_eq!(second.content, "second");
+        assert!(!queue.pending_by_session.contains_key("session-1"));
+        assert!(queue.active_sessions.contains("session-1"));
+    }
+
+    #[test]
+    fn prompt_queue_clear_queued_session_keeps_active_turn() {
+        let mut queue = PromptQueueState::default();
+        queue.active_sessions.insert("session-1".to_string());
+        let (queued, _) = test_pending_prompt("queued");
+        queue
+            .pending_by_session
+            .entry("session-1".to_string())
+            .or_default()
+            .push_back(queued);
+
+        let pending = queue.clear_queued_session("session-1");
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "queued");
+        assert!(queue.active_sessions.contains("session-1"));
+        assert!(!queue.pending_by_session.contains_key("session-1"));
+    }
+
+    #[test]
+    fn prompt_queue_clear_session_removes_active_turn_and_queued_prompts() {
+        let mut queue = PromptQueueState::default();
+        queue.active_sessions.insert("session-1".to_string());
+        let (queued, _) = test_pending_prompt("queued");
+        queue
+            .pending_by_session
+            .entry("session-1".to_string())
+            .or_default()
+            .push_back(queued);
+
+        let pending = queue.clear_session("session-1");
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "queued");
+        assert!(!queue.active_sessions.contains("session-1"));
+        assert!(!queue.pending_by_session.contains_key("session-1"));
+    }
+
+    #[test]
+    fn build_new_session_request_includes_additional_roots_meta() {
+        let request = build_new_session_request(
+            PathBuf::from("/vault"),
+            Some(vec!["/shared".to_string(), "relative/root".to_string()]),
+        );
+
+        let additional_roots = request
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("additionalRoots"))
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap();
+
+        assert_eq!(
+            additional_roots,
+            vec![
+                serde_json::json!("/shared"),
+                serde_json::json!("relative/root"),
+            ]
+        );
+    }
 
     fn map_with_tool_state(
         tool_state: &ToolState,

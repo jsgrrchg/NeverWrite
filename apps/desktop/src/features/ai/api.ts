@@ -432,9 +432,13 @@ export async function aiForkRuntimeSession(
 export async function aiCreateSession(
     runtimeId: string,
     vaultPath: string | null,
+    additionalRoots?: string[] | null,
 ) {
     const session = await invoke<AIBackendSessionPayload>("ai_create_session", {
-        runtimeId,
+        input: {
+            runtime_id: runtimeId,
+            additional_roots: additionalRoots ?? null,
+        },
         vaultPath: vaultPath ?? null,
     });
     return normalizeBackendSession(session);

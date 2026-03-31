@@ -38,6 +38,11 @@ import {
 } from "../../../app/store/vaultStore";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
+    isAbsoluteVaultPath,
+    normalizeVaultPath,
+    normalizeVaultRoot,
+} from "../../../app/utils/vaultPaths";
+import {
     appendSelectionMentionPart,
     createEmptyComposerParts,
     serializeComposerParts,
@@ -1581,6 +1586,127 @@ function cloneComposerParts(parts: AIComposerPart[]): AIComposerPart[] {
     return parts.map(cloneComposerPart);
 }
 
+function normalizeComparablePath(path: string) {
+    return normalizeVaultPath(path).replace(/\/+$/, "");
+}
+
+function isPathInsideRoot(path: string, root: string) {
+    const normalizedPath = normalizeComparablePath(path);
+    const normalizedRoot = normalizeVaultRoot(root);
+    if (!normalizedRoot) {
+        return false;
+    }
+
+    return (
+        normalizedPath === normalizedRoot ||
+        normalizedPath.startsWith(`${normalizedRoot}/`)
+    );
+}
+
+function getParentDirectory(path: string) {
+    const normalizedPath = normalizeComparablePath(path);
+    if (!normalizedPath) {
+        return null;
+    }
+
+    const lastSlashIndex = normalizedPath.lastIndexOf("/");
+    if (lastSlashIndex < 0) {
+        return null;
+    }
+
+    if (lastSlashIndex === 0) {
+        return "/";
+    }
+
+    return normalizedPath.slice(0, lastSlashIndex);
+}
+
+function getAdditionalRootCandidateForAttachment(
+    attachment: AIChatAttachment,
+): string | null {
+    if (attachment.type === "folder") {
+        const folderPath = attachment.noteId ?? attachment.path;
+        if (!folderPath || !isAbsoluteVaultPath(folderPath)) {
+            return null;
+        }
+
+        return normalizeComparablePath(folderPath);
+    }
+
+    const filePath = attachment.filePath ?? attachment.path;
+    if (!filePath || !isAbsoluteVaultPath(filePath)) {
+        return null;
+    }
+
+    return getParentDirectory(filePath);
+}
+
+function collectExternalAdditionalRoots(
+    attachments: AIChatAttachment[],
+    vaultPath: string | null,
+) {
+    const roots = new Set<string>();
+
+    for (const attachment of attachments) {
+        const candidateRoot =
+            getAdditionalRootCandidateForAttachment(attachment);
+        if (!candidateRoot) {
+            continue;
+        }
+
+        if (vaultPath && isPathInsideRoot(candidateRoot, vaultPath)) {
+            continue;
+        }
+
+        roots.add(candidateRoot);
+    }
+
+    return [...roots];
+}
+
+function canRecreateSessionForAdditionalRoots(
+    session: AIChatSession,
+    sessionId: string,
+    state: Pick<
+        ChatStore,
+        | "queuedMessagesBySessionId"
+        | "queuedMessageEditBySessionId"
+        | "sessionsById"
+    >,
+) {
+    if (session.runtimeId !== "claude-acp") {
+        return false;
+    }
+
+    if (
+        session.isResumingSession ||
+        session.runtimeState !== "live" ||
+        session.status !== "idle" ||
+        session.messages.length > 0
+    ) {
+        return false;
+    }
+
+    if ((state.queuedMessagesBySessionId[sessionId]?.length ?? 0) > 0) {
+        return false;
+    }
+
+    return !state.queuedMessageEditBySessionId[sessionId];
+}
+
+function registerOpenEditorBaselines(sessionId: string) {
+    const tabs = useEditorStore.getState().tabs;
+    for (const tab of tabs) {
+        if (isNoteTab(tab) && tab.content != null) {
+            aiRegisterFileBaseline(
+                sessionId,
+                `${tab.noteId}.md`,
+                tab.content,
+            ).catch(() => {});
+        }
+    }
+}
+
 function buildQueuedMessage(
     session: AIChatSession,
     composerParts: AIComposerPart[],
@@ -1702,6 +1828,156 @@ function restoreQueuedMessagePosition(
     }
 
     return insertQueuedMessageAtIndex(queue, editState.originalIndex, item);
+}
+
+async function replaceEmptySessionForAdditionalRoots(
+    sessionId: string,
+    queuedItem: QueuedChatMessage,
+) {
+    const state = useChatStore.getState();
+    const session = state.sessionsById[sessionId];
+    if (!session) {
+        return sessionId;
+    }
+
+    const vaultPath = session.vaultPath ?? useVaultStore.getState().vaultPath;
+    const additionalRoots = collectExternalAdditionalRoots(
+        queuedItem.attachments,
+        vaultPath ?? null,
+    );
+    if (
+        additionalRoots.length === 0 ||
+        !canRecreateSessionForAdditionalRoots(session, sessionId, state)
+    ) {
+        return sessionId;
+    }
+
+    const replacementSession = await aiCreateSession(
+        session.runtimeId,
+        vaultPath ?? null,
+        additionalRoots,
+    );
+
+    const latestState = useChatStore.getState();
+    const latestSession = latestState.sessionsById[sessionId];
+    if (
+        !latestSession ||
+        !canRecreateSessionForAdditionalRoots(
+            latestSession,
+            sessionId,
+            latestState,
+        )
+    ) {
+        await aiDeleteRuntimeSession(replacementSession.sessionId).catch(
+            () => {},
+        );
+        if (vaultPath) {
+            await aiDeleteSessionHistory(
+                vaultPath,
+                replacementSession.historySessionId,
+            ).catch(() => {});
+        }
+        return sessionId;
+    }
+
+    const previousParts =
+        latestState.composerPartsBySessionId[sessionId] ??
+        createEmptyComposerParts();
+    const previousQueue =
+        latestState.queuedMessagesBySessionId[sessionId] ?? [];
+    const previousQueuedMessageEdit =
+        latestState.queuedMessageEditBySessionId[sessionId];
+    const migratedSession: AIChatSession = {
+        ...replacementSession,
+        attachments: latestSession.attachments.map(cloneAttachment),
+        resumeContextPending: latestSession.resumeContextPending ?? false,
+    };
+
+    useChatStore.setState((currentState) => {
+        const currentSession = currentState.sessionsById[sessionId];
+        if (
+            !currentSession ||
+            !canRecreateSessionForAdditionalRoots(
+                currentSession,
+                sessionId,
+                currentState,
+            )
+        ) {
+            return currentState;
+        }
+
+        const nextSessionsById = { ...currentState.sessionsById };
+        delete nextSessionsById[sessionId];
+
+        const nextComposerParts = {
+            ...currentState.composerPartsBySessionId,
+        };
+        delete nextComposerParts[sessionId];
+        nextComposerParts[migratedSession.sessionId] = previousParts;
+
+        const nextQueuedMessagesBySessionId = {
+            ...currentState.queuedMessagesBySessionId,
+        };
+        delete nextQueuedMessagesBySessionId[sessionId];
+        if (previousQueue.length > 0) {
+            nextQueuedMessagesBySessionId[migratedSession.sessionId] =
+                previousQueue;
+        }
+
+        const nextQueuedMessageEditBySessionId = {
+            ...currentState.queuedMessageEditBySessionId,
+        };
+        delete nextQueuedMessageEditBySessionId[sessionId];
+        if (previousQueuedMessageEdit) {
+            nextQueuedMessageEditBySessionId[migratedSession.sessionId] =
+                previousQueuedMessageEdit;
+        }
+
+        return {
+            runtimes: hydrateRuntimesFromSessions(currentState.runtimes, [
+                migratedSession,
+            ]),
+            sessionsById: {
+                ...nextSessionsById,
+                [migratedSession.sessionId]: migratedSession,
+            },
+            sessionOrder: touchSessionOrder(
+                currentState.sessionOrder.filter((id) => id !== sessionId),
+                migratedSession.sessionId,
+            ),
+            activeSessionId:
+                currentState.activeSessionId === sessionId
+                    ? migratedSession.sessionId
+                    : currentState.activeSessionId,
+            composerPartsBySessionId: nextComposerParts,
+            queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
+            queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+        };
+    });
+
+    clearStaleStreamingCheck(sessionId);
+    _queueDrainLocks.delete(sessionId);
+    replaceChatRowUiSessionId(sessionId, migratedSession.sessionId);
+    useChatTabsStore
+        .getState()
+        .replaceSessionId(
+            sessionId,
+            migratedSession.sessionId,
+            migratedSession.historySessionId,
+            migratedSession.runtimeId,
+        );
+
+    registerOpenEditorBaselines(migratedSession.sessionId);
+    await persistSessionNow(migratedSession);
+    await aiDeleteRuntimeSession(sessionId).catch(() => {});
+    if (vaultPath) {
+        await aiDeleteSessionHistory(
+            vaultPath,
+            latestSession.historySessionId,
+        ).catch(() => {});
+    }
+
+    return migratedSession.sessionId;
 }
 
 function prioritizeQueuedMessage(
@@ -3568,6 +3844,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         try {
+            if (source === "immediate") {
+                const replacementSessionId =
+                    await replaceEmptySessionForAdditionalRoots(
+                        activeSessionId,
+                        currentItem,
+                    );
+                if (replacementSessionId !== activeSessionId) {
+                    activeSessionId = replacementSessionId;
+                    session = get().sessionsById[activeSessionId];
+                    if (!session || isSessionBusy(session)) {
+                        return;
+                    }
+                }
+            }
+
             session =
                 (await syncQueuedMessageConfig(activeSessionId, currentItem)) ??
                 session;
@@ -5082,17 +5373,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                 }
 
-                // Register baselines for all open editor tabs
-                const resumedTabs = useEditorStore.getState().tabs;
-                for (const tab of resumedTabs) {
-                    if (isNoteTab(tab) && tab.content != null) {
-                        aiRegisterFileBaseline(
-                            resumedSession.sessionId,
-                            `${tab.noteId}.md`,
-                            tab.content,
-                        ).catch(() => {});
-                    }
-                }
+                registerOpenEditorBaselines(resumedSession.sessionId);
 
                 const migratedSession = startNewWorkCycle(
                     replaceSessionTranscript(
@@ -7260,17 +7541,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 get().upsertSession(session, true);
                 await persistSessionNow(session);
 
-                // Register baselines for all open editor tabs
-                const tabs = useEditorStore.getState().tabs;
-                for (const tab of tabs) {
-                    if (isNoteTab(tab) && tab.content != null) {
-                        aiRegisterFileBaseline(
-                            session.sessionId,
-                            `${tab.noteId}.md`,
-                            tab.content,
-                        ).catch(() => {});
-                    }
-                }
+                registerOpenEditorBaselines(session.sessionId);
 
                 // Restore saved preferences
                 const prefs = loadAiPreferences();

@@ -6974,7 +6974,10 @@ describe("chatStore", () => {
             ],
         });
         expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
-            runtimeId: "codex-acp",
+            input: {
+                runtime_id: "codex-acp",
+                additional_roots: null,
+            },
             vaultPath: "/vault",
         });
     });
@@ -7180,6 +7183,222 @@ describe("chatStore", () => {
         expect(
             invokeMock.mock.calls.some(
                 ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+    });
+
+    it("recreates an empty Claude session with additionalRoots on the first external file send", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const claudeRuntimePayload = [
+            {
+                runtime: {
+                    id: "claude-acp",
+                    name: "Claude ACP",
+                    description: "Claude runtime embedded as an ACP sidecar.",
+                    capabilities: ["create_session", "attachments"],
+                },
+                models: [],
+                modes: [],
+                config_options: [],
+            },
+        ];
+        const claudeSetupStatus = {
+            ...readySetupStatus,
+            runtime_id: "claude-acp",
+            binary_path: "/Applications/VaultAI/claude-agent-acp",
+        };
+        const claudeSessionPayload = {
+            session_id: "claude-session-1",
+            runtime_id: "claude-acp",
+            model_id: "claude-sonnet",
+            mode_id: "default",
+            status: "idle" as const,
+            models: [
+                {
+                    id: "claude-sonnet",
+                    runtime_id: "claude-acp",
+                    name: "Claude Sonnet",
+                    description: "Claude test model.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtime_id: "claude-acp",
+                    name: "Default",
+                    description: "Claude default mode.",
+                    disabled: false,
+                },
+            ],
+            config_options: [],
+        };
+        const replacementClaudeSessionPayload = {
+            ...claudeSessionPayload,
+            session_id: "claude-session-2",
+        };
+
+        let createSessionCount = 0;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return claudeRuntimePayload;
+            if (command === "ai_get_setup_status") return claudeSetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_create_session") {
+                createSessionCount += 1;
+                return createSessionCount === 1
+                    ? claudeSessionPayload
+                    : replacementClaudeSessionPayload;
+            }
+            if (command === "ai_send_message") {
+                expect(args).toMatchObject({
+                    sessionId: "claude-session-2",
+                    attachments: [
+                        expect.objectContaining({
+                            filePath:
+                                "/home/user/projects/VaultAI/README.md",
+                        }),
+                    ],
+                });
+                return {
+                    ...replacementClaudeSessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        useChatStore
+            .getState()
+            .attachFile(
+                "/home/user/projects/VaultAI/README.md",
+                "README.md",
+                "text/markdown",
+            );
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Review this"));
+
+        await useChatStore.getState().sendMessage();
+
+        const state = useChatStore.getState();
+        expect(state.activeSessionId).toBe("claude-session-2");
+        expect(state.sessionsById["claude-session-1"]).toBeUndefined();
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toHaveLength(2);
+        expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
+            input: {
+                runtime_id: "claude-acp",
+                additional_roots: null,
+            },
+            vaultPath: "/vault",
+        });
+        expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
+            input: {
+                runtime_id: "claude-acp",
+                additional_roots: ["/home/user/projects/VaultAI"],
+            },
+            vaultPath: "/vault",
+        });
+        expect(invokeMock).toHaveBeenCalledWith("ai_delete_runtime_session", {
+            sessionId: "claude-session-1",
+        });
+        expect(invokeMock).toHaveBeenCalledWith("ai_delete_session_history", {
+            vaultPath: "/vault",
+            sessionId: "claude-session-1",
+        });
+    });
+
+    it("keeps the existing Claude session when the first file send stays inside the vault", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const claudeRuntimePayload = [
+            {
+                runtime: {
+                    id: "claude-acp",
+                    name: "Claude ACP",
+                    description: "Claude runtime embedded as an ACP sidecar.",
+                    capabilities: ["create_session", "attachments"],
+                },
+                models: [],
+                modes: [],
+                config_options: [],
+            },
+        ];
+        const claudeSetupStatus = {
+            ...readySetupStatus,
+            runtime_id: "claude-acp",
+            binary_path: "/Applications/VaultAI/claude-agent-acp",
+        };
+        const claudeSessionPayload = {
+            session_id: "claude-session-1",
+            runtime_id: "claude-acp",
+            model_id: "claude-sonnet",
+            mode_id: "default",
+            status: "idle" as const,
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return claudeRuntimePayload;
+            if (command === "ai_get_setup_status") return claudeSetupStatus;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_create_session") return claudeSessionPayload;
+            if (command === "ai_send_message") {
+                expect(args).toMatchObject({
+                    sessionId: "claude-session-1",
+                });
+                return {
+                    ...claudeSessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        useChatStore
+            .getState()
+            .attachFile("/vault/docs/guide.md", "guide.md", "text/markdown");
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Review this"));
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toHaveLength(1);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_delete_runtime_session",
             ),
         ).toBe(false);
     });

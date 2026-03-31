@@ -83,6 +83,7 @@ impl AiRuntimeAdapter for GeminiRuntimeAdapter {
         &mut self,
         app: &AppHandle,
         vault_root: Option<PathBuf>,
+        _additional_roots: Option<Vec<String>>,
     ) -> Result<AiSession, String> {
         let process_spec = self.runtime.process_spec(app, vault_root)?;
         let created = match self.handle(app).create_session(process_spec) {
