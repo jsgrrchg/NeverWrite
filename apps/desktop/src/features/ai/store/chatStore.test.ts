@@ -7516,8 +7516,7 @@ describe("chatStore", () => {
                     sessionId: "claude-session-2",
                     attachments: [
                         expect.objectContaining({
-                            filePath:
-                                "/home/user/projects/VaultAI/README.md",
+                            filePath: "/home/user/projects/VaultAI/README.md",
                         }),
                     ],
                 });
