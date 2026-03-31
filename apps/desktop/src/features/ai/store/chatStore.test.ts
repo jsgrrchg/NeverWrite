@@ -2832,7 +2832,12 @@ describe("chatStore", () => {
         ).toBe(true);
         expect(
             useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
-        ).toBeUndefined();
+        ).toMatchObject([
+            {
+                content: "Send after this turn",
+                status: "sending",
+            },
+        ]);
         expect(
             useChatStore
                 .getState()
@@ -2840,6 +2845,255 @@ describe("chatStore", () => {
                     activeSessionId
                 ]?.messages.some((message) => message.role === "user" && message.content === "Send after this turn"),
         ).toBe(true);
+    });
+
+    it("pauses the queue on cancel and resumes it only after the next manual send", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                const content =
+                    typeof args === "object" &&
+                    args !== null &&
+                    "content" in args &&
+                    typeof args.content === "string"
+                        ? args.content
+                        : "";
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                    model_id:
+                        content === "Manual redirect"
+                            ? sessionPayload.model_id
+                            : sessionPayload.model_id,
+                };
+            }
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "Queued after cancel"),
+                ],
+            },
+        }));
+
+        await useChatStore.getState().stopStreaming(activeSessionId);
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1"]);
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId]
+                ?.reinstateAfterNextManualSend,
+        ).toEqual([]);
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-cancelled",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Queued after cancel",
+            ),
+        ).toHaveLength(0);
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Manual redirect"));
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Manual redirect",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1"]);
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-after-manual",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Queued after cancel",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it("requeues the in-flight queued message after cancel and preserves order after the next manual send", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "First queued"),
+                    createQueuedMessage("queued-2", "Second queued"),
+                ],
+            },
+        }));
+
+        await useChatStore.getState().tryDrainQueue(activeSessionId);
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1", "queued-2"]);
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item.id,
+        ).toBe("queued-1");
+
+        await useChatStore.getState().stopStreaming(activeSessionId);
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1", "queued-2"]);
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId]
+                ?.reinstateAfterNextManualSend,
+        ).toEqual([]);
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Manual redirect"));
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1", "queued-2"]);
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId],
+        ).toBeUndefined();
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-after-manual",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "First queued",
+            ),
+        ).toHaveLength(2);
     });
 
     it("retries a failed queued message without duplicating the user turn", async () => {
@@ -2929,7 +3183,12 @@ describe("chatStore", () => {
         ).toHaveLength(1);
         expect(
             useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
-        ).toBeUndefined();
+        ).toMatchObject([
+            {
+                content: "Retry me once",
+                status: "sending",
+            },
+        ]);
         expect(sendAttempts).toBe(2);
     });
 
