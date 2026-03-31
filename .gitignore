@@ -14,10 +14,8 @@ CLAUDE.md
 .vaultai-cache/
 .PERSONAL
 .trash/
-apps/desktop/src-tauri/binaries/codex-acp
-apps/desktop/src-tauri/binaries/codex-acp.exe
-apps/desktop/src-tauri/binaries/claude-agent-acp
-apps/desktop/src-tauri/binaries/claude-agent-acp.exe
+apps/desktop/src-tauri/binaries/*
+!apps/desktop/src-tauri/binaries/README.md
 apps/desktop/src-tauri/embedded/
 vendor/
 apps/desktop/dist/
