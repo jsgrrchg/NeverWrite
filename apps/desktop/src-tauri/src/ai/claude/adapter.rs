@@ -6,7 +6,7 @@ use vault_ai_ai::{AiRuntimeSessionSummary, AiSession, AiSessionStatus, CLAUDE_RU
 use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
 
 use super::{
-    client::ClaudeRuntimeHandle,
+    client::{ClaudeRuntimeHandle, ClaudeSessionCache},
     process::ClaudeRuntime,
     setup::{
         clear_authenticated_method, clear_gateway_settings, launch_claude_login,
@@ -15,16 +15,11 @@ use super::{
     ClaudeSetupInput,
 };
 
-#[derive(Debug, Clone)]
-struct ClaudeManagedSession {
-    session: AiSession,
-}
-
 #[derive(Debug, Default)]
 pub struct ClaudeRuntimeAdapter {
     runtime: ClaudeRuntime,
     handle: Option<ClaudeRuntimeHandle>,
-    sessions: HashMap<String, ClaudeManagedSession>,
+    session_cache: ClaudeSessionCache,
 }
 
 impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
@@ -92,9 +87,13 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         &mut self,
         app: &AppHandle,
         vault_root: Option<PathBuf>,
+        additional_roots: Option<Vec<String>>,
     ) -> Result<AiSession, String> {
         let process_spec = self.runtime.process_spec(app, vault_root)?;
-        let created = match self.handle(app).create_session(process_spec) {
+        let created = match self
+            .handle(app)
+            .create_session(process_spec, additional_roots)
+        {
             Ok(session) => session,
             Err(error) => {
                 self.invalidate_auth_if_needed(app, &error);
@@ -114,26 +113,19 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
             config_options: created.config_options,
         };
 
-        self.sessions.insert(
-            session.session_id.clone(),
-            ClaudeManagedSession {
-                session: session.clone(),
-            },
-        );
+        self.session_cache.upsert(session.clone());
 
         Ok(session)
     }
 
     fn get_session(&self, session_id: &str) -> Option<AiSession> {
-        self.sessions
-            .get(session_id)
-            .map(|managed| managed.session.clone())
+        self.session_cache.get(session_id)
     }
 
     fn sync_state(&mut self) -> Result<(), String> {
         if let Some(handle) = self.handle.as_ref() {
             if let Err(error) = handle.check_health() {
-                self.sessions.clear();
+                self.session_cache.clear();
                 return Err(error);
             }
         }
@@ -141,7 +133,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
     }
 
     fn remove_session(&mut self, session_id: &str) {
-        self.sessions.remove(session_id);
+        self.session_cache.remove(session_id);
         if let Some(handle) = self.handle.as_ref() {
             handle.clear_session_state(session_id);
         }
@@ -187,12 +179,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
             config_options: loaded.config_options,
         };
 
-        self.sessions.insert(
-            session.session_id.clone(),
-            ClaudeManagedSession {
-                session: session.clone(),
-            },
-        );
+        self.session_cache.upsert(session.clone());
 
         Ok(session)
     }
@@ -236,12 +223,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
             config_options: resumed.config_options,
         };
 
-        self.sessions.insert(
-            session.session_id.clone(),
-            ClaudeManagedSession {
-                session: session.clone(),
-            },
-        );
+        self.session_cache.upsert(session.clone());
 
         Ok(session)
     }
@@ -273,27 +255,16 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
             config_options: forked.config_options,
         };
 
-        self.sessions.insert(
-            session.session_id.clone(),
-            ClaudeManagedSession {
-                session: session.clone(),
-            },
-        );
+        self.session_cache.upsert(session.clone());
 
         Ok(session)
     }
 
     fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<AiSession, String> {
         let supports_model = self
-            .sessions
+            .session_cache
             .get(session_id)
-            .map(|managed| {
-                managed
-                    .session
-                    .models
-                    .iter()
-                    .any(|model| model.id == model_id)
-            })
+            .map(|session| session.models.iter().any(|model| model.id == model_id))
             .unwrap_or(false);
         if !supports_model {
             return Err(format!("Modelo no soportado por Claude ACP: {model_id}"));
@@ -302,24 +273,25 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         self.handle_from_session(session_id)?
             .set_model(session_id, model_id)?;
 
-        let managed = self.session_mut(session_id)?;
-        managed.session.model_id = model_id.to_string();
-        if let Some(option) = managed
-            .session
-            .config_options
-            .iter_mut()
-            .find(|option| option.id == "model")
-        {
-            option.value = model_id.to_string();
-        }
-        Ok(managed.session.clone())
+        self.session_cache
+            .update(session_id, |session| {
+                session.model_id = model_id.to_string();
+                if let Some(option) = session
+                    .config_options
+                    .iter_mut()
+                    .find(|option| option.id == "model")
+                {
+                    option.value = model_id.to_string();
+                }
+            })
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn set_mode(&mut self, session_id: &str, mode_id: &str) -> Result<AiSession, String> {
         let supports_mode = self
-            .sessions
+            .session_cache
             .get(session_id)
-            .map(|managed| managed.session.modes.iter().any(|mode| mode.id == mode_id))
+            .map(|session| session.modes.iter().any(|mode| mode.id == mode_id))
             .unwrap_or(false);
         if !supports_mode {
             return Err(format!("Modo no soportado por Claude ACP: {mode_id}"));
@@ -327,17 +299,18 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
 
         self.handle_from_session(session_id)?
             .set_mode(session_id, mode_id)?;
-        let managed = self.session_mut(session_id)?;
-        managed.session.mode_id = mode_id.to_string();
-        if let Some(option) = managed
-            .session
-            .config_options
-            .iter_mut()
-            .find(|option| option.id == "mode")
-        {
-            option.value = mode_id.to_string();
-        }
-        Ok(managed.session.clone())
+        self.session_cache
+            .update(session_id, |session| {
+                session.mode_id = mode_id.to_string();
+                if let Some(option) = session
+                    .config_options
+                    .iter_mut()
+                    .find(|option| option.id == "mode")
+                {
+                    option.value = mode_id.to_string();
+                }
+            })
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn set_config_option(
@@ -347,11 +320,10 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         value: &str,
     ) -> Result<AiSession, String> {
         let supports_value = self
-            .sessions
+            .session_cache
             .get(session_id)
-            .and_then(|managed| {
-                managed
-                    .session
+            .and_then(|session| {
+                session
                     .config_options
                     .iter()
                     .find(|item| item.id == option_id)
@@ -367,29 +339,32 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         self.handle_from_session(session_id)?
             .set_config_option(session_id, option_id, value)?;
 
-        let managed = self.session_mut(session_id)?;
-        let option = managed
-            .session
-            .config_options
-            .iter_mut()
-            .find(|item| item.id == option_id)
-            .ok_or_else(|| format!("Opcion no encontrada: {option_id}"))?;
-        option.value = value.to_string();
+        self.session_cache
+            .update(session_id, |session| {
+                if let Some(option) = session
+                    .config_options
+                    .iter_mut()
+                    .find(|item| item.id == option_id)
+                {
+                    option.value = value.to_string();
+                }
 
-        if option_id == "model" {
-            managed.session.model_id = value.to_string();
-        } else if option_id == "mode" {
-            managed.session.mode_id = value.to_string();
-        }
-
-        Ok(managed.session.clone())
+                if option_id == "model" {
+                    session.model_id = value.to_string();
+                } else if option_id == "mode" {
+                    session.mode_id = value.to_string();
+                }
+            })
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn cancel_turn(&mut self, session_id: &str) -> Result<AiSession, String> {
         self.handle_from_session(session_id)?.cancel(session_id)?;
-        let managed = self.session_mut(session_id)?;
-        managed.session.status = AiSessionStatus::Idle;
-        Ok(managed.session.clone())
+        self.session_cache
+            .update(session_id, |session| {
+                session.status = AiSessionStatus::Idle;
+            })
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn send_message(
@@ -406,9 +381,11 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
             return Err(error);
         }
 
-        let managed = self.session_mut(session_id)?;
-        managed.session.status = AiSessionStatus::Streaming;
-        Ok(managed.session.clone())
+        self.session_cache
+            .update(session_id, |session| {
+                session.status = AiSessionStatus::Streaming;
+            })
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn respond_permission(
@@ -419,9 +396,11 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
     ) -> Result<AiSession, String> {
         self.handle_from_session(session_id)?
             .respond_permission(request_id, option_id)?;
-        let managed = self.session_mut(session_id)?;
-        managed.session.status = AiSessionStatus::Streaming;
-        Ok(managed.session.clone())
+        self.session_cache
+            .update(session_id, |session| {
+                session.status = AiSessionStatus::Streaming;
+            })
+            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn respond_user_input(
@@ -450,25 +429,19 @@ impl ClaudeRuntimeAdapter {
             return handle.clone();
         }
 
-        let handle = ClaudeRuntimeHandle::spawn(app.clone());
+        let handle = ClaudeRuntimeHandle::spawn(app.clone(), self.session_cache.clone());
         self.handle = Some(handle.clone());
         handle
     }
 
     fn handle_from_session(&self, session_id: &str) -> Result<ClaudeRuntimeHandle, String> {
-        if !self.sessions.contains_key(session_id) {
+        if !self.session_cache.contains(session_id) {
             return Err(format!("Sesion AI no encontrada: {session_id}"));
         }
 
         self.handle
             .clone()
             .ok_or_else(|| "ACP runtime is not initialized.".to_string())
-    }
-
-    fn session_mut(&mut self, session_id: &str) -> Result<&mut ClaudeManagedSession, String> {
-        self.sessions
-            .get_mut(session_id)
-            .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }
 
     fn invalidate_auth_if_needed(&self, app: &AppHandle, error: &str) {

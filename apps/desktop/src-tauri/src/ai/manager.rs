@@ -330,11 +330,14 @@ impl AiManager {
         &mut self,
         runtime_id: &str,
         vault_root: Option<PathBuf>,
+        additional_roots: Option<Vec<String>>,
         app: &AppHandle,
     ) -> Result<AiSession, String> {
-        let session = self
-            .runtime_mut(runtime_id)?
-            .create_session(app, vault_root.clone())?;
+        let session = self.runtime_mut(runtime_id)?.create_session(
+            app,
+            vault_root.clone(),
+            additional_roots,
+        )?;
 
         self.sessions.insert(
             session.session_id.clone(),
@@ -579,6 +582,7 @@ mod tests {
             &mut self,
             _app: &AppHandle,
             _vault_root: Option<PathBuf>,
+            _additional_roots: Option<Vec<String>>,
         ) -> Result<AiSession, String> {
             Err("not used".to_string())
         }

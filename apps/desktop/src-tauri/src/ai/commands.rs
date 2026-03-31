@@ -88,6 +88,12 @@ pub struct AiRuntimeSessionInput {
     pub session_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AiCreateSessionInput {
+    pub runtime_id: String,
+    pub additional_roots: Option<Vec<String>>,
+}
+
 #[tauri::command]
 pub async fn ai_get_setup_status(
     runtime_id: Option<String>,
@@ -262,7 +268,7 @@ pub async fn ai_fork_runtime_session(
 
 #[tauri::command]
 pub async fn ai_create_session(
-    runtime_id: String,
+    input: AiCreateSessionInput,
     vault_path: Option<String>,
     app: AppHandle,
     ai_state: State<'_, Mutex<AiManager>>,
@@ -271,7 +277,8 @@ pub async fn ai_create_session(
     let mut ai_state = ai_state
         .lock()
         .map_err(|error| format!("Error de estado interno: {error}"))?;
-    let session = ai_state.create_session(&runtime_id, vault_root, &app)?;
+    let session =
+        ai_state.create_session(&input.runtime_id, vault_root, input.additional_roots, &app)?;
     emit_session_created(&app, &session);
     Ok(session)
 }

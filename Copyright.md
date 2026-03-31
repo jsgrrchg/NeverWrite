@@ -22,7 +22,6 @@ VaultAI is built upon open-source software. Below is a summary of the licenses
 governing our direct and transitive dependencies, grouped by license type.
 
 ### License Summary
-
 | License              | Scope                                                    |
 | -------------------- | -------------------------------------------------------- |
 | MIT                  | Majority of frontend and backend dependencies            |
