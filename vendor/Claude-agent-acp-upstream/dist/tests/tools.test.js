@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toAcpNotifications } from "../acp-agent.js";
-import { toolUpdateFromToolResult, createPostToolUseHook } from "../tools.js";
+import { toolUpdateFromToolResult, createPostToolUseHook, toolInfoFromToolUse } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
     const mockClient = {};
     const mockLogger = { log: () => { }, error: () => { } };
@@ -895,5 +895,35 @@ describe("Bash terminal output", () => {
             expect(hookMeta.terminal_output).toBeUndefined();
             expect(hookMeta.terminal_exit).toBeUndefined();
         });
+    });
+});
+describe("toolInfoFromToolUse - ExitPlanMode", () => {
+    it("should include plan text in content when input.plan is provided", () => {
+        const toolUse = {
+            name: "ExitPlanMode",
+            id: "toolu_plan_1",
+            input: {
+                plan: "# My Plan\n\n## Step 1\nDo something",
+                planFilePath: "/tmp/plan.md",
+            },
+        };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.kind).toBe("switch_mode");
+        expect(info.title).toBe("Ready to code?");
+        expect(info.content).toHaveLength(1);
+        expect(info.content[0]).toEqual({
+            type: "content",
+            content: { type: "text", text: "# My Plan\n\n## Step 1\nDo something" },
+        });
+    });
+    it("should return empty content when input.plan is not provided", () => {
+        const toolUse = {
+            name: "ExitPlanMode",
+            id: "toolu_plan_2",
+            input: {},
+        };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.kind).toBe("switch_mode");
+        expect(info.content).toEqual([]);
     });
 });

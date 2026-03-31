@@ -57,10 +57,7 @@ import {
   SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
-import {
-  BetaContentBlock,
-  BetaRawContentBlockDelta,
-} from "@anthropic-ai/sdk/resources/beta.mjs";
+import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -76,12 +73,7 @@ import {
   toolUpdateFromEditToolResponse,
   toolUpdateFromToolResult,
 } from "./tools.js";
-import {
-  nodeToWebReadable,
-  nodeToWebWritable,
-  Pushable,
-  unreachable,
-} from "./utils.js";
+import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
 
 export const CLAUDE_CONFIG_DIR =
   process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
@@ -126,10 +118,7 @@ type Session = {
   models: SessionModelState;
   configOptions: SessionConfigOption[];
   promptRunning: boolean;
-  pendingMessages: Map<
-    string,
-    { resolve: (cancelled: boolean) => void; order: number }
-  >;
+  pendingMessages: Map<string, { resolve: (cancelled: boolean) => void; order: number }>;
   nextPendingOrder: number;
   abortController: AbortController;
 };
@@ -227,9 +216,7 @@ function isStaticBinary(): boolean {
 export async function claudeCliPath(): Promise<string> {
   return isStaticBinary()
     ? (await import("@anthropic-ai/claude-agent-sdk/embed")).default
-    : import.meta
-        .resolve("@anthropic-ai/claude-agent-sdk")
-        .replace("sdk.mjs", "cli.js");
+    : import.meta.resolve("@anthropic-ai/claude-agent-sdk").replace("sdk.mjs", "cli.js");
 }
 
 function shouldHideClaudeAuth(): boolean {
@@ -239,6 +226,10 @@ function shouldHideClaudeAuth(): boolean {
 // Bypass Permissions doesn't work if we are a root/sudo user
 const IS_ROOT = (process.geteuid?.() ?? process.getuid?.()) === 0;
 const ALLOW_BYPASS = !IS_ROOT || !!process.env.IS_SANDBOX;
+
+// Slash commands that the SDK handles locally without replaying the user
+// message and without invoking the model.
+const LOCAL_ONLY_COMMANDS = new Set(["/context", "/heapdump", "/extra-usage"]);
 
 const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
   default: "default",
@@ -260,9 +251,7 @@ export function resolvePermissionMode(defaultMode?: unknown): PermissionMode {
 
   const normalized = defaultMode.trim().toLowerCase();
   if (normalized === "") {
-    throw new Error(
-      "Invalid permissions.defaultMode: expected a non-empty string.",
-    );
+    throw new Error("Invalid permissions.defaultMode: expected a non-empty string.");
   }
 
   const mapped = PERMISSION_MODE_ALIASES[normalized];
@@ -303,8 +292,7 @@ export class ClaudeAcpAgent implements Agent {
 
     // Bypasses standard auth by routing requests through a custom Anthropic-protocol gateway.
     // Only offered when the client advertises `auth._meta.gateway` capability.
-    const supportsGatewayAuth =
-      request.clientCapabilities?.auth?._meta?.gateway === true;
+    const supportsGatewayAuth = request.clientCapabilities?.auth?._meta?.gateway === true;
 
     const gatewayAuthMethod: AuthMethod = {
       id: "gateway",
@@ -324,12 +312,10 @@ export class ClaudeAcpAgent implements Agent {
       type: "terminal",
       args: ["--cli"],
     };
-    const supportsTerminalAuth =
-      request.clientCapabilities?.auth?.terminal === true;
+    const supportsTerminalAuth = request.clientCapabilities?.auth?.terminal === true;
 
     // If client supports terminal-auth capability, use that instead.
-    const supportsMetaTerminalAuth =
-      request.clientCapabilities?._meta?.["terminal-auth"] === true;
+    const supportsMetaTerminalAuth = request.clientCapabilities?._meta?.["terminal-auth"] === true;
     if (supportsMetaTerminalAuth) {
       terminalAuthMethod._meta = {
         "terminal-auth": {
@@ -370,8 +356,7 @@ export class ClaudeAcpAgent implements Agent {
         version: packageJson.version,
       },
       authMethods: [
-        ...(!shouldHideClaudeAuth() &&
-        (supportsTerminalAuth || supportsMetaTerminalAuth)
+        ...(!shouldHideClaudeAuth() && (supportsTerminalAuth || supportsMetaTerminalAuth)
           ? [terminalAuthMethod]
           : []),
         ...(supportsGatewayAuth ? [gatewayAuthMethod] : []),
@@ -390,8 +375,7 @@ export class ClaudeAcpAgent implements Agent {
 
     const response = await this.createSession(params, {
       // Revisit these meta values once we support resume
-      resume: (params._meta as NewSessionMeta | undefined)?.claudeCode?.options
-        ?.resume,
+      resume: (params._meta as NewSessionMeta | undefined)?.claudeCode?.options?.resume,
     });
     // Needs to happen after we return the session
     setTimeout(() => {
@@ -400,9 +384,7 @@ export class ClaudeAcpAgent implements Agent {
     return response;
   }
 
-  async unstable_forkSession(
-    params: ForkSessionRequest,
-  ): Promise<ForkSessionResponse> {
+  async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
     const response = await this.createSession(
       {
         cwd: params.cwd,
@@ -421,9 +403,7 @@ export class ClaudeAcpAgent implements Agent {
     return response;
   }
 
-  async unstable_resumeSession(
-    params: ResumeSessionRequest,
-  ): Promise<ResumeSessionResponse> {
+  async unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
     const result = await this.getOrCreateSession(params);
 
     // Needs to happen after we return the session
@@ -446,9 +426,7 @@ export class ClaudeAcpAgent implements Agent {
     return result;
   }
 
-  async listSessions(
-    params: ListSessionsRequest,
-  ): Promise<ListSessionsResponse> {
+  async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
     const sdk_sessions = await listSessions({ dir: params.cwd ?? undefined });
     const sessions = [];
 
@@ -496,6 +474,16 @@ export class ClaudeAcpAgent implements Agent {
     userMessage.uuid = promptUuid;
 
     let promptReplayed = false;
+
+    // These local-only commands return a result without replaying the user
+    // message. Mark promptReplayed=true so their result isn't consumed as a
+    // background task result.
+    const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
+    const isLocalOnlyCommand =
+      firstText.startsWith("/") && LOCAL_ONLY_COMMANDS.has(firstText.split(" ", 1)[0]);
+    if (isLocalOnlyCommand) {
+      promptReplayed = true;
+    }
 
     if (session.promptRunning) {
       session.input.push(userMessage);
@@ -552,10 +540,7 @@ export class ClaudeAcpAgent implements Agent {
                   sessionId: message.session_id,
                   update: {
                     sessionUpdate: "agent_message_chunk",
-                    content: {
-                      type: "text",
-                      text: "\n\nCompacting completed.",
-                    },
+                    content: { type: "text", text: "\n\nCompacting completed." },
                   },
                 });
                 promptReplayed = true;
@@ -572,6 +557,12 @@ export class ClaudeAcpAgent implements Agent {
                 promptReplayed = true;
                 break;
               }
+              case "session_state_changed": {
+                if (message.state === "idle") {
+                  return { stopReason: "end_turn", usage: sessionUsage(session) };
+                }
+                break;
+              }
               case "hook_started":
               case "hook_progress":
               case "hook_response":
@@ -580,6 +571,7 @@ export class ClaudeAcpAgent implements Agent {
               case "task_notification":
               case "task_progress":
               case "elicitation_complete":
+              case "api_retry":
                 // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
                 break;
               default:
@@ -590,17 +582,12 @@ export class ClaudeAcpAgent implements Agent {
           case "result": {
             // Accumulate usage from this result
             session.accumulatedUsage.inputTokens += message.usage.input_tokens;
-            session.accumulatedUsage.outputTokens +=
-              message.usage.output_tokens;
-            session.accumulatedUsage.cachedReadTokens +=
-              message.usage.cache_read_input_tokens;
-            session.accumulatedUsage.cachedWriteTokens +=
-              message.usage.cache_creation_input_tokens;
+            session.accumulatedUsage.outputTokens += message.usage.output_tokens;
+            session.accumulatedUsage.cachedReadTokens += message.usage.cache_read_input_tokens;
+            session.accumulatedUsage.cachedWriteTokens += message.usage.cache_creation_input_tokens;
 
             // Calculate context window size from modelUsage (minimum across all models used)
-            const contextWindows = Object.values(message.modelUsage).map(
-              (m) => m.contextWindow,
-            );
+            const contextWindows = Object.values(message.modelUsage).map((m) => m.contextWindow);
             const contextWindowSize =
               contextWindows.length > 0 ? Math.min(...contextWindows) : 200000;
 
@@ -620,32 +607,24 @@ export class ClaudeAcpAgent implements Agent {
               });
             }
 
-            if (!promptReplayed) {
-              // This result is from a background task that finished after
-              // the previous prompt loop ended. Consume it and continue
-              // waiting for our own prompt's result.
-              this.logger.log(
-                `Session ${params.sessionId}: consuming background task result`,
-              );
-              break;
-            }
-
+            // Check cancelled before promptReplayed — when a cancel races
+            // with the first result, promptReplayed is still false and the
+            // result would be consumed as a background task, blocking the
+            // loop forever (see #442).
             if (session.cancelled) {
               return { stopReason: "cancelled" };
             }
 
+            if (!promptReplayed) {
+              // This result is from a background task that finished after
+              // the previous prompt loop ended. Consume it and continue
+              // waiting for our own prompt's result.
+              this.logger.log(`Session ${params.sessionId}: consuming background task result`);
+              break;
+            }
+
             // Build the usage response
-            const usage: PromptResponse["usage"] = {
-              inputTokens: session.accumulatedUsage.inputTokens,
-              outputTokens: session.accumulatedUsage.outputTokens,
-              cachedReadTokens: session.accumulatedUsage.cachedReadTokens,
-              cachedWriteTokens: session.accumulatedUsage.cachedWriteTokens,
-              totalTokens:
-                session.accumulatedUsage.inputTokens +
-                session.accumulatedUsage.outputTokens +
-                session.accumulatedUsage.cachedReadTokens +
-                session.accumulatedUsage.cachedWriteTokens,
-            };
+            const usage = sessionUsage(session);
 
             switch (message.subtype) {
               case "success": {
@@ -658,9 +637,23 @@ export class ClaudeAcpAgent implements Agent {
                 if (message.is_error) {
                   throw RequestError.internalError(undefined, message.result);
                 }
-                return { stopReason: "end_turn", usage };
+                // For local-only commands (no model invocation), the result
+                // text is the command output — forward it to the client.
+                if (isLocalOnlyCommand) {
+                  for (const notification of toAcpNotifications(
+                    message.result,
+                    "assistant",
+                    params.sessionId,
+                    this.toolUseCache,
+                    this.client,
+                    this.logger,
+                  )) {
+                    await this.client.sessionUpdate(notification);
+                  }
+                }
+                break;
               }
-              case "error_during_execution":
+              case "error_during_execution": {
                 if (message.stop_reason === "max_tokens") {
                   return { stopReason: "max_tokens", usage };
                 }
@@ -670,7 +663,8 @@ export class ClaudeAcpAgent implements Agent {
                     message.errors.join(", ") || message.subtype,
                   );
                 }
-                return { stopReason: "end_turn", usage };
+                return { stopReason: "end_turn", usage: sessionUsage(session) };
+              }
               case "error_max_budget_usd":
               case "error_max_turns":
               case "error_max_structured_output_retries":
@@ -717,16 +711,15 @@ export class ClaudeAcpAgent implements Agent {
                 promptReplayed = true;
                 break;
               }
-              const pending = session.pendingMessages.get(
-                message.uuid as string,
-              );
+
+              const pending = session.pendingMessages.get(message.uuid as string);
               if (pending) {
                 pending.resolve(false);
                 session.pendingMessages.delete(message.uuid as string);
                 handedOff = true;
                 // the current loop stops with end_turn,
                 // the loop of the next prompt continues running
-                return { stopReason: "end_turn" };
+                return { stopReason: "end_turn", usage: sessionUsage(session) };
               }
               if ("isReplay" in message && message.isReplay) {
                 // not pending or unrelated replay message
@@ -735,12 +728,8 @@ export class ClaudeAcpAgent implements Agent {
             }
 
             // Store latest assistant usage (excluding subagents)
-            if (
-              (message.message as any).usage &&
-              message.parent_tool_use_id === null
-            ) {
-              const messageWithUsage =
-                message.message as unknown as SDKResultMessage;
+            if ((message.message as any).usage && message.parent_tool_use_id === null) {
+              const messageWithUsage = message.message as unknown as SDKResultMessage;
               lastAssistantTotalUsage =
                 messageWithUsage.usage.input_tokens +
                 messageWithUsage.usage.output_tokens +
@@ -754,22 +743,6 @@ export class ClaudeAcpAgent implements Agent {
               typeof message.message.content === "string" &&
               message.message.content.includes("<local-command-stdout>")
             ) {
-              // Handle /context by sending its reply as regular agent message.
-              if (message.message.content.includes("Context Usage")) {
-                for (const notification of toAcpNotifications(
-                  message.message.content
-                    .replace("<local-command-stdout>", "")
-                    .replace("</local-command-stdout>", ""),
-                  "assistant",
-                  params.sessionId,
-                  this.toolUseCache,
-                  this.client,
-                  this.logger,
-                  { clientCapabilities: this.clientCapabilities },
-                )) {
-                  await this.client.sessionUpdate(notification);
-                }
-              }
               this.logger.log(message.message.content);
               break;
             }
@@ -852,9 +825,8 @@ export class ClaudeAcpAgent implements Agent {
         message.includes("process terminated by signal") ||
         message.includes("Failed to write to process stdin")
       ) {
-        this.logger.error(
-          `Session ${params.sessionId}: Claude Agent process died: ${message}`,
-        );
+        this.logger.error(`Session ${params.sessionId}: Claude Agent process died: ${message}`);
+        session.settingsManager.dispose();
         session.input.end();
         delete this.sessions[params.sessionId];
         throw RequestError.internalError(
@@ -895,15 +867,14 @@ export class ClaudeAcpAgent implements Agent {
     await session.query.interrupt();
   }
 
-  async unstable_closeSession(
-    params: CloseSessionRequest,
-  ): Promise<CloseSessionResponse> {
+  async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
     const session = this.sessions[params.sessionId];
     if (!session) {
       throw new Error("Session not found");
     }
     await this.cancel({ sessionId: params.sessionId });
 
+    session.settingsManager.dispose();
     session.abortController.abort();
     delete this.sessions[params.sessionId];
 
@@ -920,9 +891,7 @@ export class ClaudeAcpAgent implements Agent {
     await this.updateConfigOption(params.sessionId, "model", params.modelId);
   }
 
-  async setSessionMode(
-    params: SetSessionModeRequest,
-  ): Promise<SetSessionModeResponse> {
+  async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
     if (!this.sessions[params.sessionId]) {
       throw new Error("Session not found");
     }
@@ -940,9 +909,7 @@ export class ClaudeAcpAgent implements Agent {
       throw new Error("Session not found");
     }
     if (typeof params.value !== "string") {
-      throw new Error(
-        `Invalid value for config option ${params.configId}: ${params.value}`,
-      );
+      throw new Error(`Invalid value for config option ${params.configId}: ${params.value}`);
     }
 
     const option = session.configOptions.find((o) => o.id === params.configId);
@@ -972,9 +939,7 @@ export class ClaudeAcpAgent implements Agent {
     }
 
     if (!validValue) {
-      throw new Error(
-        `Invalid value for config option ${params.configId}: ${params.value}`,
-      );
+      throw new Error(`Invalid value for config option ${params.configId}: ${params.value}`);
     }
 
     // Use the canonical option value so downstream code always receives the
@@ -1005,10 +970,7 @@ export class ClaudeAcpAgent implements Agent {
     return { configOptions: session.configOptions };
   }
 
-  private async applySessionMode(
-    sessionId: string,
-    modeId: string,
-  ): Promise<void> {
+  private async applySessionMode(sessionId: string, modeId: string): Promise<void> {
     switch (modeId) {
       case "default":
       case "acceptEdits":
@@ -1059,24 +1021,19 @@ export class ClaudeAcpAgent implements Agent {
     }
   }
 
-  async readTextFile(
-    params: ReadTextFileRequest,
-  ): Promise<ReadTextFileResponse> {
+  async readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
     const response = await this.client.readTextFile(params);
     return response;
   }
 
-  async writeTextFile(
-    params: WriteTextFileRequest,
-  ): Promise<WriteTextFileResponse> {
+  async writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
     const response = await this.client.writeTextFile(params);
     return response;
   }
 
   canUseTool(sessionId: string): CanUseTool {
     return async (toolName, toolInput, { signal, suggestions, toolUseID }) => {
-      const supportsTerminalOutput =
-        this.clientCapabilities?._meta?.["terminal_output"] === true;
+      const supportsTerminalOutput = this.clientCapabilities?._meta?.["terminal_output"] === true;
       const session = this.sessions[sessionId];
       if (!session) {
         return {
@@ -1092,11 +1049,7 @@ export class ClaudeAcpAgent implements Agent {
             name: "Yes, and auto-accept edits",
             optionId: "acceptEdits",
           },
-          {
-            kind: "allow_once",
-            name: "Yes, and manually approve edits",
-            optionId: "default",
-          },
+          { kind: "allow_once", name: "Yes, and manually approve edits", optionId: "default" },
           { kind: "reject_once", name: "No, keep planning", optionId: "plan" },
         ];
         if (ALLOW_BYPASS) {
@@ -1137,21 +1090,13 @@ export class ClaudeAcpAgent implements Agent {
               currentModeId: response.outcome.optionId,
             },
           });
-          await this.updateConfigOption(
-            sessionId,
-            "mode",
-            response.outcome.optionId,
-          );
+          await this.updateConfigOption(sessionId, "mode", response.outcome.optionId);
 
           return {
             behavior: "allow",
             updatedInput: toolInput,
             updatedPermissions: suggestions ?? [
-              {
-                type: "setMode",
-                mode: response.outcome.optionId,
-                destination: "session",
-              },
+              { type: "setMode", mode: response.outcome.optionId, destination: "session" },
             ],
           };
         } else {
@@ -1167,12 +1112,7 @@ export class ClaudeAcpAgent implements Agent {
           behavior: "allow",
           updatedInput: toolInput,
           updatedPermissions: suggestions ?? [
-            {
-              type: "addRules",
-              rules: [{ toolName }],
-              behavior: "allow",
-              destination: "session",
-            },
+            { type: "addRules", rules: [{ toolName }], behavior: "allow", destination: "session" },
           ],
         };
       }
@@ -1203,8 +1143,7 @@ export class ClaudeAcpAgent implements Agent {
       }
       if (
         response.outcome?.outcome === "selected" &&
-        (response.outcome.optionId === "allow" ||
-          response.outcome.optionId === "allow_always")
+        (response.outcome.optionId === "allow" || response.outcome.optionId === "allow_always")
       ) {
         // If Claude Code has suggestions, it will update their settings already
         if (response.outcome.optionId === "allow_always") {
@@ -1258,9 +1197,7 @@ export class ClaudeAcpAgent implements Agent {
     this.syncSessionConfigState(session, configId, value);
 
     session.configOptions = session.configOptions.map((o) =>
-      o.id === configId && typeof o.currentValue === "string"
-        ? { ...o, currentValue: value }
-        : o,
+      o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o,
     );
 
     await this.client.sessionUpdate({
@@ -1272,11 +1209,7 @@ export class ClaudeAcpAgent implements Agent {
     });
   }
 
-  private syncSessionConfigState(
-    session: Session,
-    configId: string,
-    value: string,
-  ): void {
+  private syncSessionConfigState(session: Session, configId: string, value: string): void {
     if (configId === "mode") {
       session.modes = { ...session.modes, currentModeId: value };
     } else if (configId === "model") {
@@ -1365,10 +1298,7 @@ export class ClaudeAcpAgent implements Agent {
       }
     }
 
-    let systemPrompt: Options["systemPrompt"] = {
-      type: "preset",
-      preset: "claude_code",
-    };
+    let systemPrompt: Options["systemPrompt"] = { type: "preset", preset: "claude_code" };
     if (params._meta?.systemPrompt) {
       const customPrompt = params._meta.systemPrompt;
       if (typeof customPrompt === "string") {
@@ -1404,12 +1334,9 @@ export class ClaudeAcpAgent implements Agent {
     // backward compatibility but callers should prefer the tools array.
     const tools: Options["tools"] =
       userProvidedOptions?.tools ??
-      (params._meta?.disableBuiltInTools === true
-        ? []
-        : { type: "preset", preset: "claude_code" });
+      (params._meta?.disableBuiltInTools === true ? [] : { type: "preset", preset: "claude_code" });
 
-    const abortController =
-      userProvidedOptions?.abortController || new AbortController();
+    const abortController = userProvidedOptions?.abortController || new AbortController();
 
     const options: Options = {
       systemPrompt,
@@ -1420,6 +1347,8 @@ export class ClaudeAcpAgent implements Agent {
         ...process.env,
         ...userProvidedOptions?.env,
         ...createEnvForGateway(this.gatewayAuthMeta),
+        // Opt-in to session state events like when the agent is idle
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
       },
       // Override certain fields that must be controlled by ACP
       cwd: params.cwd,
@@ -1442,10 +1371,7 @@ export class ClaudeAcpAgent implements Agent {
         ...userProvidedOptions?.extraArgs,
         "replay-user-messages": "",
       },
-      disallowedTools: [
-        ...(userProvidedOptions?.disallowedTools || []),
-        ...disallowedTools,
-      ],
+      disallowedTools: [...(userProvidedOptions?.disallowedTools || []), ...disallowedTools],
       tools,
       hooks: {
         ...userProvidedOptions?.hooks,
@@ -1510,7 +1436,7 @@ export class ClaudeAcpAgent implements Agent {
     if (
       shouldHideClaudeAuth() &&
       initializationResult.account.subscriptionType &&
-      this.gatewayAuthMeta === null
+      !this.gatewayAuthMeta
     ) {
       throw RequestError.authRequired(
         undefined,
@@ -1518,11 +1444,7 @@ export class ClaudeAcpAgent implements Agent {
       );
     }
 
-    const models = await getAvailableModels(
-      q,
-      initializationResult.models,
-      settingsManager,
-    );
+    const models = await getAvailableModels(q, initializationResult.models, settingsManager);
 
     const availableModes = [
       {
@@ -1592,6 +1514,20 @@ export class ClaudeAcpAgent implements Agent {
   }
 }
 
+function sessionUsage(session: Session) {
+  return {
+    inputTokens: session.accumulatedUsage.inputTokens,
+    outputTokens: session.accumulatedUsage.outputTokens,
+    cachedReadTokens: session.accumulatedUsage.cachedReadTokens,
+    cachedWriteTokens: session.accumulatedUsage.cachedWriteTokens,
+    totalTokens:
+      session.accumulatedUsage.inputTokens +
+      session.accumulatedUsage.outputTokens +
+      session.accumulatedUsage.cachedReadTokens +
+      session.accumulatedUsage.cachedWriteTokens,
+  };
+}
+
 function createEnvForGateway(gatewayMeta?: GatewayAuthMeta) {
   if (!gatewayMeta) {
     return {};
@@ -1643,14 +1579,9 @@ function buildConfigOptions(
 // but the SDK model list uses IDs like "claude-opus-4-6-1m".
 const MODEL_CONTEXT_HINT_PATTERN = /\[(\d+m)\]$/i;
 
-function tokenizeModelPreference(model: string): {
-  tokens: string[];
-  contextHint?: string;
-} {
+function tokenizeModelPreference(model: string): { tokens: string[]; contextHint?: string } {
   const lower = model.trim().toLowerCase();
-  const contextHint = lower
-    .match(MODEL_CONTEXT_HINT_PATTERN)?.[1]
-    ?.toLowerCase();
+  const contextHint = lower.match(MODEL_CONTEXT_HINT_PATTERN)?.[1]?.toLowerCase();
 
   const normalized = lower.replace(MODEL_CONTEXT_HINT_PATTERN, " $1 ");
   const rawTokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
@@ -1666,11 +1597,7 @@ function tokenizeModelPreference(model: string): {
   return { tokens, contextHint };
 }
 
-function scoreModelMatch(
-  model: ModelInfo,
-  tokens: string[],
-  contextHint?: string,
-): number {
+function scoreModelMatch(model: ModelInfo, tokens: string[], contextHint?: string): number {
   const haystack = `${model.value} ${model.displayName}`.toLowerCase();
   let score = 0;
   for (const token of tokens) {
@@ -1681,10 +1608,7 @@ function scoreModelMatch(
   return score;
 }
 
-function resolveModelPreference(
-  models: ModelInfo[],
-  preference: string,
-): ModelInfo | null {
+function resolveModelPreference(models: ModelInfo[], preference: string): ModelInfo | null {
   const trimmed = preference.trim();
   if (!trimmed) return null;
 
@@ -1703,9 +1627,7 @@ function resolveModelPreference(
   const includesMatch = models.find((model) => {
     const value = model.value.toLowerCase();
     const display = model.displayName.toLowerCase();
-    return (
-      value.includes(lower) || display.includes(lower) || lower.includes(value)
-    );
+    return value.includes(lower) || display.includes(lower) || lower.includes(value);
   });
   if (includesMatch) return includesMatch;
 
@@ -1754,9 +1676,7 @@ async function getAvailableModels(
   };
 }
 
-function getAvailableSlashCommands(
-  commands: SlashCommand[],
-): AvailableCommand[] {
+function getAvailableSlashCommands(commands: SlashCommand[]): AvailableCommand[] {
   const UNSUPPORTED_COMMANDS = [
     "cost",
     "keybindings-help",
@@ -1786,10 +1706,7 @@ function getAvailableSlashCommands(
         input,
       };
     })
-    .filter(
-      (command: AvailableCommand) =>
-        !UNSUPPORTED_COMMANDS.includes(command.name),
-    );
+    .filter((command: AvailableCommand) => !UNSUPPORTED_COMMANDS.includes(command.name));
 }
 
 function formatUriAsLink(uri: string): string {
@@ -1893,11 +1810,7 @@ export function promptToClaude(prompt: PromptRequest): SDKUserMessage {
  * Only handles text, image, and thinking chunks for now.
  */
 export function toAcpNotifications(
-  content:
-    | string
-    | ContentBlockParam[]
-    | BetaContentBlock[]
-    | BetaRawContentBlockDelta[],
+  content: string | ContentBlockParam[] | BetaContentBlock[] | BetaRawContentBlockDelta[],
   role: "assistant" | "user",
   sessionId: string,
   toolUseCache: ToolUseCache,
@@ -1911,12 +1824,10 @@ export function toAcpNotifications(
   },
 ): SessionNotification[] {
   const registerHooks = options?.registerHooks !== false;
-  const supportsTerminalOutput =
-    options?.clientCapabilities?._meta?.["terminal_output"] === true;
+  const supportsTerminalOutput = options?.clientCapabilities?._meta?.["terminal_output"] === true;
   if (typeof content === "string") {
     const update: SessionNotification["update"] = {
-      sessionUpdate:
-        role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
+      sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
       content: {
         type: "text",
         text: content,
@@ -1944,8 +1855,7 @@ export function toAcpNotifications(
       case "text":
       case "text_delta":
         update = {
-          sessionUpdate:
-            role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
+          sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
           content: {
             type: "text",
             text: chunk.text,
@@ -1954,13 +1864,11 @@ export function toAcpNotifications(
         break;
       case "image":
         update = {
-          sessionUpdate:
-            role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
+          sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
           content: {
             type: "image",
             data: chunk.source.type === "base64" ? chunk.source.data : "",
-            mimeType:
-              chunk.source.type === "base64" ? chunk.source.media_type : "",
+            mimeType: chunk.source.type === "base64" ? chunk.source.media_type : "",
             uri: chunk.source.type === "url" ? chunk.source.url : undefined,
           },
         };
@@ -1996,9 +1904,7 @@ export function toAcpNotifications(
                 const toolUse = toolUseCache[toolUseId];
                 if (toolUse) {
                   const editDiff =
-                    toolUse.name === "Edit"
-                      ? toolUpdateFromEditToolResponse(toolResponse)
-                      : {};
+                    toolUse.name === "Edit" ? toolUpdateFromEditToolResponse(toolResponse) : {};
                   const update: SessionNotification["update"] = {
                     _meta: {
                       claudeCode: {
@@ -2043,11 +1949,7 @@ export function toAcpNotifications(
               toolCallId: chunk.id,
               sessionUpdate: "tool_call_update",
               rawInput,
-              ...toolInfoFromToolUse(
-                chunk,
-                supportsTerminalOutput,
-                options?.cwd,
-              ),
+              ...toolInfoFromToolUse(chunk, supportsTerminalOutput, options?.cwd),
             };
           } else {
             // First encounter (streaming content_block_start or replay) —
@@ -2065,11 +1967,7 @@ export function toAcpNotifications(
               sessionUpdate: "tool_call",
               rawInput,
               status: "pending",
-              ...toolInfoFromToolUse(
-                chunk,
-                supportsTerminalOutput,
-                options?.cwd,
-              ),
+              ...toolInfoFromToolUse(chunk, supportsTerminalOutput, options?.cwd),
             };
           }
         }
@@ -2111,11 +2009,7 @@ export function toAcpNotifications(
                 _meta: {
                   terminal_output: toolMeta.terminal_output,
                   ...(options?.parentToolUseId
-                    ? {
-                        claudeCode: {
-                          parentToolUseId: options.parentToolUseId,
-                        },
-                      }
+                    ? { claudeCode: { parentToolUseId: options.parentToolUseId } }
                     : {}),
                 },
                 toolCallId: chunk.tool_use_id,
@@ -2129,14 +2023,11 @@ export function toAcpNotifications(
               claudeCode: {
                 toolName: toolUse.name,
               },
-              ...(toolMeta?.terminal_exit
-                ? { terminal_exit: toolMeta.terminal_exit }
-                : {}),
+              ...(toolMeta?.terminal_exit ? { terminal_exit: toolMeta.terminal_exit } : {}),
             } satisfies ToolUpdateMeta,
             toolCallId: chunk.tool_use_id,
             sessionUpdate: "tool_call_update",
-            status:
-              "is_error" in chunk && chunk.is_error ? "failed" : "completed",
+            status: "is_error" in chunk && chunk.is_error ? "failed" : "completed",
             rawOutput: chunk.content,
             ...toolUpdate,
           };
