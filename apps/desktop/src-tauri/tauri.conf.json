@@ -9,6 +9,13 @@
         "beforeDevCommand": "npm run dev",
         "beforeBuildCommand": "npm run build"
     },
+    "plugins": {
+        "deep-link": {
+            "desktop": {
+                "schemes": ["vaultai"]
+            }
+        }
+    },
     "bundle": {
         "active": true,
         "targets": ["app", "nsis", "msi"],

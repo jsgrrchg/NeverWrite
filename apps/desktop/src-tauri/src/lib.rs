@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
+use url::Url;
 use vault_ai_index::{IndexBuildPhase, VaultIndex};
 use vault_ai_types::{
     AdvancedSearchParams, AdvancedSearchResultDto, BacklinkDto, NoteDetailDto, NoteDocument,
@@ -44,6 +46,8 @@ use vault_ai_vault::{
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
 const MENU_ACTION_EVENT: &str = "menu-action";
 const DOCK_OPEN_VAULT_EVENT: &str = "dock-open-vault";
+const WEB_CLIPPER_DEEP_LINK_SCHEME: &str = "vaultai";
+const WEB_CLIPPER_DEEP_LINK_HOST: &str = "clip";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const OPEN_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_GRAPH_MAX_NODES_GLOBAL: usize = 8_000;
@@ -5227,6 +5231,211 @@ fn build_web_clipper_relative_note_path(
     Err("Could not find a free filename for the clip.".to_string())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WebClipperDeepLinkMode {
+    Inline,
+    Clipboard,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct WebClipperDeepLinkRequest {
+    request_id: String,
+    vault_path_hint: Option<String>,
+    vault_name_hint: Option<String>,
+    folder: String,
+    title: String,
+    content: Option<String>,
+    clipboard_token: Option<String>,
+    mode: WebClipperDeepLinkMode,
+}
+
+fn normalize_web_clipper_hint(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut normalized = trimmed;
+    loop {
+        let bytes = normalized.as_bytes();
+        if bytes.len() < 2 {
+            break;
+        }
+
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        let wraps_single_quotes = first == b'\'' && last == b'\'';
+        let wraps_double_quotes = first == b'"' && last == b'"';
+        if !wraps_single_quotes && !wraps_double_quotes {
+            break;
+        }
+
+        normalized = normalized[1..normalized.len() - 1].trim();
+    }
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn infer_web_clipper_vault_hints(
+    vault: Option<String>,
+    mut vault_path_hint: Option<String>,
+    mut vault_name_hint: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let Some(vault) = vault else {
+        return (vault_path_hint, vault_name_hint);
+    };
+
+    let looks_like_path = Path::new(&vault).is_absolute()
+        || vault.contains(std::path::MAIN_SEPARATOR)
+        || vault.contains('/');
+
+    if looks_like_path && vault_path_hint.is_none() {
+        vault_path_hint = Some(vault.clone());
+    }
+
+    if !looks_like_path && vault_name_hint.is_none() {
+        vault_name_hint = Some(vault);
+    }
+
+    (vault_path_hint, vault_name_hint)
+}
+
+fn parse_web_clipper_deep_link(uri: &str) -> Result<WebClipperDeepLinkRequest, String> {
+    let url = Url::parse(uri).map_err(|error| format!("Invalid web clipper deep link: {error}"))?;
+    if url.scheme() != WEB_CLIPPER_DEEP_LINK_SCHEME {
+        return Err("Unsupported web clipper deep link scheme.".to_string());
+    }
+
+    let is_clip_link = url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case(WEB_CLIPPER_DEEP_LINK_HOST))
+        || url
+            .path()
+            .trim_matches('/')
+            .eq_ignore_ascii_case(WEB_CLIPPER_DEEP_LINK_HOST);
+    if !is_clip_link {
+        return Err("Unsupported web clipper deep link target.".to_string());
+    }
+
+    let params = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    let request_id = params
+        .get("requestId")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("Web clipper requestId is required.".to_string())?
+        .to_string();
+    let title = params
+        .get("title")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("Web clipper title is required.".to_string())?
+        .to_string();
+    let folder = params.get("folder").cloned().unwrap_or_default();
+
+    let (vault_path_hint, vault_name_hint) = infer_web_clipper_vault_hints(
+        normalize_web_clipper_hint(params.get("vault").map(String::as_str)),
+        normalize_web_clipper_hint(params.get("vaultPathHint").map(String::as_str)),
+        normalize_web_clipper_hint(params.get("vaultNameHint").map(String::as_str)),
+    );
+
+    let mode = match params
+        .get("mode")
+        .map(String::as_str)
+        .map(str::trim)
+        .unwrap_or("inline")
+    {
+        "inline" => WebClipperDeepLinkMode::Inline,
+        "clipboard" => WebClipperDeepLinkMode::Clipboard,
+        _ => return Err("Unsupported web clipper deep link mode.".to_string()),
+    };
+
+    let content = params.get("content").cloned();
+    let clipboard_token = params
+        .get("clipboardToken")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if mode == WebClipperDeepLinkMode::Inline
+        && content
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        return Err("Inline web clipper deep link content is required.".to_string());
+    }
+
+    if mode == WebClipperDeepLinkMode::Clipboard && clipboard_token.is_none() {
+        return Err("Clipboard web clipper deep link token is required.".to_string());
+    }
+
+    Ok(WebClipperDeepLinkRequest {
+        request_id,
+        vault_path_hint,
+        vault_name_hint,
+        folder,
+        title,
+        content,
+        clipboard_token,
+        mode,
+    })
+}
+
+fn read_web_clipper_clipboard_content() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("Could not access the clipboard bridge: {error}"))?;
+    let content = clipboard
+        .get_text()
+        .map_err(|error| format!("Could not read the clipboard bridge content: {error}"))?;
+    if content.trim().is_empty() {
+        return Err("Clipboard bridge content is empty.".to_string());
+    }
+    Ok(content)
+}
+
+fn handle_web_clipper_deep_link(app: &AppHandle, uri: &str) -> Result<(), String> {
+    let request = parse_web_clipper_deep_link(uri)?;
+    let content = match request.mode {
+        WebClipperDeepLinkMode::Inline => request
+            .content
+            .clone()
+            .ok_or("Inline web clipper content is missing.".to_string())?,
+        WebClipperDeepLinkMode::Clipboard => read_web_clipper_clipboard_content()?,
+    };
+
+    web_clipper_save_note(
+        app,
+        request.request_id,
+        request.vault_path_hint.as_deref(),
+        request.vault_name_hint.as_deref(),
+        &request.title,
+        &request.folder,
+        &content,
+    )?;
+
+    Ok(())
+}
+
+fn handle_web_clipper_deep_link_urls(app: &AppHandle, urls: &[Url]) {
+    for url in urls {
+        if url.scheme() != WEB_CLIPPER_DEEP_LINK_SCHEME {
+            continue;
+        }
+
+        if let Err(error) = handle_web_clipper_deep_link(app, url.as_str()) {
+            eprintln!("[web-clipper-deep-link] {error}");
+        }
+    }
+}
+
 pub(crate) fn web_clipper_ready_vaults(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
     let state = app.state::<Mutex<AppState>>();
     let guard = lock!(state)?;
@@ -5379,6 +5588,7 @@ pub fn run() {
             file_preview_gateway::FILE_PREVIEW_SCHEME,
             file_preview_gateway::handle_request,
         )
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(AppState::new()))
@@ -5434,6 +5644,17 @@ pub fn run() {
             install_macos_dock_menu(&app.handle().clone());
 
             clipper_api::start_server(app.handle().clone());
+
+            let app_handle = app.handle().clone();
+            if let Some(start_urls) = app.deep_link().get_current()? {
+                handle_web_clipper_deep_link_urls(&app_handle, &start_urls);
+            }
+
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                let urls = event.urls();
+                handle_web_clipper_deep_link_urls(&app_handle, &urls);
+            });
 
             Ok(())
         })
@@ -5857,6 +6078,54 @@ mod tests {
         assert_eq!(relative_path, "Clips/Donald Trump's Greenland plan.md");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_web_clipper_deep_link_normalizes_wrapped_vault_hints() {
+        let uri = concat!(
+            "vaultai://clip?requestId=req-1&createdAt=2026-04-01T23%3A00%3A48.124Z",
+            "&source=web-clipper",
+            "&vault=%27%2FUsers%2Fjose%2FDocuments%2Fobsidian+volt%2FGEO+2026%27",
+            "&vaultPathHint=%27%2FUsers%2Fjose%2FDocuments%2Fobsidian+volt%2FGEO+2026%27",
+            "&vaultNameHint=Geo+2026",
+            "&folder=Clippings",
+            "&title=Market+Update",
+            "&url=https%3A%2F%2Fexample.com",
+            "&mode=clipboard",
+            "&clipboardToken=token-1"
+        );
+
+        let request = parse_web_clipper_deep_link(uri).unwrap();
+
+        assert_eq!(
+            request.vault_path_hint.as_deref(),
+            Some("/vaults/Geo 2026")
+        );
+        assert_eq!(request.vault_name_hint.as_deref(), Some("Geo 2026"));
+        assert_eq!(request.folder, "Clippings");
+        assert_eq!(request.mode, WebClipperDeepLinkMode::Clipboard);
+        assert_eq!(request.clipboard_token.as_deref(), Some("token-1"));
+    }
+
+    #[test]
+    fn parse_web_clipper_deep_link_uses_legacy_vault_as_name_hint() {
+        let uri = concat!(
+            "vaultai://clip?requestId=req-2",
+            "&source=web-clipper",
+            "&vault=Geo+2026",
+            "&folder=Clippings",
+            "&title=Inline+Clip",
+            "&url=https%3A%2F%2Fexample.com",
+            "&mode=inline",
+            "&content=%23+Clip"
+        );
+
+        let request = parse_web_clipper_deep_link(uri).unwrap();
+
+        assert_eq!(request.vault_path_hint, None);
+        assert_eq!(request.vault_name_hint.as_deref(), Some("Geo 2026"));
+        assert_eq!(request.content.as_deref(), Some("# Clip"));
+        assert_eq!(request.mode, WebClipperDeepLinkMode::Inline);
     }
 
     fn ready_web_clipper_state_for_paths(paths: &[&str]) -> (AppState, Vec<std::path::PathBuf>) {

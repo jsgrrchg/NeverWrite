@@ -105,3 +105,8 @@ local token in `browser.storage.local`. Subsequent requests must send both the
 extension identity and that token.
 
 If the local API is unavailable, the extension falls back to the deep-link handoff flow.
+
+On macOS, that deep-link fallback only works with an installed VaultAI app bundle
+that has the `vaultai://` scheme registered. `npm run tauri dev` does not
+register custom URI schemes with the OS, so the browser fallback cannot be
+validated end-to-end against a pure dev session there.
