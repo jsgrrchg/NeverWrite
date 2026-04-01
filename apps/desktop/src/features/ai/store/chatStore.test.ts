@@ -5174,6 +5174,118 @@ describe("chatStore", () => {
         });
     });
 
+    it("rejects an accumulated multi-turn file against the carried diffBase", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-reject-a",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/vault/src/watcher.rs",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-reject-b",
+            title: "Edit watcher again",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs again",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-accumulated-reject-b",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        expectTrackedFileToMatchAccumulatedDiff(
+            entry,
+            "aaXa\nbbb\nccc\nddd",
+            "aaXa\nBBB\nccc\nDDD",
+        );
+        expect(entry.reviewState).toBe("finalized");
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(activeSessionId, entry.identityKey);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/vault/src/watcher.rs",
+            previousPath: null,
+            content: "aaXa\nbbb\nccc\nddd",
+        });
+    });
+
     it("keeps the review tab open after rejectEditedFile resolves the last pending file", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -9085,6 +9197,123 @@ describe("chatStore", () => {
 
         const [trackedAfter] = getVisibleBuffer(session.sessionId);
         expect(trackedAfter).toEqual(trackedBefore);
+    });
+
+    it("resolveReviewHunks rejects only the selected accumulated hunk and preserves later agent hunks", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-hunk-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-hunk-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-accumulated-hunk-b",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        const projection = buildReviewProjection(entry);
+        expect(projection.hunks).toHaveLength(2);
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                entry.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [remaining] = getVisibleBuffer(activeSessionId);
+        expect(remaining).toBeDefined();
+        expectTrackedFileToMatchAccumulatedDiff(
+            remaining!,
+            "aaXa\nbbb\nccc\nddd",
+            "aaXa\nbbb\nccc\nDDD",
+        );
+        expect(buildReviewProjection(remaining!).hunks).toHaveLength(1);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/notes/file.md",
+            previousPath: null,
+            content: "aaXa\nbbb\nccc\nDDD",
+        });
     });
 
     it("resolveReviewHunks resolves the expanded overlap closure returned by projection", async () => {
