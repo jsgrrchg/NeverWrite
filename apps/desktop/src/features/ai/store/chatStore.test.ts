@@ -15,6 +15,7 @@ import type {
     QueuedChatMessage,
 } from "../types";
 import { deriveReviewItems } from "../diff/editedFilesPresentationModel";
+import * as reviewProjectionIndexModule from "../diff/reviewProjectionIndex";
 import * as reviewProjectionModule from "../diff/reviewProjection";
 import { buildReviewProjection } from "../diff/reviewProjection";
 import { selectVisibleTrackedFiles } from "./editedFilesBufferModel";
@@ -9328,7 +9329,139 @@ describe("chatStore", () => {
         });
     });
 
-    it("resolveReviewHunks resolves the expanded overlap closure returned by projection", async () => {
+    it("resolveReviewHunks accepts only the selected accumulated hunk and preserves later agent hunks", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accept-hunk-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accept-hunk-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-accept-hunk-b",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        const projection = buildReviewProjection(entry);
+        expect(projection.hunks).toHaveLength(2);
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                entry.identityKey,
+                "accepted",
+                entry.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [remaining] = getVisibleBuffer(activeSessionId);
+        expect(remaining).toBeDefined();
+        expectTrackedFileToMatchAccumulatedDiff(
+            remaining!,
+            "aaXa\nBBB\nccc\nddd",
+            "aaXa\nBBB\nccc\nDDD",
+        );
+        expect(buildReviewProjection(remaining!).hunks).toHaveLength(1);
+    });
+
+    it("resolveReviewHunks does not depend on the visual projection to accept hunks", async () => {
+        const file = createTrackedFile(
+            "notes/visual-independence.md",
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+            {
+                reviewState: "finalized",
+            },
+        );
+        const session = createSessionWithTrackedFiles("session-visual", [file]);
+        const projection = buildReviewProjection(file);
+
+        useChatStore.setState({
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        });
+
+        const projectionSpy = vi.spyOn(
+            reviewProjectionModule,
+            "buildReviewProjection",
+        );
+        projectionSpy.mockImplementation(() => {
+            throw new Error("visual projection should not be used here");
+        });
+
+        try {
+            await useChatStore
+                .getState()
+                .resolveReviewHunks(
+                    session.sessionId,
+                    file.identityKey,
+                    "accepted",
+                    file.version,
+                    [projection.hunks[0]!.id],
+                );
+        } finally {
+            projectionSpy.mockRestore();
+        }
+
+        expect(getVisibleBuffer(session.sessionId)).toHaveLength(0);
+    });
+
+    it("resolveReviewHunks resolves the expanded overlap closure returned by the canonical index", async () => {
         const file = createTrackedFile(
             "notes/overlap-closure.md",
             "one\ntwo\nthree\nfour",
@@ -9344,14 +9477,14 @@ describe("chatStore", () => {
 
         expect(projection.hunks).toHaveLength(2);
         const closureSpy = vi.spyOn(
-            reviewProjectionModule,
-            "expandReviewHunksToOverlapClosure",
+            reviewProjectionIndexModule,
+            "expandReviewHunkIdsToOverlapClosure",
         );
-        closureSpy.mockImplementation((_projection, selectedHunks) => {
-            if (selectedHunks.length === 1) {
-                return projection.hunks;
+        closureSpy.mockImplementation((_index, selectedHunkIds) => {
+            if (selectedHunkIds.length === 1) {
+                return projection.hunks.map((hunk) => hunk.id);
             }
-            return [...selectedHunks];
+            return [...selectedHunkIds];
         });
         try {
             useChatStore.setState({

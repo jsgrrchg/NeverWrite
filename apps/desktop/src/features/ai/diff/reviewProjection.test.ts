@@ -5,17 +5,24 @@ import {
     buildReviewHunks,
     buildReviewProjection,
     canResolveReviewChunkInlineExactly,
-    expandReviewHunksToOverlapClosure,
     getReviewChunkControlMode,
     getReviewChunkById,
     getReviewHunkById,
     getReviewHunksForChunk,
     isReviewChunkMultiHunk,
-    reviewHunkIdsStableWithinVersion,
+} from "./reviewProjection";
+import {
+    getReviewProjectionDiagnostics,
+    getReviewChunkRenderState,
+    getRenderableReviewChunks,
     reviewProjectionMatchesSpans,
     summarizeReviewProjectionInlineState,
+} from "./reviewProjectionDiagnostics";
+import { expandReviewIndexHunksToOverlapClosure } from "./reviewProjectionIndex";
+import {
+    reviewHunkIdsStableWithinVersion,
     validateReviewProjection,
-} from "./reviewProjection";
+} from "./reviewProjectionValidation";
 import {
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
@@ -314,7 +321,7 @@ describe("reviewProjection", () => {
             },
         };
 
-        const closure = expandReviewHunksToOverlapClosure(projection, [
+        const closure = expandReviewIndexHunksToOverlapClosure(projection, [
             projection.hunks[0]!,
         ]);
         expect(closure).toHaveLength(2);
@@ -362,6 +369,60 @@ describe("reviewProjection", () => {
 
         expect(projection.hunks[0]!.hasConflict).toBe(true);
         expect(projection.chunks[0]!.hasConflict).toBe(true);
+    });
+
+    it("marks conflicting chunks as degraded while keeping them renderable", () => {
+        const file = createTrackedFile("foo bar baz", "FOO bar BAZ", {
+            conflictHash: "conflict",
+            unreviewedRanges: {
+                spans: [
+                    {
+                        baseFrom: 0,
+                        baseTo: 3,
+                        currentFrom: 0,
+                        currentTo: 3,
+                    },
+                    {
+                        baseFrom: 8,
+                        baseTo: 11,
+                        currentFrom: 8,
+                        currentTo: 11,
+                    },
+                ],
+            },
+        });
+
+        const projection = buildReviewProjection(file);
+
+        expect(
+            getReviewChunkRenderState(projection, projection.chunks[0]!.id),
+        ).toBe("degraded");
+        expect(getRenderableReviewChunks(projection)).toEqual(
+            projection.chunks,
+        );
+        expect(projection.diagnostics.metrics.degradedChunkCount).toBe(1);
+        expect(projection.diagnostics.metrics.invalidChunkCount).toBe(0);
+    });
+
+    it("computes projection diagnostics lazily and caches them once accessed", () => {
+        const file = createTrackedFile(
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+        );
+
+        const projection = buildReviewProjection(file);
+        const diagnosticsDescriptor = Object.getOwnPropertyDescriptor(
+            projection,
+            "diagnostics",
+        );
+
+        expect(diagnosticsDescriptor?.get).toBeTypeOf("function");
+
+        const firstDiagnostics = getReviewProjectionDiagnostics(projection);
+        const secondDiagnostics = getReviewProjectionDiagnostics(projection);
+
+        expect(firstDiagnostics).toBe(secondDiagnostics);
+        expect(projection.diagnostics).toBe(firstDiagnostics);
     });
 
     it("summarizes inline gating flags from the projection", () => {
@@ -419,6 +480,26 @@ describe("reviewProjection", () => {
                 ],
             },
         });
+        const projection = buildReviewProjection(file);
+
+        expect(reviewProjectionMatchesSpans(file, projection)).toBe(true);
+        expect(validateReviewProjection(file, projection)).toEqual([]);
+    });
+
+    it("validates against synced canonical spans even when derived ranges are stale", () => {
+        const file = createTrackedFile("foo bar baz", "FOO bar BAZ", {
+            unreviewedRanges: {
+                spans: [
+                    {
+                        baseFrom: 0,
+                        baseTo: 3,
+                        currentFrom: 0,
+                        currentTo: 3,
+                    },
+                ],
+            },
+        });
+
         const projection = buildReviewProjection(file);
 
         expect(reviewProjectionMatchesSpans(file, projection)).toBe(true);

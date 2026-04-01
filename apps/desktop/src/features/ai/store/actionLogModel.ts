@@ -25,8 +25,12 @@ import type {
     TrackedFileDomainInvariantId,
     TrackedFileStatus,
 } from "../diff/actionLogTypes";
-import type { ReviewHunk } from "../diff/reviewProjection";
 import type { AIFileDiff, AIFileDiffHunk, AIFileDiffHunkLine } from "../types";
+import {
+    resolveReviewIndexHunksToExactSpans,
+    type ReviewHunkMemberSpan,
+} from "../diff/reviewProjectionIndex";
+import { buildLineStartOffsets, lineIndexToOffset } from "../diff/lineMap";
 import {
     applyNonConflictingEditsRust,
     applyRejectUndoRust,
@@ -697,22 +701,6 @@ function splitSingleLineSpanByWordDiff(
     return candidates.length > 1 ? candidates : null;
 }
 
-function buildLineStartOffsets(text: string): number[] {
-    const offsets = [0];
-    for (let index = 0; index < text.length; index += 1) {
-        if (text[index] === "\n") {
-            offsets.push(index + 1);
-        }
-    }
-    return offsets;
-}
-
-function lineIndexToOffset(lineStarts: number[], text: string, line: number) {
-    if (line <= 0) return 0;
-    if (line >= lineStarts.length) return text.length;
-    return lineStarts[line]!;
-}
-
 export function computeWordDiffsForHunk(
     baseText: string,
     currentText: string,
@@ -1107,25 +1095,25 @@ export function keepExactSpans(
     return keepExactSpansRust(file, spans);
 }
 
-function collectExactSpansFromReviewHunks(
+export interface ReviewHunkSelection {
+    trackedVersion: number;
+    memberSpans: ReviewHunkMemberSpan[];
+}
+
+function collectExactSpansFromReviewSelections(
     file: TrackedFile,
-    reviewHunks: ReviewHunk[],
+    reviewSelections: readonly ReviewHunkSelection[],
 ): AgentTextSpan[] {
     const syncedFile = syncDerivedLinePatch(file);
     const currentSpans = syncedFile.unreviewedRanges?.spans ?? [];
     const selectedSpans = dedupeSpans(
-        reviewHunks.flatMap((hunk) =>
-            hunk.memberSpans.map((span) => ({
-                baseFrom: span.baseFrom,
-                baseTo: span.baseTo,
-                currentFrom: span.currentFrom,
-                currentTo: span.currentTo,
-            })),
-        ),
+        resolveReviewIndexHunksToExactSpans(reviewSelections),
     );
 
     if (
-        reviewHunks.some((hunk) => hunk.trackedVersion !== syncedFile.version)
+        reviewSelections.some(
+            (selection) => selection.trackedVersion !== syncedFile.version,
+        )
     ) {
         throw new Error(
             `Review hunk version mismatch for ${syncedFile.identityKey}: expected ${syncedFile.version}.`,
@@ -1147,11 +1135,11 @@ function collectExactSpansFromReviewHunks(
 
 export function keepReviewHunks(
     file: TrackedFile,
-    reviewHunks: ReviewHunk[],
+    reviewHunks: readonly ReviewHunkSelection[],
 ): TrackedFile {
     return keepExactSpans(
         file,
-        collectExactSpansFromReviewHunks(file, reviewHunks),
+        collectExactSpansFromReviewSelections(file, reviewHunks),
     );
 }
 
@@ -1188,11 +1176,11 @@ export function rejectExactSpans(
 
 export function rejectReviewHunks(
     file: TrackedFile,
-    reviewHunks: ReviewHunk[],
+    reviewHunks: readonly ReviewHunkSelection[],
 ): { file: TrackedFile; undoData: PerFileUndo } {
     return rejectExactSpans(
         file,
-        collectExactSpansFromReviewHunks(file, reviewHunks),
+        collectExactSpansFromReviewSelections(file, reviewHunks),
     );
 }
 

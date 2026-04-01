@@ -1412,6 +1412,33 @@ describe("Exact review resolution", () => {
         ]);
     });
 
+    it("keepReviewHunks accepts the canonical selection shape without depending on visual fields", () => {
+        const file = createInlineNeighborFile();
+        const selection = [
+            {
+                trackedVersion: file.version,
+                memberSpans: [
+                    {
+                        spanIndex: 0,
+                        ...file.unreviewedRanges!.spans[0]!,
+                    },
+                ],
+            },
+        ];
+
+        const accepted = keepReviewHunks(file, selection);
+
+        expect(accepted.diffBase).toBe("FOO bar baz");
+        expect(accepted.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+    });
+
     it("rejectReviewHunks resolves exact member spans independently inside one visual chunk", () => {
         const file = createInlineNeighborFile();
         const projection = buildReviewProjection(file);
@@ -1419,6 +1446,33 @@ describe("Exact review resolution", () => {
         const { file: rejected } = rejectReviewHunks(file, [
             projection.hunks[0]!,
         ]);
+
+        expect(rejected.currentText).toBe("foo bar BAZ");
+        expect(rejected.unreviewedRanges?.spans).toEqual([
+            {
+                baseFrom: 8,
+                baseTo: 11,
+                currentFrom: 8,
+                currentTo: 11,
+            },
+        ]);
+    });
+
+    it("rejectReviewHunks rejects from the canonical selection shape without depending on visual fields", () => {
+        const file = createInlineNeighborFile();
+        const selection = [
+            {
+                trackedVersion: file.version,
+                memberSpans: [
+                    {
+                        spanIndex: 0,
+                        ...file.unreviewedRanges!.spans[0]!,
+                    },
+                ],
+            },
+        ];
+
+        const { file: rejected } = rejectReviewHunks(file, selection);
 
         expect(rejected.currentText).toBe("foo bar BAZ");
         expect(rejected.unreviewedRanges?.spans).toEqual([

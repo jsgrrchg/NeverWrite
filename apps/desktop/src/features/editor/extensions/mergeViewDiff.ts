@@ -19,8 +19,8 @@ import type {
     ReviewChunkId,
     ReviewHunk,
     ReviewHunkId,
-    ReviewProjectionMetrics,
 } from "../../ai/diff/reviewProjection";
+import type { ReviewProjectionMetrics } from "../../ai/diff/reviewProjectionDiagnostics";
 import type { ChangePresentationLevel } from "../changePresentationModel";
 import { createChangeRailExtension } from "./changeRail";
 import { createReviewProjectionControlsExtension } from "./reviewProjectionControls";

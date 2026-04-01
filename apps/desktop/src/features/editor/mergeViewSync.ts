@@ -4,13 +4,16 @@ import { useChatStore } from "../ai/store/chatStore";
 import type { AgentTextSpan } from "../ai/diff/actionLogTypes";
 import {
     buildReviewProjection,
-    summarizeReviewProjectionInlineState,
     type ReviewChunkId,
     type ReviewHunkId,
     type ReviewProjection,
+} from "../ai/diff/reviewProjection";
+import {
+    getReviewProjectionDiagnostics,
+    summarizeReviewProjectionInlineState,
     type ReviewProjectionInlineState,
     type ReviewProjectionMetrics,
-} from "../ai/diff/reviewProjection";
+} from "../ai/diff/reviewProjectionDiagnostics";
 import type { AIChatSession } from "../ai/types";
 import {
     isFileTab,
@@ -91,7 +94,7 @@ function buildProjectionDiagnosticsLogInfo(
     invalidHunkKeys: string[];
 } | null {
     if (!projection) return null;
-    const { diagnostics } = projection;
+    const diagnostics = getReviewProjectionDiagnostics(projection);
     const invalidChunkKeys = Object.entries(diagnostics.chunkInvariantIdsByKey)
         .filter(([, ids]) => ids.length > 0)
         .map(([key]) => key);
@@ -103,6 +106,21 @@ function buildProjectionDiagnosticsLogInfo(
     }
     const warnKey = [...invalidChunkKeys, ...invalidHunkKeys].sort().join(",");
     return { warnKey, invalidChunkKeys, invalidHunkKeys };
+}
+
+function toProjectionMetrics(
+    state: ReviewProjectionInlineState,
+): ReviewProjectionMetrics {
+    return {
+        totalLines: state.totalLines,
+        hunkCount: state.hunkCount,
+        chunkCount: state.chunkCount,
+        visibleChunkCount: state.visibleChunkCount,
+        invalidChunkCount: state.invalidChunkCount,
+        inlineSafeChunkCount: state.inlineSafeChunkCount,
+        degradedChunkCount: state.degradedChunkCount,
+        status: state.projectionState,
+    };
 }
 
 export function syncMergeViewForPaths(
@@ -346,7 +364,10 @@ export function syncMergeViewForPaths(
         ? summarizeReviewProjectionInlineState(reviewProjection)
         : EMPTY_INLINE_STATE;
     const projectionDiagnostics =
-        buildProjectionDiagnosticsLogInfo(reviewProjection);
+        reviewProjection &&
+        projectionState.projectionState !== "projection_ready"
+            ? buildProjectionDiagnosticsLogInfo(reviewProjection)
+            : null;
 
     if (
         projectionDiagnostics &&
@@ -395,8 +416,6 @@ export function syncMergeViewForPaths(
         clearMergeDebugLog(view);
         mergeProjectionDiagnosticsWarnKeyByView.delete(view);
     }
-    clearMergeDebugLog(view);
-    mergeProjectionDiagnosticsWarnKeyByView.delete(view);
     const nextControlsSignature = buildMergeControlsSignature(reviewProjection);
     const resolvedInlineState: MergeInlineState =
         projectionState.projectionState === "projection_ready"
@@ -420,9 +439,6 @@ export function syncMergeViewForPaths(
         currentSignature !== nextSignature ||
         currentControlsSignature !== nextControlsSignature
     ) {
-        const projectionState = reviewProjection
-            ? summarizeReviewProjectionInlineState(reviewProjection)
-            : EMPTY_INLINE_STATE;
         const flags = getMergePresentationFlags(presentation, projectionState);
         // CodeMirror normalizes \r\n → \n, so raw string lengths can exceed
         // the internal document length. Use normalized lengths for clamping.
@@ -453,9 +469,7 @@ export function syncMergeViewForPaths(
                         level: presentation.level,
                         statusKind: trackedFile.status.kind,
                         inlineState: resolvedInlineState,
-                        projectionMetrics:
-                            reviewProjection?.diagnostics.metrics ??
-                            EMPTY_PROJECTION_METRICS,
+                        projectionMetrics: toProjectionMetrics(projectionState),
                         highlightChanges: flags.highlightChanges,
                         allowInlineDiffs: flags.allowInlineDiffs,
                         enableControls: flags.enableControls,
