@@ -478,6 +478,7 @@ function UserTextMessage({
 interface AIChatMessageItemProps {
     message: AIChatMessage;
     sessionId?: string | null;
+    readOnly?: boolean;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
     chatFontFamily?: EditorFontFamily;
@@ -3003,6 +3004,7 @@ function UserInputRequestMessage({
 export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
     sessionId,
+    readOnly = false,
     pillMetrics,
     chatFontSize = 20,
     chatFontFamily = "system",
@@ -3011,11 +3013,13 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     onPermissionResponse,
     onUserInputResponse,
 }: AIChatMessageItemProps) {
-    const diffPresentationMode = getDiffPresentationMode(
-        message,
-        visibleWorkCycleId,
-        recentDiffWorkCycleIds,
-    );
+    const diffPresentationMode = readOnly
+        ? ("recent" as DiffPresentationMode)
+        : getDiffPresentationMode(
+              message,
+              visibleWorkCycleId,
+              recentDiffWorkCycleIds,
+          );
 
     // User text — full width, subtle box (Zed style)
     if (message.kind === "text" && message.role === "user") {
