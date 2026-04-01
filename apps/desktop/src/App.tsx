@@ -81,6 +81,10 @@ import {
 import { getDesktopPlatform } from "./app/utils/platform";
 import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
 import {
+    canUseExcalidrawRuntime,
+    readSearchParam,
+} from "./app/utils/safeBrowser";
+import {
     flushChatTabsPersistence,
     markChatTabsReady,
     readPersistedChatWorkspace,
@@ -960,6 +964,37 @@ const LazyGraphTabView = React.lazy(() =>
 );
 
 const GRAPH_KEEP_ALIVE_MS = 15 * 60 * 1000;
+const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
+
+function UnsupportedMapView() {
+    return (
+        <div
+            className="h-full flex items-center justify-center p-6"
+            style={{ color: "var(--text-secondary)" }}
+        >
+            <div
+                className="max-w-xl rounded-xl p-5"
+                style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-secondary)",
+                }}
+            >
+                <div
+                    className="text-sm font-semibold"
+                    style={{ color: "var(--text-primary)" }}
+                >
+                    Map view is unavailable in this hardened build
+                </div>
+                <div className="mt-2 text-sm leading-6">
+                    The current release disables dynamic code execution required
+                    by Excalidraw. Existing map tabs are preserved in session
+                    data, but they are not restored automatically and cannot be
+                    rendered until a CSP-compatible runtime is wired in.
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function renderEditorPanelView(
     view: EditorPanelView,
@@ -973,6 +1008,9 @@ function renderEditorPanelView(
         case "ai-review":
             return <AIReviewView />;
         case "map":
+            if (!EXCALIDRAW_RUNTIME_SUPPORTED) {
+                return <UnsupportedMapView />;
+            }
             return (
                 <React.Suspense fallback={null}>
                     <LazyExcalidrawTabView />
@@ -1080,7 +1118,7 @@ export default function App() {
         (s) => s.developerTerminalEnabled,
     );
     const windowMode = getWindowMode();
-    const vaultParam = new URLSearchParams(window.location.search).get("vault");
+    const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
         !(
             windowMode === "main" &&
@@ -1373,31 +1411,37 @@ export default function App() {
 
         const currentVaultPath = useVaultStore.getState().vaultPath;
 
-        for (const mapEntry of session?.mapTabs ?? []) {
-            const relativePath =
-                mapEntry.relativePath ||
-                (mapEntry.filePath
-                    ? toVaultRelativePath(mapEntry.filePath, currentVaultPath)
-                    : null);
-            if (!relativePath) {
-                continue;
-            }
+        if (EXCALIDRAW_RUNTIME_SUPPORTED) {
+            for (const mapEntry of session?.mapTabs ?? []) {
+                const relativePath =
+                    mapEntry.relativePath ||
+                    (mapEntry.filePath
+                        ? toVaultRelativePath(
+                              mapEntry.filePath,
+                              currentVaultPath,
+                          )
+                        : null);
+                if (!relativePath) {
+                    continue;
+                }
 
-            if (
-                restoredTabs.some(
-                    (tab) =>
-                        tab.kind === "map" && tab.relativePath === relativePath,
-                )
-            ) {
-                continue;
-            }
+                if (
+                    restoredTabs.some(
+                        (tab) =>
+                            tab.kind === "map" &&
+                            tab.relativePath === relativePath,
+                    )
+                ) {
+                    continue;
+                }
 
-            restoredTabs.push({
-                id: crypto.randomUUID(),
-                kind: "map",
-                relativePath,
-                title: mapEntry.title,
-            });
+                restoredTabs.push({
+                    id: crypto.randomUUID(),
+                    kind: "map",
+                    relativePath,
+                    title: mapEntry.title,
+                });
+            }
         }
 
         if (session?.hasGraphTab) {
@@ -1418,14 +1462,22 @@ export default function App() {
         const activeLegacyMapRelativePath = session?.activeMapFilePath
             ? toVaultRelativePath(session.activeMapFilePath, currentVaultPath)
             : null;
-        if (!activeTab && session?.activeMapRelativePath) {
+        if (
+            EXCALIDRAW_RUNTIME_SUPPORTED &&
+            !activeTab &&
+            session?.activeMapRelativePath
+        ) {
             activeTab = restoredTabs.find(
                 (tab) =>
                     tab.kind === "map" &&
                     tab.relativePath === session.activeMapRelativePath,
             );
         }
-        if (!activeTab && activeLegacyMapRelativePath) {
+        if (
+            EXCALIDRAW_RUNTIME_SUPPORTED &&
+            !activeTab &&
+            activeLegacyMapRelativePath
+        ) {
             activeTab = restoredTabs.find(
                 (tab) =>
                     tab.kind === "map" &&
@@ -1896,8 +1948,7 @@ export default function App() {
     }, [routeWebClipperClip, windowMode]);
 
     if (windowMode === "ghost") {
-        const title =
-            new URLSearchParams(window.location.search).get("title") ?? "Tab";
+        const title = readSearchParam("title") ?? "Tab";
         return (
             <div
                 style={{

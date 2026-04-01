@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { type ThemeName, applyThemeColors } from "../themes/index";
+import { readSearchParam, safeMatchMedia } from "../utils/safeBrowser";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+    subscribeSafeStorage,
+} from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -59,23 +65,8 @@ function normalizeThemeName(value: unknown): ThemeName {
         : "default";
 }
 
-function getIsDark(mode: ThemeMode): boolean {
-    if (typeof window === "undefined") return false;
-    if (mode === "dark") return true;
-    if (mode === "light") return false;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function applyDark(isDark: boolean) {
-    if (typeof document === "undefined") return;
-    document.documentElement.classList.toggle("dark", isDark);
-}
-
-function resolveTheme(mode: ThemeMode, themeName: ThemeName) {
-    const isDark = getIsDark(mode);
-    applyDark(isDark);
-    applyThemeColors(themeName, isDark);
-    return { mode, themeName, isDark };
+function getStorageKey(vaultPath: string | null): string {
+    return vaultPath ? `${THEME_KEY_PREFIX}${vaultPath}` : THEME_KEY_FALLBACK;
 }
 
 function parseStoredTheme(raw: string | null): ThemePreference | null {
@@ -105,46 +96,53 @@ function parseStoredTheme(raw: string | null): ThemePreference | null {
     }
 }
 
-function getStorageKey(vaultPath: string | null): string {
-    return vaultPath ? `${THEME_KEY_PREFIX}${vaultPath}` : THEME_KEY_FALLBACK;
+function getIsDark(mode: ThemeMode): boolean {
+    if (mode === "dark") return true;
+    if (mode === "light") return false;
+    return safeMatchMedia("(prefers-color-scheme: dark)")?.matches ?? false;
 }
 
-function safeGetItem(key: string): string | null {
-    try {
-        return localStorage.getItem(key);
-    } catch {
-        return null;
-    }
+function applyDark(isDark: boolean) {
+    if (typeof document === "undefined") return;
+    document.documentElement.classList.toggle("dark", isDark);
+}
+
+function resolveTheme(mode: ThemeMode, themeName: ThemeName) {
+    const isDark = getIsDark(mode);
+    applyDark(isDark);
+    applyThemeColors(themeName, isDark);
+    return { mode, themeName, isDark };
 }
 
 function migrateGlobalTheme(vaultPath: string) {
     const vaultKey = getStorageKey(vaultPath);
-    if (safeGetItem(vaultKey)) return; // already migrated
-    const global = parseStoredTheme(safeGetItem(THEME_KEY_FALLBACK));
+    if (safeStorageGetItem(vaultKey)) return;
+
+    const global = parseStoredTheme(safeStorageGetItem(THEME_KEY_FALLBACK));
     if (!global) return;
-    try {
-        localStorage.setItem(vaultKey, JSON.stringify(global));
-    } catch {
-        // localStorage unavailable
-    }
+
+    safeStorageSetItem(vaultKey, JSON.stringify(global));
 }
 
 function readInitialVaultPath(): string | null {
     try {
-        const urlVault = new URLSearchParams(window.location.search).get(
-            "vault",
-        );
+        const urlVault = readSearchParam("vault");
         if (urlVault) return decodeURIComponent(urlVault);
-        return safeGetItem(LAST_VAULT_KEY);
     } catch {
-        return null;
+        // Fall back to persisted storage below.
     }
+
+    return safeStorageGetItem(LAST_VAULT_KEY);
 }
 
 function loadTheme(vaultPath: string | null): ThemePreference {
-    if (vaultPath) migrateGlobalTheme(vaultPath);
+    if (vaultPath) {
+        migrateGlobalTheme(vaultPath);
+    }
+
     return (
-        parseStoredTheme(safeGetItem(getStorageKey(vaultPath))) ?? DEFAULT_THEME
+        parseStoredTheme(safeStorageGetItem(getStorageKey(vaultPath))) ??
+        DEFAULT_THEME
     );
 }
 
@@ -157,67 +155,103 @@ function getEffectiveVaultPath(
 }
 
 function saveTheme(vaultPath: string | null, preference: ThemePreference) {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
-        getStorageKey(vaultPath),
-        JSON.stringify(preference),
-    );
+    safeStorageSetItem(getStorageKey(vaultPath), JSON.stringify(preference));
 }
 
-const initialVaultPath = readInitialVaultPath();
-const initialPreference = loadTheme(initialVaultPath);
-const initialTheme = resolveTheme(
-    initialPreference.mode,
-    initialPreference.themeName,
-);
-
 export const useThemeStore = create<ThemeStore>((set, get) => ({
-    ...initialTheme,
+    mode: DEFAULT_THEME.mode,
+    themeName: DEFAULT_THEME.themeName,
+    isDark: false,
     setMode: (mode) => set(resolveTheme(mode, get().themeName)),
     setThemeName: (themeName) => set(resolveTheme(get().mode, themeName)),
 }));
 
-let _currentVaultPath: string | null = initialVaultPath;
+let themeRuntimeInitialized = false;
+let currentVaultPath: string | null = null;
+let stopStorageSync: (() => void) | null = null;
+let stopVaultSync: (() => void) | null = null;
+let stopThemePersistence: (() => void) | null = null;
+let mediaQueryList: MediaQueryList | null = null;
+let removeMediaListener: (() => void) | null = null;
+let isApplyingExternal = false;
 
-if (typeof window !== "undefined") {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
+export function hydrateThemeStore() {
+    try {
+        currentVaultPath = readInitialVaultPath();
+        const preference = loadTheme(currentVaultPath);
+        useThemeStore.setState(
+            resolveTheme(preference.mode, preference.themeName),
+        );
+    } catch (error) {
+        console.warn("Failed to hydrate theme store:", error);
+        useThemeStore.setState(
+            resolveTheme(DEFAULT_THEME.mode, DEFAULT_THEME.themeName),
+        );
+    }
+}
 
-    media.addEventListener("change", () => {
-        const s = useThemeStore.getState();
-        if (s.mode !== "system") return;
-        useThemeStore.setState(resolveTheme("system", s.themeName));
-    });
+export function initializeThemeStore() {
+    if (themeRuntimeInitialized) return;
+    themeRuntimeInitialized = true;
 
-    let isApplyingExternal = false;
+    hydrateThemeStore();
 
-    // Persist on every theme change
-    useThemeStore.subscribe((state) => {
+    stopThemePersistence = useThemeStore.subscribe((state) => {
         applyDark(state.isDark);
         applyThemeColors(state.themeName, state.isDark);
         if (!isApplyingExternal) {
-            saveTheme(_currentVaultPath, {
+            saveTheme(currentVaultPath, {
                 mode: state.mode,
                 themeName: state.themeName,
             });
         }
     });
 
-    // React to changes made by other windows (e.g. settings window) via localStorage
-    window.addEventListener("storage", (event) => {
-        if (event.key !== getStorageKey(_currentVaultPath)) return;
+    stopStorageSync = subscribeSafeStorage((event) => {
+        if (event.key !== getStorageKey(currentVaultPath)) return;
+
         const theme = parseStoredTheme(event.newValue);
         if (!theme) return;
+
         isApplyingExternal = true;
         useThemeStore.setState(resolveTheme(theme.mode, theme.themeName));
         isApplyingExternal = false;
     });
 
-    // Reload theme when the active vault changes
-    useVaultStore.subscribe((state) => {
+    stopVaultSync = useVaultStore.subscribe((state) => {
         const newVaultPath = getEffectiveVaultPath(state);
-        if (newVaultPath === _currentVaultPath) return;
-        _currentVaultPath = newVaultPath;
-        const pref = loadTheme(newVaultPath);
-        useThemeStore.setState(resolveTheme(pref.mode, pref.themeName));
+        if (newVaultPath === currentVaultPath) return;
+        currentVaultPath = newVaultPath;
+        const preference = loadTheme(newVaultPath);
+        useThemeStore.setState(
+            resolveTheme(preference.mode, preference.themeName),
+        );
     });
+
+    mediaQueryList = safeMatchMedia("(prefers-color-scheme: dark)");
+    const onMediaChange = () => {
+        const state = useThemeStore.getState();
+        if (state.mode !== "system") return;
+        useThemeStore.setState(resolveTheme("system", state.themeName));
+    };
+
+    if (mediaQueryList) {
+        mediaQueryList.addEventListener("change", onMediaChange);
+        removeMediaListener = () => {
+            mediaQueryList?.removeEventListener("change", onMediaChange);
+        };
+    }
+}
+
+export function disposeThemeStoreRuntime() {
+    stopThemePersistence?.();
+    stopStorageSync?.();
+    stopVaultSync?.();
+    removeMediaListener?.();
+    stopThemePersistence = null;
+    stopStorageSync = null;
+    stopVaultSync = null;
+    removeMediaListener = null;
+    mediaQueryList = null;
+    themeRuntimeInitialized = false;
 }

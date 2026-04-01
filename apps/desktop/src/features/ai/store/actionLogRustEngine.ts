@@ -26,6 +26,27 @@ import type {
     TextRangePatch,
     TrackedFile,
 } from "../diff/actionLogTypes";
+import {
+    applyNonConflictingEditsFallback,
+    applyRejectUndoFallback,
+    buildPatchFromTextsFallback,
+    buildTextRangePatchFromTextsFallback,
+    computeWordDiffsForHunkFallback,
+    deriveLinePatchFromTextRangesFallback,
+    keepExactSpansFallback,
+    mapAgentSpanThroughTextEditsFallback,
+    mapTextPositionThroughEditsFallback,
+    partitionSpansByOverlapFallback,
+    rebuildDiffBaseFromPendingSpansFallback,
+    rejectAllEditsFallback,
+    rejectExactSpansFallback,
+    syncDerivedLinePatchFallback,
+} from "./actionLogJsFallback";
+
+let rustEngineReady = false;
+let rustEngineInitPromise: Promise<void> | null = null;
+let rustEngineInitError: unknown = null;
+let rustEngineRuntimeFallbackWarned = false;
 
 async function initActionLogRustEngine() {
     if (import.meta.env.MODE === "test") {
@@ -71,7 +92,56 @@ async function initActionLogRustEngine() {
     await initActionLogWasm({ module_or_path: wasmUrl });
 }
 
-await initActionLogRustEngine();
+export async function initializeActionLogRustEngineRuntime() {
+    if (rustEngineReady) return;
+    if (rustEngineInitPromise) {
+        await rustEngineInitPromise;
+        return;
+    }
+
+    rustEngineInitPromise = initActionLogRustEngine()
+        .then(() => {
+            rustEngineReady = true;
+        })
+        .catch((error) => {
+            rustEngineInitError = error;
+            rustEngineInitPromise = null;
+            throw error;
+        });
+
+    await rustEngineInitPromise;
+}
+
+function assertRustEngineReady() {
+    if (rustEngineReady) return;
+    throw new Error(
+        "Action log Rust/WASM engine is unavailable in this runtime.",
+    );
+}
+
+function callWithFallback<T>(rustCall: () => T, fallbackCall: () => T): T {
+    if (!rustEngineReady) {
+        return fallbackCall();
+    }
+
+    try {
+        return rustCall();
+    } catch (error) {
+        if (!rustEngineRuntimeFallbackWarned) {
+            rustEngineRuntimeFallbackWarned = true;
+            console.warn(
+                "Rust/WASM action log call failed; using JS fallback for this session.",
+                error,
+                rustEngineInitError,
+            );
+        }
+        return fallbackCall();
+    }
+}
+
+if (import.meta.env.DEV || import.meta.env.MODE === "test") {
+    await initializeActionLogRustEngineRuntime();
+}
 
 type RejectEditsResult = {
     file: TrackedFile;
@@ -91,7 +161,13 @@ export function buildPatchFromTextsRust(
     oldText: string,
     newText: string,
 ): LinePatch {
-    return parseJson(build_patch_from_texts_json(oldText, newText));
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(build_patch_from_texts_json(oldText, newText));
+        },
+        () => buildPatchFromTextsFallback(oldText, newText),
+    );
 }
 
 export function buildTextRangePatchFromTextsRust(
@@ -99,12 +175,18 @@ export function buildTextRangePatchFromTextsRust(
     newText: string,
     linePatch?: LinePatch,
 ): TextRangePatch {
-    return parseJson(
-        build_text_range_patch_from_texts_json(
-            oldText,
-            newText,
-            linePatch ? JSON.stringify(linePatch) : undefined,
-        ),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                build_text_range_patch_from_texts_json(
+                    oldText,
+                    newText,
+                    linePatch ? JSON.stringify(linePatch) : undefined,
+                ),
+            );
+        },
+        () => buildTextRangePatchFromTextsFallback(oldText, newText, linePatch),
     );
 }
 
@@ -122,14 +204,26 @@ export function computeWordDiffsForHunkRust(
         maxChars?: number;
     } = {},
 ): HunkWordDiffs | null {
-    return parseJson(
-        compute_word_diffs_for_hunk_json(
-            baseText,
-            currentText,
-            JSON.stringify(edit),
-            options.maxLines ?? 5,
-            options.maxChars ?? 240,
-        ),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                compute_word_diffs_for_hunk_json(
+                    baseText,
+                    currentText,
+                    JSON.stringify(edit),
+                    options.maxLines ?? 5,
+                    options.maxChars ?? 240,
+                ),
+            );
+        },
+        () =>
+            computeWordDiffsForHunkFallback(
+                baseText,
+                currentText,
+                edit,
+                options,
+            ),
     );
 }
 
@@ -138,17 +232,32 @@ export function deriveLinePatchFromTextRangesRust(
     currentText: string,
     spans: AgentTextSpan[],
 ): LinePatch {
-    return parseJson(
-        derive_line_patch_from_text_ranges_json(
-            baseText,
-            currentText,
-            JSON.stringify(spans),
-        ),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                derive_line_patch_from_text_ranges_json(
+                    baseText,
+                    currentText,
+                    JSON.stringify(spans),
+                ),
+            );
+        },
+        () =>
+            deriveLinePatchFromTextRangesFallback(baseText, currentText, spans),
     );
 }
 
 export function syncDerivedLinePatchRust(file: TrackedFile): TrackedFile {
-    return parseJson(sync_derived_line_patch_json(JSON.stringify(file)));
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                sync_derived_line_patch_json(JSON.stringify(file)),
+            );
+        },
+        () => syncDerivedLinePatchFallback(file),
+    );
 }
 
 export function applyNonConflictingEditsRust(
@@ -156,12 +265,18 @@ export function applyNonConflictingEditsRust(
     userEdits: TextEdit[],
     newFullText: string,
 ): TrackedFile {
-    return parseJson(
-        apply_non_conflicting_edits_json(
-            JSON.stringify(file),
-            JSON.stringify(userEdits),
-            newFullText,
-        ),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                apply_non_conflicting_edits_json(
+                    JSON.stringify(file),
+                    JSON.stringify(userEdits),
+                    newFullText,
+                ),
+            );
+        },
+        () => applyNonConflictingEditsFallback(file, userEdits, newFullText),
     );
 }
 
@@ -169,21 +284,45 @@ export function keepExactSpansRust(
     file: TrackedFile,
     spans: AgentTextSpan[],
 ): TrackedFile {
-    return parseJson(
-        keep_exact_spans_json(JSON.stringify(file), JSON.stringify(spans)),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                keep_exact_spans_json(
+                    JSON.stringify(file),
+                    JSON.stringify(spans),
+                ),
+            );
+        },
+        () => keepExactSpansFallback(file, spans),
     );
 }
 
 export function rejectAllEditsRust(file: TrackedFile): RejectEditsResult {
-    return parseJson(reject_all_edits_json(JSON.stringify(file)));
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(reject_all_edits_json(JSON.stringify(file)));
+        },
+        () => rejectAllEditsFallback(file),
+    );
 }
 
 export function rejectExactSpansRust(
     file: TrackedFile,
     spans: AgentTextSpan[],
 ): RejectEditsResult {
-    return parseJson(
-        reject_exact_spans_json(JSON.stringify(file), JSON.stringify(spans)),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                reject_exact_spans_json(
+                    JSON.stringify(file),
+                    JSON.stringify(spans),
+                ),
+            );
+        },
+        () => rejectExactSpansFallback(file, spans),
     );
 }
 
@@ -191,8 +330,17 @@ export function applyRejectUndoRust(
     file: TrackedFile,
     undo: PerFileUndo,
 ): TrackedFile {
-    return parseJson(
-        apply_reject_undo_json(JSON.stringify(file), JSON.stringify(undo)),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                apply_reject_undo_json(
+                    JSON.stringify(file),
+                    JSON.stringify(undo),
+                ),
+            );
+        },
+        () => applyRejectUndoFallback(file, undo),
     );
 }
 
@@ -201,10 +349,16 @@ export function mapTextPositionThroughEditsRust(
     edits: TextEdit[],
     assoc: -1 | 1,
 ): number {
-    return map_text_position_through_edits_json(
-        position,
-        JSON.stringify(edits),
-        assoc,
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return map_text_position_through_edits_json(
+                position,
+                JSON.stringify(edits),
+                assoc,
+            );
+        },
+        () => mapTextPositionThroughEditsFallback(position, edits, assoc),
     );
 }
 
@@ -212,11 +366,17 @@ export function mapAgentSpanThroughTextEditsRust(
     span: AgentTextSpan,
     edits: TextEdit[],
 ): AgentTextSpan | null {
-    return parseJson(
-        map_agent_span_through_text_edits_json(
-            JSON.stringify(span),
-            JSON.stringify(edits),
-        ),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                map_agent_span_through_text_edits_json(
+                    JSON.stringify(span),
+                    JSON.stringify(edits),
+                ),
+            );
+        },
+        () => mapAgentSpanThroughTextEditsFallback(span, edits),
     );
 }
 
@@ -225,10 +385,21 @@ export function rebuildDiffBaseFromPendingSpansRust(
     currentText: string,
     spans: AgentTextSpan[],
 ): string {
-    return rebuild_diff_base_from_pending_spans_json(
-        originalDiffBase,
-        currentText,
-        JSON.stringify(spans),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return rebuild_diff_base_from_pending_spans_json(
+                originalDiffBase,
+                currentText,
+                JSON.stringify(spans),
+            );
+        },
+        () =>
+            rebuildDiffBaseFromPendingSpansFallback(
+                originalDiffBase,
+                currentText,
+                spans,
+            ),
     );
 }
 
@@ -238,12 +409,24 @@ export function partitionSpansByOverlapRust(
     baseText: string,
     currentText: string,
 ): PartitionedSpans {
-    return parseJson(
-        partition_spans_by_overlap_json(
-            JSON.stringify(spans),
-            JSON.stringify(ranges),
-            baseText,
-            currentText,
-        ),
+    return callWithFallback(
+        () => {
+            assertRustEngineReady();
+            return parseJson(
+                partition_spans_by_overlap_json(
+                    JSON.stringify(spans),
+                    JSON.stringify(ranges),
+                    baseText,
+                    currentText,
+                ),
+            );
+        },
+        () =>
+            partitionSpansByOverlapFallback(
+                spans,
+                ranges,
+                baseText,
+                currentText,
+            ),
     );
 }

@@ -1,9 +1,15 @@
+import {
+    safeStorageGetItem,
+    safeStorageRemoveItem,
+    safeStorageSetItem,
+} from "../../app/utils/safeStorage";
+
 const KEY = "vaultai.search.history";
 const MAX_ENTRIES = 20;
 
 export function getSearchHistory(): string[] {
     try {
-        const raw = localStorage.getItem(KEY);
+        const raw = safeStorageGetItem(KEY);
         if (!raw) return [];
         return JSON.parse(raw) as string[];
     } catch {
@@ -22,14 +28,14 @@ export function addToSearchHistory(query: string): void {
         history.length = MAX_ENTRIES;
     }
 
-    localStorage.setItem(KEY, JSON.stringify(history));
+    safeStorageSetItem(KEY, JSON.stringify(history));
 }
 
 export function removeFromSearchHistory(query: string): void {
     const history = getSearchHistory().filter((q) => q !== query);
-    localStorage.setItem(KEY, JSON.stringify(history));
+    safeStorageSetItem(KEY, JSON.stringify(history));
 }
 
 export function clearSearchHistory(): void {
-    localStorage.removeItem(KEY);
+    safeStorageRemoveItem(KEY);
 }

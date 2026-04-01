@@ -40,6 +40,7 @@ import {
     resolvePersistedReviewAnchor,
     type PersistedReviewAnchor,
 } from "./reviewTabPersistence";
+import { subscribeSafeStorage } from "../../../app/utils/safeStorage";
 
 /* ------------------------------------------------------------------ */
 /*  Empty state                                                        */
@@ -370,7 +371,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     }, [persistedState?.updatedAt]);
 
     useEffect(() => {
-        const onStorage = (event: StorageEvent) => {
+        return subscribeSafeStorage((event) => {
             if (event.key !== reviewStorageKey || !event.newValue) {
                 return;
             }
@@ -394,12 +395,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                 return;
             }
             schedulePersistedStateRefresh();
-        };
-
-        window.addEventListener("storage", onStorage);
-        return () => {
-            window.removeEventListener("storage", onStorage);
-        };
+        });
     }, [reviewStorageKey, schedulePersistedStateRefresh]);
 
     useEffect(() => {

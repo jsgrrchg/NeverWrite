@@ -35,7 +35,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
-const PIXEL_RATIO = window.devicePixelRatio || 1;
 const PINCH_SENSITIVITY = 0.0025;
 const PINCH_COMMIT_DELAY = 150;
 const CONTINUOUS_PAGE_GAP = 20;
@@ -65,6 +64,11 @@ const PDF_DOCUMENT_OPTIONS = {
 
 function clampScrollOffset(offset: number) {
     return Number.isFinite(offset) ? Math.max(0, offset) : 0;
+}
+
+function getPixelRatio() {
+    if (typeof window === "undefined") return 1;
+    return window.devicePixelRatio || 1;
 }
 
 function getSelectionText() {
@@ -1147,7 +1151,7 @@ function PdfPageCanvas({
 
                 const displayViewport = page.getViewport({ scale: zoom });
                 const renderViewport = page.getViewport({
-                    scale: zoom * PIXEL_RATIO,
+                    scale: zoom * getPixelRatio(),
                 });
 
                 pageShell.style.width = `${displayViewport.width}px`;

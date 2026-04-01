@@ -1,5 +1,12 @@
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import type { DetachedWindowPayload } from "./detachedWindows";
+import {
+    safeStorageGetItem,
+    safeStorageKey,
+    safeStorageLength,
+    safeStorageRemoveItem,
+    safeStorageSetItem,
+} from "./utils/safeStorage";
 import type { Tab } from "./store/editorStore";
 
 const WINDOW_SESSION_DESCRIPTOR_PREFIX = "vaultai:window-session:";
@@ -84,18 +91,18 @@ export function writeWindowSessionEntry(
 ) {
     const key = getWindowSessionDescriptorKey(label);
     if (!entry) {
-        localStorage.removeItem(key);
+        safeStorageRemoveItem(key);
         return;
     }
     try {
-        localStorage.setItem(key, JSON.stringify(entry));
+        safeStorageSetItem(key, JSON.stringify(entry));
     } catch (error) {
         console.warn("Failed to write window session entry:", error);
     }
 }
 
 export function readWindowSessionEntry(label: string) {
-    const raw = localStorage.getItem(getWindowSessionDescriptorKey(label));
+    const raw = safeStorageGetItem(getWindowSessionDescriptorKey(label));
     if (!raw) return null;
 
     try {
@@ -124,7 +131,7 @@ export function readWindowSessionEntry(label: string) {
 }
 
 export function readWindowSessionSnapshot() {
-    const raw = localStorage.getItem(WINDOW_SESSION_SNAPSHOT_KEY);
+    const raw = safeStorageGetItem(WINDOW_SESSION_SNAPSHOT_KEY);
     if (!raw) return [];
 
     try {
@@ -171,8 +178,8 @@ export async function refreshWindowSessionSnapshot() {
             .filter((label) => !label.startsWith("ghost-")),
     );
 
-    const entries = Array.from({ length: localStorage.length }, (_, index) =>
-        localStorage.key(index),
+    const entries = Array.from({ length: safeStorageLength() }, (_, index) =>
+        safeStorageKey(index),
     )
         .filter(
             (key): key is string =>
@@ -187,7 +194,7 @@ export async function refreshWindowSessionSnapshot() {
         );
 
     try {
-        localStorage.setItem(
+        safeStorageSetItem(
             WINDOW_SESSION_SNAPSHOT_KEY,
             JSON.stringify(
                 sortWindowSessionEntries(entries).map((entry) => entry.label),

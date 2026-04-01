@@ -1,4 +1,8 @@
 import { getBaseName } from "./fileTreeMoves";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../app/utils/safeStorage";
 
 const FILE_TREE_CLIPBOARD_KEY = "vaultai.fileTree.clipboard";
 
@@ -35,7 +39,7 @@ function folderPathExists(folderPath: string, takenPaths: Set<string>) {
 
 export function writeFileTreeClipboard(payload: FileTreeClipboardPayload) {
     try {
-        localStorage.setItem(FILE_TREE_CLIPBOARD_KEY, JSON.stringify(payload));
+        safeStorageSetItem(FILE_TREE_CLIPBOARD_KEY, JSON.stringify(payload));
     } catch {
         console.warn("Failed to write file tree clipboard to localStorage");
     }
@@ -47,7 +51,7 @@ export function readFileTreeClipboard(
     if (!vaultPath) return null;
 
     try {
-        const raw = localStorage.getItem(FILE_TREE_CLIPBOARD_KEY);
+        const raw = safeStorageGetItem(FILE_TREE_CLIPBOARD_KEY);
         if (!raw) return null;
         const parsed = JSON.parse(raw) as Partial<FileTreeClipboardPayload>;
 

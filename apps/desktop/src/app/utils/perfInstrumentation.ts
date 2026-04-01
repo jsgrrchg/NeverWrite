@@ -1,3 +1,9 @@
+import {
+    safeStorageGetItem,
+    safeStorageRemoveItem,
+    safeStorageSetItem,
+} from "./safeStorage";
+
 type PerfMetaValue = string | number | boolean | null | undefined;
 type PerfMeta = Record<string, PerfMetaValue>;
 
@@ -43,6 +49,12 @@ type PerfApi = {
 
 const STORAGE_KEY = "vaultai:perf-probe";
 const MAX_EVENTS = 250;
+const DEFAULT_SNAPSHOT: PerfSnapshot = {
+    enabled: false,
+    activeScenario: null,
+    metrics: [],
+    recentEvents: [],
+};
 
 const metrics = new Map<string, PerfMetric>();
 const recentEvents: PerfEvent[] = [];
@@ -60,16 +72,16 @@ function stringifyMetaValue(value: PerfMetaValue): string {
 function ensureInitialized() {
     if (initialized || typeof window === "undefined") return;
     initialized = true;
-    enabled = window.localStorage.getItem(STORAGE_KEY) === "true";
+    enabled = safeStorageGetItem(STORAGE_KEY) === "true";
 
     const api: PerfApi = {
         enable() {
             enabled = true;
-            window.localStorage.setItem(STORAGE_KEY, "true");
+            safeStorageSetItem(STORAGE_KEY, "true");
         },
         disable() {
             enabled = false;
-            window.localStorage.removeItem(STORAGE_KEY);
+            safeStorageRemoveItem(STORAGE_KEY);
         },
         reset() {
             metrics.clear();
@@ -102,6 +114,16 @@ function ensureInitialized() {
     };
 
     window.__vaultAiPerf = api;
+}
+
+export function initializePerfInstrumentation() {
+    try {
+        ensureInitialized();
+    } catch (error) {
+        initialized = false;
+        enabled = false;
+        console.warn("Failed to initialize perf instrumentation:", error);
+    }
 }
 
 function buildSnapshot(): PerfSnapshot {
@@ -202,4 +224,11 @@ declare global {
     }
 }
 
-ensureInitialized();
+export function perfSnapshot() {
+    try {
+        ensureInitialized();
+        return buildSnapshot();
+    } catch {
+        return DEFAULT_SNAPSHOT;
+    }
+}

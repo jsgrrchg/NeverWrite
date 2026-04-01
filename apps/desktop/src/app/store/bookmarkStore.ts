@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,7 +69,7 @@ function storageKey(vaultPath: string): string {
 
 function readBookmarks(vaultPath: string): BookmarkState {
     try {
-        const raw = localStorage.getItem(storageKey(vaultPath));
+        const raw = safeStorageGetItem(storageKey(vaultPath));
         if (!raw) return { folders: [], items: [] };
         const parsed = JSON.parse(raw) as Partial<BookmarkState>;
         return {
@@ -83,7 +84,7 @@ function readBookmarks(vaultPath: string): BookmarkState {
 function persistBookmarks(state: BookmarkState) {
     if (!_currentVaultPath) return;
     try {
-        localStorage.setItem(
+        safeStorageSetItem(
             storageKey(_currentVaultPath),
             JSON.stringify({ folders: state.folders, items: state.items }),
         );

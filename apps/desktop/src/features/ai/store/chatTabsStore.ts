@@ -1,4 +1,8 @@
 import { create } from "zustand";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../../app/utils/safeStorage";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
 const CHAT_TABS_STORAGE_KEY_PREFIX = "vaultai.chat.tabs:";
@@ -299,7 +303,7 @@ export function readPersistedChatWorkspace(
     if (!vaultPath) return null;
 
     try {
-        const raw = localStorage.getItem(getChatTabsStorageKey(vaultPath));
+        const raw = safeStorageGetItem(getChatTabsStorageKey(vaultPath));
         if (!raw) return null;
         return normalizeParsedWorkspace(JSON.parse(raw));
     } catch {
@@ -321,7 +325,7 @@ function flushPendingPersistence() {
         pendingPersistVaultPath,
         pendingPersistJson,
     );
-    localStorage.setItem(
+    safeStorageSetItem(
         getChatTabsStorageKey(pendingPersistVaultPath),
         pendingPersistJson,
     );

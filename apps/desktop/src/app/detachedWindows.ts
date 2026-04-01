@@ -7,6 +7,14 @@ import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { Tab } from "./store/editorStore";
 import { getPathBaseName } from "./utils/path";
 import { getManagedWindowChromeOptions } from "./utils/platform";
+import { readSearchParam } from "./utils/safeBrowser";
+import {
+    safeStorageGetItem,
+    safeStorageKey,
+    safeStorageLength,
+    safeStorageRemoveItem,
+    safeStorageSetItem,
+} from "./utils/safeStorage";
 
 const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "vaultai:detached-window:";
@@ -29,8 +37,8 @@ async function purgeStaleLocalStorageEntries() {
         const liveLabels = new Set(windows.map((w) => w.label));
         const keysToRemove: string[] = [];
 
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
+        for (let i = 0; i < safeStorageLength(); i++) {
+            const key = safeStorageKey(i);
             if (!key) continue;
 
             let label: string | null = null;
@@ -45,7 +53,7 @@ async function purgeStaleLocalStorageEntries() {
         }
 
         for (const key of keysToRemove) {
-            localStorage.removeItem(key);
+            safeStorageRemoveItem(key);
         }
     } catch {
         // Best-effort cleanup
@@ -58,11 +66,11 @@ async function purgeStaleLocalStorageEntries() {
  */
 async function safeSetItem(key: string, value: string) {
     try {
-        window.localStorage.setItem(key, value);
+        safeStorageSetItem(key, value);
     } catch {
         await purgeStaleLocalStorageEntries();
         try {
-            window.localStorage.setItem(key, value);
+            safeStorageSetItem(key, value);
         } catch (retryError) {
             console.warn(
                 "localStorage.setItem failed after cleanup:",
@@ -103,8 +111,7 @@ interface WindowTabDropTargetCandidate extends WindowTabDropZoneBounds {
 }
 
 export function getWindowMode() {
-    const params = new URLSearchParams(window.location.search);
-    const w = params.get("window");
+    const w = readSearchParam("window");
     if (w === "note") return "note";
     if (w === "settings") return "settings";
     if (w === "ghost") return "ghost";
@@ -155,9 +162,9 @@ export function getDetachedNoteWindowUrl(vaultPath: string | null) {
 }
 
 export function readDetachedWindowPayload(label: string) {
-    const raw = window.localStorage.getItem(getDetachedWindowStorageKey(label));
+    const raw = safeStorageGetItem(getDetachedWindowStorageKey(label));
     if (!raw) return null;
-    window.localStorage.removeItem(getDetachedWindowStorageKey(label));
+    safeStorageRemoveItem(getDetachedWindowStorageKey(label));
 
     try {
         const parsed = JSON.parse(raw) as DetachedWindowPayload;
@@ -185,7 +192,7 @@ export function publishWindowTabDropZone(
 ) {
     const key = getWindowTabDropZoneStorageKey(label);
     if (!bounds) {
-        window.localStorage.removeItem(key);
+        safeStorageRemoveItem(key);
         return;
     }
 
@@ -197,9 +204,7 @@ export function publishWindowTabDropZone(
 }
 
 function readWindowTabDropZone(label: string) {
-    const raw = window.localStorage.getItem(
-        getWindowTabDropZoneStorageKey(label),
-    );
+    const raw = safeStorageGetItem(getWindowTabDropZoneStorageKey(label));
     if (!raw) return null;
 
     try {
@@ -423,7 +428,7 @@ export async function openDetachedNoteWindow(
             resolve(detachedWindow);
         });
         void detachedWindow.once("tauri://error", (event) => {
-            window.localStorage.removeItem(getDetachedWindowStorageKey(label));
+            safeStorageRemoveItem(getDetachedWindowStorageKey(label));
             reject(event.payload);
         });
     });

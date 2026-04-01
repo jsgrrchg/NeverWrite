@@ -8,9 +8,11 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getWindowChromeLayout } from "../../app/utils/platform";
 
-const appWindow = getCurrentWindow();
-
 const WINDOWS_CONTROLS_WIDTH = 138;
+
+function getAppWindow() {
+    return getCurrentWindow();
+}
 
 function getWindowsControlButtonStyle(
     variant: "default" | "close",
@@ -41,6 +43,7 @@ function WindowControls() {
         let unlisten: (() => void) | null = null;
 
         const syncMaximized = async () => {
+            const appWindow = getAppWindow();
             if (typeof appWindow.isMaximized !== "function") return;
             try {
                 const maximized = await appWindow.isMaximized();
@@ -54,6 +57,7 @@ function WindowControls() {
 
         void syncMaximized();
 
+        const appWindow = getAppWindow();
         if (typeof appWindow.onResized === "function") {
             const resizeListener = appWindow.onResized(() => {
                 void syncMaximized();
@@ -89,6 +93,7 @@ function WindowControls() {
     };
 
     const handleMinimize = () => {
+        const appWindow = getAppWindow();
         if (typeof appWindow.minimize !== "function") return;
         void Promise.resolve(appWindow.minimize()).catch(() => {
             // Ignore unavailable minimize support.
@@ -96,6 +101,7 @@ function WindowControls() {
     };
 
     const handleToggleMaximize = () => {
+        const appWindow = getAppWindow();
         if (typeof appWindow.toggleMaximize !== "function") return;
         void Promise.resolve(appWindow.toggleMaximize())
             .then(async () => {
@@ -109,6 +115,7 @@ function WindowControls() {
     };
 
     const handleClose = () => {
+        const appWindow = getAppWindow();
         if (typeof appWindow.close !== "function") return;
         void Promise.resolve(appWindow.close()).catch(() => {
             // Ignore unavailable close support.

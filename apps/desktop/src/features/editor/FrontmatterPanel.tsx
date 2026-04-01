@@ -9,6 +9,10 @@ import {
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../app/utils/safeStorage";
+import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
@@ -1093,7 +1097,7 @@ export function FrontmatterPanel({
 }) {
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const [collapsed, setCollapsed] = useState(
-        () => localStorage.getItem(FM_COLLAPSED_KEY) === "true",
+        () => safeStorageGetItem(FM_COLLAPSED_KEY) === "true",
     );
     const [contextMenu, setContextMenu] = useState<ContextMenuState<
         | { kind: "panel" }
@@ -1111,7 +1115,7 @@ export function FrontmatterPanel({
     const toggleCollapsed = () => {
         const next = !collapsed;
         setCollapsed(next);
-        localStorage.setItem(FM_COLLAPSED_KEY, String(next));
+        safeStorageSetItem(FM_COLLAPSED_KEY, String(next));
     };
 
     const handleEntryChange = (key: string, nextValue: FrontmatterValue) => {

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
+import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { toVaultRelativePath } from "../utils/vaultPaths";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { useSettingsStore } from "./settingsStore";
@@ -128,9 +129,8 @@ export function readPersistedSession(
 ): PersistedSession | null {
     try {
         const raw =
-            (vaultPath
-                ? localStorage.getItem(getSessionKey(vaultPath))
-                : null) ?? localStorage.getItem(SESSION_KEY);
+            (vaultPath ? safeStorageGetItem(getSessionKey(vaultPath)) : null) ??
+            safeStorageGetItem(SESSION_KEY);
         if (!raw) return null;
         return JSON.parse(raw) as PersistedSession;
     } catch {
@@ -2404,7 +2404,7 @@ useEditorStore.subscribe((state) => {
     if (_sessionTimer) clearTimeout(_sessionTimer);
     _sessionTimer = setTimeout(() => {
         try {
-            localStorage.setItem(getSessionKey(vaultPath), json);
+            safeStorageSetItem(getSessionKey(vaultPath), json);
             _lastSessionJson = json;
         } catch (error) {
             console.warn("Failed to persist editor session", error);
