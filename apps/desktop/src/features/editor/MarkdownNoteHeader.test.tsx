@@ -178,9 +178,10 @@ describe("MarkdownNoteHeader", () => {
                 );
             } else {
                 delete (
-                    HTMLTextAreaElement.prototype as HTMLTextAreaElement & {
-                        scrollHeight?: number;
-                    }
+                    HTMLTextAreaElement.prototype as unknown as Record<
+                        string,
+                        unknown
+                    >
                 ).scrollHeight;
             }
         }
