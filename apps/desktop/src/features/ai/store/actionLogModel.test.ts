@@ -21,7 +21,6 @@ import {
     getTrackedFileReviewState,
     getTrackedFileDomainContract,
     keepAllEdits,
-    keepEditsInRange,
     keepExactSpans,
     keepReviewHunks,
     mapAgentSpanThroughTextEdits,
@@ -32,7 +31,6 @@ import {
     rangesOverlap,
     rebuildDiffBaseFromPendingSpans,
     rejectAllEdits,
-    rejectEditsInRanges,
     rejectExactSpans,
     rejectReviewHunks,
     shouldShowInlineDiff,
@@ -1296,7 +1294,7 @@ describe("partitionSpansByOverlap", () => {
 });
 
 // ---------------------------------------------------------------------------
-// keepAllEdits / keepEditsInRange
+// keepAllEdits
 // ---------------------------------------------------------------------------
 
 describe("Accept operations", () => {
@@ -1308,73 +1306,10 @@ describe("Accept operations", () => {
         expect(patchIsEmpty(accepted.unreviewedEdits)).toBe(true);
         expect(accepted.diffBase).toBe(accepted.currentText);
     });
-
-    it("keepEditsInRange accepts only matching edits", () => {
-        // Two hunks: line 0 and line 4
-        const diff = makeDiff({
-            old_text: "aaa\nbbb\nccc\nddd\neee",
-            new_text: "AAA\nbbb\nccc\nddd\nEEE",
-        });
-        const file = createTrackedFileFromDiff(diff, 1000);
-        expect(file.unreviewedEdits.edits).toHaveLength(2);
-
-        // Accept only the first hunk (line 0)
-        const accepted = keepEditsInRange(file, 0, 1);
-        expect(lines(accepted.diffBase)).toContain("AAA");
-        // The second hunk should still be unreviewed
-        expect(accepted.unreviewedEdits.edits.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it("keepEditsInRange accepts only spans that match the selected derived hunk", () => {
-        const file = createTrackedFileFromDiff(
-            makeDiff({
-                old_text: "alpha\nmiddle\nbeta",
-                new_text: "alpHa\nmiddle\nbeTa",
-            }),
-            1000,
-        );
-
-        const accepted = keepEditsInRange(file, 0, 1);
-
-        expect(accepted.diffBase).toBe("alpHa\nmiddle\nbeta");
-        expect(accepted.currentText).toBe("alpHa\nmiddle\nbeTa");
-        expect(accepted.unreviewedRanges?.spans).toEqual([
-            {
-                baseFrom: 15,
-                baseTo: 16,
-                currentFrom: 15,
-                currentTo: 16,
-            },
-        ]);
-        expect(accepted.unreviewedEdits.edits).toEqual([
-            {
-                oldStart: 2,
-                oldEnd: 3,
-                newStart: 2,
-                newEnd: 3,
-            },
-        ]);
-    });
-
-    it("keepEditsInRange accepts pure deletions selected as point ranges", () => {
-        const file = createTrackedFileFromDiff(
-            makeDiff({
-                old_text: "aaa\nbbb\nccc",
-                new_text: "aaa\nccc",
-            }),
-            1000,
-        );
-
-        const accepted = keepEditsInRange(file, 1, 1);
-
-        expect(accepted.diffBase).toBe("aaa\nccc");
-        expect(accepted.currentText).toBe("aaa\nccc");
-        expect(accepted.unreviewedEdits.edits).toEqual([]);
-    });
 });
 
 // ---------------------------------------------------------------------------
-// rejectAllEdits / rejectEditsInRanges
+// rejectAllEdits
 // ---------------------------------------------------------------------------
 
 describe("Reject operations", () => {
@@ -1385,84 +1320,6 @@ describe("Reject operations", () => {
         expect(rejected.currentText).toBe(rejected.diffBase);
         expect(patchIsEmpty(rejected.unreviewedEdits)).toBe(true);
         expect(undoData.editsToRestore.length).toBeGreaterThan(0);
-    });
-
-    it("rejectEditsInRanges reverts only matching hunks", () => {
-        const diff = makeDiff({
-            old_text: "aaa\nbbb\nccc\nddd\neee",
-            new_text: "AAA\nbbb\nccc\nddd\nEEE",
-        });
-        const file = createTrackedFileFromDiff(diff, 1000);
-
-        // Reject only line 0 (first hunk)
-        const { file: rejected, undoData } = rejectEditsInRanges(file, [
-            { start: 0, end: 1 },
-        ]);
-
-        // Line 0 should be reverted to "aaa"
-        expect(lines(rejected.currentText)[0]).toBe("aaa");
-        // Line 4 should still be "EEE" (not rejected)
-        expect(lines(rejected.currentText)[4]).toBe("EEE");
-        // Undo should capture the rejected agent text
-        expect(undoData.editsToRestore).toHaveLength(1);
-        expect(undoData.editsToRestore[0].text).toBe("AAA");
-    });
-
-    it("rejectEditsInRanges reverts only spans inside the selected derived hunk", () => {
-        const file = createTrackedFileFromDiff(
-            makeDiff({
-                old_text: "alpha\nmiddle\nbeta",
-                new_text: "alpHa\nmiddle\nbeTa",
-            }),
-            1000,
-        );
-
-        const { file: rejected, undoData } = rejectEditsInRanges(file, [
-            { start: 0, end: 1 },
-        ]);
-
-        expect(rejected.currentText).toBe("alpha\nmiddle\nbeTa");
-        expect(rejected.unreviewedRanges?.spans).toEqual([
-            {
-                baseFrom: 15,
-                baseTo: 16,
-                currentFrom: 15,
-                currentTo: 16,
-            },
-        ]);
-        expect(rejected.unreviewedEdits.edits).toEqual([
-            {
-                oldStart: 2,
-                oldEnd: 3,
-                newStart: 2,
-                newEnd: 3,
-            },
-        ]);
-        expect(undoData.editsToRestore).toEqual([
-            {
-                startLine: 0,
-                endLine: 1,
-                text: "alpHa",
-            },
-        ]);
-    });
-
-    it("rejectEditsInRanges reverts pure deletions selected as point ranges", () => {
-        const file = createTrackedFileFromDiff(
-            makeDiff({
-                old_text: "aaa\nbbb\nccc",
-                new_text: "aaa\nccc",
-            }),
-            1000,
-        );
-
-        const { file: rejected, undoData } = rejectEditsInRanges(file, [
-            { start: 1, end: 1 },
-        ]);
-
-        expect(rejected.currentText).toBe("aaa\nbbb\nccc");
-        expect(rejected.unreviewedEdits.edits).toEqual([]);
-        expect(undoData.editsToRestore).toHaveLength(1);
     });
 });
 
@@ -1576,6 +1433,47 @@ describe("Exact review resolution", () => {
                 currentTo: 11,
             },
         ]);
+    });
+
+    it("keepReviewHunks accepts pure deletion hunks exactly", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "aaa\nbbb\nccc",
+                new_text: "aaa\nccc",
+            }),
+            1000,
+        );
+        const projection = buildReviewProjection(file);
+
+        expect(projection.hunks).toHaveLength(1);
+
+        const accepted = keepReviewHunks(file, projection.hunks);
+
+        expect(accepted.diffBase).toBe("aaa\nccc");
+        expect(accepted.currentText).toBe("aaa\nccc");
+        expect(accepted.unreviewedEdits.edits).toEqual([]);
+    });
+
+    it("rejectReviewHunks rejects pure deletion hunks exactly", () => {
+        const file = createTrackedFileFromDiff(
+            makeDiff({
+                old_text: "aaa\nbbb\nccc",
+                new_text: "aaa\nccc",
+            }),
+            1000,
+        );
+        const projection = buildReviewProjection(file);
+
+        expect(projection.hunks).toHaveLength(1);
+
+        const { file: rejected, undoData } = rejectReviewHunks(
+            file,
+            projection.hunks,
+        );
+
+        expect(rejected.currentText).toBe("aaa\nbbb\nccc");
+        expect(rejected.unreviewedEdits.edits).toEqual([]);
+        expect(undoData.editsToRestore).toHaveLength(1);
     });
 
     it("keeps heavily edited agent files stable hunk by hunk inside one visual chunk", () => {
@@ -1810,70 +1708,6 @@ describe("reviewState", () => {
         );
 
         expect(updated.reviewState).toBe("pending");
-    });
-});
-
-// ---------------------------------------------------------------------------
-// Pure deletion: keepEditsInRange / rejectEditsInRanges with empty new-ranges
-// ---------------------------------------------------------------------------
-
-describe("keepEditsInRange with pure deletions", () => {
-    it("accepts a pure deletion (removes lines from diffBase)", () => {
-        // Agent deleted line "bbb" (line index 1) from "aaa\nbbb\nccc"
-        const tracked: TrackedFile = {
-            identityKey: "test.md",
-            originPath: "test.md",
-            path: "test.md",
-            previousPath: null,
-            status: { kind: "modified" },
-            diffBase: "aaa\nbbb\nccc",
-            currentText: "aaa\nccc",
-            unreviewedEdits: buildPatchFromTexts("aaa\nbbb\nccc", "aaa\nccc"),
-            version: 1,
-            isText: true,
-            updatedAt: 1000,
-        };
-
-        // The deletion edit has newStart === newEnd (empty in new space)
-        expect(tracked.unreviewedEdits.edits.length).toBe(1);
-        const edit = tracked.unreviewedEdits.edits[0];
-        expect(edit.newStart).toBe(edit.newEnd); // pure deletion
-
-        const result = keepEditsInRange(tracked, edit.newStart, edit.newEnd);
-
-        // diffBase should now match currentText (deletion accepted)
-        expect(result.diffBase).toBe("aaa\nccc");
-        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
-    });
-});
-
-describe("rejectEditsInRanges with pure deletions", () => {
-    it("rejects a pure deletion (restores deleted lines in currentText)", () => {
-        const tracked: TrackedFile = {
-            identityKey: "test.md",
-            originPath: "test.md",
-            path: "test.md",
-            previousPath: null,
-            status: { kind: "modified" },
-            diffBase: "aaa\nbbb\nccc",
-            currentText: "aaa\nccc",
-            unreviewedEdits: buildPatchFromTexts("aaa\nbbb\nccc", "aaa\nccc"),
-            version: 1,
-            isText: true,
-            updatedAt: 1000,
-        };
-
-        const edit = tracked.unreviewedEdits.edits[0];
-        expect(edit.newStart).toBe(edit.newEnd); // pure deletion
-
-        const { file: result, undoData } = rejectEditsInRanges(tracked, [
-            { start: edit.newStart, end: edit.newEnd },
-        ]);
-
-        // currentText should be restored to diffBase (deletion rejected)
-        expect(result.currentText).toBe("aaa\nbbb\nccc");
-        expect(patchIsEmpty(result.unreviewedEdits)).toBe(true);
-        expect(undoData.editsToRestore.length).toBe(1);
     });
 });
 

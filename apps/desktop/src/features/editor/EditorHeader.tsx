@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, useLayoutEffect } from "react";
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+} from "react";
 
 export function MetaBadge({
     label,
@@ -64,8 +70,16 @@ export function EditableNoteTitle({
     onContextMenu?: (event: React.MouseEvent<HTMLTextAreaElement>) => void;
 }) {
     const ref = useRef<HTMLTextAreaElement | null>(null);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
     const [draft, setDraft] = useState(value);
     const [isFocused, setIsFocused] = useState(false);
+
+    const resizeToFit = useCallback(() => {
+        const el = ref.current;
+        if (!el) return;
+        el.style.height = "0px";
+        el.style.height = `${el.scrollHeight}px`;
+    }, []);
 
     useEffect(() => {
         if (textareaRef) {
@@ -80,55 +94,95 @@ export function EditableNoteTitle({
     const visibleValue = isFocused ? draft : value;
 
     useLayoutEffect(() => {
-        const el = ref.current;
-        if (!el) return;
-        el.style.height = "0px";
-        el.style.height = `${el.scrollHeight}px`;
-    }, [visibleValue]);
+        resizeToFit();
+    }, [resizeToFit, visibleValue]);
+
+    useEffect(() => {
+        const wrapper = wrapperRef.current;
+        if (!wrapper || typeof ResizeObserver === "undefined") return;
+
+        let frame = 0;
+        let lastWidth = -1;
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            const nextWidth = Math.round(entry.contentRect.width);
+            if (nextWidth === lastWidth) return;
+            lastWidth = nextWidth;
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => {
+                resizeToFit();
+            });
+        });
+
+        observer.observe(wrapper);
+
+        return () => {
+            cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
+    }, [resizeToFit]);
+
+    useEffect(() => {
+        if (typeof document === "undefined" || !("fonts" in document)) return;
+
+        let cancelled = false;
+        void document.fonts.ready.then(() => {
+            if (!cancelled) {
+                resizeToFit();
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [resizeToFit]);
 
     return (
-        <textarea
-            ref={ref}
-            value={visibleValue}
-            rows={1}
-            spellCheck={false}
-            onChange={(e) => {
-                const nextValue = e.target.value.replace(/\r?\n+/g, " ");
-                setDraft(nextValue);
-                onChange(nextValue);
-            }}
-            onContextMenu={onContextMenu}
-            style={{
-                width: "100%",
-                minWidth: 0,
-                display: "block",
-                resize: "none",
-                overflow: "hidden",
-                background: "transparent",
-                border: "1px solid transparent",
-                borderRadius: 16,
-                padding: "6px 8px",
-                margin: "-6px -8px 0",
-                fontSize: "2rem",
-                fontWeight: 750,
-                color: "var(--text-primary)",
-                lineHeight: 1.1,
-                letterSpacing: "-0.03em",
-                outline: "none",
-            }}
-            onFocus={(e) => {
-                setIsFocused(true);
-                setDraft(value);
-                e.currentTarget.style.borderColor =
-                    "color-mix(in srgb, var(--accent) 22%, transparent)";
-                e.currentTarget.style.background =
-                    "color-mix(in srgb, var(--bg-secondary) 78%, transparent)";
-            }}
-            onBlur={(e) => {
-                setIsFocused(false);
-                e.currentTarget.style.borderColor = "transparent";
-                e.currentTarget.style.background = "transparent";
-            }}
-        />
+        <div ref={wrapperRef} style={{ width: "100%", minWidth: 0 }}>
+            <textarea
+                ref={ref}
+                value={visibleValue}
+                rows={1}
+                spellCheck={false}
+                onChange={(e) => {
+                    const nextValue = e.target.value.replace(/\r?\n+/g, " ");
+                    setDraft(nextValue);
+                    onChange(nextValue);
+                }}
+                onContextMenu={onContextMenu}
+                style={{
+                    width: "100%",
+                    minWidth: 0,
+                    display: "block",
+                    resize: "none",
+                    overflow: "hidden",
+                    background: "transparent",
+                    border: "1px solid transparent",
+                    borderRadius: 16,
+                    padding: "6px 8px",
+                    margin: "-6px -8px 0",
+                    fontSize: "2rem",
+                    fontWeight: 750,
+                    color: "var(--text-primary)",
+                    lineHeight: 1.1,
+                    letterSpacing: "-0.03em",
+                    outline: "none",
+                }}
+                onFocus={(e) => {
+                    setIsFocused(true);
+                    setDraft(value);
+                    e.currentTarget.style.borderColor =
+                        "color-mix(in srgb, var(--accent) 22%, transparent)";
+                    e.currentTarget.style.background =
+                        "color-mix(in srgb, var(--bg-secondary) 78%, transparent)";
+                }}
+                onBlur={(e) => {
+                    setIsFocused(false);
+                    e.currentTarget.style.borderColor = "transparent";
+                    e.currentTarget.style.background = "transparent";
+                }}
+            />
+        </div>
     );
 }
