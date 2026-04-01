@@ -764,17 +764,21 @@ describe("mergeViewSync", () => {
             [secondSession.sessionId]: secondSession,
         });
 
+        expect(view.dom.textContent).not.toContain("Review in Changes");
         expect(
             view.dom.querySelectorAll('[data-review-decision="accept"]'),
-        ).toHaveLength(3);
+        ).toHaveLength(1);
+        expect(
+            view.dom.querySelector(".cm-review-chunk-controls")
+                ?.textContent,
+        ).toContain("3 changes");
         expect(
             view.dom.querySelector('[data-review-hunk-key="0:3:0:3"]'),
-        ).not.toBeNull();
+        ).toBeNull();
         expect(
-            view.dom.querySelector('[data-review-hunk-key="8:13:8:13"]'),
-        ).not.toBeNull();
-        expect(
-            view.dom.querySelector('[data-review-hunk-key="19:23:19:23"]'),
+            view.dom.querySelector(
+                '[data-review-presentation-mode="grouped"]',
+            ),
         ).not.toBeNull();
 
         destroy();

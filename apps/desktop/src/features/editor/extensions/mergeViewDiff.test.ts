@@ -321,6 +321,115 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
+    it("does not label singleton overlap groups as overlapping", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "AA\nBB\nCC\nDD\nEE\n",
+            original: "aa\nbb\ncc\ndd\nee\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                    ambiguous: true,
+                    overlapGroupId: "chunk-1::overlap-1",
+                    overlapGroupSize: 2,
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    oldStartLine: 1,
+                    oldEndLine: 2,
+                    newStartLine: 1,
+                    newEndLine: 2,
+                    visualStartLine: 1,
+                    visualEndLine: 2,
+                    baseFrom: 3,
+                    baseTo: 5,
+                    currentFrom: 3,
+                    currentTo: 5,
+                    ambiguous: true,
+                    overlapGroupId: "chunk-1::overlap-1",
+                    overlapGroupSize: 2,
+                    memberSpans: [
+                        {
+                            spanIndex: 1,
+                            baseFrom: 3,
+                            baseTo: 5,
+                            currentFrom: 3,
+                            currentTo: 5,
+                        },
+                    ],
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-3" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    oldStartLine: 3,
+                    oldEndLine: 4,
+                    newStartLine: 3,
+                    newEndLine: 4,
+                    visualStartLine: 3,
+                    visualEndLine: 4,
+                    baseFrom: 9,
+                    baseTo: 11,
+                    currentFrom: 9,
+                    currentTo: 11,
+                    ambiguous: true,
+                    overlapGroupId: "chunk-1::singleton",
+                    overlapGroupSize: 1,
+                    memberSpans: [
+                        {
+                            spanIndex: 2,
+                            baseFrom: 9,
+                            baseTo: 11,
+                            currentFrom: 9,
+                            currentTo: 11,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    id: { trackedVersion: 1, key: "chunk-1" },
+                    startLine: 0,
+                    endLine: 4,
+                    ambiguous: true,
+                    multiHunk: true,
+                    controlMode: "inline-overlap",
+                    canResolveInlineExactly: true,
+                    hunkIds: [
+                        { trackedVersion: 1, key: "hunk-1" },
+                        { trackedVersion: 1, key: "hunk-2" },
+                        { trackedVersion: 1, key: "hunk-3" },
+                    ],
+                    overlapGroupIds: [
+                        "chunk-1::overlap-1",
+                        "chunk-1::singleton",
+                    ],
+                }),
+            ],
+        });
+
+        const controls = Array.from(
+            view.dom.querySelectorAll<HTMLElement>(".cm-review-chunk-controls"),
+        );
+        expect(controls).toHaveLength(2);
+        expect(
+            controls.filter((control) => control.dataset.reviewOverlap === "true"),
+        ).toHaveLength(1);
+        expect(
+            controls.find(
+                (control) => control.dataset.reviewChangeCount === "1",
+            )?.textContent,
+        ).not.toContain("Overlapping");
+
+        destroy();
+    });
+
     it("renders per-hunk inline actions for separable multi-hunk chunks", () => {
         const { view, destroy } = mountMergeView({
             doc: "ONE\ntwo\nTHREE\nfour\n",
@@ -385,6 +494,96 @@ describe("mergeViewDiff", () => {
             view.dom.querySelector('[data-review-hunk-key="hunk-2"]'),
         ).not.toBeNull();
         expect(view.dom.textContent).toContain("1 change");
+
+        destroy();
+    });
+
+    it("degrades visually tall multi-hunk chunks to a grouped inline control", () => {
+        const calls: MergeDecisionPayload[] = [];
+        const { view, destroy } = mountMergeView({
+            doc: "ONE\ntwo\nTHREE\nTHREE-2\nTHREE-3\nfour\n",
+            original: "one\ntwo\nthree\nfour\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-1" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    oldStartLine: 0,
+                    oldEndLine: 1,
+                    newStartLine: 0,
+                    newEndLine: 1,
+                    visualStartLine: 0,
+                    visualEndLine: 1,
+                }),
+                makeReviewHunk({
+                    id: { trackedVersion: 1, key: "hunk-2" },
+                    chunkId: { trackedVersion: 1, key: "chunk-1" },
+                    oldStartLine: 2,
+                    oldEndLine: 3,
+                    newStartLine: 2,
+                    newEndLine: 5,
+                    visualStartLine: 2,
+                    visualEndLine: 5,
+                    baseFrom: 8,
+                    baseTo: 13,
+                    currentFrom: 8,
+                    currentTo: 29,
+                    memberSpans: [
+                        {
+                            spanIndex: 1,
+                            baseFrom: 8,
+                            baseTo: 13,
+                            currentFrom: 8,
+                            currentTo: 29,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    id: { trackedVersion: 1, key: "chunk-1" },
+                    startLine: 0,
+                    endLine: 5,
+                    multiHunk: true,
+                    controlMode: "hunk",
+                    hunkIds: [
+                        { trackedVersion: 1, key: "hunk-1" },
+                        { trackedVersion: 1, key: "hunk-2" },
+                    ],
+                }),
+            ],
+            onDecision(context) {
+                calls.push(context);
+            },
+        });
+
+        const controls = view.dom.querySelectorAll<HTMLElement>(
+            ".cm-review-chunk-controls",
+        );
+        expect(controls).toHaveLength(1);
+        expect(controls[0]?.dataset.reviewPresentationMode).toBe("grouped");
+        expect(controls[0]?.dataset.reviewChangeCount).toBe("2");
+        expect(controls[0]?.textContent).toContain("2 changes");
+        expect(
+            view.dom.querySelector('[data-review-hunk-key="hunk-1"]'),
+        ).toBeNull();
+
+        const rejectButton = view.dom.querySelector(
+            '[data-review-decision="reject"]',
+        ) as HTMLButtonElement | null;
+        expect(rejectButton?.dataset.reviewDecisionScope).toBe("chunk");
+        if (rejectButton) {
+            fireEvent.mouseDown(rejectButton);
+        }
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.chunkId).toEqual({
+            trackedVersion: 1,
+            key: "chunk-1",
+        });
+        expect(calls[0]?.hunkIds).toEqual([
+            { trackedVersion: 1, key: "hunk-1" },
+            { trackedVersion: 1, key: "hunk-2" },
+        ]);
 
         destroy();
     });
@@ -466,7 +665,7 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
-    it("offsets nearby controls to avoid crowding in the same corner", () => {
+    it("keeps nearby controls from different chunks in separate visual stacks", () => {
         const { view, destroy } = mountMergeView({
             doc: "ONE\ntwo\nTHREE\nfour\nFIVE\nsix\n",
             original: "one\ntwo\nthree\nfour\nfive\nsix\n",
@@ -525,19 +724,21 @@ describe("mergeViewDiff", () => {
         );
         expect(controls).toHaveLength(2);
         expect(controls[0]?.dataset.reviewDenseSlot).toBe("0");
-        expect(controls[1]?.dataset.reviewDenseSlot).toBe("1");
+        expect(controls[1]?.dataset.reviewDenseSlot).toBe("0");
         expect(controls[0]?.dataset.reviewDenseColumn).toBe("0");
         expect(controls[1]?.dataset.reviewDenseColumn).toBe("0");
+        expect(controls[0]?.dataset.reviewPresentationMode).toBe("individual");
+        expect(controls[1]?.dataset.reviewPresentationMode).toBe("individual");
         expect(
             controls[1]?.style.getPropertyValue(
                 "--review-control-dense-offset",
             ),
-        ).toBe("30px");
+        ).toBe("0px");
 
         destroy();
     });
 
-    it("keeps large dense groups close to the block with compact rows and columns", () => {
+    it("does not compact independent chunks into one dense control stack", () => {
         const reviewHunks = Array.from({ length: 5 }, (_, index) =>
             makeReviewHunk({
                 id: { trackedVersion: 1, key: `hunk-${index + 1}` },
@@ -584,25 +785,11 @@ describe("mergeViewDiff", () => {
 
         expect(controls).toHaveLength(5);
         controls.forEach((control) => {
-            expect(control.dataset.reviewDenseCompact).toBe("true");
-            expect(control.dataset.reviewDenseGroupSize).toBe("5");
+            expect(control.dataset.reviewDenseCompact).toBe("false");
+            expect(control.dataset.reviewDenseGroupSize).toBe("1");
+            expect(control.dataset.reviewDenseSlot).toBe("0");
+            expect(control.dataset.reviewDenseColumn).toBe("0");
         });
-        expect(
-            controls.map((control) => control.dataset.reviewDenseSlot),
-        ).toEqual(["0", "1", "2", "0", "1"]);
-        expect(
-            controls.map((control) => control.dataset.reviewDenseColumn),
-        ).toEqual(["0", "0", "0", "1", "1"]);
-        expect(
-            controls[3]?.style.getPropertyValue(
-                "--review-control-dense-inline-offset",
-            ),
-        ).toBe("96px");
-        expect(
-            controls[4]?.style.getPropertyValue(
-                "--review-control-dense-offset",
-            ),
-        ).toBe("18px");
 
         destroy();
     });
@@ -736,6 +923,12 @@ describe("mergeViewDiff", () => {
                             trackedVersion: 1,
                             key: `${warningPrefix}-h-${index}`,
                         },
+                        oldStartLine: 20 + index,
+                        oldEndLine: 21 + index,
+                        newStartLine: 20 + index,
+                        newEndLine: 21 + index,
+                        visualStartLine: 20 + index,
+                        visualEndLine: 21 + index,
                     }),
                 ],
                 reviewChunks: [
@@ -842,7 +1035,7 @@ describe("mergeViewDiff", () => {
         expect(warn).toHaveBeenCalledWith(
             "[merge-inline] skipping out-of-range inline control",
             expect.objectContaining({
-                controlId: "chunk:chunk-out-of-range",
+                controlId: "hunk:hunk-out-of-range",
                 trackedVersion: 1,
                 startLine: 20,
                 endLine: 21,

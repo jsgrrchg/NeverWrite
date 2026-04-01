@@ -39,22 +39,27 @@ const DENSE_CONTROL_COMPACT_OFFSET_PX = 18;
 const DENSE_CONTROL_COMPACT_COLUMN_PX = 96;
 const MAX_DENSE_SLOT = 2;
 const DENSE_COMPACT_THRESHOLD = 3;
+const GROUPED_MULTI_HUNK_LINE_SPAN_THRESHOLD = 4;
 const MAX_OUT_OF_RANGE_CONTROL_WARNING_KEYS = 256;
 const outOfRangeControlWarningKeys = new LruCache<string, true>(
     MAX_OUT_OF_RANGE_CONTROL_WARNING_KEYS,
 );
 
+type ReviewInlinePresentationMode = "individual" | "grouped" | "panel-only";
+
 type ReviewControlEntry =
     | {
           kind: "decision";
+          presentationMode: ReviewInlinePresentationMode;
           controlId: string;
           label: string;
           chunkId: ReviewChunkId;
           hunkIds: ReviewHunkId[];
-          overlapGroupId: string;
-          overlapGroupSize: number;
+          changeCount: number;
+          isOverlapping: boolean;
           startLine: number;
           endLine: number;
+          layoutGroupKey: string;
           hunkId?: ReviewHunkId;
           denseSlot: number;
           denseColumn: number;
@@ -63,12 +68,16 @@ type ReviewControlEntry =
       }
     | {
           kind: "panel-only";
+          presentationMode: ReviewInlinePresentationMode;
           controlId: string;
           label: string;
           chunkId: ReviewChunkId;
           hunkIds: ReviewHunkId[];
+          changeCount: number;
+          isOverlapping: boolean;
           startLine: number;
           endLine: number;
+          layoutGroupKey: string;
           denseSlot: number;
           denseColumn: number;
           denseCompact: boolean;
@@ -84,6 +93,7 @@ function assignDenseSlots(entries: ReviewControlEntry[]): ReviewControlEntry[] {
     for (const entry of sortedEntries) {
         const isDenseNeighbor =
             currentGroup.length > 0 &&
+            entry.layoutGroupKey === currentGroup[0]?.layoutGroupKey &&
             entry.startLine <= currentGroupEndLine + DENSE_CONTROLS_LINE_GAP;
 
         if (!isDenseNeighbor) {
@@ -119,6 +129,187 @@ function assignDenseSlots(entries: ReviewControlEntry[]): ReviewControlEntry[] {
     });
 }
 
+function formatChangeCountLabel(changeCount: number): string {
+    return changeCount === 1 ? "1 change" : `${changeCount} changes`;
+}
+
+function createPanelOnlyEntry(
+    chunk: ReviewChunk,
+    changeCount: number = chunk.hunkIds.length,
+): ReviewControlEntry {
+    return {
+        kind: "panel-only",
+        presentationMode: "panel-only",
+        controlId: `chunk:${chunk.id.key}`,
+        label: formatChangeCountLabel(changeCount),
+        chunkId: chunk.id,
+        hunkIds: chunk.hunkIds,
+        changeCount,
+        isOverlapping: chunk.controlMode === "inline-overlap",
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        layoutGroupKey: `chunk:${chunk.id.key}`,
+        denseSlot: 0,
+        denseColumn: 0,
+        denseCompact: false,
+        denseGroupSize: 1,
+    };
+}
+
+function createIndividualDecisionEntry(
+    chunk: ReviewChunk,
+    hunk: ReviewHunk,
+): ReviewControlEntry {
+    return {
+        kind: "decision",
+        presentationMode: "individual",
+        controlId: `hunk:${hunk.id.key}`,
+        label: "1 change",
+        chunkId: chunk.id,
+        hunkIds: [hunk.id],
+        changeCount: 1,
+        isOverlapping: hunk.overlapGroupSize > 1,
+        startLine: Math.min(hunk.visualStartLine, hunk.visualEndLine),
+        endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
+        layoutGroupKey: `chunk:${chunk.id.key}`,
+        hunkId: hunk.id,
+        denseSlot: 0,
+        denseColumn: 0,
+        denseCompact: false,
+        denseGroupSize: 1,
+    };
+}
+
+function createGroupedDecisionEntry(options: {
+    chunk: ReviewChunk;
+    controlKey: string;
+    hunkIds: ReviewHunkId[];
+    changeCount: number;
+    startLine: number;
+    endLine: number;
+    isOverlapping: boolean;
+    layoutGroupKey: string;
+    presentationMode?: Exclude<ReviewInlinePresentationMode, "panel-only">;
+}): ReviewControlEntry {
+    return {
+        kind: "decision",
+        presentationMode: options.presentationMode ?? "grouped",
+        controlId: options.controlKey,
+        label: formatChangeCountLabel(options.changeCount),
+        chunkId: options.chunk.id,
+        hunkIds: options.hunkIds,
+        changeCount: options.changeCount,
+        isOverlapping: options.isOverlapping,
+        startLine: options.startLine,
+        endLine: options.endLine,
+        layoutGroupKey: options.layoutGroupKey,
+        denseSlot: 0,
+        denseColumn: 0,
+        denseCompact: false,
+        denseGroupSize: 1,
+    };
+}
+
+function getChunkHunks(
+    chunk: ReviewChunk,
+    hunkByIdKey: Map<string, ReviewHunk>,
+): ReviewHunk[] {
+    return chunk.hunkIds
+        .map((hunkId) => hunkByIdKey.get(hunkId.key))
+        .filter((hunk): hunk is ReviewHunk => hunk != null);
+}
+
+function getChunkVisualLineSpan(hunks: ReviewHunk[]): number {
+    if (hunks.length === 0) {
+        return 0;
+    }
+
+    const startLine = Math.min(...hunks.map((hunk) => hunk.visualStartLine));
+    const endLine = Math.max(...hunks.map((hunk) => hunk.visualEndLine));
+    return endLine - startLine + 1;
+}
+
+function deriveChunkPresentationMode(
+    allowDecisionActions: boolean,
+    chunk: ReviewChunk,
+    chunkHunks: ReviewHunk[],
+): ReviewInlinePresentationMode {
+    if (
+        !allowDecisionActions ||
+        !chunk.canResolveInlineExactly ||
+        chunk.controlMode === "panel-only"
+    ) {
+        return "panel-only";
+    }
+
+    if (chunk.controlMode === "inline-overlap") {
+        return "grouped";
+    }
+
+    if (chunk.controlMode === "chunk") {
+        return chunk.hunkIds.length > 1 ? "grouped" : "individual";
+    }
+
+    if (chunk.controlMode !== "hunk" || chunk.hunkIds.length <= 1) {
+        return "individual";
+    }
+
+    return getChunkVisualLineSpan(chunkHunks) >
+        GROUPED_MULTI_HUNK_LINE_SPAN_THRESHOLD
+        ? "grouped"
+        : "individual";
+}
+
+function buildOverlapGroupEntries(
+    chunk: ReviewChunk,
+    chunkHunks: ReviewHunk[],
+): ReviewControlEntry[] {
+    const groups = new Map<
+        string,
+        {
+            hunkIds: ReviewHunkId[];
+            startLine: number;
+            endLine: number;
+            changeCount: number;
+        }
+    >();
+
+    for (const hunk of chunkHunks) {
+        const groupId = hunk.overlapGroupId;
+        const existing = groups.get(groupId);
+        const startLine = Math.min(hunk.visualStartLine, hunk.visualEndLine);
+        const endLine = Math.max(hunk.visualStartLine, hunk.visualEndLine);
+
+        if (existing) {
+            existing.hunkIds.push(hunk.id);
+            existing.startLine = Math.min(existing.startLine, startLine);
+            existing.endLine = Math.max(existing.endLine, endLine);
+            existing.changeCount += 1;
+            continue;
+        }
+
+        groups.set(groupId, {
+            hunkIds: [hunk.id],
+            startLine,
+            endLine,
+            changeCount: 1,
+        });
+    }
+
+    return Array.from(groups.entries()).map(([groupId, group]) =>
+        createGroupedDecisionEntry({
+            chunk,
+            controlKey: `group:${groupId}`,
+            hunkIds: group.hunkIds,
+            changeCount: group.changeCount,
+            startLine: group.startLine,
+            endLine: group.endLine,
+            isOverlapping: group.changeCount > 1,
+            layoutGroupKey: `overlap:${groupId}`,
+        }),
+    );
+}
+
 function buildReviewControlEntries(
     allowDecisionActions: boolean,
     hunks: ReviewHunk[],
@@ -126,24 +317,7 @@ function buildReviewControlEntries(
 ): ReviewControlEntry[] {
     if (!allowDecisionActions) {
         return assignDenseSlots(
-            chunks
-                .map((chunk) => ({
-                    kind: "panel-only" as const,
-                    controlId: `chunk:${chunk.id.key}`,
-                    label:
-                        chunk.hunkIds.length > 1
-                            ? `${chunk.hunkIds.length} changes`
-                            : "1 change",
-                    chunkId: chunk.id,
-                    hunkIds: chunk.hunkIds,
-                    startLine: chunk.startLine,
-                    endLine: chunk.endLine,
-                    denseSlot: 0,
-                    denseColumn: 0,
-                    denseCompact: false,
-                    denseGroupSize: 1,
-                }))
-                .sort(compareControlEntries),
+            chunks.map((chunk) => createPanelOnlyEntry(chunk)),
         );
     }
 
@@ -151,105 +325,45 @@ function buildReviewControlEntries(
     const entries: ReviewControlEntry[] = [];
 
     for (const chunk of chunks) {
-        if (
-            !chunk.canResolveInlineExactly ||
-            chunk.controlMode === "panel-only"
-        ) {
-            entries.push({
-                kind: "panel-only",
-                controlId: `chunk:${chunk.id.key}`,
-                label:
-                    chunk.hunkIds.length > 1
-                        ? `${chunk.hunkIds.length} changes`
-                        : "1 change",
-                chunkId: chunk.id,
-                hunkIds: chunk.hunkIds,
-                startLine: chunk.startLine,
-                endLine: chunk.endLine,
-                denseSlot: 0,
-                denseColumn: 0,
-                denseCompact: false,
-                denseGroupSize: 1,
-            });
+        const chunkHunks = getChunkHunks(chunk, hunkByIdKey);
+        const presentationMode = deriveChunkPresentationMode(
+            allowDecisionActions,
+            chunk,
+            chunkHunks,
+        );
+
+        if (presentationMode === "panel-only") {
+            entries.push(createPanelOnlyEntry(chunk));
             continue;
         }
 
-        if (chunk.controlMode === "hunk") {
-            for (const hunkId of chunk.hunkIds) {
-                const hunk = hunkByIdKey.get(hunkId.key);
-                if (!hunk) {
-                    continue;
-                }
-                entries.push({
-                    kind: "decision",
-                    controlId: `hunk:${hunk.id.key}`,
-                    label: "1 change",
-                    chunkId: chunk.id,
-                    hunkIds: [hunk.id],
-                    overlapGroupId: hunk.overlapGroupId,
-                    overlapGroupSize: hunk.overlapGroupSize,
-                    startLine: Math.min(
-                        hunk.visualStartLine,
-                        hunk.visualEndLine,
-                    ),
-                    endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
-                    hunkId: hunk.id,
-                    denseSlot: 0,
-                    denseColumn: 0,
-                    denseCompact: false,
-                    denseGroupSize: 1,
-                });
-            }
+        if (presentationMode === "individual") {
+            entries.push(
+                ...chunkHunks.map((hunk) =>
+                    createIndividualDecisionEntry(chunk, hunk),
+                ),
+            );
             continue;
         }
 
         if (chunk.controlMode === "inline-overlap") {
-            for (const hunkId of chunk.hunkIds) {
-                const hunk = hunkByIdKey.get(hunkId.key);
-                if (!hunk) {
-                    continue;
-                }
-                entries.push({
-                    kind: "decision",
-                    controlId: `hunk:${hunk.id.key}`,
-                    label: "1 change",
-                    chunkId: chunk.id,
-                    hunkIds: [hunk.id],
-                    overlapGroupId: hunk.overlapGroupId,
-                    overlapGroupSize: hunk.overlapGroupSize,
-                    startLine: Math.min(
-                        hunk.visualStartLine,
-                        hunk.visualEndLine,
-                    ),
-                    endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
-                    hunkId: hunk.id,
-                    denseSlot: 0,
-                    denseColumn: 0,
-                    denseCompact: false,
-                    denseGroupSize: 1,
-                });
-            }
+            entries.push(...buildOverlapGroupEntries(chunk, chunkHunks));
             continue;
         }
 
-        entries.push({
-            kind: "decision",
-            controlId: `chunk:${chunk.id.key}`,
-            label:
-                chunk.hunkIds.length > 1
-                    ? `${chunk.hunkIds.length} changes`
-                    : "1 change",
-            chunkId: chunk.id,
-            hunkIds: chunk.hunkIds,
-            overlapGroupId: chunk.overlapGroupIds[0] ?? chunk.id.key,
-            overlapGroupSize: chunk.hunkIds.length,
-            startLine: chunk.startLine,
-            endLine: chunk.endLine,
-            denseSlot: 0,
-            denseColumn: 0,
-            denseCompact: false,
-            denseGroupSize: 1,
-        });
+        entries.push(
+            createGroupedDecisionEntry({
+                chunk,
+                controlKey: `chunk:${chunk.id.key}`,
+                hunkIds: chunk.hunkIds,
+                changeCount: chunk.hunkIds.length,
+                startLine: chunk.startLine,
+                endLine: chunk.endLine,
+                isOverlapping: false,
+                layoutGroupKey: `chunk:${chunk.id.key}`,
+                presentationMode,
+            }),
+        );
     }
 
     return assignDenseSlots(entries);
@@ -291,6 +405,7 @@ class ReviewControlWidget extends WidgetType {
             other.geometryVersion === this.geometryVersion &&
             other.entry.controlId === this.entry.controlId &&
             other.entry.kind === this.entry.kind &&
+            other.entry.presentationMode === this.entry.presentationMode &&
             other.entry.label === this.entry.label &&
             other.entry.chunkId.key === this.entry.chunkId.key &&
             other.entry.chunkId.trackedVersion ===
@@ -306,18 +421,9 @@ class ReviewControlWidget extends WidgetType {
             other.entry.denseColumn === this.entry.denseColumn &&
             other.entry.denseCompact === this.entry.denseCompact &&
             other.entry.denseGroupSize === this.entry.denseGroupSize &&
-            ("overlapGroupId" in other.entry
-                ? other.entry.overlapGroupId
-                : null) ===
-                ("overlapGroupId" in this.entry
-                    ? this.entry.overlapGroupId
-                    : null) &&
-            ("overlapGroupSize" in other.entry
-                ? other.entry.overlapGroupSize
-                : null) ===
-                ("overlapGroupSize" in this.entry
-                    ? this.entry.overlapGroupSize
-                    : null)
+            other.entry.changeCount === this.entry.changeCount &&
+            other.entry.isOverlapping === this.entry.isOverlapping &&
+            other.entry.layoutGroupKey === this.entry.layoutGroupKey
         );
     }
 
@@ -330,11 +436,13 @@ class ReviewControlWidget extends WidgetType {
         wrap.className = "cm-review-chunk-controls";
         wrap.dataset.reviewControlId = this.entry.controlId;
         wrap.dataset.reviewEntryKind = this.entry.kind;
+        wrap.dataset.reviewPresentationMode = this.entry.presentationMode;
         wrap.dataset.reviewChunkId = this.entry.chunkId.key;
         wrap.dataset.reviewTrackedVersion = String(
             this.entry.chunkId.trackedVersion,
         );
         wrap.dataset.reviewHunkCount = String(this.entry.hunkIds.length);
+        wrap.dataset.reviewChangeCount = String(this.entry.changeCount);
         wrap.dataset.reviewDenseSlot = String(this.entry.denseSlot);
         wrap.dataset.reviewDenseColumn = String(this.entry.denseColumn);
         wrap.dataset.reviewDenseCompact = String(this.entry.denseCompact);
@@ -362,7 +470,7 @@ class ReviewControlWidget extends WidgetType {
             return anchor;
         }
 
-        if (this.entry.overlapGroupSize > 1) {
+        if (this.entry.isOverlapping) {
             wrap.dataset.reviewOverlap = "true";
             const overlapNote = document.createElement("span");
             overlapNote.className = "cm-review-chunk-overlap";
@@ -384,7 +492,8 @@ class ReviewControlWidget extends WidgetType {
                 {
                     scope: this.entry.hunkId ? "hunk" : "chunk",
                     hunkId: this.entry.hunkId,
-                    overlapGroupSize: this.entry.overlapGroupSize,
+                    changeCount: this.entry.changeCount,
+                    isOverlapping: this.entry.isOverlapping,
                 },
             ),
         );
@@ -402,7 +511,8 @@ class ReviewControlWidget extends WidgetType {
                 {
                     scope: this.entry.hunkId ? "hunk" : "chunk",
                     hunkId: this.entry.hunkId,
-                    overlapGroupSize: this.entry.overlapGroupSize,
+                    changeCount: this.entry.changeCount,
+                    isOverlapping: this.entry.isOverlapping,
                 },
             ),
         );
@@ -422,15 +532,20 @@ function createDecisionButton(
     options: {
         scope: "chunk" | "hunk";
         hunkId?: ReviewHunkId;
-        overlapGroupSize: number;
+        changeCount: number;
+        isOverlapping: boolean;
     },
 ) {
     const button = document.createElement("button");
     const defaultTitle =
-        options.overlapGroupSize > 1
+        options.isOverlapping && options.changeCount > 1
             ? type === "accept"
-                ? `Accept overlapping group (${options.overlapGroupSize} changes)`
-                : `Reject overlapping group (${options.overlapGroupSize} changes)`
+                ? `Accept overlapping group (${options.changeCount} changes)`
+                : `Reject overlapping group (${options.changeCount} changes)`
+            : options.changeCount > 1
+              ? type === "accept"
+                ? `Accept ${options.changeCount} changes`
+                : `Reject ${options.changeCount} changes`
             : type === "accept"
               ? "Accept change"
               : "Reject change";
