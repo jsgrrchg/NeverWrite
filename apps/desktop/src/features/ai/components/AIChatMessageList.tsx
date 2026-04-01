@@ -30,6 +30,7 @@ interface AIChatMessageListProps {
     sessionId?: string | null;
     messages: AIChatMessage[];
     status: AIChatSessionStatus;
+    readOnly?: boolean;
     hasOlderMessages?: boolean;
     isLoadingOlderMessages?: boolean;
     visibleWorkCycleId?: string | null;
@@ -258,6 +259,7 @@ function renderTimelineRow(
     row: TimelineRow,
     options: {
         sessionId?: string | null;
+        readOnly?: boolean;
         pillMetrics: ReturnType<typeof getChatPillMetrics>;
         chatFontSize: number;
         chatFontFamily: EditorFontFamily;
@@ -271,6 +273,7 @@ function renderTimelineRow(
     },
 ) {
     if (row.kind === "run-indicator") {
+        if (options.readOnly) return null;
         return (
             <StreamingRunIndicator
                 timestamp={row.timestamp}
@@ -282,14 +285,19 @@ function renderTimelineRow(
     return (
         <AIChatMessageItem
             sessionId={options.sessionId}
+            readOnly={options.readOnly}
             message={row.message}
             pillMetrics={options.pillMetrics}
             chatFontSize={options.chatFontSize}
             chatFontFamily={options.chatFontFamily}
             visibleWorkCycleId={options.visibleWorkCycleId}
             recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
-            onPermissionResponse={options.onPermissionResponse}
-            onUserInputResponse={options.onUserInputResponse}
+            onPermissionResponse={
+                options.readOnly ? undefined : options.onPermissionResponse
+            }
+            onUserInputResponse={
+                options.readOnly ? undefined : options.onUserInputResponse
+            }
         />
     );
 }
@@ -298,6 +306,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     sessionId = null,
     messages,
     status,
+    readOnly = false,
     hasOlderMessages = false,
     isLoadingOlderMessages = false,
     visibleWorkCycleId = null,
@@ -386,8 +395,14 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         [chatFontSize],
     );
     const { pinnedPlan, runIndicatorAnchor } = useMemo(
-        () => deriveMessageListDecorations(messages, status === "streaming"),
-        [messages, status],
+        () =>
+            readOnly
+                ? { pinnedPlan: null, runIndicatorAnchor: null }
+                : deriveMessageListDecorations(
+                      messages,
+                      status === "streaming",
+                  ),
+        [messages, readOnly, status],
     );
     const recentDiffWorkCycleIds = useMemo(
         () =>
@@ -430,6 +445,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const rowRenderOptions = useMemo(
         () => ({
             sessionId,
+            readOnly,
             pillMetrics,
             chatFontSize,
             chatFontFamily,
@@ -444,6 +460,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             onPermissionResponse,
             onUserInputResponse,
             pillMetrics,
+            readOnly,
             recentDiffWorkCycleIds,
             sessionId,
             visibleWorkCycleId,
