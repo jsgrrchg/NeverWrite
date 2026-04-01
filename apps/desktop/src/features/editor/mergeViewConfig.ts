@@ -1,5 +1,5 @@
 import type { ReviewState } from "../ai/diff/actionLogTypes";
-import type { ReviewProjectionInlineState } from "../ai/diff/reviewProjection";
+import type { ReviewProjectionInlineState } from "../ai/diff/reviewProjectionDiagnostics";
 import type {
     ChangePresentationLevel,
     FileChangePresentation,

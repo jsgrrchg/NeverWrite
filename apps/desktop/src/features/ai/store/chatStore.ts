@@ -61,19 +61,20 @@ import {
     getTrackedFileReviewState,
     getTrackedFilesForSession,
     hashTextContent,
-    keepReviewHunks,
+    keepExactSpans,
     patchIsEmpty,
     rejectAllEdits as actionLogRejectAll,
-    rejectReviewHunks,
+    rejectExactSpans,
     setTrackedFilesForWorkCycle,
     type RestoreAction,
 } from "./actionLogModel";
 import type { LastRejectUndo, TrackedFile } from "../diff/actionLogTypes";
 import {
-    buildReviewProjection,
-    expandReviewHunksToOverlapClosure,
+    buildReviewProjectionIndex,
+    expandReviewHunkIdsToOverlapClosure,
     type ReviewHunkId,
-} from "../diff/reviewProjection";
+    resolveReviewHunkIdsToExactSpans,
+} from "../diff/reviewProjectionIndex";
 import {
     type EditorTarget,
     resolveEditorTargetForTrackedPath,
@@ -7395,31 +7396,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            const projection = buildReviewProjection(tracked);
-            if (projection.trackedVersion !== trackedVersion) {
+            const reviewIndex = buildReviewProjectionIndex(tracked);
+            if (reviewIndex.trackedVersion !== trackedVersion) {
                 return;
             }
 
-            const selectedReviewHunks = hunkIds
-                .map((id) =>
-                    projection.hunks.find(
-                        (hunk) =>
-                            hunk.id.trackedVersion === id.trackedVersion &&
-                            hunk.id.key === id.key,
-                    ),
-                )
-                .filter(
-                    (hunk): hunk is (typeof projection.hunks)[number] => !!hunk,
-                );
-
-            if (selectedReviewHunks.length === 0) {
-                return;
-            }
-            const resolvedReviewHunks = expandReviewHunksToOverlapClosure(
-                projection,
-                selectedReviewHunks,
+            const resolvedHunkIds = expandReviewHunkIdsToOverlapClosure(
+                reviewIndex,
+                hunkIds,
             );
-            if (resolvedReviewHunks.length === 0) {
+            if (resolvedHunkIds.length === 0) {
+                return;
+            }
+
+            const resolvedExactSpans = resolveReviewHunkIdsToExactSpans(
+                reviewIndex,
+                resolvedHunkIds,
+            );
+            if (resolvedExactSpans.length === 0) {
                 return;
             }
 
@@ -7430,7 +7424,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             } | null = null;
 
             if (decision === "accepted") {
-                updatedFile = keepReviewHunks(tracked, resolvedReviewHunks);
+                updatedFile = keepExactSpans(tracked, resolvedExactSpans);
             } else {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 if (vaultPath) {
@@ -7462,10 +7456,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }
                 }
 
-                const { file } = rejectReviewHunks(
-                    tracked,
-                    resolvedReviewHunks,
-                );
+                const { file } = rejectExactSpans(tracked, resolvedExactSpans);
                 updatedFile = file;
                 hunkUndoSnapshot = { identityKey, snapshot: tracked };
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ReviewProjectionInlineState } from "../ai/diff/reviewProjection";
+import type { ReviewProjectionInlineState } from "../ai/diff/reviewProjectionDiagnostics";
 import type { FileChangePresentation } from "./changePresentationModel";
 import {
     buildMergeStructuralSignature,

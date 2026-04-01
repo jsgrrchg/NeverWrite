@@ -9,6 +9,13 @@ import type {
     TrackedFile,
     WordDiffRange,
 } from "../diff/actionLogTypes";
+import {
+    buildLineStartOffsets,
+    deriveOffsetLineRange,
+    insertionLineIndexAtOffset,
+    lineIndexAtOffset,
+    lineIndexToOffset,
+} from "../diff/lineMap";
 
 function emptyPatch(): LinePatch {
     return { edits: [] };
@@ -30,58 +37,6 @@ function rangesOverlap(
 ): boolean {
     if (aStart === aEnd && bStart === bEnd) return aStart === bStart;
     return aStart < bEnd && bStart < aEnd;
-}
-
-function buildLineStartOffsets(text: string): number[] {
-    const offsets = [0];
-    for (let index = 0; index < text.length; index += 1) {
-        if (text[index] === "\n") {
-            offsets.push(index + 1);
-        }
-    }
-    return offsets;
-}
-
-function lineIndexAtOffset(lineStarts: number[], offset: number): number {
-    if (lineStarts.length === 0) return 0;
-    let low = 0;
-    let high = lineStarts.length - 1;
-
-    while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        if (lineStarts[mid] <= offset) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    return Math.max(0, high);
-}
-
-function insertionLineIndexAtOffset(
-    lineStarts: number[],
-    offset: number,
-): number {
-    let low = 0;
-    let high = lineStarts.length;
-
-    while (low < high) {
-        const mid = Math.floor((low + high) / 2);
-        if (lineStarts[mid] < offset) {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
-    }
-
-    return low;
-}
-
-function lineIndexToOffset(lineStarts: number[], text: string, line: number) {
-    if (line <= 0) return 0;
-    if (line >= lineStarts.length) return text.length;
-    return lineStarts[line];
 }
 
 function commonPrefixLength(a: string, b: string): number {
@@ -241,10 +196,7 @@ function spanPartToLineRange(
         return { start: line, end: line + 1 };
     }
 
-    return {
-        start: lineIndexAtOffset(lineStarts, from),
-        end: lineIndexAtOffset(lineStarts, to - 1) + 1,
-    };
+    return deriveOffsetLineRange(lineStarts, from, to);
 }
 
 // Derived presentation helper only.

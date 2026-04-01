@@ -6,6 +6,8 @@ import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorView } from "@codemirror/view";
 import { fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import * as reviewProjectionModule from "../ai/diff/reviewProjection";
+import * as reviewProjectionDiagnosticsModule from "../ai/diff/reviewProjectionDiagnostics";
 import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import type { AIChatSession } from "../ai/types";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -206,6 +208,34 @@ describe("mergeViewSync", () => {
             transitionReason: "none",
         });
         destroy();
+    });
+
+    it("does not compute full projection diagnostics on the healthy sync path", () => {
+        const diagnosticsSpy = vi.spyOn(
+            reviewProjectionDiagnosticsModule,
+            "getReviewProjectionDiagnostics",
+        );
+        const { view, destroy } = mountView("alpHa");
+        const path = "notes/current.md";
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const session = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
+
+        try {
+            syncMergeViewForPaths(view, [path], {
+                [session.sessionId]: session,
+            });
+
+            expect(getChunks(view.state)?.chunks.length).toBe(1);
+            expect(diagnosticsSpy).not.toHaveBeenCalled();
+        } finally {
+            diagnosticsSpy.mockRestore();
+            destroy();
+        }
     });
 
     it("ignores tracked files from other vaults even when relative paths collide", () => {
@@ -769,16 +799,13 @@ describe("mergeViewSync", () => {
             view.dom.querySelectorAll('[data-review-decision="accept"]'),
         ).toHaveLength(1);
         expect(
-            view.dom.querySelector(".cm-review-chunk-controls")
-                ?.textContent,
+            view.dom.querySelector(".cm-review-chunk-controls")?.textContent,
         ).toContain("3 changes");
         expect(
             view.dom.querySelector('[data-review-hunk-key="0:3:0:3"]'),
         ).toBeNull();
         expect(
-            view.dom.querySelector(
-                '[data-review-presentation-mode="grouped"]',
-            ),
+            view.dom.querySelector('[data-review-presentation-mode="grouped"]'),
         ).not.toBeNull();
 
         destroy();
@@ -981,6 +1008,49 @@ describe("mergeViewSync", () => {
         expect(view.dom.textContent).toContain("Review in Changes");
 
         destroy();
+    });
+
+    it("disables inline review controls when projection building fails", () => {
+        const buildProjectionSpy = vi
+            .spyOn(reviewProjectionModule, "buildReviewProjection")
+            .mockImplementation(() => {
+                throw new Error("projection failed");
+            });
+        const { view, destroy } = mountView("alpHa");
+        const path = "notes/current.md";
+        useVaultStore.setState({ vaultPath: "/vault-a" });
+        const session = createSession(
+            "session-1",
+            "wc-1",
+            [createTrackedFile(path, "alpha", "alpHa")],
+            "/vault-a",
+        );
+
+        try {
+            syncMergeViewForPaths(view, [path], {
+                [session.sessionId]: session,
+            });
+
+            expect(readMergeViewRuntimeState(view.state)).toMatchObject({
+                enabled: true,
+                inlineState: "disabled",
+                sessionId: "session-1",
+                identityKey: path,
+                targetId: "notes/current",
+                targetKind: "note",
+                trackedVersion: 1,
+            });
+            expect(getChunks(view.state)?.chunks.length).toBe(1);
+            expect(
+                view.dom.querySelector('[data-review-decision="accept"]'),
+            ).toBeNull();
+            expect(
+                view.dom.querySelector('[data-review-decision="reject"]'),
+            ).toBeNull();
+        } finally {
+            buildProjectionSpy.mockRestore();
+            destroy();
+        }
     });
 
     it("keeps exact inline actions available for large files", () => {
