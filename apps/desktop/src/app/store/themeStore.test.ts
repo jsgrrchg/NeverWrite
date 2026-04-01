@@ -1,8 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { useThemeStore } from "./themeStore";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+    disposeThemeStoreRuntime,
+    initializeThemeStore,
+    useThemeStore,
+} from "./themeStore";
 import { useVaultStore } from "./vaultStore";
 
 describe("themeStore global persistence", () => {
+    beforeEach(() => {
+        disposeThemeStoreRuntime();
+        initializeThemeStore();
+        useVaultStore.setState((state) => ({
+            ...state,
+            vaultPath: null,
+            isLoading: false,
+            vaultOpenState: {
+                ...state.vaultOpenState,
+                path: null,
+                stage: "idle",
+            },
+        }));
+    });
+
+    afterEach(() => {
+        disposeThemeStoreRuntime();
+    });
+
     it("persists theme globally across all vaults", () => {
         useThemeStore.getState().setThemeName("nord");
         useThemeStore.getState().setMode("dark");

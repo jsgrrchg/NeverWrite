@@ -125,6 +125,12 @@ import {
     replaceSessionTranscript,
 } from "../transcriptModel";
 import { getSessionPreview, getSessionTitle } from "../sessionPresentation";
+import {
+    safeStorageGetItem,
+    safeStorageRemoveItem,
+    safeStorageSetItem,
+    subscribeSafeStorage,
+} from "../../../app/utils/safeStorage";
 
 const AI_PREFS_KEY = "vaultai.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "vaultai.ai.runtime-catalog";
@@ -162,6 +168,17 @@ interface NormalizedAiPreferences {
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
 }
+
+const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
+    requireCmdEnterToSend: false,
+    composerFontSize: 14,
+    chatFontSize: 20,
+    composerFontFamily: "system",
+    chatFontFamily: "system",
+    editDiffZoom: 0.72,
+    historyRetentionDays: 0,
+    screenshotRetentionSeconds: 0,
+};
 
 interface AIRuntimeCatalogSnapshot {
     models: AIRuntimeDescriptor["models"];
@@ -217,7 +234,7 @@ function aiPrefsEqual(
 
 function loadAiPreferences(): AiPreferences {
     try {
-        const raw = localStorage.getItem(AI_PREFS_KEY);
+        const raw = safeStorageGetItem(AI_PREFS_KEY);
         return raw ? (JSON.parse(raw) as AiPreferences) : {};
     } catch {
         return {};
@@ -227,7 +244,7 @@ function loadAiPreferences(): AiPreferences {
 function saveAiPreferences(patch: Partial<AiPreferences>) {
     try {
         const current = loadAiPreferences();
-        localStorage.setItem(
+        safeStorageSetItem(
             AI_PREFS_KEY,
             JSON.stringify({ ...current, ...patch }),
         );
@@ -251,7 +268,7 @@ function getAutoContextStorageKey(vaultPath: string | null) {
 
 function loadAutoContextPreference(vaultPath: string | null) {
     try {
-        const raw = localStorage.getItem(getAutoContextStorageKey(vaultPath));
+        const raw = safeStorageGetItem(getAutoContextStorageKey(vaultPath));
         if (raw === "true") return true;
         if (raw === "false") return false;
     } catch {
@@ -267,7 +284,7 @@ function saveAutoContextPreference(
     autoContextEnabled: boolean,
 ) {
     try {
-        localStorage.setItem(
+        safeStorageSetItem(
             getAutoContextStorageKey(vaultPath),
             String(autoContextEnabled),
         );
@@ -292,7 +309,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
 
 function loadRuntimeCatalogCache(): Record<string, AIRuntimeCatalogSnapshot> {
     try {
-        const raw = localStorage.getItem(AI_RUNTIME_CACHE_KEY);
+        const raw = safeStorageGetItem(AI_RUNTIME_CACHE_KEY);
         return raw
             ? (JSON.parse(raw) as Record<string, AIRuntimeCatalogSnapshot>)
             : {};
@@ -307,7 +324,7 @@ function saveRuntimeCatalogCache(
 ) {
     try {
         const current = loadRuntimeCatalogCache();
-        localStorage.setItem(
+        safeStorageSetItem(
             AI_RUNTIME_CACHE_KEY,
             JSON.stringify({
                 ...current,
@@ -3640,11 +3657,6 @@ function restoreMessagesFromHistory(
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {
-    const initialPreferences = getNormalizedAiPreferences();
-    const initialAutoContextEnabled = loadAutoContextPreference(
-        useVaultStore.getState().vaultPath,
-    );
-
     async function loadPersistedTranscript(
         sessionId: string,
         mode: "latest" | "full" | "older",
@@ -4214,16 +4226,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,
-        autoContextEnabled: initialAutoContextEnabled,
-        requireCmdEnterToSend: initialPreferences.requireCmdEnterToSend,
-        composerFontSize: initialPreferences.composerFontSize,
-        chatFontSize: initialPreferences.chatFontSize,
-        composerFontFamily: initialPreferences.composerFontFamily,
-        chatFontFamily: initialPreferences.chatFontFamily,
-        editDiffZoom: initialPreferences.editDiffZoom,
-        historyRetentionDays: initialPreferences.historyRetentionDays,
+        autoContextEnabled: true,
+        requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
+        composerFontSize: DEFAULT_AI_PREFERENCES.composerFontSize,
+        chatFontSize: DEFAULT_AI_PREFERENCES.chatFontSize,
+        composerFontFamily: DEFAULT_AI_PREFERENCES.composerFontFamily,
+        chatFontFamily: DEFAULT_AI_PREFERENCES.chatFontFamily,
+        editDiffZoom: DEFAULT_AI_PREFERENCES.editDiffZoom,
+        historyRetentionDays: DEFAULT_AI_PREFERENCES.historyRetentionDays,
         screenshotRetentionSeconds:
-            initialPreferences.screenshotRetentionSeconds,
+            DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},
@@ -8265,11 +8277,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
 });
 
-// Sync AI preferences when another window (e.g. standalone Settings) updates localStorage
-if (typeof window !== "undefined") {
-    let aiPrefsSyncTimer: number | null = null;
-    let autoContextSyncTimer: number | null = null;
-    window.addEventListener("storage", (event) => {
+let chatRuntimeInitialized = false;
+let stopChatStorageSync: (() => void) | null = null;
+let stopChatVaultSync: (() => void) | null = null;
+let aiPrefsSyncTimer: number | null = null;
+let autoContextSyncTimer: number | null = null;
+
+export function hydrateChatStorePreferences() {
+    const prefs = getNormalizedAiPreferences();
+    useChatStore.setState({
+        autoContextEnabled: loadAutoContextPreference(
+            useVaultStore.getState().vaultPath,
+        ),
+        requireCmdEnterToSend: prefs.requireCmdEnterToSend,
+        composerFontSize: prefs.composerFontSize,
+        chatFontSize: prefs.chatFontSize,
+        composerFontFamily: prefs.composerFontFamily,
+        chatFontFamily: prefs.chatFontFamily,
+        editDiffZoom: prefs.editDiffZoom,
+        historyRetentionDays: prefs.historyRetentionDays,
+        screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
+    });
+}
+
+export function initializeChatStoreRuntime() {
+    if (chatRuntimeInitialized) return;
+    chatRuntimeInitialized = true;
+
+    hydrateChatStorePreferences();
+
+    stopChatStorageSync = subscribeSafeStorage((event) => {
         if (event.key === AI_PREFS_KEY) {
             if (aiPrefsSyncTimer != null) {
                 window.clearTimeout(aiPrefsSyncTimer);
@@ -8314,6 +8351,13 @@ if (typeof window !== "undefined") {
             }, 80);
         }
     });
+    stopChatVaultSync = useVaultStore.subscribe((state, prev) => {
+        if (state.vaultPath === prev.vaultPath) {
+            return;
+        }
+
+        useChatStore.getState().syncAutoContextForVault(state.vaultPath);
+    });
 }
 
 /** Flush any buffered message/thinking deltas synchronously (useful in tests). */
@@ -8321,7 +8365,7 @@ export { flushDeltasSync };
 
 export function resetChatStore() {
     try {
-        localStorage.removeItem(AI_RUNTIME_CACHE_KEY);
+        safeStorageRemoveItem(AI_RUNTIME_CACHE_KEY);
     } catch {
         // ignore
     }
@@ -8362,10 +8406,18 @@ export function resetChatStore() {
     });
 }
 
-useVaultStore.subscribe((state, prev) => {
-    if (state.vaultPath === prev.vaultPath) {
-        return;
+export function disposeChatStoreRuntime() {
+    stopChatStorageSync?.();
+    stopChatVaultSync?.();
+    stopChatStorageSync = null;
+    stopChatVaultSync = null;
+    if (typeof window !== "undefined" && aiPrefsSyncTimer != null) {
+        window.clearTimeout(aiPrefsSyncTimer);
     }
-
-    useChatStore.getState().syncAutoContextForVault(state.vaultPath);
-});
+    if (typeof window !== "undefined" && autoContextSyncTimer != null) {
+        window.clearTimeout(autoContextSyncTimer);
+    }
+    aiPrefsSyncTimer = null;
+    autoContextSyncTimer = null;
+    chatRuntimeInitialized = false;
+}

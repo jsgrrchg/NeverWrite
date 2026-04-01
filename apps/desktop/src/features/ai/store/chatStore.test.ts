@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isFileTab,
     isNoteTab,
@@ -28,7 +28,13 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
-import { flushDeltasSync, resetChatStore, useChatStore } from "./chatStore";
+import {
+    disposeChatStoreRuntime,
+    flushDeltasSync,
+    initializeChatStoreRuntime,
+    resetChatStore,
+    useChatStore,
+} from "./chatStore";
 import { resolveEditorTargetForOpenTab } from "../../editor/editorTargetResolver";
 import { subscribeEditorReviewSync } from "../../editor/editorReviewSync";
 import { useChatRowUiStore } from "./chatRowUiStore";
@@ -504,6 +510,8 @@ function expectTrackedFileToMatchAccumulatedDiff(
 
 describe("chatStore", () => {
     beforeEach(() => {
+        disposeChatStoreRuntime();
+        initializeChatStoreRuntime();
         resetChatStore();
         resetChatTabsStore();
         vi.clearAllMocks();
@@ -519,6 +527,10 @@ describe("chatStore", () => {
             currentSelection: null,
         });
         invokeMock.mockImplementation(defaultInvokeImplementation);
+    });
+
+    afterEach(() => {
+        disposeChatStoreRuntime();
     });
 
     it("loads the default edit diff zoom when no preference is stored", () => {

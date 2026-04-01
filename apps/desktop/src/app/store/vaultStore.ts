@@ -2,6 +2,11 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
 import { getPathBaseName } from "../utils/path";
+import {
+    safeStorageGetItem,
+    safeStorageRemoveItem,
+    safeStorageSetItem,
+} from "../utils/safeStorage";
 import { useEditorStore } from "./editorStore";
 import { useBookmarkStore } from "./bookmarkStore";
 
@@ -183,7 +188,7 @@ function normalizeOpenState(
 
 export function getRecentVaults(): RecentVault[] {
     try {
-        return JSON.parse(localStorage.getItem(RECENT_VAULTS_KEY) ?? "[]");
+        return JSON.parse(safeStorageGetItem(RECENT_VAULTS_KEY) ?? "[]");
     } catch {
         return [];
     }
@@ -201,7 +206,7 @@ function syncRecentVaultsToNative(vaults: RecentVault[]) {
 }
 
 function writeRecentVaults(vaults: RecentVault[]) {
-    localStorage.setItem(RECENT_VAULTS_KEY, JSON.stringify(vaults));
+    safeStorageSetItem(RECENT_VAULTS_KEY, JSON.stringify(vaults));
     syncRecentVaultsToNative(vaults);
 }
 
@@ -219,16 +224,16 @@ export async function removeVaultFromList(path: string) {
     writeRecentVaults(updated);
 
     // Clear last vault if it matches
-    if (localStorage.getItem(LAST_VAULT_KEY) === path) {
-        localStorage.removeItem(LAST_VAULT_KEY);
+    if (safeStorageGetItem(LAST_VAULT_KEY) === path) {
+        safeStorageRemoveItem(LAST_VAULT_KEY);
     }
 
     // Clear all per-vault localStorage data
-    localStorage.removeItem(`vaultai.session.tabs:${path}`);
-    localStorage.removeItem(`vaultai:theme:${path}`);
-    localStorage.removeItem(`vaultai:settings:${path}`);
-    localStorage.removeItem(`vaultai.chat.tabs:${path}`);
-    localStorage.removeItem(`vaultai:bookmarks:${path}`);
+    safeStorageRemoveItem(`vaultai.session.tabs:${path}`);
+    safeStorageRemoveItem(`vaultai:theme:${path}`);
+    safeStorageRemoveItem(`vaultai:settings:${path}`);
+    safeStorageRemoveItem(`vaultai.chat.tabs:${path}`);
+    safeStorageRemoveItem(`vaultai:bookmarks:${path}`);
 
     // Delete vault index snapshot from disk
     try {
@@ -250,7 +255,7 @@ export async function removeVaultFromList(path: string) {
 }
 
 export function clearRecentVaults() {
-    localStorage.removeItem(RECENT_VAULTS_KEY);
+    safeStorageRemoveItem(RECENT_VAULTS_KEY);
     syncRecentVaultsToNative([]);
 }
 
@@ -371,7 +376,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                     ]);
                     if (sequence !== openVaultSequence) return;
 
-                    localStorage.setItem(LAST_VAULT_KEY, path);
+                    safeStorageSetItem(LAST_VAULT_KEY, path);
                     addToRecentVaults(path);
 
                     set((state) => ({
@@ -428,7 +433,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     },
 
     restoreVault: async () => {
-        const path = localStorage.getItem(LAST_VAULT_KEY);
+        const path = safeStorageGetItem(LAST_VAULT_KEY);
         if (path) await get().openVault(path);
     },
 

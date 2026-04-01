@@ -3,6 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../../app/utils/safeStorage";
+import {
     appendTerminalRawOutput,
     normalizePersistedTerminalRawOutput,
 } from "./terminalRawOutput";
@@ -215,7 +219,7 @@ export function readPersistedTerminalWorkspace(
     if (!vaultPath) return null;
 
     try {
-        const raw = localStorage.getItem(getTerminalTabsStorageKey(vaultPath));
+        const raw = safeStorageGetItem(getTerminalTabsStorageKey(vaultPath));
         if (!raw) return null;
         return normalizeParsedWorkspace(JSON.parse(raw), vaultPath);
     } catch {
@@ -914,7 +918,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
         }
 
         persistTimerRef.current = setTimeout(() => {
-            localStorage.setItem(getTerminalTabsStorageKey(vaultPath), json);
+            safeStorageSetItem(getTerminalTabsStorageKey(vaultPath), json);
             lastPersistedJsonRef.current = json;
             persistTimerRef.current = null;
         }, 300);
@@ -941,7 +945,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                     activeTabIdRef.current,
                 );
                 const json = JSON.stringify(workspace);
-                localStorage.setItem(
+                safeStorageSetItem(
                     getTerminalTabsStorageKey(vaultPathAtCleanup),
                     json,
                 );

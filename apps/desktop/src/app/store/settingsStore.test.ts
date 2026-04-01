@@ -1,8 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { useSettingsStore } from "./settingsStore";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+    disposeSettingsStoreRuntime,
+    initializeSettingsStore,
+    useSettingsStore,
+} from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
 
 describe("settingsStore developer mode", () => {
+    beforeEach(() => {
+        disposeSettingsStoreRuntime();
+        initializeSettingsStore();
+        useVaultStore.setState((state) => ({
+            ...state,
+            vaultPath: null,
+            isLoading: false,
+            vaultOpenState: {
+                ...state.vaultOpenState,
+                path: null,
+                stage: "idle",
+            },
+        }));
+    });
+
+    afterEach(() => {
+        disposeSettingsStoreRuntime();
+    });
+
     it("defaults developerModeEnabled to false", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);

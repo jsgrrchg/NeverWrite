@@ -1,10 +1,10 @@
 // Capture full stack traces for debugging deep recursion / stack overflow
-(Error as ErrorConstructor & { stackTraceLimit?: number }).stackTraceLimit = 300;
+(Error as ErrorConstructor & { stackTraceLimit?: number }).stackTraceLimit =
+    300;
 
 import { Component, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import App from "./App.tsx";
 
 interface RootErrorBoundaryState {
     error: Error | null;
@@ -136,8 +136,93 @@ class RootErrorBoundary extends Component<
     }
 }
 
-createRoot(document.getElementById("root")!).render(
-    <RootErrorBoundary>
-        <App />
-    </RootErrorBoundary>,
-);
+function renderFatalStartupError(error: unknown) {
+    const root = document.getElementById("root");
+    const message =
+        error instanceof Error ? error.message : "Unknown startup error";
+    const stack =
+        error instanceof Error ? error.stack || error.message : String(error);
+
+    if (!root) {
+        document.body.innerHTML = `<pre>${stack}</pre>`;
+        return;
+    }
+
+    createRoot(root).render(
+        <div
+            style={{
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 24,
+                background: "#0b1017",
+                color: "#f8fafc",
+            }}
+        >
+            <div
+                style={{
+                    width: "min(720px, 100%)",
+                    border: "1px solid #243043",
+                    borderRadius: 14,
+                    padding: 20,
+                    background: "#111827",
+                    boxShadow: "0 24px 80px rgb(0 0 0 / 0.35)",
+                }}
+            >
+                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
+                    Startup error
+                </div>
+                <div
+                    style={{
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                        color: "#ef4444",
+                        marginBottom: 12,
+                        fontFamily:
+                            '"SFMono-Regular", Menlo, Monaco, Consolas, monospace',
+                    }}
+                >
+                    {message}
+                </div>
+                <pre
+                    style={{
+                        margin: 0,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        color: "#e5e7eb",
+                        fontFamily:
+                            '"SFMono-Regular", Menlo, Monaco, Consolas, monospace',
+                    }}
+                >
+                    {stack}
+                </pre>
+            </div>
+        </div>,
+    );
+}
+
+async function startApplication() {
+    const root = document.getElementById("root");
+    if (!root) {
+        throw new Error("App root element not found.");
+    }
+
+    const { bootstrapApplicationRuntime } = await import("./app/bootstrap");
+    bootstrapApplicationRuntime();
+
+    const { default: App } = await import("./App.tsx");
+
+    createRoot(root).render(
+        <RootErrorBoundary>
+            <App />
+        </RootErrorBoundary>,
+    );
+}
+
+void startApplication().catch((error) => {
+    console.error("Startup bootstrap error:", error);
+    renderFatalStartupError(error);
+});

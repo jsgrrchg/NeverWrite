@@ -46,6 +46,11 @@ import {
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { perfMeasure, perfNow } from "../../app/utils/perfInstrumentation";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+    subscribeSafeStorage,
+} from "../../app/utils/safeStorage";
 
 // --- Sort ---
 
@@ -1494,10 +1499,10 @@ export function FileTree() {
     );
 
     const [sortMode, setSortMode] = useState<SortMode>(
-        () => (localStorage.getItem(SORT_KEY) as SortMode | null) ?? "name_asc",
+        () => (safeStorageGetItem(SORT_KEY) as SortMode | null) ?? "name_asc",
     );
     const [revealActive, setRevealActive] = useState(
-        () => localStorage.getItem(REVEAL_KEY) === "true",
+        () => safeStorageGetItem(REVEAL_KEY) === "true",
     );
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
         new Set(),
@@ -1803,13 +1808,10 @@ export function FileTree() {
     }, []);
 
     useEffect(() => {
-        const handleStorage = (event: StorageEvent) => {
+        return subscribeSafeStorage((event) => {
             if (event.key !== "vaultai.fileTree.clipboard") return;
             setClipboardVersion((value) => value + 1);
-        };
-
-        window.addEventListener("storage", handleStorage);
-        return () => window.removeEventListener("storage", handleStorage);
+        });
     }, []);
 
     useEffect(() => {
@@ -2500,7 +2502,7 @@ export function FileTree() {
 
     const handleSortSelect = (mode: SortMode) => {
         setSortMode(mode);
-        localStorage.setItem(SORT_KEY, mode);
+        safeStorageSetItem(SORT_KEY, mode);
         setSortMenuOpen(false);
     };
 
@@ -2567,7 +2569,7 @@ export function FileTree() {
             setExpandedFolders(new Set(visibleExpandedFolders));
         }
         setRevealActive(next);
-        localStorage.setItem(REVEAL_KEY, String(next));
+        safeStorageSetItem(REVEAL_KEY, String(next));
     };
 
     const handleCollapseExpandAll = () => {

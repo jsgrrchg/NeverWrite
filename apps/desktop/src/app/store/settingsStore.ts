@@ -1,4 +1,10 @@
 import { create } from "zustand";
+import { readSearchParam } from "../utils/safeBrowser";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+    subscribeSafeStorage,
+} from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
 
 export interface Settings {
@@ -427,12 +433,12 @@ function getStorageKey(vaultPath: string | null): string {
 function migrateGlobalSettings(vaultPath: string) {
     try {
         const vaultKey = getStorageKey(vaultPath);
-        if (localStorage.getItem(vaultKey)) return; // already migrated
+        if (safeStorageGetItem(vaultKey)) return; // already migrated
         const global = extractSettingsFromStorage(
-            localStorage.getItem(SETTINGS_KEY_FALLBACK),
+            safeStorageGetItem(SETTINGS_KEY_FALLBACK),
         );
         if (!global) return;
-        localStorage.setItem(vaultKey, JSON.stringify({ state: global }));
+        safeStorageSetItem(vaultKey, JSON.stringify({ state: global }));
     } catch {
         // localStorage unavailable
     }
@@ -447,12 +453,12 @@ function migrateGlobalSettings(vaultPath: string) {
 function migrateGlobalSpellcheckToVault(vaultPath: string) {
     try {
         const vaultKey = getStorageKey(vaultPath);
-        const vaultRaw = localStorage.getItem(vaultKey);
+        const vaultRaw = safeStorageGetItem(vaultKey);
         if (hasStoredSpellcheckSettings(vaultRaw)) return;
 
         const vaultSettings = extractSettingsFromStorage(vaultRaw);
 
-        const globalRaw = localStorage.getItem(SETTINGS_KEY_FALLBACK);
+        const globalRaw = safeStorageGetItem(SETTINGS_KEY_FALLBACK);
         if (!hasStoredSpellcheckSettings(globalRaw)) return;
 
         const globalSettings = extractSettingsFromStorage(globalRaw);
@@ -464,7 +470,7 @@ function migrateGlobalSpellcheckToVault(vaultPath: string) {
             spellcheckSecondaryLanguage:
                 globalSettings.spellcheckSecondaryLanguage,
         };
-        localStorage.setItem(vaultKey, JSON.stringify({ state: merged }));
+        safeStorageSetItem(vaultKey, JSON.stringify({ state: merged }));
     } catch {
         // localStorage unavailable
     }
@@ -476,7 +482,7 @@ function loadSettings(vaultPath: string | null): Settings {
             migrateGlobalSettings(vaultPath);
             migrateGlobalSpellcheckToVault(vaultPath);
         }
-        const raw = localStorage.getItem(getStorageKey(vaultPath));
+        const raw = safeStorageGetItem(getStorageKey(vaultPath));
         return extractSettingsFromStorage(raw) ?? defaults;
     } catch {
         return defaults;
@@ -493,7 +499,7 @@ function getEffectiveVaultPath(
 
 function saveSettings(vaultPath: string | null, settings: Settings) {
     try {
-        localStorage.setItem(
+        safeStorageSetItem(
             getStorageKey(vaultPath),
             JSON.stringify({ state: settings }),
         );
@@ -506,20 +512,16 @@ function saveSettings(vaultPath: string | null, settings: Settings) {
 // In a settings window the vault is passed as a URL param; otherwise fall back to localStorage.
 function readInitialVaultPath(): string | null {
     try {
-        const urlVault = new URLSearchParams(window.location.search).get(
-            "vault",
-        );
+        const urlVault = readSearchParam("vault");
         if (urlVault) return decodeURIComponent(urlVault);
-        return localStorage.getItem(LAST_VAULT_KEY);
+        return safeStorageGetItem(LAST_VAULT_KEY);
     } catch {
         return null;
     }
 }
 
-const initialVaultPath = readInitialVaultPath();
-
 export const useSettingsStore = create<SettingsStore>()((set) => ({
-    ...loadSettings(initialVaultPath),
+    ...defaults,
     setSetting: (key, value) =>
         set((state) => {
             if (
@@ -547,19 +549,31 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
 }));
 
 // Track the current vault path so the save subscriber always writes to the right key
-let _currentVaultPath: string | null = initialVaultPath;
+let _currentVaultPath: string | null = null;
 let _isApplyingExternal = false;
+let settingsRuntimeInitialized = false;
+let stopStorageSync: (() => void) | null = null;
+let stopVaultSync: (() => void) | null = null;
+let stopSettingsPersistence: (() => void) | null = null;
 
-// Persist on every settings change
-useSettingsStore.subscribe((state) => {
-    if (!_isApplyingExternal) {
-        saveSettings(_currentVaultPath, pickSettings(state));
-    }
-});
+export function hydrateSettingsStore() {
+    _currentVaultPath = readInitialVaultPath();
+    useSettingsStore.setState(loadSettings(_currentVaultPath));
+}
 
-// React to changes made by other windows (e.g. settings window) via localStorage
-if (typeof window !== "undefined") {
-    window.addEventListener("storage", (event) => {
+export function initializeSettingsStore() {
+    if (settingsRuntimeInitialized) return;
+    settingsRuntimeInitialized = true;
+
+    hydrateSettingsStore();
+
+    stopSettingsPersistence = useSettingsStore.subscribe((state) => {
+        if (!_isApplyingExternal) {
+            saveSettings(_currentVaultPath, pickSettings(state));
+        }
+    });
+
+    stopStorageSync = subscribeSafeStorage((event) => {
         if (
             event.key !== getStorageKey(_currentVaultPath) &&
             event.key !== SETTINGS_KEY_FALLBACK
@@ -578,17 +592,21 @@ if (typeof window !== "undefined") {
         useSettingsStore.setState(loadSettings(_currentVaultPath));
         _isApplyingExternal = false;
     });
-}
 
-// Reload settings when the active vault changes (lazy to avoid circular init)
-queueMicrotask(() => {
-    if (!useVaultStore || typeof useVaultStore.subscribe !== "function") {
-        return;
-    }
-    useVaultStore.subscribe((state) => {
+    stopVaultSync = useVaultStore.subscribe((state) => {
         const newVaultPath = getEffectiveVaultPath(state);
         if (newVaultPath === _currentVaultPath) return;
         _currentVaultPath = newVaultPath;
         useSettingsStore.setState(loadSettings(newVaultPath));
     });
-});
+}
+
+export function disposeSettingsStoreRuntime() {
+    stopSettingsPersistence?.();
+    stopStorageSync?.();
+    stopVaultSync?.();
+    stopSettingsPersistence = null;
+    stopStorageSync = null;
+    stopVaultSync = null;
+    settingsRuntimeInitialized = false;
+}

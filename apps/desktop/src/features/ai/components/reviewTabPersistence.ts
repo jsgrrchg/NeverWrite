@@ -1,5 +1,9 @@
 import type { ReviewFileItem } from "../diff/editedFilesPresentationModel";
 import type { ReviewHunkId } from "../diff/reviewProjection";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../../app/utils/safeStorage";
 
 const REVIEW_VIEW_STATE_VERSION = 1;
 const REVIEW_VIEW_STATE_PREFIX = "vaultai.ai.review.view";
@@ -273,7 +277,7 @@ export function readPersistedReviewViewState(
     sessionId: string,
 ): PersistedReviewViewState | null {
     try {
-        const raw = localStorage.getItem(
+        const raw = safeStorageGetItem(
             getReviewViewStateKey(getReviewViewScope(vaultPath), sessionId),
         );
         if (!raw) {
@@ -336,7 +340,7 @@ export function persistReviewViewState(
     }
 
     try {
-        localStorage.setItem(
+        safeStorageSetItem(
             getReviewViewStateKey(getReviewViewScope(vaultPath), sessionId),
             JSON.stringify(payload),
         );

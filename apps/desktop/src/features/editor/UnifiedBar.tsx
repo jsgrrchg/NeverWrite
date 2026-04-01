@@ -66,12 +66,16 @@ import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 
-const appWindow = getCurrentWindow();
 const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
+
+function getAppWindow() {
+    return getCurrentWindow();
+}
 
 function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
+    const appWindow = getAppWindow();
     void appWindow.startDragging().catch(() => {
         // Ignore denied / unsupported drag attempts and keep the bar interactive.
     });
@@ -79,6 +83,7 @@ function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
 
 function toggleWindowMaximize() {
     if (getDesktopPlatform() !== "windows") return;
+    const appWindow = getAppWindow();
     if (typeof appWindow.toggleMaximize !== "function") return;
     void appWindow.toggleMaximize().catch(() => {
         // Ignore denied / unsupported maximize attempts.
@@ -86,6 +91,7 @@ function toggleWindowMaximize() {
 }
 
 async function getWindowContentScreenOrigin() {
+    const appWindow = getAppWindow();
     if (
         typeof appWindow.innerPosition !== "function" ||
         typeof appWindow.scaleFactor !== "function"
@@ -521,6 +527,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             );
 
             if (targetWindowLabel) {
+                const appWindow = getAppWindow();
                 await appWindow.emitTo(
                     targetWindowLabel,
                     ATTACH_EXTERNAL_TAB_EVENT,
@@ -548,6 +555,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             );
 
             if (windowMode === "note" && currentTabs.length === 1) {
+                const appWindow = getAppWindow();
                 await appWindow.close();
                 return;
             }
@@ -768,6 +776,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 useEditorStore.getState();
 
             if (windowMode === "note" && currentTabs.length === 1) {
+                const appWindow = getAppWindow();
                 await appWindow.close().catch((error) => {
                     console.error("No se pudo cerrar la ventana:", error);
                 });
@@ -1008,6 +1017,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             });
             resizeObserver.observe(strip);
         }
+
+        const appWindow = getAppWindow();
 
         void Promise.resolve(
             appWindow.onMoved(() => {

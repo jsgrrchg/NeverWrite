@@ -1,3 +1,8 @@
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../app/utils/safeStorage";
+
 export interface GraphNodePosition {
     x: number;
     y: number;
@@ -15,7 +20,7 @@ export function loadGraphLayoutSnapshot(
     layoutKey: string,
 ): GraphLayoutSnapshot | null {
     try {
-        const raw = localStorage.getItem(GRAPH_LAYOUT_CACHE_PREFIX + layoutKey);
+        const raw = safeStorageGetItem(GRAPH_LAYOUT_CACHE_PREFIX + layoutKey);
         if (!raw) return null;
         const parsed = JSON.parse(raw) as GraphLayoutSnapshot;
         if (!parsed || typeof parsed !== "object") return null;
@@ -33,7 +38,7 @@ export function saveGraphLayoutSnapshot(
     positions: Record<string, GraphNodePosition>,
 ): void {
     try {
-        localStorage.setItem(
+        safeStorageSetItem(
             GRAPH_LAYOUT_CACHE_PREFIX + layoutKey,
             JSON.stringify({
                 positions,
