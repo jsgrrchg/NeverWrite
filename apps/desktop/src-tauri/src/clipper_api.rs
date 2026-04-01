@@ -166,20 +166,28 @@ fn allowed_browser_origins_with_dev_origins(dev_origins: Vec<String>) -> BTreeSe
     origins
 }
 
-fn resolve_extension_identity(
+fn resolve_extension_identity_with_allowed_origins(
     origin: Option<&str>,
     extension_id: Option<&str>,
+    allowed_origins: &BTreeSet<String>,
 ) -> Result<AuthorizedClipper, ClipperOriginAuthError> {
-    let origin = origin
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or(ClipperOriginAuthError::MissingOrigin)?;
     let extension_id = extension_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or(ClipperOriginAuthError::MissingExtensionId)?;
+    let origin = origin
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let synthesized_chrome_origin = format!("chrome-extension://{extension_id}");
+            allowed_origins
+                .contains(&synthesized_chrome_origin)
+                .then_some(synthesized_chrome_origin)
+        })
+        .ok_or(ClipperOriginAuthError::MissingOrigin)?;
 
-    if !is_extension_origin(origin) {
+    if !is_extension_origin(&origin) {
         return Err(ClipperOriginAuthError::OriginNotAllowed);
     }
 
@@ -187,30 +195,38 @@ fn resolve_extension_identity(
         && origin == format!("chrome-extension://{CHROME_EXTENSION_ID}")
     {
         return Ok(AuthorizedClipper {
-            origin: origin.to_string(),
+            origin,
             identity: ExtensionIdentity::OfficialChrome,
         });
     }
 
-    if extension_id == FIREFOX_EXTENSION_ID && is_firefox_extension_origin(origin) {
+    if extension_id == FIREFOX_EXTENSION_ID && is_firefox_extension_origin(&origin) {
         return Ok(AuthorizedClipper {
-            origin: origin.to_string(),
+            origin,
             identity: ExtensionIdentity::OfficialFirefox,
         });
     }
 
-    if allowed_browser_origins().contains(origin) {
+    if allowed_origins.contains(&origin) {
         return Ok(AuthorizedClipper {
-            origin: origin.to_string(),
+            origin,
             identity: ExtensionIdentity::ExplicitDev,
         });
     }
 
-    if is_chrome_extension_origin(origin) || is_firefox_extension_origin(origin) {
+    if is_chrome_extension_origin(&origin) || is_firefox_extension_origin(&origin) {
         return Err(ClipperOriginAuthError::ExtensionNotAllowed);
     }
 
     Err(ClipperOriginAuthError::OriginNotAllowed)
+}
+
+fn resolve_extension_identity(
+    origin: Option<&str>,
+    extension_id: Option<&str>,
+) -> Result<AuthorizedClipper, ClipperOriginAuthError> {
+    let allowed_origins = allowed_browser_origins();
+    resolve_extension_identity_with_allowed_origins(origin, extension_id, &allowed_origins)
 }
 
 fn web_clipper_auth_file_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -592,7 +608,8 @@ pub(crate) fn start_server(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_dev_origins, resolve_extension_identity, AuthorizedClipper, ExtensionIdentity,
+        allowed_browser_origins_with_dev_origins, parse_dev_origins, resolve_extension_identity,
+        resolve_extension_identity_with_allowed_origins, AuthorizedClipper, ExtensionIdentity,
         CHROME_EXTENSION_ID, FIREFOX_EXTENSION_ID,
     };
 
@@ -622,7 +639,6 @@ mod tests {
 
     #[test]
     fn rejects_missing_and_unapproved_extension_identity() {
-        assert!(resolve_extension_identity(None, Some(CHROME_EXTENSION_ID)).is_err());
         assert!(resolve_extension_identity(
             Some("chrome-extension://fakeid"),
             Some(CHROME_EXTENSION_ID),
@@ -637,6 +653,55 @@ mod tests {
         assert!(resolve_extension_identity(
             Some("chrome-extension://pogmjgibofkooljfgaandhoinmenfhao"),
             None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn accepts_missing_origin_for_allowed_chrome_extension_ids() {
+        let allowed_origins = allowed_browser_origins_with_dev_origins(vec![
+            "chrome-extension://devclipper".to_string(),
+        ]);
+
+        assert_eq!(
+            resolve_extension_identity_with_allowed_origins(
+                None,
+                Some(CHROME_EXTENSION_ID),
+                &allowed_origins,
+            ),
+            Ok(AuthorizedClipper {
+                origin: format!("chrome-extension://{CHROME_EXTENSION_ID}"),
+                identity: ExtensionIdentity::OfficialChrome,
+            })
+        );
+
+        assert_eq!(
+            resolve_extension_identity_with_allowed_origins(
+                None,
+                Some("devclipper"),
+                &allowed_origins,
+            ),
+            Ok(AuthorizedClipper {
+                origin: "chrome-extension://devclipper".to_string(),
+                identity: ExtensionIdentity::ExplicitDev,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_missing_origin_for_unapproved_or_non_chrome_ids() {
+        let allowed_origins = allowed_browser_origins_with_dev_origins(vec![]);
+
+        assert!(resolve_extension_identity_with_allowed_origins(
+            None,
+            Some("fake-extension-id"),
+            &allowed_origins,
+        )
+        .is_err());
+        assert!(resolve_extension_identity_with_allowed_origins(
+            None,
+            Some(FIREFOX_EXTENSION_ID),
+            &allowed_origins,
         )
         .is_err());
     }

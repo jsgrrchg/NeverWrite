@@ -131,9 +131,86 @@ describe("desktop api client", () => {
         });
     });
 
+    it("clears an invalid persisted token, pairs again, and retries the request", async () => {
+        const storage = installBrowserMock("stale-token");
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        message: "Web clipper token is invalid.",
+                    }),
+                    {
+                        status: 403,
+                        headers: { "content-type": "application/json" },
+                    },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        message: "Web clipper pairing is required.",
+                    }),
+                    {
+                        status: 401,
+                        headers: { "content-type": "application/json" },
+                    },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ ok: true, token: "token-2" }), {
+                    status: 200,
+                    headers: { "content-type": "application/json" },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        ok: true,
+                        status: "saved",
+                        message: "Saved clip to Inbox/Clip.md.",
+                    }),
+                    {
+                        status: 200,
+                        headers: { "content-type": "application/json" },
+                    },
+                ),
+            );
+        vi.stubGlobal("fetch", fetchMock);
+
+        const result = await saveClipToDesktop({
+            requestId: "clip-4",
+            title: "Clip",
+            content: "Body",
+            folder: "",
+        });
+
+        expect(result.status).toBe("saved");
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({
+            "content-type": "application/json",
+            "x-vaultai-clipper-token": "stale-token",
+            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+        });
+        expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
+            "content-type": "application/json",
+            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+        });
+        expect(fetchMock.mock.calls[2]?.[0]).toContain("/pair");
+        expect(fetchMock.mock.calls[3]?.[1]?.headers).toEqual({
+            "content-type": "application/json",
+            "x-vaultai-clipper-token": "token-2",
+            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+        });
+        expect(storage.get("clipperDesktopAuth")).toEqual({ token: "token-2" });
+    });
+
     it("treats transport failures as desktop unavailability", async () => {
         installBrowserMock();
-        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("boom")));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn().mockRejectedValue(new TypeError("boom")),
+        );
 
         await expect(
             saveClipToDesktop({
