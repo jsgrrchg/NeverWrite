@@ -566,9 +566,22 @@ fn resolve_vault_scoped_path(
     path: &str,
     intent: ScopedPathIntent,
 ) -> Result<PathBuf, String> {
+    let normalized_input = normalize_vault_scoped_input(vault, path);
     vault
-        .resolve_scoped_path(path, intent)
+        .resolve_scoped_path(&normalized_input, intent)
         .map_err(|error| error.to_string())
+}
+
+fn normalize_vault_scoped_input(vault: &Vault, path: &str) -> String {
+    let input_path = Path::new(path);
+    if !input_path.is_absolute() {
+        return path.to_string();
+    }
+
+    input_path
+        .strip_prefix(&vault.root)
+        .map(|relative_path| relative_path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string())
 }
 
 fn build_unique_trash_target_path(vault: &Vault, source_path: &Path) -> Result<PathBuf, String> {
@@ -5612,6 +5625,53 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn resolve_vault_scoped_path_accepts_absolute_existing_markdown_paths_inside_vault() {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-absolute-markdown-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let file_path = dir.join(".PERSONAL").join("pruebas.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "# test").unwrap();
+
+        let vault = Vault::open(dir.clone()).unwrap();
+        let resolved = resolve_vault_scoped_path(
+            &vault,
+            &file_path.to_string_lossy(),
+            ScopedPathIntent::ReadExisting,
+        )
+        .unwrap();
+
+        assert_eq!(resolved, file_path);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_vault_scoped_path_accepts_absolute_code_file_targets_inside_vault() {
+        let dir = std::env::temp_dir().join(format!(
+            "vault-ai-absolute-code-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(dir.join("src")).unwrap();
+        let file_path = dir.join("src").join("watcher.rs");
+
+        let vault = Vault::open(dir.clone()).unwrap();
+        let resolved = resolve_vault_scoped_path(
+            &vault,
+            &file_path.to_string_lossy(),
+            ScopedPathIntent::CreateTarget,
+        )
+        .unwrap();
+
+        assert_eq!(resolved, file_path);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
