@@ -54,10 +54,6 @@ function makeDiff(overrides: Partial<AIFileDiff> = {}): AIFileDiff {
     };
 }
 
-function lines(text: string): string[] {
-    return text.split("\n");
-}
-
 function getViolationIds(file: TrackedFile): string[] {
     return validateTrackedFileDomain(file).map((violation) => violation.id);
 }
