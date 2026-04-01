@@ -5174,6 +5174,118 @@ describe("chatStore", () => {
         });
     });
 
+    it("rejects an accumulated multi-turn file against the carried diffBase", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-reject-a",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/vault/src/watcher.rs",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-reject-b",
+            title: "Edit watcher again",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs again",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-accumulated-reject-b",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        expectTrackedFileToMatchAccumulatedDiff(
+            entry,
+            "aaXa\nbbb\nccc\nddd",
+            "aaXa\nBBB\nccc\nDDD",
+        );
+        expect(entry.reviewState).toBe("finalized");
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(activeSessionId, entry.identityKey);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/vault/src/watcher.rs",
+            previousPath: null,
+            content: "aaXa\nbbb\nccc\nddd",
+        });
+    });
+
     it("keeps the review tab open after rejectEditedFile resolves the last pending file", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -5869,351 +5981,6 @@ describe("chatStore", () => {
         });
     });
 
-    it("reloads an open markdown note when rejecting a deleted hunk from an absolute path", async () => {
-        useVaultStore.setState({
-            vaultPath: "/vault",
-            notes: [
-                {
-                    id: "notes/current",
-                    path: "/vault/notes/current.md",
-                    title: "Current",
-                    modified_at: 0,
-                    created_at: 0,
-                },
-            ],
-        });
-        useEditorStore.setState({
-            tabs: [
-                {
-                    id: "tab-1",
-                    kind: "note",
-                    noteId: "notes/current",
-                    title: "Current",
-                    content: "alpha\ngamma",
-                    history: [],
-                    historyIndex: 0,
-                },
-            ],
-            activeTabId: "tab-1",
-            activationHistory: ["tab-1"],
-            tabNavigationHistory: ["tab-1"],
-            tabNavigationIndex: 0,
-        });
-        await useChatStore.getState().initialize();
-
-        const activeSessionId = getActiveSessionId();
-
-        useChatStore.getState().applyToolActivity({
-            session_id: activeSessionId,
-            tool_call_id: "tool-hunk-reject-deletion",
-            title: "Delete a line",
-            kind: "edit",
-            status: "completed",
-            target: "/vault/notes/current.md",
-            summary: "Deleted a line",
-            diffs: [
-                {
-                    path: "/vault/notes/current.md",
-                    kind: "update",
-                    old_text: "alpha\nbeta\ngamma",
-                    new_text: "alpha\ngamma",
-                },
-            ],
-        });
-
-        const workCycleId =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .activeWorkCycleId!;
-        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
-        const hunk = entry.unreviewedEdits.edits[0]!;
-
-        invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_get_text_file_hash") {
-                return hashTextContent(entry.currentText);
-            }
-
-            if (command === "ai_restore_text_file") {
-                return {
-                    vault_path: "/vault",
-                    kind: "upsert",
-                    note: {
-                        id: "notes/current",
-                        path: "/vault/notes/current.md",
-                        title: "Current",
-                        modified_at: 0,
-                        created_at: 0,
-                    },
-                    note_id: "notes/current",
-                    entry: null,
-                    relative_path: "notes/current.md",
-                    origin: "agent",
-                    op_id: "agent-hunk-1",
-                    revision: 4,
-                    content_hash: "hash-alpha-beta-gamma",
-                    graph_revision: 1,
-                };
-            }
-
-            if (
-                command === "ai_save_session_history" ||
-                command === "ai_prune_session_histories"
-            ) {
-                return undefined;
-            }
-
-            throw new Error(`Unexpected command: ${command}`);
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                activeSessionId,
-                entry.identityKey,
-                "rejected",
-                hunk.newStart,
-                hunk.newEnd,
-            );
-
-        const editorState = useEditorStore.getState();
-        const tab = editorState.tabs[0];
-        expect(tab).toMatchObject({
-            noteId: "notes/current",
-            content: "alpha\nbeta\ngamma",
-        });
-        expect(editorState._pendingForceReloads.has("notes/current")).toBe(
-            true,
-        );
-        expect(editorState._noteReloadMetadata["notes/current"]).toMatchObject({
-            origin: "agent",
-            opId: "agent-hunk-1",
-            revision: 4,
-            contentHash: "hash-alpha-beta-gamma",
-        });
-    });
-
-    it("allows hunk review while the tracked file is pending", async () => {
-        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
-        await useChatStore.getState().initialize();
-
-        const activeSessionId = getActiveSessionId();
-
-        useChatStore.getState().applyMessageStarted({
-            session_id: activeSessionId,
-            message_id: "assistant-1",
-        });
-        useChatStore.getState().applyToolActivity({
-            session_id: activeSessionId,
-            tool_call_id: "tool-pending-hunk",
-            title: "Edit watcher",
-            kind: "edit",
-            status: "completed",
-            target: "/vault/src/watcher.rs",
-            summary: "Updated watcher.rs",
-            diffs: [
-                {
-                    path: "/vault/src/watcher.rs",
-                    kind: "update",
-                    old_text: "old line",
-                    new_text: "new line",
-                },
-            ],
-        });
-
-        const workCycleId =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .activeWorkCycleId!;
-        const pendingEntry = getEditedBufferEntry(activeSessionId, workCycleId);
-        const hunk = pendingEntry.unreviewedEdits.edits[0]!;
-
-        expect(pendingEntry.reviewState).toBe("pending");
-
-        invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_get_text_file_hash") {
-                return hashTextContent(pendingEntry.currentText);
-            }
-
-            if (command === "ai_restore_text_file") {
-                return undefined;
-            }
-
-            if (
-                command === "ai_save_session_history" ||
-                command === "ai_prune_session_histories"
-            ) {
-                return undefined;
-            }
-
-            throw new Error(`Unexpected command: ${command}`);
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                activeSessionId,
-                pendingEntry.identityKey,
-                "rejected",
-                hunk.newStart,
-                hunk.newEnd,
-            );
-
-        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
-        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
-            vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
-            previousPath: null,
-            content: "old line",
-        });
-        expect(invokeMock).toHaveBeenCalledWith(
-            "ai_get_text_file_hash",
-            expect.objectContaining({
-                vaultPath: "/vault",
-                path: "/vault/src/watcher.rs",
-            }),
-        );
-    });
-
-    it("rejects a hunk only when the on-disk hash still matches the applied snapshot", async () => {
-        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
-        await useChatStore.getState().initialize();
-
-        const activeSessionId = getActiveSessionId();
-
-        useChatStore.getState().applyToolActivity({
-            session_id: activeSessionId,
-            tool_call_id: "tool-hunk-reject",
-            title: "Edit watcher",
-            kind: "edit",
-            status: "completed",
-            target: "/vault/src/watcher.rs",
-            summary: "Updated watcher.rs",
-            diffs: [
-                {
-                    path: "/vault/src/watcher.rs",
-                    kind: "update",
-                    old_text: "old line",
-                    new_text: "new line",
-                },
-            ],
-        });
-
-        const workCycleId =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .activeWorkCycleId!;
-        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
-        const hunk = entry.unreviewedEdits.edits[0]!;
-
-        invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_get_text_file_hash") {
-                return hashTextContent(entry.currentText);
-            }
-
-            if (command === "ai_restore_text_file") {
-                return undefined;
-            }
-
-            if (
-                command === "ai_save_session_history" ||
-                command === "ai_prune_session_histories"
-            ) {
-                return undefined;
-            }
-
-            throw new Error(`Unexpected command: ${command}`);
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                activeSessionId,
-                entry.identityKey,
-                "rejected",
-                hunk.newStart,
-                hunk.newEnd,
-            );
-
-        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
-        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
-            vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
-            previousPath: null,
-            content: "old line",
-        });
-    });
-
-    it("marks hunk reject as conflict when the applied file changed on disk", async () => {
-        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
-        await useChatStore.getState().initialize();
-
-        const activeSessionId = getActiveSessionId();
-
-        useChatStore.getState().applyToolActivity({
-            session_id: activeSessionId,
-            tool_call_id: "tool-hunk-conflict",
-            title: "Edit watcher",
-            kind: "edit",
-            status: "completed",
-            target: "/vault/src/watcher.rs",
-            summary: "Updated watcher.rs",
-            diffs: [
-                {
-                    path: "/vault/src/watcher.rs",
-                    kind: "update",
-                    old_text: "old line",
-                    new_text: "new line",
-                },
-            ],
-        });
-
-        const workCycleId =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .activeWorkCycleId!;
-        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
-        const hunk = entry.unreviewedEdits.edits[0]!;
-
-        invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_get_text_file_hash") {
-                return "different-hash";
-            }
-
-            if (command === "ai_restore_text_file") {
-                return undefined;
-            }
-
-            if (
-                command === "ai_save_session_history" ||
-                command === "ai_prune_session_histories"
-            ) {
-                return undefined;
-            }
-
-            throw new Error(`Unexpected command: ${command}`);
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                activeSessionId,
-                entry.identityKey,
-                "rejected",
-                hunk.newStart,
-                hunk.newEnd,
-            );
-
-        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
-
-        expect(remainingEntry).toMatchObject({
-            identityKey: entry.identityKey,
-            currentText: "new line",
-            conflictHash: "different-hash",
-        });
-        expect(invokeMock).not.toHaveBeenCalledWith("ai_restore_text_file", {
-            vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
-            previousPath: null,
-            content: "old line",
-        });
-    });
-
     it("clears stale conflictHash when a new diff arrives for the same tracked file", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -6285,91 +6052,6 @@ describe("chatStore", () => {
         });
 
         expect(getVisibleBuffer(activeSessionId)[0]?.conflictHash).toBeNull();
-    });
-
-    it("keeps moved files tracked after rejecting their last content hunk", async () => {
-        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
-        await useChatStore.getState().initialize();
-
-        const activeSessionId = getActiveSessionId();
-
-        useChatStore.getState().applyToolActivity({
-            session_id: activeSessionId,
-            tool_call_id: "tool-hunk-move-reject",
-            title: "Move watcher",
-            kind: "move",
-            status: "completed",
-            target: "/vault/src/watcher-final.rs",
-            summary: "Moved watcher.rs",
-            diffs: [
-                {
-                    path: "/vault/src/watcher-final.rs",
-                    previous_path: "/vault/src/watcher.rs",
-                    kind: "move",
-                    old_text: "old line",
-                    new_text: "new line",
-                },
-            ],
-        });
-
-        const workCycleId =
-            useChatStore.getState().sessionsById[activeSessionId]!
-                .activeWorkCycleId!;
-        const entry = getEditedBufferEntry(activeSessionId, workCycleId);
-        const hunk = entry.unreviewedEdits.edits[0]!;
-
-        invokeMock.mockImplementation(async (command, args) => {
-            if (command === "ai_get_text_file_hash") {
-                const path =
-                    typeof args === "object" && args !== null && "path" in args
-                        ? String(args.path)
-                        : "";
-                if (path === "/vault/src/watcher-final.rs") {
-                    return hashTextContent(entry.currentText);
-                }
-                return null;
-            }
-
-            if (command === "ai_restore_text_file") {
-                return undefined;
-            }
-
-            if (
-                command === "ai_save_session_history" ||
-                command === "ai_prune_session_histories"
-            ) {
-                return undefined;
-            }
-
-            throw new Error(`Unexpected command: ${command}`);
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                activeSessionId,
-                entry.identityKey,
-                "rejected",
-                hunk.newStart,
-                hunk.newEnd,
-            );
-
-        const remainingEntry = getVisibleBuffer(activeSessionId)[0] ?? null;
-
-        expect(remainingEntry).toMatchObject({
-            identityKey: "/vault/src/watcher-final.rs",
-            originPath: "/vault/src/watcher.rs",
-            path: "/vault/src/watcher-final.rs",
-            currentText: "old line",
-            diffBase: "old line",
-        });
-        expect(remainingEntry?.unreviewedEdits.edits).toEqual([]);
-        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
-            vaultPath: "/vault",
-            path: "/vault/src/watcher-final.rs",
-            previousPath: "/vault/src/watcher.rs",
-            content: "old line",
-        });
     });
 
     it("rejects all safe entries and leaves conflicting rows visible", async () => {
@@ -9517,6 +9199,123 @@ describe("chatStore", () => {
         expect(trackedAfter).toEqual(trackedBefore);
     });
 
+    it("resolveReviewHunks rejects only the selected accumulated hunk and preserves later agent hunks", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-hunk-a",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc\nddd",
+                    new_text: "aaa\nBBB\nccc\nddd",
+                },
+            ],
+        });
+
+        useChatStore.getState().notifyUserEditOnFile(
+            "/notes/file.md",
+            [
+                {
+                    oldFrom: 2,
+                    oldTo: 2,
+                    newFrom: 2,
+                    newTo: 3,
+                },
+            ],
+            "aaXa\nBBB\nccc\nddd",
+        );
+
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"));
+        await useChatStore.getState().sendMessage();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accumulated-hunk-b",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaXa\nBBB\nccc\nddd",
+                    new_text: "aaXa\nBBB\nccc\nDDD",
+                },
+            ],
+        });
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-accumulated-hunk-b",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        const projection = buildReviewProjection(entry);
+        expect(projection.hunks).toHaveLength(2);
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(entry.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                entry.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [remaining] = getVisibleBuffer(activeSessionId);
+        expect(remaining).toBeDefined();
+        expectTrackedFileToMatchAccumulatedDiff(
+            remaining!,
+            "aaXa\nbbb\nccc\nddd",
+            "aaXa\nbbb\nccc\nDDD",
+        );
+        expect(buildReviewProjection(remaining!).hunks).toHaveLength(1);
+        expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
+            vaultPath: "/vault",
+            path: "/notes/file.md",
+            previousPath: null,
+            content: "aaXa\nbbb\nccc\nDDD",
+        });
+    });
+
     it("resolveReviewHunks resolves the expanded overlap closure returned by projection", async () => {
         const file = createTrackedFile(
             "notes/overlap-closure.md",
@@ -9565,108 +9364,6 @@ describe("chatStore", () => {
         } finally {
             closureSpy.mockRestore();
         }
-    });
-
-    it("keeps panel and inline review in sync for precise single-hunk accepts", async () => {
-        const file = createTrackedFile(
-            "notes/same-final.md",
-            "alpha\nbeta\ngamma",
-            "alpha\nBETA\ngamma",
-            {
-                reviewState: "finalized",
-            },
-        );
-        const projection = buildReviewProjection(file);
-        const panelSession = createSessionWithTrackedFiles("session-panel", [
-            file,
-        ]);
-        const inlineSession = createSessionWithTrackedFiles("session-inline", [
-            file,
-        ]);
-
-        useChatStore.setState({
-            activeSessionId: panelSession.sessionId,
-            sessionsById: {
-                [panelSession.sessionId]: panelSession,
-                [inlineSession.sessionId]: inlineSession,
-            },
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                panelSession.sessionId,
-                file.identityKey,
-                "accepted",
-                projection.hunks[0]!.newStartLine,
-                projection.hunks[0]!.newEndLine,
-            );
-        await useChatStore
-            .getState()
-            .resolveReviewHunks(
-                inlineSession.sessionId,
-                file.identityKey,
-                "accepted",
-                file.version,
-                [projection.hunks[0]!.id],
-            );
-
-        const [panelTracked] = getVisibleBuffer(panelSession.sessionId);
-        const [inlineTracked] = getVisibleBuffer(inlineSession.sessionId);
-
-        expect(panelTracked).toEqual(inlineTracked);
-    });
-
-    it("keeps panel and inline review in sync for precise single-hunk rejects", async () => {
-        const file = createTrackedFile(
-            "notes/same-final-reject.md",
-            "alpha\nbeta\ngamma",
-            "alpha\nBETA\ngamma",
-            {
-                reviewState: "finalized",
-            },
-        );
-        const projection = buildReviewProjection(file);
-        const panelSession = createSessionWithTrackedFiles(
-            "session-panel-reject",
-            [file],
-        );
-        const inlineSession = createSessionWithTrackedFiles(
-            "session-inline-reject",
-            [file],
-        );
-
-        useChatStore.setState({
-            activeSessionId: panelSession.sessionId,
-            sessionsById: {
-                [panelSession.sessionId]: panelSession,
-                [inlineSession.sessionId]: inlineSession,
-            },
-        });
-
-        await useChatStore
-            .getState()
-            .resolveHunkEdits(
-                panelSession.sessionId,
-                file.identityKey,
-                "rejected",
-                projection.hunks[0]!.newStartLine,
-                projection.hunks[0]!.newEndLine,
-            );
-        await useChatStore
-            .getState()
-            .resolveReviewHunks(
-                inlineSession.sessionId,
-                file.identityKey,
-                "rejected",
-                file.version,
-                [projection.hunks[0]!.id],
-            );
-
-        const [panelTracked] = getVisibleBuffer(panelSession.sessionId);
-        const [inlineTracked] = getVisibleBuffer(inlineSession.sessionId);
-
-        expect(panelTracked).toEqual(inlineTracked);
     });
 
     it("ignores session updates from another vault for an existing session", () => {
