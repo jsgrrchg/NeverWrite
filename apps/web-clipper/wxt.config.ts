@@ -20,6 +20,7 @@ export default defineConfig({
         description: "Clip web content directly into your VaultAI vault.",
         key: CHROME_EXTENSION_PUBLIC_KEY,
         permissions: ["contextMenus", "storage"],
+        host_permissions: ["http://127.0.0.1:32145/*"],
         browser_specific_settings: {
             gecko: {
                 id: FIREFOX_EXTENSION_ID,

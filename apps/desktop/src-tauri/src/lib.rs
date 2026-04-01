@@ -5859,6 +5859,65 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    fn ready_web_clipper_state_for_paths(paths: &[&str]) -> (AppState, Vec<std::path::PathBuf>) {
+        let mut state = AppState::new();
+        let mut dirs = Vec::new();
+
+        for path in paths {
+            let dir = std::env::temp_dir().join(format!(
+                "vault-ai-web-clipper-state-test-{}-{}-{}",
+                std::process::id(),
+                now_ms(),
+                dirs.len()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+
+            let mut instance = VaultInstance::new();
+            instance.vault = Some(Vault::open(dir.clone()).unwrap());
+            instance
+                .open_state
+                .finish_ready(0, false, VaultOpenMetrics::default());
+            state.vaults.insert((*path).to_string(), instance);
+            dirs.push(dir);
+        }
+
+        (state, dirs)
+    }
+
+    #[test]
+    fn resolve_web_clipper_vault_key_uses_single_ready_vault_without_hints() {
+        let (state, dirs) = ready_web_clipper_state_for_paths(&["/vaults/geo-2026"]);
+
+        assert_eq!(
+            resolve_web_clipper_vault_key(&state, None, None).unwrap(),
+            "/vaults/geo-2026".to_string()
+        );
+
+        for dir in dirs {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn resolve_web_clipper_vault_key_requires_specific_hint_with_multiple_ready_vaults() {
+        let (state, dirs) =
+            ready_web_clipper_state_for_paths(&["/vaults/geo-2026", "/vaults/work"]);
+
+        assert!(resolve_web_clipper_vault_key(&state, None, None).is_err());
+        assert_eq!(
+            resolve_web_clipper_vault_key(&state, Some("/vaults/work"), None).unwrap(),
+            "/vaults/work".to_string()
+        );
+        assert_eq!(
+            resolve_web_clipper_vault_key(&state, None, Some("geo-2026")).unwrap(),
+            "/vaults/geo-2026".to_string()
+        );
+
+        for dir in dirs {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
     #[test]
     fn select_web_clipper_target_window_label_prefers_latest_matching_window() {
         let mut state = AppState::new();
