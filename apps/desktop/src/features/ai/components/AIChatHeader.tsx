@@ -25,6 +25,7 @@ interface AIChatHeaderProps {
     onExportSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
     onDeleteAllSessions: () => void;
+    onRenameSession: (sessionId: string, newTitle: string | null) => void;
     onToggleExpanded: () => void;
 }
 
@@ -104,12 +105,16 @@ export function AIChatHeader({
     onExportSession,
     onDeleteSession,
     onDeleteAllSessions,
+    onRenameSession,
     onToggleExpanded,
 }: AIChatHeaderProps) {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [newMenuOpen, setNewMenuOpen] = useState(false);
     const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
     const [headerWidth, setHeaderWidth] = useState<number | null>(null);
+    const [editingTitle, setEditingTitle] = useState(false);
+    const [titleEditValue, setTitleEditValue] = useState("");
+    const titleInputRef = useRef<HTMLInputElement>(null);
     const headerRef = useRef<HTMLDivElement>(null);
     const newMenuRef = useRef<HTMLDivElement>(null);
     const sessionMenuRef = useRef<HTMLDivElement>(null);
@@ -177,6 +182,26 @@ export function AIChatHeader({
         };
     }, [newMenuOpen, sessionMenuOpen]);
 
+    useEffect(() => {
+        if (editingTitle) {
+            titleInputRef.current?.focus();
+            titleInputRef.current?.select();
+        }
+    }, [editingTitle]);
+
+    function startTitleEdit() {
+        if (!currentSession) return;
+        setTitleEditValue(getSessionTitle(currentSession));
+        setEditingTitle(true);
+    }
+
+    function commitTitleEdit() {
+        if (!editingTitle || !currentSession) return;
+        const trimmed = titleEditValue.trim();
+        onRenameSession(currentSession.sessionId, trimmed || null);
+        setEditingTitle(false);
+    }
+
     return (
         <div
             ref={headerRef}
@@ -208,13 +233,40 @@ export function AIChatHeader({
                     className="flex min-w-0 flex-1 items-center px-1"
                     style={{ color: "var(--text-primary)" }}
                 >
-                    <span
-                        className={`truncate font-medium ${
-                            isCompact ? "text-[11px]" : "text-xs"
-                        }`}
-                    >
-                        {headerTitle}
-                    </span>
+                    {editingTitle ? (
+                        <input
+                            ref={titleInputRef}
+                            className={`min-w-0 flex-1 rounded bg-transparent font-medium outline-none ${
+                                isCompact ? "text-[11px]" : "text-xs"
+                            }`}
+                            style={{
+                                color: "var(--text-primary)",
+                                border: "none",
+                                padding: 0,
+                                borderBottom: "1px solid var(--accent)",
+                            }}
+                            value={titleEditValue}
+                            onChange={(e) => setTitleEditValue(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                    commitTitleEdit();
+                                } else if (e.key === "Escape") {
+                                    setEditingTitle(false);
+                                }
+                            }}
+                            onBlur={commitTitleEdit}
+                        />
+                    ) : (
+                        <span
+                            className={`cursor-default truncate font-medium ${
+                                isCompact ? "text-[11px]" : "text-xs"
+                            }`}
+                            onDoubleClick={startTitleEdit}
+                            title="Double-click to rename"
+                        >
+                            {headerTitle}
+                        </span>
+                    )}
                 </div>
             )}
 
@@ -315,6 +367,7 @@ export function AIChatHeader({
                                     onDeleteSession={(sessionId) => {
                                         onDeleteSession(sessionId);
                                     }}
+                                    onRenameSession={onRenameSession}
                                 />
                                 {sessions.length > 1 && (
                                     <>

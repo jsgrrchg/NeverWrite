@@ -65,6 +65,8 @@ pub struct PersistedSessionHistory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
     pub messages: Vec<PersistedMessage>,
 }
@@ -97,6 +99,8 @@ struct PersistedSessionMetadata {
     message_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<String>,
 }
@@ -303,6 +307,7 @@ fn metadata_from_history(
             .title
             .clone()
             .or_else(|| derive_title(&history.messages)),
+        custom_title: history.custom_title.clone(),
         preview: history
             .preview
             .clone()
@@ -328,6 +333,7 @@ fn history_from_metadata(
         start_index: Some(0),
         message_count: Some(metadata.message_count),
         title: metadata.title,
+        custom_title: metadata.custom_title,
         preview: metadata.preview,
         messages,
     }
@@ -349,6 +355,7 @@ fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, Stri
         start_index: Some(0),
         message_count: Some(history.messages.len()),
         title: history.title.or_else(|| derive_title(&history.messages)),
+        custom_title: history.custom_title,
         preview: history
             .preview
             .or_else(|| derive_preview(&history.messages)),
@@ -883,6 +890,7 @@ pub fn load_all_session_histories(
                     start_index: Some(0),
                     message_count: Some(history.messages.len()),
                     title: history.title.or_else(|| derive_title(&history.messages)),
+                    custom_title: history.custom_title,
                     preview: history
                         .preview
                         .or_else(|| derive_preview(&history.messages)),
@@ -909,6 +917,7 @@ pub fn load_all_session_histories(
                     start_index: Some(0),
                     message_count: Some(message_count),
                     title: history.title.or_else(|| derive_title(&history.messages)),
+                    custom_title: history.custom_title,
                     preview: history
                         .preview
                         .or_else(|| derive_preview(&history.messages)),
