@@ -127,3 +127,82 @@ export function getReviewTabTitle(
 
     return `Review ${normalizeReviewAgentName(runtimeName)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Session stats (for history cards)
+// ---------------------------------------------------------------------------
+
+export interface SessionStats {
+    messageCount: number;
+    modelUsed: string;
+    durationMs: number;
+}
+
+export function computeSessionStats(session: AIChatSession): SessionStats {
+    return {
+        messageCount: session.persistedMessageCount ?? session.messages.length,
+        modelUsed: session.modelId || "",
+        durationMs: computeDuration(session),
+    };
+}
+
+function computeDuration(session: AIChatSession): number {
+    const created = session.persistedCreatedAt ?? 0;
+    const updated = session.persistedUpdatedAt ?? 0;
+    return created > 0 && updated > created ? updated - created : 0;
+}
+
+export function formatDuration(ms: number): string {
+    if (ms <= 0) return "";
+    const minutes = Math.floor(ms / 60000);
+    if (minutes < 1) return "<1m";
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const rem = minutes % 60;
+    if (hours < 24) return rem > 0 ? `${hours}h ${rem}m` : `${hours}h`;
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
+}
+
+// ---------------------------------------------------------------------------
+// Date grouping (for history list)
+// ---------------------------------------------------------------------------
+
+export type DateGroup =
+    | "Today"
+    | "Yesterday"
+    | "This week"
+    | "This month"
+    | "Older";
+
+export const DATE_GROUP_ORDER: DateGroup[] = [
+    "Today",
+    "Yesterday",
+    "This week",
+    "This month",
+    "Older",
+];
+
+export function getDateGroup(timestamp: number): DateGroup {
+    if (!timestamp) return "Older";
+    const now = new Date();
+    const date = new Date(timestamp);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dateDay = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate(),
+    );
+    const diffDays = Math.floor(
+        (today.getTime() - dateDay.getTime()) / 86400000,
+    );
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return "This week";
+    if (
+        date.getMonth() === now.getMonth() &&
+        date.getFullYear() === now.getFullYear()
+    )
+        return "This month";
+    return "Older";
+}
