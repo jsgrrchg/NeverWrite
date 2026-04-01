@@ -297,6 +297,7 @@ export interface AIChatSession {
     persistedCreatedAt?: number | null;
     persistedUpdatedAt?: number | null;
     persistedTitle?: string | null;
+    customTitle?: string | null;
     persistedPreview?: string | null;
     persistedMessageCount?: number;
     loadedPersistedMessageStart?: number | null;
@@ -583,6 +584,7 @@ export interface PersistedSessionHistory {
     start_index?: number;
     message_count?: number;
     title?: string;
+    custom_title?: string | null;
     preview?: string;
     messages: PersistedMessage[];
 }

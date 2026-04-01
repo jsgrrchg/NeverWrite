@@ -16,6 +16,9 @@ function truncateText(value: string, maxLength: number) {
 }
 
 export function getSessionTitle(session: AIChatSession) {
+    const custom = session.customTitle?.trim();
+    if (custom) return truncateText(custom, 42);
+
     const firstUserText = getFirstUserTextMessage(session);
     const fallbackTitle = session.persistedTitle?.trim();
 
@@ -23,6 +26,10 @@ export function getSessionTitle(session: AIChatSession) {
         return fallbackTitle || "New chat";
     }
     return truncateText(cleanPillMarkers(firstUserText.content), 42);
+}
+
+export function hasCustomTitle(session: AIChatSession) {
+    return !!session.customTitle?.trim();
 }
 
 export function getSessionPreview(session: AIChatSession) {

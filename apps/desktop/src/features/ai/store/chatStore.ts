@@ -610,6 +610,8 @@ async function ensureSessionAgentCatalogLoaded(
                         null,
                     persistedTitle:
                         latest.persistedTitle ?? loaded.persistedTitle ?? null,
+                    customTitle:
+                        latest.customTitle ?? loaded.customTitle ?? null,
                     persistedPreview:
                         latest.persistedPreview ??
                         loaded.persistedPreview ??
@@ -981,6 +983,7 @@ interface ChatStore {
     newSession: (runtimeId?: string) => Promise<void>;
     deleteSession: (sessionId: string) => Promise<void>;
     deleteAllSessions: () => Promise<void>;
+    renameSession: (sessionId: string, newTitle: string | null) => void;
     attachNote: (note: AIChatNoteSummary, sessionId?: string) => void;
     attachVaultFile: (file: AIChatFileSummary, sessionId?: string) => void;
     attachFolder: (
@@ -2832,6 +2835,7 @@ function applyPersistedHistoryMetadata(
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
+            customTitle: history.custom_title ?? null,
             persistedPreview: history.preview ?? null,
             persistedMessageCount: getPersistedHistoryMessageCount(history),
             loadedPersistedMessageStart:
@@ -2866,6 +2870,7 @@ function applyPersistedHistoryPage(
         start_index: page.start_index,
         message_count: page.total_messages,
         title: session.persistedTitle ?? undefined,
+        custom_title: session.customTitle ?? undefined,
         preview: session.persistedPreview ?? undefined,
         messages: page.messages,
     });
@@ -2959,6 +2964,7 @@ function createPersistedSession(
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
+            customTitle: history.custom_title ?? null,
             persistedPreview: history.preview ?? null,
             persistedMessageCount,
             loadedPersistedMessageStart:
@@ -3062,6 +3068,7 @@ function mergeSession(
                     persistedCreatedAt: incoming.persistedCreatedAt ?? null,
                     persistedUpdatedAt: incoming.persistedUpdatedAt ?? null,
                     persistedTitle: incoming.persistedTitle ?? null,
+                    customTitle: incoming.customTitle ?? null,
                     persistedPreview: incoming.persistedPreview ?? null,
                     persistedMessageCount:
                         incoming.persistedMessageCount ??
@@ -3150,6 +3157,8 @@ function mergeSession(
             incoming.persistedTitle ??
             normalizedExisting.persistedTitle ??
             null,
+        customTitle:
+            incoming.customTitle ?? normalizedExisting.customTitle ?? null,
         persistedPreview:
             incoming.persistedPreview ??
             normalizedExisting.persistedPreview ??
@@ -3357,6 +3366,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         start_index: startIndex,
         message_count: messageCount,
         title: getSessionTitle(session),
+        custom_title: session.customTitle ?? undefined,
         preview: getSessionPreview(session),
         messages,
     };
@@ -5730,6 +5740,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 latestSession.persistedUpdatedAt ?? null,
                             persistedTitle:
                                 latestSession.persistedTitle ?? null,
+                            customTitle: latestSession.customTitle ?? null,
                             persistedPreview:
                                 latestSession.persistedPreview ?? null,
                             persistedMessageCount:
@@ -7828,6 +7839,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     await get().refreshSetupStatus(nextRuntimeId);
                 }
             }
+        },
+
+        renameSession: (sessionId, newTitle) => {
+            const session = get().sessionsById[sessionId];
+            if (!session) return;
+            const trimmed = newTitle?.trim() || null;
+            const updated = { ...session, customTitle: trimmed };
+            set({
+                sessionsById: { ...get().sessionsById, [sessionId]: updated },
+            });
+            scheduleSessionPersistence(updated);
         },
 
         deleteSession: async (sessionId) => {

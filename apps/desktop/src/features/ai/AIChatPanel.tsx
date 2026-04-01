@@ -1148,6 +1148,9 @@ function AIChatHeaderBridge({
                 resetTabs();
                 void chatActions.deleteAllSessions();
             }}
+            onRenameSession={(sessionId, newTitle) => {
+                chatActions.renameSession(sessionId, newTitle);
+            }}
             onToggleExpanded={toggleRightPanelExpanded}
         />
     );
