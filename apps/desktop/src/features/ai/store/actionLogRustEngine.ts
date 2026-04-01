@@ -7,14 +7,12 @@ import {
     build_text_range_patch_from_texts_json,
     compute_word_diffs_for_hunk_json,
     derive_line_patch_from_text_ranges_json,
-    keep_edits_in_range_json,
     keep_exact_spans_json,
     map_agent_span_through_text_edits_json,
     map_text_position_through_edits_json,
     partition_spans_by_overlap_json,
     rebuild_diff_base_from_pending_spans_json,
     reject_all_edits_json,
-    reject_edits_in_ranges_json,
     reject_exact_spans_json,
     sync_derived_line_patch_json,
 } from "./wasm/vault_ai_diff";
@@ -167,16 +165,6 @@ export function applyNonConflictingEditsRust(
     );
 }
 
-export function keepEditsInRangeRust(
-    file: TrackedFile,
-    startLine: number,
-    endLine: number,
-): TrackedFile {
-    return parseJson(
-        keep_edits_in_range_json(JSON.stringify(file), startLine, endLine),
-    );
-}
-
 export function keepExactSpansRust(
     file: TrackedFile,
     spans: AgentTextSpan[],
@@ -188,18 +176,6 @@ export function keepExactSpansRust(
 
 export function rejectAllEditsRust(file: TrackedFile): RejectEditsResult {
     return parseJson(reject_all_edits_json(JSON.stringify(file)));
-}
-
-export function rejectEditsInRangesRust(
-    file: TrackedFile,
-    ranges: Array<{ start: number; end: number }>,
-): RejectEditsResult {
-    return parseJson(
-        reject_edits_in_ranges_json(
-            JSON.stringify(file),
-            JSON.stringify(ranges),
-        ),
-    );
 }
 
 export function rejectExactSpansRust(

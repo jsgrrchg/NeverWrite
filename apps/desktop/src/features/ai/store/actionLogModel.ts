@@ -34,14 +34,12 @@ import {
     buildTextRangePatchFromTextsRust,
     computeWordDiffsForHunkRust,
     deriveLinePatchFromTextRangesRust,
-    keepEditsInRangeRust,
     keepExactSpansRust,
     mapAgentSpanThroughTextEditsRust,
     mapTextPositionThroughEditsRust,
     partitionSpansByOverlapRust,
     rebuildDiffBaseFromPendingSpansRust,
     rejectAllEditsRust,
-    rejectEditsInRangesRust,
     rejectExactSpansRust,
     syncDerivedLinePatchRust,
 } from "./actionLogRustEngine";
@@ -1096,18 +1094,6 @@ export function keepAllEdits(file: TrackedFile): TrackedFile {
     };
 }
 
-/**
- * Accept agent edits in a specific line range (in the *new* text space).
- * Edits inside the range are absorbed into diffBase; others stay.
- */
-export function keepEditsInRange(
-    file: TrackedFile,
-    startLine: number,
-    endLine: number,
-): TrackedFile {
-    return keepEditsInRangeRust(file, startLine, endLine);
-}
-
 export function keepExactSpans(
     file: TrackedFile,
     spans: AgentTextSpan[],
@@ -1178,17 +1164,6 @@ export function rejectAllEdits(file: TrackedFile): {
     undoData: PerFileUndo;
 } {
     return rejectAllEditsRust(file);
-}
-
-/**
- * Reject agent edits in specific line ranges (in *new* text space).
- * Reverts only overlapping edits to diffBase; keeps the rest.
- */
-export function rejectEditsInRanges(
-    file: TrackedFile,
-    ranges: Array<{ start: number; end: number }>,
-): { file: TrackedFile; undoData: PerFileUndo } {
-    return rejectEditsInRangesRust(file, ranges);
 }
 
 export function rejectExactSpans(
