@@ -15,6 +15,7 @@ import type {
     AIRuntimeOption,
 } from "../types";
 import type { ChatWorkspaceTab } from "../store/chatTabsStore";
+import { useInlineRename } from "./useInlineRename";
 
 interface AIChatTabsProps {
     tabs: ChatWorkspaceTab[];
@@ -26,6 +27,7 @@ interface AIChatTabsProps {
     onReorderTabs: (fromIndex: number, toIndex: number) => void;
     onCloseTab: (tabId: string) => void;
     onExportSession: (sessionId: string) => void;
+    onRenameSession: (sessionId: string, newTitle: string | null) => void;
 }
 
 const STATUS_COLORS: Record<AIChatSessionStatus, string> = {
@@ -60,6 +62,7 @@ export function AIChatTabs({
     onReorderTabs,
     onCloseTab,
     onExportSession,
+    onRenameSession,
 }: AIChatTabsProps) {
     const isCompact = density !== "comfortable";
     const isTight = density === "tight";
@@ -68,6 +71,15 @@ export function AIChatTabs({
         sessionId: string;
         hasSession: boolean;
     }> | null>(null);
+    const {
+        editingKey,
+        editValue,
+        inputRef,
+        setEditValue,
+        startEditing,
+        cancelEditing,
+        commitEditing,
+    } = useInlineRename<string>();
     const handleWheel = useCallback((e: React.WheelEvent) => {
         if (e.deltaY !== 0 && tabStripRef.current) {
             e.preventDefault();
@@ -101,10 +113,19 @@ export function AIChatTabs({
     });
     const handleTabClick = useCallback(
         (tabId: string) => {
+            if (editingKey === tabId) return;
             if (consumeSuppressedClick(tabId)) return;
             onSelectTab(tabId);
         },
-        [consumeSuppressedClick, onSelectTab],
+        [consumeSuppressedClick, editingKey, onSelectTab],
+    );
+    const beginTabRename = useCallback(
+        (tabId: string, session: AIChatSession | undefined) => {
+            if (!session) return;
+            onSelectTab(tabId);
+            startEditing(tabId, getSessionTitle(session));
+        },
+        [onSelectTab, startEditing],
     );
     const draggingOriginalIndex = draggingTabId
         ? tabs.findIndex((tab) => tab.id === draggingTabId)
@@ -156,6 +177,7 @@ export function AIChatTabs({
                 const status = session?.status ?? "idle";
                 const isActive = tab.id === activeTabId;
                 const isDragging = tab.id === draggingTabId;
+                const isEditing = editingKey === tab.id;
                 const title = session
                     ? getSessionTitle(session)
                     : getFallbackTitle(tab.sessionId);
@@ -176,34 +198,47 @@ export function AIChatTabs({
                                 isCompact ? "gap-0.5 pr-0.5" : "gap-1 pr-1"
                             }`}
                             onPointerDownCapture={(event) =>
-                                handleTabPointerDownCapture(tab.id, event)
+                                isEditing
+                                    ? undefined
+                                    : handleTabPointerDownCapture(tab.id, event)
                             }
                             onPointerDown={(event) =>
-                                handlePointerDown(tab.id, index, event)
+                                isEditing
+                                    ? undefined
+                                    : handlePointerDown(tab.id, index, event)
                             }
                             onPointerMove={(event) =>
-                                handlePointerMove(tab.id, event)
+                                isEditing
+                                    ? undefined
+                                    : handlePointerMove(tab.id, event)
                             }
                             onPointerUp={(event) =>
-                                handlePointerUp(event.pointerId, {
-                                    clientX: event.clientX,
-                                    clientY: event.clientY,
-                                    screenX: event.screenX,
-                                    screenY: event.screenY,
-                                })
+                                isEditing
+                                    ? undefined
+                                    : handlePointerUp(event.pointerId, {
+                                          clientX: event.clientX,
+                                          clientY: event.clientY,
+                                          screenX: event.screenX,
+                                          screenY: event.screenY,
+                                      })
                             }
                             onPointerCancel={(event) =>
-                                handlePointerUp(event.pointerId, {
-                                    clientX: event.clientX,
-                                    clientY: event.clientY,
-                                    screenX: event.screenX,
-                                    screenY: event.screenY,
-                                })
+                                isEditing
+                                    ? undefined
+                                    : handlePointerUp(event.pointerId, {
+                                          clientX: event.clientX,
+                                          clientY: event.clientY,
+                                          screenX: event.screenX,
+                                          screenY: event.screenY,
+                                      })
                             }
                             onLostPointerCapture={(event) =>
-                                handleLostPointerCapture(event.pointerId)
+                                isEditing
+                                    ? undefined
+                                    : handleLostPointerCapture(event.pointerId)
                             }
                             onKeyDown={(event) => {
+                                if (isEditing) return;
                                 if (
                                     event.key === "Enter" ||
                                     event.key === " "
@@ -214,6 +249,7 @@ export function AIChatTabs({
                             }}
                             onClick={() => handleTabClick(tab.id)}
                             onContextMenu={(event) => {
+                                if (isEditing) return;
                                 event.preventDefault();
                                 setContextMenu({
                                     x: event.clientX,
@@ -273,13 +309,77 @@ export function AIChatTabs({
                                     }}
                                     title={STATUS_LABELS[status]}
                                 />
-                                <span
-                                    className={`min-w-0 flex-1 truncate font-medium ${
-                                        isTight ? "text-[11px]" : "text-xs"
-                                    }`}
-                                >
-                                    {title}
-                                </span>
+                                {isEditing ? (
+                                    <input
+                                        ref={inputRef}
+                                        value={editValue}
+                                        onChange={(event) =>
+                                            setEditValue(event.target.value)
+                                        }
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter") {
+                                                commitEditing(
+                                                    (editedTabId, value) => {
+                                                        const editedTab =
+                                                            tabs.find(
+                                                                (candidate) =>
+                                                                    candidate.id ===
+                                                                    editedTabId,
+                                                            );
+                                                        if (!editedTab) return;
+                                                        onRenameSession(
+                                                            editedTab.sessionId,
+                                                            value,
+                                                        );
+                                                    },
+                                                );
+                                            } else if (event.key === "Escape") {
+                                                cancelEditing();
+                                            }
+                                        }}
+                                        onBlur={() =>
+                                            commitEditing(
+                                                (editedTabId, value) => {
+                                                    const editedTab = tabs.find(
+                                                        (candidate) =>
+                                                            candidate.id ===
+                                                            editedTabId,
+                                                    );
+                                                    if (!editedTab) return;
+                                                    onRenameSession(
+                                                        editedTab.sessionId,
+                                                        value,
+                                                    );
+                                                },
+                                            )
+                                        }
+                                        onClick={(event) =>
+                                            event.stopPropagation()
+                                        }
+                                        className={`min-w-0 flex-1 rounded bg-transparent font-medium leading-none outline-none ${
+                                            isTight ? "text-[11px]" : "text-xs"
+                                        }`}
+                                        style={{
+                                            color: "var(--text-primary)",
+                                            border: "none",
+                                            padding: 0,
+                                            height: isTight ? 14 : 16,
+                                            minHeight: 0,
+                                            lineHeight: 1,
+                                            boxSizing: "border-box",
+                                            boxShadow:
+                                                "inset 0 -1px 0 var(--accent)",
+                                        }}
+                                    />
+                                ) : (
+                                    <span
+                                        className={`min-w-0 flex-1 truncate font-medium ${
+                                            isTight ? "text-[11px]" : "text-xs"
+                                        }`}
+                                    >
+                                        {title}
+                                    </span>
+                                )}
                                 {!isCompact && (
                                     <span
                                         className="truncate text-[10px]"
@@ -346,6 +446,23 @@ export function AIChatTabs({
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
                     entries={[
+                        {
+                            label: "Rename chat",
+                            action: () => {
+                                const tab = tabs.find(
+                                    (candidate) =>
+                                        candidate.id ===
+                                        contextMenu.payload.tabId,
+                                );
+                                beginTabRename(
+                                    contextMenu.payload.tabId,
+                                    tab
+                                        ? sessionsById[tab.sessionId]
+                                        : undefined,
+                                );
+                            },
+                            disabled: !contextMenu.payload.hasSession,
+                        },
                         {
                             label: "Export chat to Markdown",
                             action: () =>

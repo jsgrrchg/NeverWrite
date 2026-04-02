@@ -56,6 +56,7 @@ import {
     normalizeComposerParts,
 } from "./composerParts";
 import { exportChatSessionToVaultNote } from "./chatExport";
+import { ChatHistoryView } from "./components/ChatHistoryView";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 
@@ -101,6 +102,7 @@ export function AIChatPanel() {
     const activeSessionId = useChatStore((s) => s.activeSessionId);
     const selectedRuntimeId = useChatStore((s) => s.selectedRuntimeId);
     const isInitializing = useChatStore((s) => s.isInitializing);
+    const historyViewOpen = useChatStore((s) => s.historyViewOpen);
 
     // Actions — access via getState() to avoid 30+ unnecessary subscriptions
     const chatActions = useRef(useChatStore.getState()).current;
@@ -765,6 +767,10 @@ export function AIChatPanel() {
         shouldFocusSelectedRuntime,
         tabsReady,
     ]);
+
+    if (historyViewOpen) {
+        return <ChatHistoryView />;
+    }
 
     return (
         <div

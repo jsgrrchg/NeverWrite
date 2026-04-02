@@ -15,7 +15,9 @@ use super::{
     emit::{emit_session_created, emit_session_error, emit_session_updated},
     gemini::GeminiSetupInput,
     manager::{AiAttachmentInput, AiManager},
-    persistence::{self, PersistedSessionHistory, PersistedSessionHistoryPage},
+    persistence::{
+        self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
+    },
     runtime::AiRuntimeSetupInput,
     secret_store::SecretValuePatch,
 };
@@ -436,6 +438,32 @@ pub fn ai_load_session_history_page(
         .map_err(|error| format!("Error de estado interno: {error}"))?;
     let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
     persistence::load_session_history_page(&vault_root, &session_id, start_index, limit)
+}
+
+#[tauri::command]
+pub fn ai_search_session_content(
+    vault_path: String,
+    query: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<SessionSearchResult>, String> {
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::search_session_content(&vault_root, &query)
+}
+
+#[tauri::command]
+pub fn ai_fork_session_history(
+    vault_path: String,
+    source_session_id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let state = state
+        .lock()
+        .map_err(|error| format!("Error de estado interno: {error}"))?;
+    let vault_root = resolve_ai_history_vault_root(&state, &vault_path)?;
+    persistence::fork_session_history(&vault_root, &source_session_id)
 }
 
 #[tauri::command]

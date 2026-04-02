@@ -5733,6 +5733,8 @@ pub fn run() {
             ai::commands::ai_save_session_history,
             ai::commands::ai_load_session_histories,
             ai::commands::ai_load_session_history_page,
+            ai::commands::ai_search_session_content,
+            ai::commands::ai_fork_session_history,
             ai::commands::ai_delete_session_history,
             ai::commands::ai_delete_all_session_histories,
             ai::commands::ai_delete_runtime_session,

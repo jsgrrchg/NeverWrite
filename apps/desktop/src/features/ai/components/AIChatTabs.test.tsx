@@ -72,6 +72,7 @@ describe("AIChatTabs", () => {
                 onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={() => {}}
+                onRenameSession={() => {}}
             />,
         );
 
@@ -102,6 +103,7 @@ describe("AIChatTabs", () => {
                 onReorderTabs={() => {}}
                 onCloseTab={onCloseTab}
                 onExportSession={() => {}}
+                onRenameSession={() => {}}
             />,
         );
 
@@ -126,6 +128,7 @@ describe("AIChatTabs", () => {
                 onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={() => {}}
+                onRenameSession={() => {}}
             />,
         );
 
@@ -148,6 +151,7 @@ describe("AIChatTabs", () => {
                 onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={onExportSession}
+                onRenameSession={() => {}}
             />,
         );
 
@@ -158,6 +162,54 @@ describe("AIChatTabs", () => {
         fireEvent.click(screen.getByText("Export chat to Markdown"));
 
         expect(onExportSession).toHaveBeenCalledWith("session-a");
+    });
+
+    it("renames a tab session from the context menu and cancels with Escape", () => {
+        const onRenameSession = vi.fn();
+
+        renderComponent(
+            <AIChatTabs
+                tabs={[{ id: "tab-a", sessionId: "session-a" }]}
+                activeTabId="tab-a"
+                sessionsById={{
+                    "session-a": createSession("session-a", "First tab"),
+                }}
+                runtimes={runtimes}
+                onSelectTab={() => {}}
+                onReorderTabs={() => {}}
+                onCloseTab={() => {}}
+                onExportSession={() => {}}
+                onRenameSession={onRenameSession}
+            />,
+        );
+
+        fireEvent.contextMenu(screen.getByRole("tab", { name: /First tab/ }), {
+            clientX: 24,
+            clientY: 18,
+        });
+        fireEvent.click(screen.getByText("Rename chat"));
+
+        const input = screen.getByDisplayValue("First tab");
+        fireEvent.change(input, { target: { value: "Renamed tab" } });
+        fireEvent.keyDown(input, { key: "Escape" });
+        fireEvent.blur(input);
+
+        expect(onRenameSession).not.toHaveBeenCalled();
+
+        fireEvent.contextMenu(screen.getByRole("tab", { name: /First tab/ }), {
+            clientX: 24,
+            clientY: 18,
+        });
+        fireEvent.click(screen.getByText("Rename chat"));
+
+        const secondInput = screen.getByDisplayValue("First tab");
+        fireEvent.change(secondInput, { target: { value: "Renamed tab" } });
+        fireEvent.keyDown(secondInput, { key: "Enter" });
+
+        expect(onRenameSession).toHaveBeenCalledWith(
+            "session-a",
+            "Renamed tab",
+        );
     });
 
     it("uses the tab runtime as fallback metadata for restored tabs", () => {
@@ -177,6 +229,7 @@ describe("AIChatTabs", () => {
                 onReorderTabs={() => {}}
                 onCloseTab={() => {}}
                 onExportSession={() => {}}
+                onRenameSession={() => {}}
             />,
         );
 
