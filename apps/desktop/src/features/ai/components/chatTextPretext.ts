@@ -6,6 +6,7 @@ import {
     resizePretextFontSignature,
     type PretextFontSignature,
 } from "../../../app/utils/pretextFontSignatures";
+import { getChatCodeBlockFontSize } from "./chatCodeSizing";
 
 const MIN_ESTIMATE_CONTENT_WIDTH = 160;
 const APPROX_CHAR_WIDTH_EM = 0.56;
@@ -177,12 +178,10 @@ export function estimateChatTextMessageHeight(options: {
         options.chatFontSize,
         options.chatFontFamily,
     );
-    const codeFontSignature = buildCodeFontSignature(
-        options.chatFontSize * 0.8,
-        {
-            lineHeightPx: options.chatFontSize * 0.8 * 1.625,
-        },
-    );
+    const codeFontSize = getChatCodeBlockFontSize(options.chatFontSize);
+    const codeFontSignature = buildCodeFontSignature(codeFontSize, {
+        lineHeightPx: codeFontSize * 1.625,
+    });
 
     if (options.role === "user") {
         return estimatePlainTextHeight(
