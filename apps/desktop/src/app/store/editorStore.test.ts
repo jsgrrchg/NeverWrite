@@ -282,6 +282,58 @@ describe("editorStore session persistence", () => {
         });
     });
 
+    it("persists note renames that only affect inactive history entries", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/history-rename-2026" });
+
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "note-history-tab",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "current body",
+                    history: [
+                        {
+                            kind: "note",
+                            noteId: "notes/old",
+                            title: "Old title",
+                            content: "old body",
+                        },
+                        {
+                            kind: "note",
+                            noteId: "notes/current",
+                            title: "Current",
+                            content: "current body",
+                        },
+                    ],
+                    historyIndex: 1,
+                },
+            ],
+            activeTabId: "note-history-tab",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        useEditorStore
+            .getState()
+            .handleNoteRenamed("notes/old", "notes/renamed", "Renamed");
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const session = readPersistedSession("/vaults/history-rename-2026");
+        expect(session?.noteIds?.[0]).toEqual({
+            noteId: "notes/current",
+            title: "Current",
+            history: [
+                { noteId: "notes/renamed", title: "Renamed" },
+                { noteId: "notes/current", title: "Current" },
+            ],
+            historyIndex: 1,
+        });
+    });
+
     it("swallows storage quota errors while persisting", async () => {
         markSessionReady();
         useVaultStore.setState({ vaultPath: "/vaults/quota-2026" });
@@ -565,6 +617,37 @@ describe("editorStore hydration and external insertion", () => {
             kind: "graph",
         });
         expect(state.activeTabId).toBe("graph-1");
+    });
+
+    it("preserves graph singleton when inserting an external graph tab", () => {
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "graph-existing",
+                    kind: "graph",
+                    title: "Graph View",
+                },
+            ],
+            activeTabId: "graph-existing",
+            activationHistory: ["graph-existing"],
+            tabNavigationHistory: ["graph-existing"],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore.getState().insertExternalTab({
+            id: "graph-new",
+            kind: "graph",
+            title: "Knowledge Graph",
+        });
+
+        const state = useEditorStore.getState();
+        const graphTabs = state.tabs.filter((tab) => isGraphTab(tab));
+        expect(graphTabs).toHaveLength(1);
+        expect(graphTabs[0]).toMatchObject({
+            id: "graph-existing",
+            title: "Knowledge Graph",
+        });
+        expect(state.activeTabId).toBe("graph-existing");
     });
 
     it("skips invalid external map tabs that cannot resolve a relative path", () => {
@@ -1307,6 +1390,62 @@ describe("editorStore tab management", () => {
         const graphTabs = state.tabs.filter((tab) => isGraphTab(tab));
         expect(graphTabs).toHaveLength(1);
         expect(state.activeTabId).toBe(firstGraphTab?.id ?? null);
+    });
+
+    it("updates renamed notes inside inactive history entries", () => {
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "note-tab",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "current body",
+                    history: [
+                        {
+                            kind: "note",
+                            noteId: "notes/old",
+                            title: "Old title",
+                            content: "old body",
+                        },
+                        {
+                            kind: "note",
+                            noteId: "notes/current",
+                            title: "Current",
+                            content: "current body",
+                        },
+                    ],
+                    historyIndex: 1,
+                },
+            ],
+            activeTabId: "note-tab",
+        });
+
+        useEditorStore
+            .getState()
+            .handleNoteRenamed("notes/old", "notes/renamed", "Renamed");
+
+        const noteTab = useEditorStore.getState().tabs[0];
+        expect(noteTab).toMatchObject({
+            kind: "note",
+            noteId: "notes/current",
+            title: "Current",
+            historyIndex: 1,
+        });
+        expect(isNoteTab(noteTab) ? noteTab.history : []).toEqual([
+            {
+                kind: "note",
+                noteId: "notes/renamed",
+                title: "Renamed",
+                content: "old body",
+            },
+            {
+                kind: "note",
+                noteId: "notes/current",
+                title: "Current",
+                content: "current body",
+            },
+        ]);
     });
 
     it("opens review tabs in background, updates the existing one, and closes by session id", () => {
