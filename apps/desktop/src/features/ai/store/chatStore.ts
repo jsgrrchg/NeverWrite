@@ -646,6 +646,15 @@ type PreparedAgentConfigSession =
     | { kind: "live"; session: AIChatSession }
     | { kind: "preference-only"; session: AIChatSession };
 
+type AgentConfigMutationArgs = {
+    requestedSessionId?: string;
+    change: AgentSelectionChange;
+    applyLocal(session: AIChatSession): AIChatSession;
+    applyRemote(session: AIChatSession): Promise<AIChatSession>;
+    persistPreference(): void;
+    errorMessage: string;
+};
+
 async function prepareSessionForAgentConfigMutation(
     requestedSessionId?: string,
 ): Promise<PreparedAgentConfigSession> {
@@ -737,6 +746,53 @@ type AgentSelectionChange =
     | { kind: "mode"; value: string }
     | { kind: "config"; optionId: string; value: string };
 
+function applyLocalModeSelection(
+    session: AIChatSession,
+    modeId: string,
+): AIChatSession {
+    return {
+        ...session,
+        modeId,
+    };
+}
+
+function applyLocalConfigOptionSelection(
+    session: AIChatSession,
+    optionId: string,
+    value: string,
+): AIChatSession {
+    if (optionId === "model") {
+        return applyLocalModelSelection(session, value);
+    }
+
+    return {
+        ...session,
+        configOptions: session.configOptions.map((option) =>
+            option.id === optionId ? { ...option, value } : option,
+        ),
+    };
+}
+
+function persistModelPreference(modelId: string) {
+    saveAiPreferences({ modelId });
+}
+
+function persistModePreference(modeId: string) {
+    saveAiPreferences({ modeId });
+}
+
+function persistConfigOptionSelectionPreference(
+    optionId: string,
+    value: string,
+) {
+    if (optionId === "model") {
+        persistModelPreference(value);
+        return;
+    }
+
+    saveConfigOptionPreference(optionId, value);
+}
+
 function sessionReflectsAgentSelectionChange(
     session: AIChatSession,
     change: AgentSelectionChange,
@@ -814,6 +870,68 @@ function resolveAgentSelectionMutationResult(
                 ? latestSession.effortsByModel
                 : returnedSession.effortsByModel,
     });
+}
+
+async function applyAgentConfigMutation({
+    requestedSessionId,
+    change,
+    applyLocal,
+    applyRemote,
+    persistPreference,
+    errorMessage,
+}: AgentConfigMutationArgs): Promise<void> {
+    const preparedSession =
+        await prepareSessionForAgentConfigMutation(requestedSessionId);
+    if (preparedSession.kind === "abort") {
+        return;
+    }
+
+    if (preparedSession.kind === "preference-only") {
+        const { session } = preparedSession;
+        useChatStore.setState((state) => {
+            const currentSession = state.sessionsById[session.sessionId];
+            if (!currentSession) {
+                return {};
+            }
+
+            const hydratedSession = hydrateSessionCatalogFromRuntime(
+                currentSession,
+                state.runtimes.find(
+                    (runtime) =>
+                        runtime.runtime.id === currentSession.runtimeId,
+                ),
+            );
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [session.sessionId]: applyLocal(hydratedSession),
+                },
+            };
+        });
+        persistPreference();
+        return;
+    }
+
+    const { session } = preparedSession;
+    try {
+        const updatedSession = await applyRemote(session);
+        useChatStore
+            .getState()
+            .upsertSession(
+                resolveAgentSelectionMutationResult(
+                    useChatStore.getState().sessionsById[session.sessionId],
+                    updatedSession,
+                    change,
+                ),
+            );
+        persistPreference();
+    } catch (error) {
+        useChatStore.getState().applySessionError({
+            session_id: session.sessionId,
+            message: getAiErrorMessage(error, errorMessage),
+        });
+    }
 }
 
 function mergeRuntimeCatalog(
@@ -5921,211 +6039,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setModel: async (modelId, sessionId) => {
-            const preparedSession =
-                await prepareSessionForAgentConfigMutation(sessionId);
-            if (preparedSession.kind === "abort") {
-                return;
-            }
-
-            if (preparedSession.kind === "preference-only") {
-                const { session } = preparedSession;
-                set((state) => ({
-                    sessionsById: (() => {
-                        const currentSession =
-                            state.sessionsById[session.sessionId]!;
-                        const hydratedSession =
-                            hydrateSessionCatalogFromRuntime(
-                                currentSession,
-                                state.runtimes.find(
-                                    (runtime) =>
-                                        runtime.runtime.id ===
-                                        currentSession.runtimeId,
-                                ),
-                            );
-
-                        return {
-                            ...state.sessionsById,
-                            [session.sessionId]: applyLocalModelSelection(
-                                hydratedSession,
-                                modelId,
-                            ),
-                        };
-                    })(),
-                }));
-                saveAiPreferences({ modelId });
-                return;
-            }
-
-            const { session } = preparedSession;
-            try {
-                const modelConfig = getModelConfigOption(session);
-                const updatedSession =
-                    modelConfig &&
-                    modelConfig.options.some(
-                        (option) => option.value === modelId,
-                    )
-                        ? await aiSetConfigOption(
+            await applyAgentConfigMutation({
+                requestedSessionId: sessionId,
+                change: { kind: "model", value: modelId },
+                applyLocal: (session) =>
+                    applyLocalModelSelection(session, modelId),
+                applyRemote: async (session) => {
+                    const modelConfig = getModelConfigOption(session);
+                    return modelConfig &&
+                        modelConfig.options.some(
+                            (option) => option.value === modelId,
+                        )
+                        ? aiSetConfigOption(
                               session.sessionId,
                               modelConfig.id,
                               modelId,
                           )
-                        : await aiSetModel(session.sessionId, modelId);
-                get().upsertSession(
-                    resolveAgentSelectionMutationResult(
-                        get().sessionsById[session.sessionId],
-                        updatedSession,
-                        { kind: "model", value: modelId },
-                    ),
-                );
-                saveAiPreferences({ modelId });
-            } catch (error) {
-                get().applySessionError({
-                    session_id: session.sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to update the model.",
-                    ),
-                });
-            }
+                        : aiSetModel(session.sessionId, modelId);
+                },
+                persistPreference: () => persistModelPreference(modelId),
+                errorMessage: "Failed to update the model.",
+            });
         },
 
         setMode: async (modeId, sessionId) => {
-            const preparedSession =
-                await prepareSessionForAgentConfigMutation(sessionId);
-            if (preparedSession.kind === "abort") {
-                return;
-            }
-
-            if (preparedSession.kind === "preference-only") {
-                const { session } = preparedSession;
-                set((state) => ({
-                    sessionsById: (() => {
-                        const currentSession =
-                            state.sessionsById[session.sessionId]!;
-                        const hydratedSession =
-                            hydrateSessionCatalogFromRuntime(
-                                currentSession,
-                                state.runtimes.find(
-                                    (runtime) =>
-                                        runtime.runtime.id ===
-                                        currentSession.runtimeId,
-                                ),
-                            );
-
-                        return {
-                            ...state.sessionsById,
-                            [session.sessionId]: {
-                                ...hydratedSession,
-                                modeId,
-                            },
-                        };
-                    })(),
-                }));
-                saveAiPreferences({ modeId });
-                return;
-            }
-
-            const { session } = preparedSession;
-            try {
-                const updatedSession = await aiSetMode(
-                    session.sessionId,
-                    modeId,
-                );
-                get().upsertSession(
-                    resolveAgentSelectionMutationResult(
-                        get().sessionsById[session.sessionId],
-                        updatedSession,
-                        { kind: "mode", value: modeId },
-                    ),
-                );
-                saveAiPreferences({ modeId });
-            } catch (error) {
-                get().applySessionError({
-                    session_id: session.sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to update the mode.",
-                    ),
-                });
-            }
+            await applyAgentConfigMutation({
+                requestedSessionId: sessionId,
+                change: { kind: "mode", value: modeId },
+                applyLocal: (session) =>
+                    applyLocalModeSelection(session, modeId),
+                applyRemote: (session) => aiSetMode(session.sessionId, modeId),
+                persistPreference: () => persistModePreference(modeId),
+                errorMessage: "Failed to update the mode.",
+            });
         },
 
         setConfigOption: async (optionId, value, sessionId) => {
-            const preparedSession =
-                await prepareSessionForAgentConfigMutation(sessionId);
-            if (preparedSession.kind === "abort") {
-                return;
-            }
-
-            if (preparedSession.kind === "preference-only") {
-                const { session } = preparedSession;
-                set((state) => {
-                    const currentSession = hydrateSessionCatalogFromRuntime(
-                        state.sessionsById[session.sessionId]!,
-                        state.runtimes.find(
-                            (runtime) =>
-                                runtime.runtime.id ===
-                                state.sessionsById[session.sessionId]!
-                                    .runtimeId,
-                        ),
-                    );
-                    const nextSession =
-                        optionId === "model"
-                            ? applyLocalModelSelection(currentSession, value)
-                            : {
-                                  ...currentSession,
-                                  configOptions:
-                                      currentSession.configOptions.map(
-                                          (option) =>
-                                              option.id === optionId
-                                                  ? { ...option, value }
-                                                  : option,
-                                      ),
-                              };
-
-                    return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [session.sessionId]: nextSession,
-                        },
-                    };
-                });
-                if (optionId === "model") {
-                    saveAiPreferences({ modelId: value });
-                } else {
-                    saveConfigOptionPreference(optionId, value);
-                }
-                return;
-            }
-
-            const { session } = preparedSession;
-            try {
-                const updatedSession = await aiSetConfigOption(
-                    session.sessionId,
-                    optionId,
-                    value,
-                );
-                get().upsertSession(
-                    resolveAgentSelectionMutationResult(
-                        get().sessionsById[session.sessionId],
-                        updatedSession,
-                        { kind: "config", optionId, value },
-                    ),
-                );
-                if (optionId === "model") {
-                    saveAiPreferences({ modelId: value });
-                } else {
-                    saveConfigOptionPreference(optionId, value);
-                }
-            } catch (error) {
-                get().applySessionError({
-                    session_id: session.sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to update the session option.",
-                    ),
-                });
-            }
+            await applyAgentConfigMutation({
+                requestedSessionId: sessionId,
+                change: { kind: "config", optionId, value },
+                applyLocal: (session) =>
+                    applyLocalConfigOptionSelection(session, optionId, value),
+                applyRemote: (session) =>
+                    aiSetConfigOption(session.sessionId, optionId, value),
+                persistPreference: () =>
+                    persistConfigOptionSelectionPreference(optionId, value),
+                errorMessage: "Failed to update the session option.",
+            });
         },
 
         setComposerParts: (parts, sessionId) => {
