@@ -83,6 +83,7 @@ interface TreeMetrics {
     basePadding: number;
     smallIcon: number;
     mediumIcon: number;
+    toolbarHeight: number;
     toolbarButton: number;
     toolbarIconScale: number;
     inputFontSize: number;
@@ -1666,7 +1667,8 @@ export function FileTree() {
             basePadding: Math.round(8 * treeScale),
             smallIcon: Math.max(13, Math.round(13 * treeScale)),
             mediumIcon: Math.max(15, Math.round(15 * treeScale)),
-            toolbarButton: Math.max(26, Math.round(26 * treeScale)),
+            toolbarHeight: Math.max(29, Math.round(29 * treeScale)),
+            toolbarButton: Math.max(24, Math.round(24 * treeScale)),
             toolbarIconScale: treeScale,
             inputFontSize: Math.max(12, Math.round(12 * treeScale)),
         }),
@@ -4003,7 +4005,7 @@ export function FileTree() {
             <div
                 className="flex items-center justify-center gap-0.5 shrink-0"
                 style={{
-                    height: Math.max(36, Math.round(36 * treeScale)),
+                    height: metrics.toolbarHeight,
                     borderBottom: "1px solid var(--border)",
                     position: "relative",
                     backgroundColor:

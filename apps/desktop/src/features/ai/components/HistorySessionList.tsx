@@ -260,11 +260,11 @@ export function HistorySessionList({
         <div className="flex h-full min-h-0 flex-col">
             {/* Search bar */}
             <div
-                className="shrink-0 px-3 py-1.5"
+                className="shrink-0 px-3 py-1"
                 style={{ borderBottom: "1px solid var(--border)" }}
             >
                 <div
-                    className="flex h-8 items-center gap-2 rounded-md px-2"
+                    className="flex h-6 items-center gap-2 rounded-md px-2"
                     style={{
                         background: "var(--bg-primary)",
                         border: showContentResults
@@ -273,8 +273,8 @@ export function HistorySessionList({
                     }}
                 >
                     <svg
-                        width="14"
-                        height="14"
+                        width="12"
+                        height="12"
                         viewBox="0 0 16 16"
                         fill="none"
                         stroke="currentColor"
@@ -303,11 +303,12 @@ export function HistorySessionList({
                             }
                         }}
                         onKeyDown={handleKeyDown}
-                        className="min-w-0 flex-1 text-[11px] leading-none outline-none"
+                        className="min-w-0 flex-1 text-[9px] leading-none outline-none"
                         style={{
                             background: "transparent",
                             color: "var(--text-primary)",
                             border: "none",
+                            fontSize: 11,
                         }}
                     />
                     {search && (

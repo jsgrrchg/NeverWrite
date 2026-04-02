@@ -897,7 +897,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             <div
                 className="flex items-center gap-2 px-3 shrink-0"
                 style={{
-                    height: 36,
+                    height: 34,
                     borderBottom: "1px solid var(--border)",
                     background: "var(--bg-secondary)",
                     color: "var(--text-secondary)",
