@@ -2166,6 +2166,54 @@ function restoreQueuedMessagePosition(
     return insertQueuedMessageAtIndex(queue, editState.originalIndex, item);
 }
 
+function finalizeQueuedMessageEditState(
+    state: Pick<
+        ChatStore,
+        | "sessionsById"
+        | "composerPartsBySessionId"
+        | "queuedMessagesBySessionId"
+        | "queuedMessageEditBySessionId"
+    >,
+    sessionId: string,
+    restoredItem?: QueuedChatMessage,
+) {
+    const session = state.sessionsById[sessionId];
+    const editState = state.queuedMessageEditBySessionId[sessionId];
+    if (!session || !editState) {
+        return null;
+    }
+
+    const nextQueuedMessageEditBySessionId = {
+        ...state.queuedMessageEditBySessionId,
+    };
+    delete nextQueuedMessageEditBySessionId[sessionId];
+
+    const nextQueuedMessagesBySessionId = restoredItem
+        ? cleanupQueuedMessagesBySessionId(
+              state.queuedMessagesBySessionId,
+              sessionId,
+              restoreQueuedMessagePosition(
+                  state.queuedMessagesBySessionId[sessionId] ?? [],
+                  editState,
+                  restoredItem,
+              ),
+          )
+        : state.queuedMessagesBySessionId;
+
+    return {
+        nextSession: {
+            ...session,
+            attachments: editState.previousAttachments.map(cloneAttachment),
+        },
+        nextComposerPartsBySessionId: {
+            ...state.composerPartsBySessionId,
+            [sessionId]: cloneComposerParts(editState.previousComposerParts),
+        },
+        nextQueuedMessagesBySessionId,
+        nextQueuedMessageEditBySessionId,
+    };
+}
+
 function createDeferredQueuedMessage(
     queue: QueuedChatMessage[],
     item: QueuedChatMessage,
@@ -4445,6 +4493,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sessionId: string,
         queuedItem: QueuedChatMessage,
         source: "immediate" | "queue",
+        options?: {
+            preserveComposerState?: boolean;
+        },
     ) {
         let activeSessionId = sessionId;
         let currentItem = queuedItem;
@@ -4578,7 +4629,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 ...nextSession,
                                 status: "streaming",
                                 attachments:
-                                    source === "immediate"
+                                    source === "immediate" &&
+                                    !options?.preserveComposerState
                                         ? []
                                         : nextSession.attachments,
                             },
@@ -4593,7 +4645,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         state.sessionOrder,
                         activeSessionId,
                     ),
-                    ...(source === "immediate"
+                    ...(source === "immediate" &&
+                    !options?.preserveComposerState
                         ? {
                               composerPartsBySessionId: {
                                   ...state.composerPartsBySessionId,
@@ -6541,46 +6594,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
         cancelQueuedMessageEdit: (sessionId) => {
             let shouldDrainQueue = false;
             set((state) => {
-                const session = state.sessionsById[sessionId];
-                const editState = state.queuedMessageEditBySessionId[sessionId];
-                if (!session || !editState) {
+                const finalizedEdit = finalizeQueuedMessageEditState(
+                    state,
+                    sessionId,
+                    state.queuedMessageEditBySessionId[sessionId]?.item,
+                );
+                if (!finalizedEdit) {
                     return state;
                 }
-
-                const nextQueue = restoreQueuedMessagePosition(
-                    state.queuedMessagesBySessionId[sessionId] ?? [],
-                    editState,
-                    editState.item,
-                );
-                const nextQueuedMessageEditBySessionId = {
-                    ...state.queuedMessageEditBySessionId,
-                };
-                delete nextQueuedMessageEditBySessionId[sessionId];
-                shouldDrainQueue = session.status === "idle";
+                shouldDrainQueue = finalizedEdit.nextSession.status === "idle";
 
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [sessionId]: {
-                            ...session,
-                            attachments:
-                                editState.previousAttachments.map(
-                                    cloneAttachment,
-                                ),
-                        },
+                        [sessionId]: finalizedEdit.nextSession,
                     },
-                    composerPartsBySessionId: {
-                        ...state.composerPartsBySessionId,
-                        [sessionId]: cloneComposerParts(
-                            editState.previousComposerParts,
-                        ),
-                    },
-                    queuedMessagesBySessionId: {
-                        ...state.queuedMessagesBySessionId,
-                        [sessionId]: nextQueue,
-                    },
+                    composerPartsBySessionId:
+                        finalizedEdit.nextComposerPartsBySessionId,
+                    queuedMessagesBySessionId:
+                        finalizedEdit.nextQueuedMessagesBySessionId,
                     queuedMessageEditBySessionId:
-                        nextQueuedMessageEditBySessionId,
+                        finalizedEdit.nextQueuedMessageEditBySessionId,
                 };
             });
 
@@ -6614,49 +6648,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     status: "queued",
                     optimisticMessageId: undefined,
                 };
+                const shouldRequeueEditedMessage = isSessionBusy(session);
 
                 set((state) => {
-                    const targetSession = state.sessionsById[resolvedSessionId];
-                    const currentEdit =
-                        state.queuedMessageEditBySessionId[resolvedSessionId];
-                    if (!targetSession || !currentEdit) {
+                    const finalizedEdit = finalizeQueuedMessageEditState(
+                        state,
+                        resolvedSessionId,
+                        shouldRequeueEditedMessage
+                            ? updatedQueuedItem
+                            : undefined,
+                    );
+                    if (!finalizedEdit) {
                         return state;
                     }
-
-                    const nextQueuedMessageEditBySessionId = {
-                        ...state.queuedMessageEditBySessionId,
-                    };
-                    delete nextQueuedMessageEditBySessionId[resolvedSessionId];
 
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [resolvedSessionId]: {
-                                ...targetSession,
-                                attachments:
-                                    currentEdit.previousAttachments.map(
-                                        cloneAttachment,
-                                    ),
-                            },
+                            [resolvedSessionId]: finalizedEdit.nextSession,
                         },
-                        composerPartsBySessionId: {
-                            ...state.composerPartsBySessionId,
-                            [resolvedSessionId]: cloneComposerParts(
-                                currentEdit.previousComposerParts,
-                            ),
-                        },
-                        queuedMessagesBySessionId: {
-                            ...state.queuedMessagesBySessionId,
-                            [resolvedSessionId]: restoreQueuedMessagePosition(
-                                state.queuedMessagesBySessionId[
-                                    resolvedSessionId
-                                ] ?? [],
-                                currentEdit,
-                                updatedQueuedItem,
-                            ),
-                        },
+                        composerPartsBySessionId:
+                            finalizedEdit.nextComposerPartsBySessionId,
+                        queuedMessagesBySessionId:
+                            finalizedEdit.nextQueuedMessagesBySessionId,
                         queuedMessageEditBySessionId:
-                            nextQueuedMessageEditBySessionId,
+                            finalizedEdit.nextQueuedMessageEditBySessionId,
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
                             resolvedSessionId,
@@ -6664,9 +6680,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     };
                 });
 
-                if (get().sessionsById[resolvedSessionId]?.status === "idle") {
-                    void get().tryDrainQueue(resolvedSessionId);
+                if (shouldRequeueEditedMessage) {
+                    return;
                 }
+
+                if (get().pausedQueueBySessionId[resolvedSessionId]) {
+                    releasePausedQueueForManualSend(resolvedSessionId);
+                }
+                await dispatchMessage(
+                    resolvedSessionId,
+                    updatedQueuedItem,
+                    "immediate",
+                    {
+                        preserveComposerState: true,
+                    },
+                );
                 return;
             }
 

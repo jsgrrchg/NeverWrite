@@ -3677,7 +3677,7 @@ describe("chatStore", () => {
         ).toEqual(["queued-2", "queued-3"]);
     });
 
-    it("requeues an edited message ahead of later items when saving from the composer", async () => {
+    it("requeues an edited message ahead of later items when saving from the composer while the session is busy", async () => {
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
@@ -3764,6 +3764,118 @@ describe("chatStore", () => {
                 activeSessionId
             ],
         ).toBeUndefined();
+    });
+
+    it("sends an edited queued message immediately without keeping it in the queue when the session is idle", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                expect(
+                    typeof args === "object" &&
+                        args !== null &&
+                        "content" in args &&
+                        args.content,
+                ).toBe("Second updated");
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const previousDraft = createTextParts("Side draft");
+        const previousAttachment: AIChatAttachment = {
+            id: "side-file",
+            type: "file",
+            noteId: null,
+            label: "Side.txt",
+            path: null,
+            filePath: "/tmp/side.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [activeSessionId]: previousDraft,
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    attachments: [previousAttachment],
+                },
+            },
+        }));
+
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedMessage("queued-1", "First"),
+            );
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedMessage("queued-2", "Second"),
+            );
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedMessage("queued-3", "Third"),
+            );
+
+        useChatStore.getState().editQueuedMessage(activeSessionId, "queued-2");
+        useChatStore
+            .getState()
+            .removeQueuedMessage(activeSessionId, "queued-1");
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Second updated"));
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-3"]);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0]?.content,
+        ).toBe("Third");
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("Side draft");
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.attachments,
+        ).toEqual([previousAttachment]);
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[
+                    activeSessionId
+                ]?.messages.some((message) => message.role === "user" && message.content === "Second updated"),
+        ).toBe(true);
     });
 
     it("does not force the session back to idle after a quiet tool event", async () => {
