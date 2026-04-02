@@ -19,7 +19,7 @@ function clamp(value: number, min: number, max: number) {
 }
 
 export function getChatPillMetrics(chatFontSize: number): ChatPillMetrics {
-    const safeChatFontSize = Number.isFinite(chatFontSize) ? chatFontSize : 20;
+    const safeChatFontSize = Number.isFinite(chatFontSize) ? chatFontSize : 14;
 
     return {
         fontSize: clamp(Math.round(safeChatFontSize * 0.82), 12, 19),

@@ -3006,7 +3006,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     sessionId,
     readOnly = false,
     pillMetrics,
-    chatFontSize = 20,
+    chatFontSize = 14,
     chatFontFamily = "system",
     visibleWorkCycleId = null,
     recentDiffWorkCycleIds = [],
