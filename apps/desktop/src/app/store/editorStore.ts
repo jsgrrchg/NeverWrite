@@ -718,11 +718,22 @@ function ensurePdfTabDefaults(tab: PdfTabInput): PdfTab {
         const history = tab.history.map((entry) =>
             normalizeHistoryEntry(entry, "pdf"),
         );
-        return buildTabFromHistory(
-            tab.id,
-            history,
-            tab.historyIndex ?? history.length - 1,
-        ) as PdfTab;
+        const historyIndex = Math.max(
+            0,
+            Math.min(
+                tab.historyIndex ?? history.length - 1,
+                history.length - 1,
+            ),
+        );
+        history[historyIndex] = createPdfHistoryEntry(
+            tab.entryId,
+            tab.title,
+            tab.path,
+            tab.page ?? 1,
+            tab.zoom ?? 1,
+            tab.viewMode ?? "continuous",
+        );
+        return buildTabFromHistory(tab.id, history, historyIndex) as PdfTab;
     }
 
     const history = [
@@ -748,11 +759,22 @@ function ensureFileTabHistory(tab: FileTabInput): FileTab {
         const history = tab.history.map((entry) =>
             normalizeHistoryEntry(entry, "file"),
         );
-        return buildTabFromHistory(
-            tab.id,
-            history,
-            tab.historyIndex ?? history.length - 1,
-        ) as FileTab;
+        const historyIndex = Math.max(
+            0,
+            Math.min(
+                tab.historyIndex ?? history.length - 1,
+                history.length - 1,
+            ),
+        );
+        history[historyIndex] = createFileHistoryEntry(
+            tab.relativePath,
+            tab.title,
+            tab.path,
+            tab.content,
+            tab.mimeType ?? null,
+            tab.viewer ?? inferFileViewer(tab.path, tab.mimeType ?? null),
+        );
+        return buildTabFromHistory(tab.id, history, historyIndex) as FileTab;
     }
 
     const viewer =
@@ -811,11 +833,19 @@ function ensureNoteTabHistory(tab: NoteTabInput): NoteTab {
         const history = tab.history.map((entry) =>
             normalizeHistoryEntry(entry, "note"),
         );
-        return buildTabFromHistory(
-            tab.id,
-            history,
-            tab.historyIndex ?? history.length - 1,
-        ) as NoteTab;
+        const historyIndex = Math.max(
+            0,
+            Math.min(
+                tab.historyIndex ?? history.length - 1,
+                history.length - 1,
+            ),
+        );
+        history[historyIndex] = createNoteHistoryEntry(
+            tab.noteId,
+            tab.title,
+            tab.content,
+        );
+        return buildTabFromHistory(tab.id, history, historyIndex) as NoteTab;
     }
     return buildTabFromHistory(
         tab.id,
