@@ -5,7 +5,6 @@ import {
     createGraphTab,
     createMapTab,
     ensureFileTabDefaults,
-    ensureFileTabHistory,
     ensureNoteTabHistory,
     ensurePdfTabDefaults,
     isFileTab,
@@ -46,6 +45,12 @@ import {
     type OpenableHistoryTabKind,
 } from "./editorTabRegistry";
 import {
+    buildResourceDeleteUpdate,
+    buildResourceReloadUpdate,
+    getResourceHandler,
+    loadResourceHistoryEntryContent,
+} from "./editorResourceRegistry";
+import {
     buildPersistedSession,
     getEditorSessionSignature,
     isSessionReady,
@@ -53,7 +58,6 @@ import {
     readPersistedSession,
     writePersistedSession,
 } from "./editorSession";
-import { vaultInvoke } from "../utils/vaultInvoke";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
 
@@ -627,14 +631,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set({ tabs });
 
         if (entry.kind === "note" && !entry.content) {
-            void loadNoteHistoryEntryContent(tab.id, targetIndex, entry.noteId);
+            void loadResourceHistoryEntryContent(
+                getResourceHandler("note"),
+                tab.id,
+                targetIndex,
+                entry.noteId,
+                useEditorStore.setState,
+            );
         }
 
         if (entry.kind === "file" && !entry.content) {
-            void loadFileHistoryEntryContent(
+            void loadResourceHistoryEntryContent(
+                getResourceHandler("file"),
                 tab.id,
                 targetIndex,
                 entry.relativePath,
+                useEditorStore.setState,
             );
         }
     },
@@ -940,129 +952,95 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     clearCurrentSelection: () => set({ currentSelection: null }),
 
     reloadNoteContent: (noteId, detail) => {
-        set((state) => ({
-            _noteReloadVersions: {
-                ...state._noteReloadVersions,
-                [noteId]: (state._noteReloadVersions[noteId] ?? 0) + 1,
-            },
-            _noteReloadMetadata: {
-                ...state._noteReloadMetadata,
-                [noteId]: {
-                    origin: detail.origin ?? "unknown",
-                    opId: detail.opId ?? null,
-                    revision: detail.revision ?? 0,
-                    contentHash: detail.contentHash ?? null,
+        set((state) => {
+            const next = buildResourceReloadUpdate(
+                getResourceHandler("note"),
+                {
+                    tabs: state.tabs,
+                    pendingForceReloads: state._pendingForceReloads,
+                    reloadVersions: state._noteReloadVersions,
+                    reloadMetadata: state._noteReloadMetadata,
                 },
-            },
-            tabs: state.tabs.map((t) => {
-                if (!isNoteTab(t) || t.noteId !== noteId) return t;
-                if (t.content === detail.content && t.title === detail.title) {
-                    return t;
-                }
-                return { ...t, content: detail.content, title: detail.title };
-            }),
-        }));
+                noteId,
+                detail,
+                { fallbackOrigin: "unknown" },
+            );
+
+            return {
+                tabs: next.tabs,
+                _noteReloadVersions: next.reloadVersions,
+                _noteReloadMetadata: next.reloadMetadata,
+            };
+        });
     },
 
     reloadFileContent: (relativePath, detail) => {
-        set((state) => ({
-            _fileReloadVersions: {
-                ...state._fileReloadVersions,
-                [relativePath]:
-                    (state._fileReloadVersions[relativePath] ?? 0) + 1,
-            },
-            _fileReloadMetadata: {
-                ...state._fileReloadMetadata,
-                [relativePath]: {
-                    origin: detail.origin ?? "unknown",
-                    opId: detail.opId ?? null,
-                    revision: detail.revision ?? 0,
-                    contentHash: detail.contentHash ?? null,
+        set((state) => {
+            const next = buildResourceReloadUpdate(
+                getResourceHandler("file"),
+                {
+                    tabs: state.tabs,
+                    pendingForceReloads: state._pendingForceFileReloads,
+                    reloadVersions: state._fileReloadVersions,
+                    reloadMetadata: state._fileReloadMetadata,
                 },
-            },
-            tabs: state.tabs.map((t) => {
-                if (!isFileTab(t) || t.relativePath !== relativePath) return t;
-                if (t.content === detail.content && t.title === detail.title) {
-                    return t;
-                }
-                return { ...t, content: detail.content, title: detail.title };
-            }),
-        }));
+                relativePath,
+                detail,
+                { fallbackOrigin: "unknown" },
+            );
+
+            return {
+                tabs: next.tabs,
+                _fileReloadVersions: next.reloadVersions,
+                _fileReloadMetadata: next.reloadMetadata,
+            };
+        });
     },
 
     forceReloadNoteContent: (noteId, detail) => {
         set((state) => {
-            const next = new Set(state._pendingForceReloads);
-            next.add(noteId);
+            const next = buildResourceReloadUpdate(
+                getResourceHandler("note"),
+                {
+                    tabs: state.tabs,
+                    pendingForceReloads: state._pendingForceReloads,
+                    reloadVersions: state._noteReloadVersions,
+                    reloadMetadata: state._noteReloadMetadata,
+                },
+                noteId,
+                detail,
+                { force: true, fallbackOrigin: "system" },
+            );
+
             return {
-                _pendingForceReloads: next,
-                _noteReloadVersions: {
-                    ...state._noteReloadVersions,
-                    [noteId]: (state._noteReloadVersions[noteId] ?? 0) + 1,
-                },
-                _noteReloadMetadata: {
-                    ...state._noteReloadMetadata,
-                    [noteId]: {
-                        origin: detail.origin ?? "system",
-                        opId: detail.opId ?? null,
-                        revision: detail.revision ?? 0,
-                        contentHash: detail.contentHash ?? null,
-                    },
-                },
-                tabs: state.tabs.map((t) => {
-                    if (!isNoteTab(t) || t.noteId !== noteId) return t;
-                    if (
-                        t.content === detail.content &&
-                        t.title === detail.title
-                    ) {
-                        return t;
-                    }
-                    return {
-                        ...t,
-                        content: detail.content,
-                        title: detail.title,
-                    };
-                }),
+                tabs: next.tabs,
+                _pendingForceReloads: next.pendingForceReloads,
+                _noteReloadVersions: next.reloadVersions,
+                _noteReloadMetadata: next.reloadMetadata,
             };
         });
     },
 
     forceReloadFileContent: (relativePath, detail) => {
         set((state) => {
-            const next = new Set(state._pendingForceFileReloads);
-            next.add(relativePath);
+            const next = buildResourceReloadUpdate(
+                getResourceHandler("file"),
+                {
+                    tabs: state.tabs,
+                    pendingForceReloads: state._pendingForceFileReloads,
+                    reloadVersions: state._fileReloadVersions,
+                    reloadMetadata: state._fileReloadMetadata,
+                },
+                relativePath,
+                detail,
+                { force: true, fallbackOrigin: "system" },
+            );
+
             return {
-                _pendingForceFileReloads: next,
-                _fileReloadVersions: {
-                    ...state._fileReloadVersions,
-                    [relativePath]:
-                        (state._fileReloadVersions[relativePath] ?? 0) + 1,
-                },
-                _fileReloadMetadata: {
-                    ...state._fileReloadMetadata,
-                    [relativePath]: {
-                        origin: detail.origin ?? "system",
-                        opId: detail.opId ?? null,
-                        revision: detail.revision ?? 0,
-                        contentHash: detail.contentHash ?? null,
-                    },
-                },
-                tabs: state.tabs.map((t) => {
-                    if (!isFileTab(t) || t.relativePath !== relativePath) {
-                        return t;
-                    }
-                    if (
-                        t.content === detail.content &&
-                        t.title === detail.title
-                    ) {
-                        return t;
-                    }
-                    return {
-                        ...t,
-                        content: detail.content,
-                        title: detail.title,
-                    };
-                }),
+                tabs: next.tabs,
+                _pendingForceFileReloads: next.pendingForceReloads,
+                _fileReloadVersions: next.reloadVersions,
+                _fileReloadMetadata: next.reloadMetadata,
             };
         });
     },
@@ -1143,267 +1121,72 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     handleNoteDeleted: (noteId) => {
         set((state) => {
-            const idsToClose = new Set(
-                state.tabs
-                    .filter((t) => isNoteTab(t) && t.noteId === noteId)
-                    .map((t) => t.id),
+            const next = buildResourceDeleteUpdate(
+                getResourceHandler("note"),
+                {
+                    tabs: state.tabs,
+                    activeTabId: state.activeTabId,
+                    activationHistory: state.activationHistory,
+                    tabNavigationHistory: state.tabNavigationHistory,
+                    tabNavigationIndex: state.tabNavigationIndex,
+                    pendingForceReloads: state._pendingForceReloads,
+                    reloadVersions: state._noteReloadVersions,
+                    reloadMetadata: state._noteReloadMetadata,
+                    externalConflicts: state.noteExternalConflicts,
+                },
+                noteId,
             );
-            const nextPendingForceReloads = new Set(state._pendingForceReloads);
-            const nextNoteExternalConflicts = new Set(
-                state.noteExternalConflicts,
-            );
-            const hadPendingForceReload =
-                nextPendingForceReloads.delete(noteId);
-            const hadExternalConflict =
-                nextNoteExternalConflicts.delete(noteId);
-            const hadReloadVersion = noteId in state._noteReloadVersions;
-            const hadReloadMetadata = noteId in state._noteReloadMetadata;
-            const nextNoteReloadVersions = hadReloadVersion
-                ? Object.fromEntries(
-                      Object.entries(state._noteReloadVersions).filter(
-                          ([key]) => key !== noteId,
-                      ),
-                  )
-                : state._noteReloadVersions;
-            const nextNoteReloadMetadata = hadReloadMetadata
-                ? Object.fromEntries(
-                      Object.entries(state._noteReloadMetadata).filter(
-                          ([key]) => key !== noteId,
-                      ),
-                  )
-                : state._noteReloadMetadata;
-            const didChange = idsToClose.size > 0;
 
-            if (
-                !didChange &&
-                !hadPendingForceReload &&
-                !hadExternalConflict &&
-                !hadReloadVersion &&
-                !hadReloadMetadata
-            ) {
+            if (!next) {
                 return state;
             }
 
-            const tabs = state.tabs.filter((t) => !idsToClose.has(t.id));
-            const activationHistory = state.activationHistory.filter(
-                (id) => !idsToClose.has(id),
-            );
-            const tabNavigationHistory = state.tabNavigationHistory.filter(
-                (id) => !idsToClose.has(id),
-            );
-
-            let activeTabId = state.activeTabId;
-            if (activeTabId && idsToClose.has(activeTabId)) {
-                const closedIdx = state.tabs.findIndex(
-                    (t) => t.id === activeTabId,
-                );
-                activeTabId =
-                    [...activationHistory]
-                        .reverse()
-                        .find((id) => tabs.some((tab) => tab.id === id)) ??
-                    tabs[Math.min(closedIdx, tabs.length - 1)]?.id ??
-                    null;
-            }
-
-            let tabNavigationIndex = Math.min(
-                state.tabNavigationIndex,
-                tabNavigationHistory.length - 1,
-            );
-            if (activeTabId) {
-                const lastActiveIndex =
-                    tabNavigationHistory.lastIndexOf(activeTabId);
-                if (lastActiveIndex === -1) {
-                    const navigation = pushTabToNavigation(
-                        tabNavigationHistory,
-                        tabNavigationIndex,
-                        activeTabId,
-                    );
-                    return {
-                        tabs,
-                        activeTabId,
-                        activationHistory,
-                        tabNavigationHistory: navigation.history,
-                        tabNavigationIndex: navigation.index,
-                        _pendingForceReloads: nextPendingForceReloads,
-                        _noteReloadVersions: nextNoteReloadVersions,
-                        _noteReloadMetadata: nextNoteReloadMetadata,
-                        noteExternalConflicts: nextNoteExternalConflicts,
-                    };
-                }
-                tabNavigationIndex = lastActiveIndex;
-            } else {
-                tabNavigationIndex = -1;
-            }
-
             return {
-                tabs,
-                activeTabId,
-                activationHistory,
-                tabNavigationHistory,
-                tabNavigationIndex,
-                _pendingForceReloads: nextPendingForceReloads,
-                _noteReloadVersions: nextNoteReloadVersions,
-                _noteReloadMetadata: nextNoteReloadMetadata,
-                noteExternalConflicts: nextNoteExternalConflicts,
+                tabs: next.tabs,
+                activeTabId: next.activeTabId,
+                activationHistory: next.activationHistory,
+                tabNavigationHistory: next.tabNavigationHistory,
+                tabNavigationIndex: next.tabNavigationIndex,
+                _pendingForceReloads: next.pendingForceReloads,
+                _noteReloadVersions: next.reloadVersions,
+                _noteReloadMetadata: next.reloadMetadata,
+                noteExternalConflicts: next.externalConflicts,
             };
         });
     },
 
     handleFileDeleted: (relativePath) => {
         set((state) => {
-            let didChange = false;
-            const idsToClose = new Set(
-                state.tabs.flatMap((rawTab) => {
-                    if (!isFileTab(rawTab)) {
-                        return [];
-                    }
-
-                    const tab = ensureFileTabDefaults(rawTab);
-                    const removedEntries = tab.history.filter(
-                        (entry) =>
-                            entry.kind === "file" &&
-                            entry.relativePath === relativePath,
-                    ).length;
-                    if (removedEntries === 0) {
-                        return [];
-                    }
-
-                    didChange = true;
-                    return tab.history.length === removedEntries
-                        ? [tab.id]
-                        : [];
-                }),
+            const next = buildResourceDeleteUpdate(
+                getResourceHandler("file"),
+                {
+                    tabs: state.tabs,
+                    activeTabId: state.activeTabId,
+                    activationHistory: state.activationHistory,
+                    tabNavigationHistory: state.tabNavigationHistory,
+                    tabNavigationIndex: state.tabNavigationIndex,
+                    pendingForceReloads: state._pendingForceFileReloads,
+                    reloadVersions: state._fileReloadVersions,
+                    reloadMetadata: state._fileReloadMetadata,
+                    externalConflicts: state.fileExternalConflicts,
+                },
+                relativePath,
             );
-            const tabs = state.tabs.flatMap((rawTab): Tab[] => {
-                if (!isFileTab(rawTab)) {
-                    return [rawTab];
-                }
 
-                const tab = ensureFileTabDefaults(rawTab);
-                const removedBeforeOrAtCurrent = tab.history
-                    .slice(0, tab.historyIndex + 1)
-                    .filter(
-                        (entry) =>
-                            entry.kind === "file" &&
-                            entry.relativePath === relativePath,
-                    ).length;
-                const history = tab.history.filter(
-                    (entry) =>
-                        entry.kind !== "file" ||
-                        entry.relativePath !== relativePath,
-                );
-
-                if (history.length === tab.history.length) {
-                    return [rawTab];
-                }
-                if (history.length === 0) {
-                    return [];
-                }
-
-                const nextHistoryIndex = Math.min(
-                    Math.max(0, tab.historyIndex - removedBeforeOrAtCurrent),
-                    history.length - 1,
-                );
-                return [buildTabFromHistory(tab.id, history, nextHistoryIndex)];
-            });
-
-            const nextPendingForceFileReloads = new Set(
-                state._pendingForceFileReloads,
-            );
-            const nextFileExternalConflicts = new Set(
-                state.fileExternalConflicts,
-            );
-            const hadPendingForceReload =
-                nextPendingForceFileReloads.delete(relativePath);
-            const hadExternalConflict =
-                nextFileExternalConflicts.delete(relativePath);
-            const hadReloadVersion = relativePath in state._fileReloadVersions;
-            const hadReloadMetadata = relativePath in state._fileReloadMetadata;
-            const nextFileReloadVersions = hadReloadVersion
-                ? Object.fromEntries(
-                      Object.entries(state._fileReloadVersions).filter(
-                          ([key]) => key !== relativePath,
-                      ),
-                  )
-                : state._fileReloadVersions;
-            const nextFileReloadMetadata = hadReloadMetadata
-                ? Object.fromEntries(
-                      Object.entries(state._fileReloadMetadata).filter(
-                          ([key]) => key !== relativePath,
-                      ),
-                  )
-                : state._fileReloadMetadata;
-
-            if (
-                !didChange &&
-                !hadPendingForceReload &&
-                !hadExternalConflict &&
-                !hadReloadVersion &&
-                !hadReloadMetadata
-            ) {
+            if (!next) {
                 return state;
             }
 
-            const activationHistory = state.activationHistory.filter(
-                (id) => !idsToClose.has(id),
-            );
-            const tabNavigationHistory = state.tabNavigationHistory.filter(
-                (id) => !idsToClose.has(id),
-            );
-
-            let activeTabId = state.activeTabId;
-            if (activeTabId && idsToClose.has(activeTabId)) {
-                const closedIdx = state.tabs.findIndex(
-                    (t) => t.id === activeTabId,
-                );
-                activeTabId =
-                    [...activationHistory]
-                        .reverse()
-                        .find((id) => tabs.some((tab) => tab.id === id)) ??
-                    tabs[Math.min(closedIdx, tabs.length - 1)]?.id ??
-                    null;
-            }
-
-            let tabNavigationIndex = Math.min(
-                state.tabNavigationIndex,
-                tabNavigationHistory.length - 1,
-            );
-            if (activeTabId) {
-                const lastActiveIndex =
-                    tabNavigationHistory.lastIndexOf(activeTabId);
-                if (lastActiveIndex === -1) {
-                    const navigation = pushTabToNavigation(
-                        tabNavigationHistory,
-                        tabNavigationIndex,
-                        activeTabId,
-                    );
-                    return {
-                        tabs,
-                        activeTabId,
-                        activationHistory,
-                        tabNavigationHistory: navigation.history,
-                        tabNavigationIndex: navigation.index,
-                        _pendingForceFileReloads: nextPendingForceFileReloads,
-                        _fileReloadVersions: nextFileReloadVersions,
-                        _fileReloadMetadata: nextFileReloadMetadata,
-                        fileExternalConflicts: nextFileExternalConflicts,
-                    };
-                }
-                tabNavigationIndex = lastActiveIndex;
-            } else {
-                tabNavigationIndex = -1;
-            }
-
             return {
-                tabs,
-                activeTabId,
-                activationHistory,
-                tabNavigationHistory,
-                tabNavigationIndex,
-                _pendingForceFileReloads: nextPendingForceFileReloads,
-                _fileReloadVersions: nextFileReloadVersions,
-                _fileReloadMetadata: nextFileReloadMetadata,
-                fileExternalConflicts: nextFileExternalConflicts,
+                tabs: next.tabs,
+                activeTabId: next.activeTabId,
+                activationHistory: next.activationHistory,
+                tabNavigationHistory: next.tabNavigationHistory,
+                tabNavigationIndex: next.tabNavigationIndex,
+                _pendingForceFileReloads: next.pendingForceReloads,
+                _fileReloadVersions: next.reloadVersions,
+                _fileReloadMetadata: next.reloadMetadata,
+                fileExternalConflicts: next.externalConflicts,
             };
         });
     },
@@ -1426,72 +1209,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 }));
-
-// Load content for a history entry that was restored without content (e.g. after session restore)
-async function loadNoteHistoryEntryContent(
-    tabId: string,
-    historyIndex: number,
-    noteId: string,
-) {
-    try {
-        const detail = await vaultInvoke<{ content: string }>("read_note", {
-            noteId,
-        });
-        useEditorStore.setState((state) => ({
-            tabs: state.tabs.map((t) => {
-                if (t.id !== tabId || !isHistoryTab(t) || isMapTab(t)) return t;
-                const tab = normalizeHistoryTab(t);
-                const history = [...tab.history];
-                if (
-                    history[historyIndex]?.kind === "note" &&
-                    history[historyIndex].noteId === noteId
-                ) {
-                    history[historyIndex] = {
-                        ...history[historyIndex],
-                        content: detail.content,
-                    };
-                }
-                return buildTabFromHistory(tab.id, history, tab.historyIndex);
-            }),
-        }));
-    } catch (e) {
-        console.error("Error loading history entry content:", e);
-    }
-}
-
-async function loadFileHistoryEntryContent(
-    tabId: string,
-    historyIndex: number,
-    relativePath: string,
-) {
-    try {
-        const detail = await vaultInvoke<{ content: string }>(
-            "read_vault_file",
-            {
-                relativePath,
-            },
-        );
-        useEditorStore.setState((state) => ({
-            tabs: state.tabs.map((t) => {
-                if (t.id !== tabId || !isHistoryTab(t) || isMapTab(t)) return t;
-                const tab = normalizeHistoryTab(t);
-                const history = [...tab.history];
-                if (
-                    history[historyIndex]?.kind === "file" &&
-                    history[historyIndex].relativePath === relativePath
-                ) {
-                    history[historyIndex] = {
-                        ...history[historyIndex],
-                        content: detail.content,
-                    };
-                }
-                return buildTabFromHistory(tab.id, history, tab.historyIndex);
-            }),
-        }));
-    } catch (e) {
-        console.error("Error loading file history entry content:", e);
-    }
-}
 
 // Debounced session persistence — only write when tab list or active tab changes
 let _sessionTimer: ReturnType<typeof setTimeout> | null = null;
