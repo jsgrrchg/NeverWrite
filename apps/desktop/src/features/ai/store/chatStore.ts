@@ -1597,12 +1597,18 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     }
 
     return [
-        "Continue this conversation from the saved transcript below.",
-        "Treat it as prior context for this resumed session.",
+        "Use the saved transcript below as prior conversation context for this session.",
         "",
+        "Important:",
+        "- The transcript is historical context only and may not reflect the current workspace state.",
+        "- If the transcript conflicts with the current files, current environment, or the user's latest message, trust the current state.",
+        "- Do not assume prior pending tasks, approvals, permissions, or unfinished plans are still valid; verify when needed.",
+        "- Continue naturally from this context without repeating the transcript unless it is useful.",
+        "",
+        "Saved transcript:",
         history,
         "",
-        `User: ${prompt}`,
+        `New user message: ${prompt}`,
     ].join("\n");
 }
 
