@@ -2551,6 +2551,12 @@ function markTrackedFileConflictAndPersist(
     }
 }
 
+function isTextTrackedFile(
+    tracked: TrackedFile | null | undefined,
+): tracked is TrackedFile & { isText: true } {
+    return tracked?.isText === true;
+}
+
 type ReadyTrackedFileMutation = {
     session: AIChatSession;
     tracked: TrackedFile & { isText: true };
@@ -2580,7 +2586,7 @@ async function prepareTrackedFileMutation(
     }
 
     const tracked = findTrackedFileInAccumulatedSession(session, identityKey);
-    if (!tracked || !tracked.isText) {
+    if (!isTextTrackedFile(tracked)) {
         return { kind: "abort" };
     }
 
