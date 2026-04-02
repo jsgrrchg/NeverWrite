@@ -179,6 +179,7 @@ export function HistoryTranscriptViewer({
         () => findSessionForHistorySelection(sessionsById, historySessionId),
         [historySessionId, sessionsById],
     );
+    const sessionId = session?.sessionId ?? null;
 
     const storeFontSize = useChatStore((s) => s.chatFontSize);
     const storeFontFamily = useChatStore((s) => s.chatFontFamily);
@@ -210,9 +211,9 @@ export function HistoryTranscriptViewer({
     );
 
     useEffect(() => {
-        if (!session) return;
-        void ensureTranscriptLoaded(session.sessionId, "full");
-    }, [ensureTranscriptLoaded, session]);
+        if (!sessionId) return;
+        void ensureTranscriptLoaded(sessionId, "full");
+    }, [ensureTranscriptLoaded, sessionId]);
 
     useEffect(() => {
         if (!searchOpen) return;

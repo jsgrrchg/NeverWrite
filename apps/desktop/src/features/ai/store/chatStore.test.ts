@@ -1962,6 +1962,52 @@ describe("chatStore", () => {
         );
     });
 
+    it("does not replace an already-normalized empty persisted transcript session", async () => {
+        const sessionId = "persisted:empty-history";
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: {
+                    sessionId,
+                    historySessionId: "empty-history",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                    isLoadingPersistedMessages: false,
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+        }));
+
+        const before = useChatStore.getState().sessionsById[sessionId]!;
+
+        await useChatStore
+            .getState()
+            .ensureSessionTranscriptLoaded(sessionId, "full");
+
+        const after = useChatStore.getState().sessionsById[sessionId]!;
+
+        expect(after).toBe(before);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_history_page",
+            expect.anything(),
+        );
+    });
+
     it("rejects lazy transcript pages that belong to a different session", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
 

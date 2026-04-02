@@ -4060,17 +4060,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const persistedCount = session.persistedMessageCount ?? 0;
         if (persistedCount === 0) {
-            set((state) => ({
-                sessionsById: updateSessionById(
-                    state,
-                    sessionId,
-                    (current) => ({
-                        ...current,
-                        loadedPersistedMessageStart: 0,
-                        isLoadingPersistedMessages: false,
-                    }),
-                ),
-            }));
+            if (
+                session.loadedPersistedMessageStart === 0 &&
+                !session.isLoadingPersistedMessages
+            ) {
+                return true;
+            }
+
+            set((state) => {
+                const current = state.sessionsById[sessionId];
+                if (!current) {
+                    return state;
+                }
+
+                if (
+                    current.loadedPersistedMessageStart === 0 &&
+                    !current.isLoadingPersistedMessages
+                ) {
+                    return state;
+                }
+
+                return {
+                    sessionsById: updateSessionById(
+                        state,
+                        sessionId,
+                        (nextSession) => {
+                            if (
+                                nextSession.loadedPersistedMessageStart === 0 &&
+                                !nextSession.isLoadingPersistedMessages
+                            ) {
+                                return nextSession;
+                            }
+
+                            return {
+                                ...nextSession,
+                                loadedPersistedMessageStart: 0,
+                                isLoadingPersistedMessages: false,
+                            };
+                        },
+                    ),
+                };
+            });
             return true;
         }
 
