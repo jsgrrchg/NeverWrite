@@ -314,7 +314,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     hasOlderMessages = false,
     isLoadingOlderMessages = false,
     visibleWorkCycleId = null,
-    chatFontSize = 20,
+    chatFontSize = 14,
     chatFontFamily = "system",
     onLoadOlderMessages,
     onPermissionResponse,

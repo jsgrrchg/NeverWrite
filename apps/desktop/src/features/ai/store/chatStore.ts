@@ -174,7 +174,7 @@ interface NormalizedAiPreferences {
 const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     requireCmdEnterToSend: false,
     composerFontSize: 14,
-    chatFontSize: 20,
+    chatFontSize: 14,
     composerFontFamily: "system",
     chatFontFamily: "system",
     editDiffZoom: 0.72,
@@ -300,7 +300,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
     return {
         requireCmdEnterToSend: prefs.requireCmdEnterToSend === true,
         composerFontSize: prefs.composerFontSize ?? 14,
-        chatFontSize: prefs.chatFontSize ?? 20,
+        chatFontSize: prefs.chatFontSize ?? 14,
         composerFontFamily: normalizeEditorFontFamily(prefs.composerFontFamily),
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
