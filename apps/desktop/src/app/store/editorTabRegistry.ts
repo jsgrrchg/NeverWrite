@@ -119,6 +119,12 @@ export interface HistoryTabHandler<K extends HistoryTabKind> {
     isValidTab?: (tab: HistoryTabByKind<K>) => boolean;
 }
 
+// Invariants:
+// - Only note/pdf/file/map belong to the history-tab capability model.
+// - Special tabs like graph/review stay outside this registry on purpose.
+// - The store should delegate history mechanics to these handlers instead of
+//   branching on kind for normalize/open/persist/restore behavior.
+
 const noteTabHandler: HistoryTabHandler<"note"> = {
     kind: "note",
     normalizeTab: (input) => ensureNoteTabHistory(input),
@@ -328,4 +334,10 @@ export function getOpenableHistoryTabHandler<K extends OpenableHistoryTabKind>(
     kind: K,
 ) {
     return getHistoryTabHandler(kind);
+}
+
+export function createHistorySnapshot(tab: HistoryTab): TabHistoryEntry {
+    return getHistoryTabHandler(tab.kind).entryFromTab(
+        tab as HistoryTabByKind<typeof tab.kind>,
+    );
 }
