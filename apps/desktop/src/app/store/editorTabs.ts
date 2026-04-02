@@ -159,11 +159,16 @@ export type TabInput =
     | GraphTab;
 
 export type HistoryTab = NoteTab | PdfTab | FileTab | MapTab;
+export type NavigableHistoryTab = NoteTab | PdfTab | FileTab;
 export type HistoryTabInput =
     | NoteTabInput
     | PdfTabInput
     | FileTabInput
     | MapTabInput;
+export type NavigableHistoryTabInput =
+    | NoteTabInput
+    | PdfTabInput
+    | FileTabInput;
 export type TransientTab = ReviewTab | GraphTab;
 export type ResourceBackedTab = NoteTab | FileTab;
 
@@ -254,6 +259,19 @@ export function isHistoryTab(
     return (
         kind === "note" || kind === "pdf" || kind === "file" || kind === "map"
     );
+}
+
+export function isNavigableHistoryTab(
+    tab: Tab | null | undefined,
+): tab is NavigableHistoryTab;
+export function isNavigableHistoryTab(
+    tab: TabInput | null | undefined,
+): tab is NavigableHistoryTabInput;
+export function isNavigableHistoryTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is NavigableHistoryTab | NavigableHistoryTabInput {
+    const kind = inferTabKind(tab);
+    return kind === "note" || kind === "pdf" || kind === "file";
 }
 
 export function isTransientTab(

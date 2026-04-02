@@ -98,6 +98,11 @@ export interface ResourceHandler<K extends ResourceKind> {
     readHistoryEntryContent: (resourceId: string) => Promise<string>;
 }
 
+// Invariants:
+// - Only note/file participate in the editable-resource capability model.
+// - The store owns when a reload/delete should happen.
+// - These handlers own how a note/file tab reacts once that decision is made.
+
 function pushTabToNavigation(
     history: string[],
     index: number,
