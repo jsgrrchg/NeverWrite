@@ -641,6 +641,61 @@ async function ensureSessionAgentCatalogLoaded(
     return resolved ? resolved.sessionId : null;
 }
 
+type PreparedAgentConfigSession =
+    | { kind: "abort" }
+    | { kind: "live"; session: AIChatSession }
+    | { kind: "preference-only"; session: AIChatSession };
+
+type AgentConfigMutationArgs = {
+    requestedSessionId?: string;
+    change: AgentSelectionChange;
+    applyLocal(session: AIChatSession): AIChatSession;
+    applyRemote(session: AIChatSession): Promise<AIChatSession>;
+    persistPreference(): void;
+    errorMessage: string;
+};
+
+async function prepareSessionForAgentConfigMutation(
+    requestedSessionId?: string,
+): Promise<PreparedAgentConfigSession> {
+    const resolvedSessionId =
+        requestedSessionId ?? useChatStore.getState().activeSessionId;
+    if (!resolvedSessionId) {
+        return { kind: "abort" };
+    }
+
+    let session = useChatStore.getState().sessionsById[resolvedSessionId];
+    if (!session || session.isResumingSession) {
+        return { kind: "abort" };
+    }
+
+    if (session.runtimeState !== "live") {
+        const liveSessionId =
+            await ensureLiveSessionForAgentConfigChange(resolvedSessionId);
+        if (
+            liveSessionId &&
+            liveSessionId !== resolvedSessionId &&
+            useChatStore.getState().sessionsById[liveSessionId]
+        ) {
+            session = useChatStore.getState().sessionsById[liveSessionId]!;
+        } else if (session.isPersistedSession) {
+            return { kind: "abort" };
+        }
+    }
+
+    if (session.runtimeState === "live" && !sessionHasAgentCatalog(session)) {
+        await ensureSessionAgentCatalogLoaded(session.sessionId);
+        session =
+            useChatStore.getState().sessionsById[session.sessionId] ?? session;
+    }
+
+    if (session.runtimeState !== "live") {
+        return { kind: "preference-only", session };
+    }
+
+    return { kind: "live", session };
+}
+
 function getModelConfigOption(session: Pick<AIChatSession, "configOptions">) {
     return session.configOptions.find((option) => option.category === "model");
 }
@@ -690,6 +745,53 @@ type AgentSelectionChange =
     | { kind: "model"; value: string }
     | { kind: "mode"; value: string }
     | { kind: "config"; optionId: string; value: string };
+
+function applyLocalModeSelection(
+    session: AIChatSession,
+    modeId: string,
+): AIChatSession {
+    return {
+        ...session,
+        modeId,
+    };
+}
+
+function applyLocalConfigOptionSelection(
+    session: AIChatSession,
+    optionId: string,
+    value: string,
+): AIChatSession {
+    if (optionId === "model") {
+        return applyLocalModelSelection(session, value);
+    }
+
+    return {
+        ...session,
+        configOptions: session.configOptions.map((option) =>
+            option.id === optionId ? { ...option, value } : option,
+        ),
+    };
+}
+
+function persistModelPreference(modelId: string) {
+    saveAiPreferences({ modelId });
+}
+
+function persistModePreference(modeId: string) {
+    saveAiPreferences({ modeId });
+}
+
+function persistConfigOptionSelectionPreference(
+    optionId: string,
+    value: string,
+) {
+    if (optionId === "model") {
+        persistModelPreference(value);
+        return;
+    }
+
+    saveConfigOptionPreference(optionId, value);
+}
 
 function sessionReflectsAgentSelectionChange(
     session: AIChatSession,
@@ -768,6 +870,68 @@ function resolveAgentSelectionMutationResult(
                 ? latestSession.effortsByModel
                 : returnedSession.effortsByModel,
     });
+}
+
+async function applyAgentConfigMutation({
+    requestedSessionId,
+    change,
+    applyLocal,
+    applyRemote,
+    persistPreference,
+    errorMessage,
+}: AgentConfigMutationArgs): Promise<void> {
+    const preparedSession =
+        await prepareSessionForAgentConfigMutation(requestedSessionId);
+    if (preparedSession.kind === "abort") {
+        return;
+    }
+
+    if (preparedSession.kind === "preference-only") {
+        const { session } = preparedSession;
+        useChatStore.setState((state) => {
+            const currentSession = state.sessionsById[session.sessionId];
+            if (!currentSession) {
+                return {};
+            }
+
+            const hydratedSession = hydrateSessionCatalogFromRuntime(
+                currentSession,
+                state.runtimes.find(
+                    (runtime) =>
+                        runtime.runtime.id === currentSession.runtimeId,
+                ),
+            );
+
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [session.sessionId]: applyLocal(hydratedSession),
+                },
+            };
+        });
+        persistPreference();
+        return;
+    }
+
+    const { session } = preparedSession;
+    try {
+        const updatedSession = await applyRemote(session);
+        useChatStore
+            .getState()
+            .upsertSession(
+                resolveAgentSelectionMutationResult(
+                    useChatStore.getState().sessionsById[session.sessionId],
+                    updatedSession,
+                    change,
+                ),
+            );
+        persistPreference();
+    } catch (error) {
+        useChatStore.getState().applySessionError({
+            session_id: session.sessionId,
+            message: getAiErrorMessage(error, errorMessage),
+        });
+    }
 }
 
 function mergeRuntimeCatalog(
@@ -1732,6 +1896,138 @@ function canRecreateSessionForAdditionalRoots(
     return !state.queuedMessageEditBySessionId[sessionId];
 }
 
+type SessionLocalStateSnapshot = {
+    composerParts: AIComposerPart[];
+    queuedMessages: QueuedChatMessage[];
+    queuedMessageEdit: QueuedMessageEditState | undefined;
+    activeQueuedMessage: DeferredQueuedMessage | undefined;
+    pausedQueue: PausedQueueState | undefined;
+};
+
+function snapshotSessionLocalState(
+    state: Pick<
+        ChatStore,
+        | "composerPartsBySessionId"
+        | "queuedMessagesBySessionId"
+        | "queuedMessageEditBySessionId"
+        | "activeQueuedMessageBySessionId"
+        | "pausedQueueBySessionId"
+    >,
+    sessionId: string,
+): SessionLocalStateSnapshot {
+    return {
+        composerParts:
+            state.composerPartsBySessionId[sessionId] ??
+            createEmptyComposerParts(),
+        queuedMessages: state.queuedMessagesBySessionId[sessionId] ?? [],
+        queuedMessageEdit: state.queuedMessageEditBySessionId[sessionId],
+        activeQueuedMessage: state.activeQueuedMessageBySessionId[sessionId],
+        pausedQueue: state.pausedQueueBySessionId[sessionId],
+    };
+}
+
+function migrateSessionLocalState(
+    fromSessionId: string,
+    toSession: AIChatSession,
+    shouldApply?: (state: ChatStore) => boolean,
+): boolean {
+    let migrated = false;
+
+    useChatStore.setState((state) => {
+        if (shouldApply && !shouldApply(state)) {
+            return state;
+        }
+
+        const localState = snapshotSessionLocalState(state, fromSessionId);
+        const nextSessionsById = { ...state.sessionsById };
+        delete nextSessionsById[fromSessionId];
+
+        const nextComposerParts = {
+            ...state.composerPartsBySessionId,
+        };
+        delete nextComposerParts[fromSessionId];
+        nextComposerParts[toSession.sessionId] = localState.composerParts;
+
+        const nextQueuedMessagesBySessionId = {
+            ...state.queuedMessagesBySessionId,
+        };
+        delete nextQueuedMessagesBySessionId[fromSessionId];
+        if (localState.queuedMessages.length > 0) {
+            nextQueuedMessagesBySessionId[toSession.sessionId] =
+                localState.queuedMessages;
+        }
+
+        const nextQueuedMessageEditBySessionId = {
+            ...state.queuedMessageEditBySessionId,
+        };
+        delete nextQueuedMessageEditBySessionId[fromSessionId];
+        if (localState.queuedMessageEdit) {
+            nextQueuedMessageEditBySessionId[toSession.sessionId] =
+                localState.queuedMessageEdit;
+        }
+
+        const nextActiveQueuedMessageBySessionId = {
+            ...state.activeQueuedMessageBySessionId,
+        };
+        delete nextActiveQueuedMessageBySessionId[fromSessionId];
+        if (localState.activeQueuedMessage) {
+            nextActiveQueuedMessageBySessionId[toSession.sessionId] =
+                localState.activeQueuedMessage;
+        }
+
+        const nextPausedQueueBySessionId = {
+            ...state.pausedQueueBySessionId,
+        };
+        delete nextPausedQueueBySessionId[fromSessionId];
+        if (localState.pausedQueue) {
+            nextPausedQueueBySessionId[toSession.sessionId] =
+                localState.pausedQueue;
+        }
+
+        migrated = true;
+
+        return {
+            runtimes: hydrateRuntimesFromSessions(state.runtimes, [toSession]),
+            sessionsById: {
+                ...nextSessionsById,
+                [toSession.sessionId]: toSession,
+            },
+            sessionOrder: touchSessionOrder(
+                state.sessionOrder.filter((id) => id !== fromSessionId),
+                toSession.sessionId,
+            ),
+            activeSessionId:
+                state.activeSessionId === fromSessionId
+                    ? toSession.sessionId
+                    : state.activeSessionId,
+            composerPartsBySessionId: nextComposerParts,
+            queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
+            queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+            activeQueuedMessageBySessionId: nextActiveQueuedMessageBySessionId,
+            pausedQueueBySessionId: nextPausedQueueBySessionId,
+        };
+    });
+
+    if (!migrated) {
+        return false;
+    }
+
+    clearStaleStreamingCheck(fromSessionId);
+    _queueDrainLocks.delete(fromSessionId);
+    replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
+    useChatTabsStore
+        .getState()
+        .replaceSessionId(
+            fromSessionId,
+            toSession.sessionId,
+            toSession.historySessionId,
+            toSession.runtimeId,
+        );
+    registerOpenEditorBaselines(toSession.sessionId);
+
+    return true;
+}
+
 function registerOpenEditorBaselines(sessionId: string) {
     const tabs = useEditorStore.getState().tabs;
     for (const tab of tabs) {
@@ -1966,117 +2262,38 @@ async function replaceEmptySessionForAdditionalRoots(
         return sessionId;
     }
 
-    const previousParts =
-        latestState.composerPartsBySessionId[sessionId] ??
-        createEmptyComposerParts();
-    const previousQueue =
-        latestState.queuedMessagesBySessionId[sessionId] ?? [];
-    const previousQueuedMessageEdit =
-        latestState.queuedMessageEditBySessionId[sessionId];
-    const previousActiveQueuedMessage =
-        latestState.activeQueuedMessageBySessionId[sessionId];
-    const previousPausedQueue = latestState.pausedQueueBySessionId[sessionId];
     const migratedSession: AIChatSession = {
         ...replacementSession,
         attachments: latestSession.attachments.map(cloneAttachment),
         resumeContextPending: latestSession.resumeContextPending ?? false,
     };
 
-    useChatStore.setState((currentState) => {
-        const currentSession = currentState.sessionsById[sessionId];
-        if (
-            !currentSession ||
-            !canRecreateSessionForAdditionalRoots(
-                currentSession,
-                sessionId,
-                currentState,
-            )
-        ) {
-            return currentState;
+    const migrated = migrateSessionLocalState(
+        sessionId,
+        migratedSession,
+        (currentState) => {
+            const currentSession = currentState.sessionsById[sessionId];
+            return Boolean(
+                currentSession &&
+                canRecreateSessionForAdditionalRoots(
+                    currentSession,
+                    sessionId,
+                    currentState,
+                ),
+            );
+        },
+    );
+    if (!migrated) {
+        await aiDeleteRuntimeSession(migratedSession.sessionId).catch(() => {});
+        if (vaultPath) {
+            await aiDeleteSessionHistory(
+                vaultPath,
+                migratedSession.historySessionId,
+            ).catch(() => {});
         }
+        return sessionId;
+    }
 
-        const nextSessionsById = { ...currentState.sessionsById };
-        delete nextSessionsById[sessionId];
-
-        const nextComposerParts = {
-            ...currentState.composerPartsBySessionId,
-        };
-        delete nextComposerParts[sessionId];
-        nextComposerParts[migratedSession.sessionId] = previousParts;
-
-        const nextQueuedMessagesBySessionId = {
-            ...currentState.queuedMessagesBySessionId,
-        };
-        delete nextQueuedMessagesBySessionId[sessionId];
-        if (previousQueue.length > 0) {
-            nextQueuedMessagesBySessionId[migratedSession.sessionId] =
-                previousQueue;
-        }
-
-        const nextQueuedMessageEditBySessionId = {
-            ...currentState.queuedMessageEditBySessionId,
-        };
-        delete nextQueuedMessageEditBySessionId[sessionId];
-        if (previousQueuedMessageEdit) {
-            nextQueuedMessageEditBySessionId[migratedSession.sessionId] =
-                previousQueuedMessageEdit;
-        }
-
-        const nextActiveQueuedMessageBySessionId = {
-            ...currentState.activeQueuedMessageBySessionId,
-        };
-        delete nextActiveQueuedMessageBySessionId[sessionId];
-        if (previousActiveQueuedMessage) {
-            nextActiveQueuedMessageBySessionId[migratedSession.sessionId] =
-                previousActiveQueuedMessage;
-        }
-
-        const nextPausedQueueBySessionId = {
-            ...currentState.pausedQueueBySessionId,
-        };
-        delete nextPausedQueueBySessionId[sessionId];
-        if (previousPausedQueue) {
-            nextPausedQueueBySessionId[migratedSession.sessionId] =
-                previousPausedQueue;
-        }
-
-        return {
-            runtimes: hydrateRuntimesFromSessions(currentState.runtimes, [
-                migratedSession,
-            ]),
-            sessionsById: {
-                ...nextSessionsById,
-                [migratedSession.sessionId]: migratedSession,
-            },
-            sessionOrder: touchSessionOrder(
-                currentState.sessionOrder.filter((id) => id !== sessionId),
-                migratedSession.sessionId,
-            ),
-            activeSessionId:
-                currentState.activeSessionId === sessionId
-                    ? migratedSession.sessionId
-                    : currentState.activeSessionId,
-            composerPartsBySessionId: nextComposerParts,
-            queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
-            queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
-            activeQueuedMessageBySessionId: nextActiveQueuedMessageBySessionId,
-            pausedQueueBySessionId: nextPausedQueueBySessionId,
-        };
-    });
-
-    clearStaleStreamingCheck(sessionId);
-    _queueDrainLocks.delete(sessionId);
-    replaceChatRowUiSessionId(sessionId, migratedSession.sessionId);
-    useChatTabsStore
-        .getState()
-        .replaceSessionId(
-            sessionId,
-            migratedSession.sessionId,
-            migratedSession.historySessionId,
-            migratedSession.runtimeId,
-        );
-
-    registerOpenEditorBaselines(migratedSession.sessionId);
     await persistSessionNow(migratedSession);
     await aiDeleteRuntimeSession(sessionId).catch(() => {});
     if (vaultPath) {
@@ -2297,6 +2514,106 @@ function markTrackedConflict(
     files[identityKey] = { ...file, conflictHash: currentHash };
     return {
         ...replaceTrackedFilesInActionLog(session, files),
+    };
+}
+
+function markTrackedFileConflict(
+    sessionId: string,
+    identityKey: string,
+    currentHash: string | null,
+) {
+    useChatStore.setState((state) => {
+        const currentSession = state.sessionsById[sessionId];
+        if (!currentSession) return state;
+
+        return {
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: markTrackedConflict(
+                    currentSession,
+                    identityKey,
+                    currentHash,
+                ),
+            },
+        };
+    });
+}
+
+function markTrackedFileConflictAndPersist(
+    sessionId: string,
+    identityKey: string,
+    currentHash: string | null,
+) {
+    markTrackedFileConflict(sessionId, identityKey, currentHash);
+    const updatedSession = useChatStore.getState().sessionsById[sessionId];
+    if (updatedSession) {
+        void persistSession(updatedSession);
+    }
+}
+
+function isTextTrackedFile(
+    tracked: TrackedFile | null | undefined,
+): tracked is TrackedFile & { isText: true } {
+    return tracked?.isText === true;
+}
+
+type ReadyTrackedFileMutation = {
+    session: AIChatSession;
+    tracked: TrackedFile & { isText: true };
+    vaultPath: string;
+};
+
+type PreparedTrackedFileMutation =
+    | { kind: "abort" }
+    | { kind: "conflict" }
+    | { kind: "ready"; ctx: ReadyTrackedFileMutation };
+
+type TrackedFileMutationScope = "text" | "rejectable-text";
+
+async function prepareTrackedFileMutation(
+    sessionId: string,
+    identityKey: string,
+    scope: TrackedFileMutationScope,
+): Promise<PreparedTrackedFileMutation> {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) {
+        return { kind: "abort" };
+    }
+
+    const session = useChatStore.getState().sessionsById[sessionId];
+    if (!session) {
+        return { kind: "abort" };
+    }
+
+    const tracked = findTrackedFileInAccumulatedSession(session, identityKey);
+    if (!isTextTrackedFile(tracked)) {
+        return { kind: "abort" };
+    }
+
+    if (
+        scope === "rejectable-text" &&
+        getTrackedFileReviewState(tracked) === "pending"
+    ) {
+        return { kind: "abort" };
+    }
+
+    const restoreCheck = await hasConflict(vaultPath, tracked);
+    if (restoreCheck.conflict) {
+        markTrackedFileConflictAndPersist(
+            sessionId,
+            identityKey,
+            restoreCheck.currentHash,
+        );
+        return { kind: "conflict" };
+    }
+
+    return {
+        kind: "ready",
+        ctx: {
+            session,
+            tracked,
+            vaultPath,
+        },
     };
 }
 
@@ -2635,6 +2952,20 @@ async function executeRestoreAction(
     return { action, change };
 }
 
+async function rejectTrackedFileAndReload(
+    vaultPath: string,
+    tracked: TrackedFile,
+): Promise<RestoreAction> {
+    const liveText = await readTrackedFileLiveText(tracked);
+    const { action: restoreAction, change } = await executeRestoreAction(
+        vaultPath,
+        tracked,
+        liveText,
+    );
+    reloadEditorAfterRestore(tracked, restoreAction, change);
+    return restoreAction;
+}
+
 /**
  * After a reject/undo writes content to disk, force-reload the open editor tab
  * so CodeMirror reflects the new content immediately.
@@ -2701,6 +3032,43 @@ function reloadEditorAfterRestore(
     } else {
         reloadOpenEditorContent(restoredPath, action.content, change);
     }
+}
+
+function canRestoreRejectUndoSnapshot(
+    snapshot: TrackedFile,
+    currentHash: string | null,
+) {
+    if (
+        snapshot.status.kind === "created" &&
+        snapshot.status.existingFileContent === null
+    ) {
+        return currentHash === null;
+    }
+
+    const expectedContent =
+        snapshot.status.kind === "created"
+            ? (snapshot.status.existingFileContent ?? snapshot.diffBase)
+            : snapshot.diffBase;
+    return currentHash === hashTextContent(expectedContent);
+}
+
+async function restoreRejectUndoSnapshotAndReload(
+    vaultPath: string,
+    snapshot: TrackedFile,
+) {
+    const change = await aiRestoreTextFile({
+        vaultPath,
+        path: snapshot.path,
+        previousPath:
+            snapshot.status.kind === "created" &&
+            snapshot.status.existingFileContent === null
+                ? undefined
+                : snapshot.originPath !== snapshot.path
+                  ? snapshot.originPath
+                  : null,
+        content: snapshot.currentText,
+    });
+    reloadOpenEditorContent(snapshot.path, snapshot.currentText, change);
 }
 
 function applyUserEditToTrackedFileInSession(
@@ -5732,8 +6100,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                 }
 
-                registerOpenEditorBaselines(resumedSession.sessionId);
-
                 const migratedSession = startNewWorkCycle(
                     replaceSessionTranscript(
                         {
@@ -5768,106 +6134,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 );
 
-                set((currentState) => {
-                    const previousParts =
-                        currentState.composerPartsBySessionId[sessionId] ??
-                        createEmptyComposerParts();
-                    const previousQueue =
-                        currentState.queuedMessagesBySessionId[sessionId] ?? [];
-                    const previousQueuedMessageEdit =
-                        currentState.queuedMessageEditBySessionId[sessionId];
-                    const previousActiveQueuedMessage =
-                        currentState.activeQueuedMessageBySessionId[sessionId];
-                    const previousPausedQueue =
-                        currentState.pausedQueueBySessionId[sessionId];
-                    const nextSessionsById = { ...currentState.sessionsById };
-                    delete nextSessionsById[sessionId];
-
-                    const nextComposerParts = {
-                        ...currentState.composerPartsBySessionId,
-                    };
-                    delete nextComposerParts[sessionId];
-                    nextComposerParts[migratedSession.sessionId] =
-                        previousParts;
-
-                    const nextQueuedMessagesBySessionId = {
-                        ...currentState.queuedMessagesBySessionId,
-                    };
-                    delete nextQueuedMessagesBySessionId[sessionId];
-                    if (previousQueue.length > 0) {
-                        nextQueuedMessagesBySessionId[
-                            migratedSession.sessionId
-                        ] = previousQueue;
-                    }
-
-                    const nextQueuedMessageEditBySessionId = {
-                        ...currentState.queuedMessageEditBySessionId,
-                    };
-                    delete nextQueuedMessageEditBySessionId[sessionId];
-                    if (previousQueuedMessageEdit) {
-                        nextQueuedMessageEditBySessionId[
-                            migratedSession.sessionId
-                        ] = previousQueuedMessageEdit;
-                    }
-
-                    const nextActiveQueuedMessageBySessionId = {
-                        ...currentState.activeQueuedMessageBySessionId,
-                    };
-                    delete nextActiveQueuedMessageBySessionId[sessionId];
-                    if (previousActiveQueuedMessage) {
-                        nextActiveQueuedMessageBySessionId[
-                            migratedSession.sessionId
-                        ] = previousActiveQueuedMessage;
-                    }
-
-                    const nextPausedQueueBySessionId = {
-                        ...currentState.pausedQueueBySessionId,
-                    };
-                    delete nextPausedQueueBySessionId[sessionId];
-                    if (previousPausedQueue) {
-                        nextPausedQueueBySessionId[migratedSession.sessionId] =
-                            previousPausedQueue;
-                    }
-
-                    return {
-                        runtimes: hydrateRuntimesFromSessions(
-                            currentState.runtimes,
-                            [migratedSession],
-                        ),
-                        sessionsById: {
-                            ...nextSessionsById,
-                            [migratedSession.sessionId]: migratedSession,
-                        },
-                        sessionOrder: touchSessionOrder(
-                            currentState.sessionOrder.filter(
-                                (id) => id !== sessionId,
-                            ),
-                            migratedSession.sessionId,
-                        ),
-                        activeSessionId:
-                            currentState.activeSessionId === sessionId
-                                ? migratedSession.sessionId
-                                : currentState.activeSessionId,
-                        composerPartsBySessionId: nextComposerParts,
-                        queuedMessagesBySessionId:
-                            nextQueuedMessagesBySessionId,
-                        queuedMessageEditBySessionId:
-                            nextQueuedMessageEditBySessionId,
-                        activeQueuedMessageBySessionId:
-                            nextActiveQueuedMessageBySessionId,
-                        pausedQueueBySessionId: nextPausedQueueBySessionId,
-                    };
-                });
-                _queueDrainLocks.delete(sessionId);
-                replaceChatRowUiSessionId(sessionId, migratedSession.sessionId);
-                useChatTabsStore
-                    .getState()
-                    .replaceSessionId(
-                        sessionId,
-                        migratedSession.sessionId,
-                        migratedSession.historySessionId,
-                        migratedSession.runtimeId,
-                    );
+                migrateSessionLocalState(sessionId, migratedSession);
 
                 return migratedSession.sessionId;
             } catch (error) {
@@ -5923,283 +6190,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setModel: async (modelId, sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
-            if (!resolvedSessionId) return;
-            let session = get().sessionsById[resolvedSessionId];
-            if (!session) return;
-            if (session.isResumingSession) {
-                return;
-            }
-
-            if (session.runtimeState !== "live") {
-                const liveSessionId =
-                    await ensureLiveSessionForAgentConfigChange(
-                        resolvedSessionId,
-                    );
-                if (
-                    liveSessionId &&
-                    liveSessionId !== resolvedSessionId &&
-                    get().sessionsById[liveSessionId]
-                ) {
-                    session = get().sessionsById[liveSessionId]!;
-                } else if (session.isPersistedSession) {
-                    return;
-                }
-            }
-
-            if (
-                session.runtimeState === "live" &&
-                !sessionHasAgentCatalog(session)
-            ) {
-                await ensureSessionAgentCatalogLoaded(session.sessionId);
-                session = get().sessionsById[session.sessionId] ?? session;
-            }
-
-            if (session.runtimeState !== "live") {
-                set((state) => ({
-                    sessionsById: (() => {
-                        const currentSession =
-                            state.sessionsById[session.sessionId]!;
-                        const hydratedSession =
-                            hydrateSessionCatalogFromRuntime(
-                                currentSession,
-                                state.runtimes.find(
-                                    (runtime) =>
-                                        runtime.runtime.id ===
-                                        currentSession.runtimeId,
-                                ),
-                            );
-
-                        return {
-                            ...state.sessionsById,
-                            [session.sessionId]: applyLocalModelSelection(
-                                hydratedSession,
-                                modelId,
-                            ),
-                        };
-                    })(),
-                }));
-                saveAiPreferences({ modelId });
-                return;
-            }
-
-            try {
-                const modelConfig = getModelConfigOption(session);
-                const updatedSession =
-                    modelConfig &&
-                    modelConfig.options.some(
-                        (option) => option.value === modelId,
-                    )
-                        ? await aiSetConfigOption(
+            await applyAgentConfigMutation({
+                requestedSessionId: sessionId,
+                change: { kind: "model", value: modelId },
+                applyLocal: (session) =>
+                    applyLocalModelSelection(session, modelId),
+                applyRemote: async (session) => {
+                    const modelConfig = getModelConfigOption(session);
+                    return modelConfig &&
+                        modelConfig.options.some(
+                            (option) => option.value === modelId,
+                        )
+                        ? aiSetConfigOption(
                               session.sessionId,
                               modelConfig.id,
                               modelId,
                           )
-                        : await aiSetModel(session.sessionId, modelId);
-                get().upsertSession(
-                    resolveAgentSelectionMutationResult(
-                        get().sessionsById[session.sessionId],
-                        updatedSession,
-                        { kind: "model", value: modelId },
-                    ),
-                );
-                saveAiPreferences({ modelId });
-            } catch (error) {
-                get().applySessionError({
-                    session_id: session.sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to update the model.",
-                    ),
-                });
-            }
+                        : aiSetModel(session.sessionId, modelId);
+                },
+                persistPreference: () => persistModelPreference(modelId),
+                errorMessage: "Failed to update the model.",
+            });
         },
 
         setMode: async (modeId, sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
-            if (!resolvedSessionId) return;
-            let session = get().sessionsById[resolvedSessionId];
-            if (!session) return;
-            if (session.isResumingSession) {
-                return;
-            }
-
-            if (session.runtimeState !== "live") {
-                const liveSessionId =
-                    await ensureLiveSessionForAgentConfigChange(
-                        resolvedSessionId,
-                    );
-                if (
-                    liveSessionId &&
-                    liveSessionId !== resolvedSessionId &&
-                    get().sessionsById[liveSessionId]
-                ) {
-                    session = get().sessionsById[liveSessionId]!;
-                } else if (session.isPersistedSession) {
-                    return;
-                }
-            }
-
-            if (
-                session.runtimeState === "live" &&
-                !sessionHasAgentCatalog(session)
-            ) {
-                await ensureSessionAgentCatalogLoaded(session.sessionId);
-                session = get().sessionsById[session.sessionId] ?? session;
-            }
-
-            if (session.runtimeState !== "live") {
-                set((state) => ({
-                    sessionsById: (() => {
-                        const currentSession =
-                            state.sessionsById[session.sessionId]!;
-                        const hydratedSession =
-                            hydrateSessionCatalogFromRuntime(
-                                currentSession,
-                                state.runtimes.find(
-                                    (runtime) =>
-                                        runtime.runtime.id ===
-                                        currentSession.runtimeId,
-                                ),
-                            );
-
-                        return {
-                            ...state.sessionsById,
-                            [session.sessionId]: {
-                                ...hydratedSession,
-                                modeId,
-                            },
-                        };
-                    })(),
-                }));
-                saveAiPreferences({ modeId });
-                return;
-            }
-
-            try {
-                const updatedSession = await aiSetMode(
-                    session.sessionId,
-                    modeId,
-                );
-                get().upsertSession(
-                    resolveAgentSelectionMutationResult(
-                        get().sessionsById[session.sessionId],
-                        updatedSession,
-                        { kind: "mode", value: modeId },
-                    ),
-                );
-                saveAiPreferences({ modeId });
-            } catch (error) {
-                get().applySessionError({
-                    session_id: session.sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to update the mode.",
-                    ),
-                });
-            }
+            await applyAgentConfigMutation({
+                requestedSessionId: sessionId,
+                change: { kind: "mode", value: modeId },
+                applyLocal: (session) =>
+                    applyLocalModeSelection(session, modeId),
+                applyRemote: (session) => aiSetMode(session.sessionId, modeId),
+                persistPreference: () => persistModePreference(modeId),
+                errorMessage: "Failed to update the mode.",
+            });
         },
 
         setConfigOption: async (optionId, value, sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
-            if (!resolvedSessionId) return;
-            let session = get().sessionsById[resolvedSessionId];
-            if (!session) return;
-            if (session.isResumingSession) {
-                return;
-            }
-
-            if (session.runtimeState !== "live") {
-                const liveSessionId =
-                    await ensureLiveSessionForAgentConfigChange(
-                        resolvedSessionId,
-                    );
-                if (
-                    liveSessionId &&
-                    liveSessionId !== resolvedSessionId &&
-                    get().sessionsById[liveSessionId]
-                ) {
-                    session = get().sessionsById[liveSessionId]!;
-                } else if (session.isPersistedSession) {
-                    return;
-                }
-            }
-
-            if (
-                session.runtimeState === "live" &&
-                !sessionHasAgentCatalog(session)
-            ) {
-                await ensureSessionAgentCatalogLoaded(session.sessionId);
-                session = get().sessionsById[session.sessionId] ?? session;
-            }
-
-            if (session.runtimeState !== "live") {
-                set((state) => {
-                    const currentSession = hydrateSessionCatalogFromRuntime(
-                        state.sessionsById[session.sessionId]!,
-                        state.runtimes.find(
-                            (runtime) =>
-                                runtime.runtime.id ===
-                                state.sessionsById[session.sessionId]!
-                                    .runtimeId,
-                        ),
-                    );
-                    const nextSession =
-                        optionId === "model"
-                            ? applyLocalModelSelection(currentSession, value)
-                            : {
-                                  ...currentSession,
-                                  configOptions:
-                                      currentSession.configOptions.map(
-                                          (option) =>
-                                              option.id === optionId
-                                                  ? { ...option, value }
-                                                  : option,
-                                      ),
-                              };
-
-                    return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [session.sessionId]: nextSession,
-                        },
-                    };
-                });
-                if (optionId === "model") {
-                    saveAiPreferences({ modelId: value });
-                } else {
-                    saveConfigOptionPreference(optionId, value);
-                }
-                return;
-            }
-
-            try {
-                const updatedSession = await aiSetConfigOption(
-                    session.sessionId,
-                    optionId,
-                    value,
-                );
-                get().upsertSession(
-                    resolveAgentSelectionMutationResult(
-                        get().sessionsById[session.sessionId],
-                        updatedSession,
-                        { kind: "config", optionId, value },
-                    ),
-                );
-                if (optionId === "model") {
-                    saveAiPreferences({ modelId: value });
-                } else {
-                    saveConfigOptionPreference(optionId, value);
-                }
-            } catch (error) {
-                get().applySessionError({
-                    session_id: session.sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to update the session option.",
-                    ),
-                });
-            }
+            await applyAgentConfigMutation({
+                requestedSessionId: sessionId,
+                change: { kind: "config", optionId, value },
+                applyLocal: (session) =>
+                    applyLocalConfigOptionSelection(session, optionId, value),
+                applyRemote: (session) =>
+                    aiSetConfigOption(session.sessionId, optionId, value),
+                persistPreference: () =>
+                    persistConfigOptionSelectionPreference(optionId, value),
+                errorMessage: "Failed to update the session option.",
+            });
         },
 
         setComposerParts: (parts, sessionId) => {
@@ -7015,51 +7052,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         rejectEditedFile: async (sessionId, identityKey) => {
-            const { sessionsById } = get();
-            const vaultPath = useVaultStore.getState().vaultPath;
-            if (!vaultPath) return;
-
-            const session = sessionsById[sessionId];
-            if (!session) return;
-
-            const tracked = findTrackedFileInAccumulatedSession(
-                session,
-                identityKey,
-            );
-            if (!tracked || !tracked.isText) return;
-            if (getTrackedFileReviewState(tracked) === "pending") return;
-
             try {
-                const restoreCheck = await hasConflict(vaultPath, tracked);
+                const prepared = await prepareTrackedFileMutation(
+                    sessionId,
+                    identityKey,
+                    "rejectable-text",
+                );
+                if (prepared.kind !== "ready") return;
 
-                if (restoreCheck.conflict) {
-                    set((state) => {
-                        const currentSession = state.sessionsById[sessionId];
-                        if (!currentSession) return state;
-
-                        return {
-                            sessionsById: {
-                                ...state.sessionsById,
-                                [sessionId]: markTrackedConflict(
-                                    currentSession,
-                                    identityKey,
-                                    restoreCheck.currentHash,
-                                ),
-                            },
-                        };
-                    });
-
-                    const updatedSession = get().sessionsById[sessionId];
-                    if (updatedSession) {
-                        void persistSession(updatedSession);
-                    }
-                    return;
-                }
-
-                const liveText = await readTrackedFileLiveText(tracked);
-                const { action: restoreAction, change } =
-                    await executeRestoreAction(vaultPath, tracked, liveText);
-                reloadEditorAfterRestore(tracked, restoreAction, change);
+                const {
+                    ctx: { tracked, vaultPath },
+                } = prepared;
+                const restoreAction = await rejectTrackedFileAndReload(
+                    vaultPath,
+                    tracked,
+                );
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
@@ -7121,48 +7128,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             identityKey,
             mergedText,
         ) => {
-            const { sessionsById } = get();
-            const vaultPath = useVaultStore.getState().vaultPath;
-            if (!vaultPath) return;
-
-            const session = sessionsById[sessionId];
-            if (!session) return;
-
-            const tracked = findTrackedFileInAccumulatedSession(
-                session,
-                identityKey,
-            );
-            if (!tracked || !tracked.isText) {
-                return;
-            }
-
             try {
-                const restoreCheck = await hasConflict(vaultPath, tracked);
+                const prepared = await prepareTrackedFileMutation(
+                    sessionId,
+                    identityKey,
+                    "text",
+                );
+                if (prepared.kind !== "ready") return;
 
-                if (restoreCheck.conflict) {
-                    set((state) => {
-                        const currentSession = state.sessionsById[sessionId];
-                        if (!currentSession) return state;
-
-                        return {
-                            sessionsById: {
-                                ...state.sessionsById,
-                                [sessionId]: markTrackedConflict(
-                                    currentSession,
-                                    identityKey,
-                                    restoreCheck.currentHash,
-                                ),
-                            },
-                        };
-                    });
-
-                    const updatedSession = get().sessionsById[sessionId];
-                    if (updatedSession) {
-                        void persistSession(updatedSession);
-                    }
-                    return;
-                }
-
+                const {
+                    ctx: { tracked, vaultPath },
+                } = prepared;
                 const change = await aiRestoreTextFile({
                     vaultPath,
                     path: tracked.path,
@@ -7235,33 +7211,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const restoreCheck = await hasConflict(vaultPath, tracked);
 
                     if (restoreCheck.conflict) {
-                        set((state) => {
-                            const currentSession =
-                                state.sessionsById[sessionId];
-                            if (!currentSession) return state;
-
-                            return {
-                                sessionsById: {
-                                    ...state.sessionsById,
-                                    [sessionId]: markTrackedConflict(
-                                        currentSession,
-                                        identityKey,
-                                        restoreCheck.currentHash,
-                                    ),
-                                },
-                            };
-                        });
+                        markTrackedFileConflict(
+                            sessionId,
+                            identityKey,
+                            restoreCheck.currentHash,
+                        );
                         continue;
                     }
 
-                    const liveText = await readTrackedFileLiveText(tracked);
-                    const { action: restoreAction, change } =
-                        await executeRestoreAction(
-                            vaultPath,
-                            tracked,
-                            liveText,
-                        );
-                    reloadEditorAfterRestore(tracked, restoreAction, change);
+                    const restoreAction = await rejectTrackedFileAndReload(
+                        vaultPath,
+                        tracked,
+                    );
 
                     removedIdentityKeys.add(identityKey);
                     if (restoreAction.kind !== "skip") {
@@ -7457,27 +7418,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const restoreCheck = await hasConflict(vaultPath, tracked);
 
                     if (restoreCheck.conflict) {
-                        set((state) => {
-                            const currentSession =
-                                state.sessionsById[sessionId];
-                            if (!currentSession) return state;
-
-                            return {
-                                sessionsById: {
-                                    ...state.sessionsById,
-                                    [sessionId]: markTrackedConflict(
-                                        currentSession,
-                                        identityKey,
-                                        restoreCheck.currentHash,
-                                    ),
-                                },
-                            };
-                        });
-
-                        const updatedSession = get().sessionsById[sessionId];
-                        if (updatedSession) {
-                            void persistSession(updatedSession);
-                        }
+                        markTrackedFileConflictAndPersist(
+                            sessionId,
+                            identityKey,
+                            restoreCheck.currentHash,
+                        );
                         return;
                     }
                 }
@@ -7591,64 +7536,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             // Restore each file on disk from its pre-reject snapshot
             for (const [identityKey, snapshot] of Object.entries(snapshots)) {
                 try {
-                    // Verify the disk hasn't changed since the reject
                     const currentHash = await aiGetTextFileHash(
                         vaultPath,
                         snapshot.path,
                     );
-                    if (
-                        snapshot.status.kind === "created" &&
-                        snapshot.status.existingFileContent === null
-                    ) {
-                        // Reject deleted this file. If it exists now, someone
-                        // created a new file at the same path — skip to avoid
-                        // overwriting.
-                        if (currentHash !== null) continue;
-                    } else {
-                        // Reject restored diffBase (or existingFileContent).
-                        // If the disk differs from what the reject wrote,
-                        // someone edited it — skip.
-                        const expectedContent =
-                            snapshot.status.kind === "created"
-                                ? (snapshot.status.existingFileContent ??
-                                  snapshot.diffBase)
-                                : snapshot.diffBase;
-                        const expectedHash = hashTextContent(expectedContent);
-                        if (currentHash !== expectedHash) continue;
+                    if (!canRestoreRejectUndoSnapshot(snapshot, currentHash)) {
+                        continue;
                     }
 
-                    // Write the agent's currentText back (undo the rejection)
-                    if (
-                        snapshot.status.kind === "created" &&
-                        snapshot.status.existingFileContent === null
-                    ) {
-                        // File was created by agent — re-create it
-                        const change = await aiRestoreTextFile({
-                            vaultPath,
-                            path: snapshot.path,
-                            content: snapshot.currentText,
-                        });
-                        reloadOpenEditorContent(
-                            snapshot.path,
-                            snapshot.currentText,
-                            change,
-                        );
-                    } else {
-                        const change = await aiRestoreTextFile({
-                            vaultPath,
-                            path: snapshot.path,
-                            previousPath:
-                                snapshot.originPath !== snapshot.path
-                                    ? snapshot.originPath
-                                    : null,
-                            content: snapshot.currentText,
-                        });
-                        reloadOpenEditorContent(
-                            snapshot.path,
-                            snapshot.currentText,
-                            change,
-                        );
-                    }
+                    await restoreRejectUndoSnapshotAndReload(
+                        vaultPath,
+                        snapshot,
+                    );
                     restoredSnapshots[identityKey] = snapshot;
                 } catch (error) {
                     caughtError = error;
