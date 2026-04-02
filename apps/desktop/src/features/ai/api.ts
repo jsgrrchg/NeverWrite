@@ -699,6 +699,38 @@ export async function aiLoadSessionHistoryPage(
     });
 }
 
+export interface SessionSearchResult {
+    session_id: string;
+    title: string | null;
+    custom_title: string | null;
+    updated_at: number;
+    matched_messages: {
+        message_id: string;
+        role: string;
+        content_snippet: string;
+    }[];
+}
+
+export async function aiSearchSessionContent(
+    vaultPath: string,
+    query: string,
+): Promise<SessionSearchResult[]> {
+    return invoke<SessionSearchResult[]>("ai_search_session_content", {
+        vaultPath,
+        query,
+    });
+}
+
+export async function aiForkSessionHistory(
+    vaultPath: string,
+    sourceSessionId: string,
+): Promise<string> {
+    return invoke<string>("ai_fork_session_history", {
+        vaultPath,
+        sourceSessionId,
+    });
+}
+
 export async function aiDeleteSessionHistory(
     vaultPath: string,
     sessionId: string,

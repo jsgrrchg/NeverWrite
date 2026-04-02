@@ -16,8 +16,12 @@ function truncateText(value: string, maxLength: number) {
 }
 
 export function getSessionTitle(session: AIChatSession) {
+    return truncateText(getSessionTitleText(session), 42);
+}
+
+export function getSessionTitleText(session: AIChatSession) {
     const custom = session.customTitle?.trim();
-    if (custom) return truncateText(custom, 42);
+    if (custom) return custom;
 
     const firstUserText = getFirstUserTextMessage(session);
     const fallbackTitle = session.persistedTitle?.trim();
@@ -25,7 +29,40 @@ export function getSessionTitle(session: AIChatSession) {
     if (!firstUserText) {
         return fallbackTitle || "New chat";
     }
-    return truncateText(cleanPillMarkers(firstUserText.content), 42);
+    return cleanPillMarkers(firstUserText.content).trim() || "New chat";
+}
+
+export function getHistorySelectionId(
+    session: Pick<AIChatSession, "sessionId" | "historySessionId">,
+) {
+    return session.historySessionId || session.sessionId;
+}
+
+export function findSessionForHistorySelection(
+    sessions:
+        | AIChatSession[]
+        | Record<string, AIChatSession>
+        | null
+        | undefined,
+    selectionId: string | null | undefined,
+) {
+    if (!sessions || !selectionId) {
+        return null;
+    }
+
+    const values = Array.isArray(sessions) ? sessions : Object.values(sessions);
+    const normalizedSelectionId = selectionId.startsWith("persisted:")
+        ? selectionId.slice("persisted:".length)
+        : selectionId;
+
+    return (
+        values.find(
+            (session) =>
+                getHistorySelectionId(session) === normalizedSelectionId,
+        ) ??
+        values.find((session) => session.sessionId === selectionId) ??
+        null
+    );
 }
 
 export function hasCustomTitle(session: AIChatSession) {

@@ -1,11 +1,22 @@
-import { useMemo, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useState,
+    type MouseEvent,
+} from "react";
+import { aiSearchSessionContent, type SessionSearchResult } from "../api";
 import {
     DATE_GROUP_ORDER,
+    findSessionForHistorySelection,
+    formatSessionTime,
     getDateGroup,
+    getHistorySelectionId,
     getSessionTitle,
     getSessionUpdatedAt,
     type DateGroup,
 } from "../sessionPresentation";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import type { AIChatSession, AIRuntimeOption } from "../types";
 import { HistorySessionCard } from "./HistorySessionCard";
 
@@ -15,6 +26,9 @@ interface HistorySessionListProps {
     selectedSessionId: string | null;
     onSelectSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
+    onDeleteSessions: (sessionIds: string[]) => void;
+    onForkSession: (sessionId: string) => void;
+    onExportSession: (sessionId: string) => void;
     onRenameSession: (sessionId: string, newTitle: string | null) => void;
 }
 
@@ -51,9 +65,21 @@ export function HistorySessionList({
     selectedSessionId,
     onSelectSession,
     onDeleteSession,
+    onDeleteSessions,
+    onForkSession,
+    onExportSession,
     onRenameSession,
 }: HistorySessionListProps) {
     const [search, setSearch] = useState("");
+    const [isSearchingContent, setIsSearchingContent] = useState(false);
+    const [contentResults, setContentResults] = useState<
+        SessionSearchResult[] | null
+    >(null);
+    const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
+    const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(
+        null,
+    );
+    const vaultPath = useVaultStore((s) => s.vaultPath);
 
     const sorted = useMemo(() => {
         const copy = [...sessions];
@@ -65,21 +91,185 @@ export function HistorySessionList({
         if (!search.trim()) return sorted;
         return sorted.filter((s) => matchesSearch(s, search));
     }, [sorted, search]);
+    const visibleHistoryIds = useMemo(
+        () => filtered.map((session) => getHistorySelectionId(session)),
+        [filtered],
+    );
+    const visibleHistoryIdSet = useMemo(
+        () => new Set(visibleHistoryIds),
+        [visibleHistoryIds],
+    );
 
     const groups = useMemo(() => groupByDate(filtered), [filtered]);
+    const selectedHistoryId =
+        findSessionForHistorySelection(sessions, selectedSessionId)
+            ?.historySessionId ??
+        (selectedSessionId?.startsWith("persisted:")
+            ? selectedSessionId.slice("persisted:".length)
+            : selectedSessionId);
+
+    const runContentSearch = useCallback(
+        async (query: string) => {
+            if (!vaultPath || !query.trim()) return;
+            setIsSearchingContent(true);
+            try {
+                const results = await aiSearchSessionContent(
+                    vaultPath,
+                    query.trim(),
+                );
+                setContentResults(results);
+            } catch (err) {
+                console.error("Content search failed:", err);
+                setContentResults([]);
+            } finally {
+                setIsSearchingContent(false);
+            }
+        },
+        [vaultPath],
+    );
+
+    const clearSearch = useCallback(() => {
+        setSearch("");
+        setContentResults(null);
+    }, []);
+
+    const handleKeyDown = useCallback(
+        (e: React.KeyboardEvent) => {
+            if (e.key === "Enter" && search.trim()) {
+                e.preventDefault();
+                void runContentSearch(search);
+            }
+            if (e.key === "Escape") {
+                clearSearch();
+            }
+        },
+        [search, runContentSearch, clearSearch],
+    );
+
+    const showContentResults = contentResults !== null;
+    const batchSelectedHistoryIdSet = useMemo(
+        () => new Set(selectedHistoryIds),
+        [selectedHistoryIds],
+    );
+    const batchSelectedSessionIds = useMemo(
+        () =>
+            selectedHistoryIds
+                .map(
+                    (historyId) =>
+                        sessions.find(
+                            (session) =>
+                                getHistorySelectionId(session) === historyId,
+                        )?.sessionId ?? null,
+                )
+                .filter((sessionId): sessionId is string => !!sessionId),
+        [selectedHistoryIds, sessions],
+    );
+
+    useEffect(() => {
+        setSelectedHistoryIds((current) =>
+            current.filter((historyId) => visibleHistoryIdSet.has(historyId)),
+        );
+        setSelectionAnchorId((current) =>
+            current && visibleHistoryIdSet.has(current) ? current : null,
+        );
+    }, [visibleHistoryIdSet]);
+
+    useEffect(() => {
+        if (!showContentResults) return;
+        setSelectedHistoryIds([]);
+        setSelectionAnchorId(null);
+    }, [showContentResults]);
+
+    const handleSessionSelect = useCallback(
+        (session: AIChatSession, event: MouseEvent<HTMLDivElement>) => {
+            const historyId = getHistorySelectionId(session);
+            const isContextMenu = event.type === "contextmenu";
+            const isToggleSelection = event.metaKey || event.ctrlKey;
+            const anchorId = selectionAnchorId ?? selectedHistoryId;
+
+            if (event.shiftKey && anchorId) {
+                const anchorIndex = visibleHistoryIds.indexOf(anchorId);
+                const targetIndex = visibleHistoryIds.indexOf(historyId);
+                if (anchorIndex !== -1 && targetIndex !== -1) {
+                    const [start, end] =
+                        anchorIndex < targetIndex
+                            ? [anchorIndex, targetIndex]
+                            : [targetIndex, anchorIndex];
+                    setSelectedHistoryIds(
+                        visibleHistoryIds.slice(start, end + 1),
+                    );
+                    onSelectSession(historyId);
+                    return;
+                }
+            }
+
+            if (isToggleSelection) {
+                const next = new Set(
+                    selectedHistoryIds.length > 0
+                        ? selectedHistoryIds
+                        : selectedHistoryId
+                          ? [selectedHistoryId]
+                          : [],
+                );
+                if (next.has(historyId)) {
+                    next.delete(historyId);
+                } else {
+                    next.add(historyId);
+                }
+                setSelectedHistoryIds(
+                    visibleHistoryIds.filter((id) => next.has(id)),
+                );
+                setSelectionAnchorId(historyId);
+                onSelectSession(historyId);
+                return;
+            }
+
+            if (isContextMenu && batchSelectedHistoryIdSet.has(historyId)) {
+                onSelectSession(historyId);
+                return;
+            }
+
+            setSelectedHistoryIds([]);
+            setSelectionAnchorId(historyId);
+            onSelectSession(historyId);
+        },
+        [
+            batchSelectedHistoryIdSet,
+            onSelectSession,
+            selectedHistoryId,
+            selectedHistoryIds,
+            selectionAnchorId,
+            visibleHistoryIds,
+        ],
+    );
+
+    const clearBatchSelection = useCallback(() => {
+        setSelectedHistoryIds([]);
+        setSelectionAnchorId(selectedHistoryId);
+    }, [selectedHistoryId]);
+    const handleSessionOpen = useCallback(
+        (session: AIChatSession) => {
+            setSelectedHistoryIds([]);
+            setSelectionAnchorId(getHistorySelectionId(session));
+            onSelectSession(getHistorySelectionId(session));
+        },
+        [onSelectSession],
+    );
 
     return (
         <div className="flex h-full min-h-0 flex-col">
             {/* Search bar */}
             <div
-                className="shrink-0 px-3 py-2"
+                className="shrink-0 px-3 py-1.5"
                 style={{ borderBottom: "1px solid var(--border)" }}
             >
                 <div
-                    className="flex items-center gap-2 rounded-md px-2.5 py-1.5"
+                    className="flex h-8 items-center gap-2 rounded-md px-2"
                     style={{
                         background: "var(--bg-primary)",
-                        border: "1px solid var(--border)",
+                        border: showContentResults
+                            ? "1px solid var(--accent)"
+                            : "1px solid var(--border)",
                     }}
                 >
                     <svg
@@ -92,8 +282,10 @@ export function HistorySessionList({
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         style={{
-                            color: "var(--text-secondary)",
-                            opacity: 0.5,
+                            color: showContentResults
+                                ? "var(--accent)"
+                                : "var(--text-secondary)",
+                            opacity: showContentResults ? 1 : 0.5,
                             flexShrink: 0,
                         }}
                     >
@@ -104,8 +296,14 @@ export function HistorySessionList({
                         type="text"
                         placeholder="Search chats…"
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        className="min-w-0 flex-1 text-xs outline-none"
+                        onChange={(e) => {
+                            setSearch(e.target.value);
+                            if (!e.target.value.trim()) {
+                                setContentResults(null);
+                            }
+                        }}
+                        onKeyDown={handleKeyDown}
+                        className="min-w-0 flex-1 text-[11px] leading-none outline-none"
                         style={{
                             background: "transparent",
                             color: "var(--text-primary)",
@@ -115,7 +313,7 @@ export function HistorySessionList({
                     {search && (
                         <button
                             type="button"
-                            onClick={() => setSearch("")}
+                            onClick={clearSearch}
                             className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm"
                             style={{
                                 background: "none",
@@ -140,58 +338,295 @@ export function HistorySessionList({
                 </div>
             </div>
 
-            {/* Session list */}
+            {batchSelectedSessionIds.length > 1 && (
+                <div
+                    className="flex shrink-0 items-center gap-2 px-3 py-1.5"
+                    style={{
+                        borderBottom: "1px solid var(--border)",
+                        background:
+                            "color-mix(in srgb, var(--accent) 7%, var(--bg-secondary))",
+                    }}
+                >
+                    <span
+                        className="min-w-0 flex-1 text-[10px] font-medium"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        {batchSelectedSessionIds.length} chats selected
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() =>
+                            onDeleteSessions(batchSelectedSessionIds)
+                        }
+                        className="rounded px-2 py-1 text-[10px] font-medium"
+                        style={{
+                            backgroundColor: "#dc2626",
+                            border: "1px solid #dc2626",
+                            color: "#fff",
+                        }}
+                    >
+                        Delete selected
+                    </button>
+                    <button
+                        type="button"
+                        onClick={clearBatchSelection}
+                        className="rounded px-2 py-1 text-[10px] font-medium"
+                        style={{
+                            background: "none",
+                            border: "1px solid var(--border)",
+                            color: "var(--text-primary)",
+                        }}
+                    >
+                        Clear
+                    </button>
+                </div>
+            )}
+
+            {/* Session list / Search results */}
             <div
                 className="min-h-0 flex-1 overflow-y-auto p-1"
                 data-scrollbar-active="true"
             >
-                {groups.length === 0 && (
+                {isSearchingContent && (
                     <div
                         className="px-3 py-8 text-center text-xs"
                         style={{ color: "var(--text-secondary)" }}
                     >
-                        {search
-                            ? "No chats match your search."
-                            : "No chat history yet."}
+                        Searching…
                     </div>
                 )}
 
-                {groups.map(([group, groupSessions]) => (
-                    <div key={group} className="mb-1">
-                        <div
-                            className="sticky top-0 z-10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+                {!isSearchingContent && showContentResults && (
+                    <ContentSearchResults
+                        results={contentResults}
+                        selectedHistoryId={selectedHistoryId}
+                        onSelectSession={onSelectSession}
+                    />
+                )}
+
+                {!isSearchingContent && !showContentResults && (
+                    <>
+                        {groups.length === 0 && (
+                            <div
+                                className="px-3 py-8 text-center text-xs"
+                                style={{ color: "var(--text-secondary)" }}
+                            >
+                                {search
+                                    ? "No chats match your search."
+                                    : "No chat history yet."}
+                            </div>
+                        )}
+
+                        {groups.map(([group, groupSessions]) => (
+                            <div key={group} className="mb-1">
+                                <div
+                                    className="sticky top-0 z-10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+                                    style={{
+                                        color: "var(--text-secondary)",
+                                        opacity: 0.6,
+                                        background: "var(--bg-secondary)",
+                                    }}
+                                >
+                                    {group}
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                    {groupSessions.map((session) => {
+                                        const historyId =
+                                            getHistorySelectionId(session);
+                                        const hasBatchSelection =
+                                            batchSelectedHistoryIdSet.size > 0;
+                                        return (
+                                            <HistorySessionCard
+                                                key={session.sessionId}
+                                                session={session}
+                                                runtimes={runtimes}
+                                                isSelected={
+                                                    hasBatchSelection
+                                                        ? batchSelectedHistoryIdSet.has(
+                                                              historyId,
+                                                          )
+                                                        : historyId ===
+                                                          selectedHistoryId
+                                                }
+                                                isActive={
+                                                    historyId ===
+                                                    selectedHistoryId
+                                                }
+                                                onOpen={() =>
+                                                    handleSessionOpen(session)
+                                                }
+                                                onSelect={(event) =>
+                                                    handleSessionSelect(
+                                                        session,
+                                                        event,
+                                                    )
+                                                }
+                                                onDelete={() =>
+                                                    onDeleteSession(
+                                                        session.sessionId,
+                                                    )
+                                                }
+                                                onFork={() =>
+                                                    onForkSession(
+                                                        session.sessionId,
+                                                    )
+                                                }
+                                                onExport={() =>
+                                                    onExportSession(
+                                                        session.sessionId,
+                                                    )
+                                                }
+                                                onRename={(newTitle) =>
+                                                    onRenameSession(
+                                                        session.sessionId,
+                                                        newTitle,
+                                                    )
+                                                }
+                                            />
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ))}
+                    </>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Content search results
+// ---------------------------------------------------------------------------
+
+function ContentSearchResults({
+    results,
+    selectedHistoryId,
+    onSelectSession,
+}: {
+    results: SessionSearchResult[];
+    selectedHistoryId: string | null | undefined;
+    onSelectSession: (sessionId: string) => void;
+}) {
+    if (results.length === 0) {
+        return (
+            <div
+                className="px-3 py-8 text-center text-xs"
+                style={{ color: "var(--text-secondary)" }}
+            >
+                No results found in message content.
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex flex-col gap-0.5">
+            <div
+                className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+                style={{
+                    color: "var(--text-secondary)",
+                    opacity: 0.6,
+                }}
+            >
+                {results.length} {results.length === 1 ? "session" : "sessions"}{" "}
+                found
+            </div>
+            {results.map((result) => (
+                <SearchResultCard
+                    key={result.session_id}
+                    result={result}
+                    isSelected={selectedHistoryId === result.session_id}
+                    onSelect={() => onSelectSession(result.session_id)}
+                />
+            ))}
+        </div>
+    );
+}
+
+function SearchResultCard({
+    result,
+    isSelected,
+    onSelect,
+}: {
+    result: SessionSearchResult;
+    isSelected: boolean;
+    onSelect: () => void;
+}) {
+    const [hovered, setHovered] = useState(false);
+    const title =
+        result.custom_title?.trim() || result.title?.trim() || "New chat";
+
+    return (
+        <div
+            className="rounded-md px-3 py-2"
+            style={{
+                backgroundColor: isSelected
+                    ? "var(--bg-tertiary)"
+                    : hovered
+                      ? "color-mix(in srgb, var(--bg-tertiary) 50%, transparent)"
+                      : "transparent",
+                border: isSelected
+                    ? "1px solid var(--accent)"
+                    : "1px solid transparent",
+                cursor: "pointer",
+                transition:
+                    "background-color 80ms ease, border-color 80ms ease",
+            }}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={onSelect}
+        >
+            {/* Title + time */}
+            <div className="flex items-center gap-1">
+                <span
+                    className="min-w-0 flex-1 truncate text-xs font-medium"
+                    style={{ color: "var(--text-primary)" }}
+                >
+                    {title}
+                </span>
+                {result.updated_at > 0 && (
+                    <span
+                        className="shrink-0 text-[10px]"
+                        style={{
+                            color: "var(--text-secondary)",
+                            opacity: 0.6,
+                        }}
+                    >
+                        {formatSessionTime(result.updated_at)}
+                    </span>
+                )}
+            </div>
+
+            {/* Matched snippets */}
+            <div className="mt-1 flex flex-col gap-0.5">
+                {result.matched_messages.map((msg) => (
+                    <div
+                        key={msg.message_id}
+                        className="flex gap-1.5 text-[11px] leading-snug"
+                    >
+                        <span
+                            className="mt-px shrink-0 rounded px-1 text-[9px] font-medium uppercase"
                             style={{
                                 color: "var(--text-secondary)",
-                                opacity: 0.6,
-                                background: "var(--bg-secondary)",
+                                background:
+                                    "color-mix(in srgb, var(--text-secondary) 12%, transparent)",
                             }}
                         >
-                            {group}
-                        </div>
-                        <div className="flex flex-col gap-0.5">
-                            {groupSessions.map((session) => (
-                                <HistorySessionCard
-                                    key={session.sessionId}
-                                    session={session}
-                                    runtimes={runtimes}
-                                    isSelected={
-                                        session.sessionId === selectedSessionId
-                                    }
-                                    onSelect={() =>
-                                        onSelectSession(session.sessionId)
-                                    }
-                                    onDelete={() =>
-                                        onDeleteSession(session.sessionId)
-                                    }
-                                    onRename={(newTitle) =>
-                                        onRenameSession(
-                                            session.sessionId,
-                                            newTitle,
-                                        )
-                                    }
-                                />
-                            ))}
-                        </div>
+                            {msg.role === "user" ? "you" : "ai"}
+                        </span>
+                        <span
+                            className="min-w-0 flex-1"
+                            style={{
+                                color: "var(--text-secondary)",
+                                opacity: 0.8,
+                                display: "-webkit-box",
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                                overflow: "hidden",
+                            }}
+                        >
+                            {msg.content_snippet}
+                        </span>
                     </div>
                 ))}
             </div>

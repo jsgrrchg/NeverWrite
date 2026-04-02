@@ -3,11 +3,13 @@ import { createPortal } from "react-dom";
 import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import { openSettingsWindow } from "../../../app/detachedWindows";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { useChatStore } from "../store/chatStore";
 import { AIChatSessionList } from "./AIChatSessionList";
 import { AIChatTabs } from "./AIChatTabs";
 import { getSessionTitle } from "../sessionPresentation";
 import type { AIChatSession, AIRuntimeOption } from "../types";
 import type { ChatWorkspaceTab } from "../store/chatTabsStore";
+import { useInlineRename } from "./useInlineRename";
 
 interface AIChatHeaderProps {
     activeSessionId: string | null;
@@ -112,14 +114,20 @@ export function AIChatHeader({
     const [newMenuOpen, setNewMenuOpen] = useState(false);
     const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
     const [headerWidth, setHeaderWidth] = useState<number | null>(null);
-    const [editingTitle, setEditingTitle] = useState(false);
-    const [titleEditValue, setTitleEditValue] = useState("");
-    const titleInputRef = useRef<HTMLInputElement>(null);
     const headerRef = useRef<HTMLDivElement>(null);
     const newMenuRef = useRef<HTMLDivElement>(null);
     const sessionMenuRef = useRef<HTMLDivElement>(null);
     const newMenuContentRef = useRef<HTMLDivElement>(null);
     const sessionMenuContentRef = useRef<HTMLDivElement>(null);
+    const {
+        editingKey,
+        editValue,
+        inputRef,
+        setEditValue,
+        startEditing,
+        cancelEditing,
+        commitEditing,
+    } = useInlineRename<string>();
     const isCompact = headerWidth !== null && headerWidth < 420;
     const isTight = headerWidth !== null && headerWidth < 330;
     const activeTabSessionId =
@@ -182,24 +190,13 @@ export function AIChatHeader({
         };
     }, [newMenuOpen, sessionMenuOpen]);
 
-    useEffect(() => {
-        if (editingTitle) {
-            titleInputRef.current?.focus();
-            titleInputRef.current?.select();
-        }
-    }, [editingTitle]);
-
     function startTitleEdit() {
         if (!currentSession) return;
-        setTitleEditValue(getSessionTitle(currentSession));
-        setEditingTitle(true);
+        startEditing(currentSession.sessionId, getSessionTitle(currentSession));
     }
 
     function commitTitleEdit() {
-        if (!editingTitle || !currentSession) return;
-        const trimmed = titleEditValue.trim();
-        onRenameSession(currentSession.sessionId, trimmed || null);
-        setEditingTitle(false);
+        commitEditing(onRenameSession);
     }
 
     return (
@@ -227,15 +224,16 @@ export function AIChatHeader({
                     onReorderTabs={onReorderTabs}
                     onCloseTab={onCloseTab}
                     onExportSession={onExportSession}
+                    onRenameSession={onRenameSession}
                 />
             ) : (
                 <div
                     className="flex min-w-0 flex-1 items-center px-1"
                     style={{ color: "var(--text-primary)" }}
                 >
-                    {editingTitle ? (
+                    {editingKey !== null ? (
                         <input
-                            ref={titleInputRef}
+                            ref={inputRef}
                             className={`min-w-0 flex-1 rounded bg-transparent font-medium outline-none ${
                                 isCompact ? "text-[11px]" : "text-xs"
                             }`}
@@ -245,13 +243,13 @@ export function AIChatHeader({
                                 padding: 0,
                                 borderBottom: "1px solid var(--accent)",
                             }}
-                            value={titleEditValue}
-                            onChange={(e) => setTitleEditValue(e.target.value)}
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
                             onKeyDown={(e) => {
                                 if (e.key === "Enter") {
                                     commitTitleEdit();
                                 } else if (e.key === "Escape") {
-                                    setEditingTitle(false);
+                                    cancelEditing();
                                 }
                             }}
                             onBlur={commitTitleEdit}
@@ -369,6 +367,19 @@ export function AIChatHeader({
                                     }}
                                     onRenameSession={onRenameSession}
                                 />
+                                <div
+                                    style={{
+                                        borderTop: "1px solid var(--border)",
+                                        margin: "2px 0",
+                                    }}
+                                />
+                                <div className="p-1">
+                                    <ChatHistoryMenuButton
+                                        onClose={() =>
+                                            setSessionMenuOpen(false)
+                                        }
+                                    />
+                                </div>
                                 {sessions.length > 1 && (
                                     <>
                                         <div
@@ -597,5 +608,48 @@ export function AIChatHeader({
                 </div>
             </div>
         </div>
+    );
+}
+
+function ChatHistoryMenuButton({ onClose }: { onClose: () => void }) {
+    const openHistoryView = useChatStore((s) => s.openHistoryView);
+
+    return (
+        <button
+            type="button"
+            onClick={() => {
+                openHistoryView();
+                onClose();
+            }}
+            className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs"
+            style={{
+                color: "var(--text-primary)",
+                background: "none",
+                border: "none",
+                transition: "background-color 80ms ease",
+            }}
+            onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "transparent";
+            }}
+        >
+            <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ opacity: 0.7 }}
+            >
+                <circle cx="8" cy="8" r="6" />
+                <path d="M8 5v3l2 2" />
+            </svg>
+            Chat History
+        </button>
     );
 }

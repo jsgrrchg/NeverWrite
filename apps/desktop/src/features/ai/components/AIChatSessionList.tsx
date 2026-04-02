@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
     formatSessionTime,
     getRuntimeName,
@@ -7,6 +7,7 @@ import {
     hasCustomTitle,
 } from "../sessionPresentation";
 import type { AIChatSession, AIRuntimeOption } from "../types";
+import { useInlineRename } from "./useInlineRename";
 
 interface AIChatSessionListProps {
     activeSessionId: string | null;
@@ -26,31 +27,27 @@ export function AIChatSessionList({
     onRenameSession,
 }: AIChatSessionListProps) {
     const [hoveredId, setHoveredId] = useState<string | null>(null);
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [editValue, setEditValue] = useState("");
-    const inputRef = useRef<HTMLInputElement>(null);
-
-    useEffect(() => {
-        if (editingId) {
-            inputRef.current?.focus();
-            inputRef.current?.select();
-        }
-    }, [editingId]);
+    const {
+        editingKey,
+        editValue,
+        inputRef,
+        setEditValue,
+        startEditing: beginInlineRename,
+        cancelEditing,
+        commitEditing,
+    } = useInlineRename<string>();
 
     function startEditing(session: AIChatSession) {
-        setEditingId(session.sessionId);
-        setEditValue(getSessionTitle(session));
+        beginInlineRename(session.sessionId, getSessionTitle(session));
     }
 
     function commitEdit(sessionId: string) {
-        if (!editingId) return;
-        const trimmed = editValue.trim();
-        onRenameSession(sessionId, trimmed || null);
-        setEditingId(null);
+        if (editingKey !== sessionId) return;
+        commitEditing(onRenameSession);
     }
 
     function cancelEdit() {
-        setEditingId(null);
+        cancelEditing();
     }
 
     if (!sessions.length) {
@@ -72,7 +69,7 @@ export function AIChatSessionList({
             {sessions.map((session) => {
                 const isActive = session.sessionId === activeSessionId;
                 const isHovered = hoveredId === session.sessionId;
-                const isEditing = editingId === session.sessionId;
+                const isEditing = editingKey === session.sessionId;
                 const updatedAt = getSessionUpdatedAt(session);
                 const runtimeLabel = getRuntimeName(
                     session.runtimeId,

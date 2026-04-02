@@ -10,6 +10,7 @@ import {
     aiDeleteRuntimeSessionsForVault,
     aiDeleteSessionHistory,
     aiDeleteAllSessionHistories,
+    aiForkSessionHistory,
     aiGetTextFileHash,
     aiGetSetupStatus,
     aiListSessions,
@@ -822,6 +823,8 @@ interface ChatStore {
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     notePickerOpen: boolean;
+    historyViewOpen: boolean;
+    historySelectedSessionId: string | null;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
     composerFontSize: number;
@@ -1013,6 +1016,10 @@ interface ChatStore {
     setScreenshotRetentionSeconds: (seconds: number) => void;
     openNotePicker: () => void;
     closeNotePicker: () => void;
+    forkSession: (sessionId: string) => Promise<void>;
+    openHistoryView: () => void;
+    closeHistoryView: () => void;
+    setHistorySelectedSessionId: (sessionId: string | null) => void;
 }
 
 const INITIAL_RUNTIME_CONNECTION: AIRuntimeConnectionState = {
@@ -4237,6 +4244,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,
+        historyViewOpen: false,
+        historySelectedSessionId: null,
         autoContextEnabled: true,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
         composerFontSize: DEFAULT_AI_PREFERENCES.composerFontSize,
@@ -8287,6 +8296,81 @@ export const useChatStore = create<ChatStore>((set, get) => {
         openNotePicker: () => set({ notePickerOpen: true }),
 
         closeNotePicker: () => set({ notePickerOpen: false }),
+
+        forkSession: async (sessionId) => {
+            const state = get();
+            const session = state.sessionsById[sessionId];
+            if (!session) return;
+
+            const vaultPath = useVaultStore.getState().vaultPath;
+            if (!vaultPath) return;
+
+            const sourceHistoryId =
+                session.historySessionId ||
+                session.sessionId.replace(/^persisted:/, "");
+
+            try {
+                const newHistoryId = await aiForkSessionHistory(
+                    vaultPath,
+                    sourceHistoryId,
+                );
+
+                const forkedTitle = `${getSessionTitle(session)} (fork)`;
+                const now = Date.now();
+                const forkedSessionId = `persisted:${newHistoryId}`;
+
+                const runtime =
+                    state.runtimes.find(
+                        (r) => r.runtime.id === session.runtimeId,
+                    ) ?? state.runtimes[0];
+                if (!runtime) return;
+
+                const forkedSession: AIChatSession = {
+                    ...session,
+                    sessionId: forkedSessionId,
+                    historySessionId: newHistoryId,
+                    status: "idle",
+                    isResumingSession: false,
+                    isPersistedSession: true,
+                    runtimeState: "persisted_only",
+                    resumeContextPending:
+                        (session.persistedMessageCount ?? 0) > 0,
+                    messages: [],
+                    attachments: [],
+                    customTitle: forkedTitle,
+                    persistedCreatedAt: now,
+                    persistedUpdatedAt: now,
+                    persistedPreview: session.persistedPreview ?? null,
+                    persistedMessageCount: session.persistedMessageCount ?? 0,
+                    loadedPersistedMessageStart: null,
+                    isLoadingPersistedMessages: false,
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                };
+
+                get().upsertSession(forkedSession, true);
+                set({
+                    historyViewOpen: false,
+                    historySelectedSessionId: null,
+                });
+
+                useChatTabsStore.getState().openSessionTab(forkedSessionId, {
+                    activate: true,
+                    historySessionId: newHistoryId,
+                    runtimeId: session.runtimeId,
+                });
+            } catch (error) {
+                console.error("Failed to fork session:", error);
+            }
+        },
+
+        openHistoryView: () => set({ historyViewOpen: true }),
+
+        closeHistoryView: () =>
+            set({ historyViewOpen: false, historySelectedSessionId: null }),
+
+        setHistorySelectedSessionId: (sessionId) =>
+            set({ historySelectedSessionId: sessionId }),
     };
 });
 

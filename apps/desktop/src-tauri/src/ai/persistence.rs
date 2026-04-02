@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,6 +81,22 @@ pub struct PersistedSessionHistoryPage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedMessage {
+    pub message_id: String,
+    pub role: String,
+    pub content_snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSearchResult {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub custom_title: Option<String>,
+    pub updated_at: u64,
+    pub matched_messages: Vec<MatchedMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSessionMetadata {
     version: u32,
     session_id: String,
@@ -103,6 +119,8 @@ struct PersistedSessionMetadata {
     custom_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forked_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +330,7 @@ fn metadata_from_history(
             .preview
             .clone()
             .or_else(|| derive_preview(&history.messages)),
+        forked_from: None,
     }
 }
 
@@ -950,6 +969,227 @@ fn upsert_history(
             histories_by_session_id.insert(session_id, (priority, history));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Content search
+// ---------------------------------------------------------------------------
+
+const MAX_MATCHED_MESSAGES_PER_SESSION: usize = 5;
+const SNIPPET_CONTEXT_CHARS: usize = 50;
+
+pub fn search_session_content(
+    vault_root: &Path,
+    query: &str,
+) -> Result<Vec<SessionSearchResult>, String> {
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let query_lower = query.to_lowercase();
+    let dir = sessions_dir(vault_root);
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut results: Vec<SessionSearchResult> = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+
+        if path.is_dir() {
+            if let Ok(result) = search_in_session_dir(&path, &query_lower) {
+                if !result.matched_messages.is_empty() {
+                    results.push(result);
+                }
+            }
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            if let Ok(result) = search_in_legacy_file(&path, &query_lower) {
+                if !result.matched_messages.is_empty() {
+                    results.push(result);
+                }
+            }
+        }
+    }
+
+    results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(results)
+}
+
+fn search_in_session_dir(
+    session_dir: &Path,
+    query_lower: &str,
+) -> Result<SessionSearchResult, String> {
+    let metadata = load_session_metadata_from_dir(session_dir)?;
+    let transcript_path = session_transcript_path(session_dir);
+
+    let mut matched = Vec::new();
+
+    if transcript_path.exists() {
+        let file = File::open(&transcript_path).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::new(file);
+
+        for line_result in reader.lines() {
+            let line = match line_result {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            // Quick byte-level pre-filter before deserializing
+            if !line.to_lowercase().contains(query_lower) {
+                continue;
+            }
+            if let Ok(msg) = serde_json::from_str::<PersistedMessage>(&line) {
+                if msg.content.to_lowercase().contains(query_lower) {
+                    matched.push(MatchedMessage {
+                        message_id: msg.id,
+                        role: msg.role,
+                        content_snippet: extract_snippet(&msg.content, query_lower),
+                    });
+                    if matched.len() >= MAX_MATCHED_MESSAGES_PER_SESSION {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(SessionSearchResult {
+        session_id: metadata.session_id,
+        title: metadata.title,
+        custom_title: metadata.custom_title,
+        updated_at: metadata.updated_at,
+        matched_messages: matched,
+    })
+}
+
+fn search_in_legacy_file(path: &Path, query_lower: &str) -> Result<SessionSearchResult, String> {
+    let history: PersistedSessionHistory = read_json_file(path)?;
+    let mut matched = Vec::new();
+
+    for msg in &history.messages {
+        if msg.content.to_lowercase().contains(query_lower) {
+            matched.push(MatchedMessage {
+                message_id: msg.id.clone(),
+                role: msg.role.clone(),
+                content_snippet: extract_snippet(&msg.content, query_lower),
+            });
+            if matched.len() >= MAX_MATCHED_MESSAGES_PER_SESSION {
+                break;
+            }
+        }
+    }
+
+    Ok(SessionSearchResult {
+        session_id: history.session_id,
+        title: history.title,
+        custom_title: history.custom_title,
+        updated_at: history.updated_at,
+        matched_messages: matched,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Session fork
+// ---------------------------------------------------------------------------
+
+pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Result<String, String> {
+    ensure_lazy_session_from_legacy(vault_root, source_session_id)?;
+
+    let source_dir = storage_session_dir(vault_root, source_session_id);
+    if !source_dir.exists() {
+        return Err(format!("Source session not found: {source_session_id}"));
+    }
+
+    let source_meta = load_session_metadata_from_dir(&source_dir)?;
+
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    ensure_sessions_root(vault_root)?;
+    let dest_dir = storage_session_dir(vault_root, &new_session_id);
+    fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+
+    // Copy transcript and index as-is
+    let src_transcript = session_transcript_path(&source_dir);
+    let src_index = session_index_path(&source_dir);
+    if src_transcript.exists() {
+        fs::copy(&src_transcript, session_transcript_path(&dest_dir)).map_err(|e| e.to_string())?;
+    }
+    if src_index.exists() {
+        fs::copy(&src_index, session_index_path(&dest_dir)).map_err(|e| e.to_string())?;
+    }
+
+    // Write new metadata with fresh ID and timestamps
+    let forked_title = source_meta
+        .custom_title
+        .or(source_meta.title)
+        .map(|t| format!("{t} (fork)"));
+
+    let new_metadata = PersistedSessionMetadata {
+        version: source_meta.version,
+        session_id: new_session_id.clone(),
+        runtime_id: source_meta.runtime_id,
+        model_id: source_meta.model_id,
+        mode_id: source_meta.mode_id,
+        models: source_meta.models,
+        modes: source_meta.modes,
+        config_options: source_meta.config_options,
+        created_at: now_ms,
+        updated_at: now_ms,
+        message_count: source_meta.message_count,
+        title: forked_title,
+        custom_title: None,
+        preview: source_meta.preview,
+        forked_from: Some(source_session_id.to_string()),
+    };
+
+    write_json_atomic(&session_meta_path(&dest_dir), &new_metadata)?;
+
+    Ok(new_session_id)
+}
+
+fn extract_snippet(content: &str, query_lower: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let content_lower = content.to_lowercase();
+    let query_char_len = query_lower.chars().count();
+
+    let match_char_idx = if let Some(byte_pos) = content_lower.find(query_lower) {
+        content_lower[..byte_pos].chars().count()
+    } else {
+        let end = chars.len().min(SNIPPET_CONTEXT_CHARS * 2);
+        let result: String = chars[..end].iter().collect();
+        return if end < chars.len() {
+            format!("{result}…")
+        } else {
+            result
+        };
+    };
+
+    let start = match_char_idx.saturating_sub(SNIPPET_CONTEXT_CHARS);
+    let end = (match_char_idx + query_char_len + SNIPPET_CONTEXT_CHARS).min(chars.len());
+
+    let mut snippet = String::new();
+    if start > 0 {
+        snippet.push('…');
+    }
+    snippet.extend(&chars[start..end]);
+    if end < chars.len() {
+        snippet.push('…');
+    }
+    snippet
 }
 
 #[cfg(test)]
