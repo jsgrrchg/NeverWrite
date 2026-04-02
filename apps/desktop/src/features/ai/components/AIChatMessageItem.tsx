@@ -1090,10 +1090,12 @@ export function PlanMessage({
     message,
     sessionId,
     pillMetrics,
+    chatFontSize = 14,
 }: {
     message: AIChatMessage;
     sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
+    chatFontSize?: number;
 }) {
     const [expanded, setExpanded] = useStoredRowExpanded(
         sessionId,
@@ -1188,6 +1190,7 @@ export function PlanMessage({
                         <MarkdownContent
                             content={detail}
                             pillMetrics={pillMetrics}
+                            chatFontSize={chatFontSize}
                         />
                     </div>
                 </div>
@@ -2425,12 +2428,14 @@ function PermissionMessage({
     message,
     sessionId,
     pillMetrics,
+    chatFontSize = 14,
     diffPresentationMode = "active",
     onPermissionResponse,
 }: {
     message: AIChatMessage;
     sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
+    chatFontSize?: number;
     diffPresentationMode?: DiffPresentationMode;
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
 }) {
@@ -2619,6 +2624,7 @@ function PermissionMessage({
                             <MarkdownContent
                                 content={expanded ? details : preview}
                                 pillMetrics={pillMetrics}
+                                chatFontSize={chatFontSize}
                             />
                             {isLong && (
                                 <button
@@ -3055,6 +3061,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 message={message}
                 sessionId={sessionId}
                 pillMetrics={pillMetrics}
+                chatFontSize={chatFontSize}
             />
         );
     }
@@ -3075,6 +3082,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 message={message}
                 sessionId={sessionId}
                 pillMetrics={pillMetrics}
+                chatFontSize={chatFontSize}
                 diffPresentationMode={diffPresentationMode}
                 onPermissionResponse={onPermissionResponse}
             />
@@ -3108,6 +3116,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
             <MarkdownContent
                 content={message.content}
                 pillMetrics={pillMetrics}
+                chatFontSize={chatFontSize}
             />
         </PretextReservedTextMessage>
     );

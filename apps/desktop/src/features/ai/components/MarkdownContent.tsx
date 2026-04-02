@@ -31,6 +31,10 @@ import {
     openChatPdfByReference,
 } from "../chatFileNavigation";
 import { DiffLineView } from "./editedFilesPresentation";
+import {
+    getChatCodeBlockFontSize,
+    getChatCodeLabelFontSize,
+} from "./chatCodeSizing";
 import { extractFenceLanguageToken } from "../../editor/codeLanguage";
 import { HighlightedCodeText } from "../../editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../editor/useCodeLanguageSupport";
@@ -39,6 +43,7 @@ interface MarkdownContentProps {
     content: string;
     className?: string;
     pillMetrics: ChatPillMetrics;
+    chatFontSize?: number;
 }
 
 function parseVaultReference(value: string) {
@@ -744,7 +749,7 @@ function TextBlock({
                             width: "100%",
                             tableLayout: "fixed",
                             borderCollapse: "collapse",
-                            fontSize: "0.92em",
+                            fontSize: "1em",
                         }}
                     >
                         <thead>
@@ -1031,7 +1036,15 @@ function TextBlock({
     );
 }
 
-function CodeBlock({ content, info }: { content: string; info?: string }) {
+function CodeBlock({
+    content,
+    info,
+    chatFontSize = 14,
+}: {
+    content: string;
+    info?: string;
+    chatFontSize?: number;
+}) {
     const [copied, setCopied] = useState(false);
     const languageSupport = useMarkdownCodeLanguageSupport(info);
     const languageToken = extractFenceLanguageToken(info ?? "");
@@ -1046,6 +1059,8 @@ function CodeBlock({ content, info }: { content: string; info?: string }) {
         () => (isUnifiedDiff ? computeUnifiedDiffLines(content) : []),
         [content, isUnifiedDiff],
     );
+    const codeFontSize = getChatCodeBlockFontSize(chatFontSize);
+    const languageLabelFontSize = getChatCodeLabelFontSize(chatFontSize);
 
     const handleCopy = () => {
         void navigator.clipboard.writeText(content).then(() => {
@@ -1102,8 +1117,9 @@ function CodeBlock({ content, info }: { content: string; info?: string }) {
             </button>
             {languageLabel ? (
                 <div
-                    className="px-3 py-2 pr-10 text-[0.65em] uppercase tracking-wider"
+                    className="px-3 py-2 pr-10 uppercase tracking-wider"
                     style={{
+                        fontSize: languageLabelFontSize,
                         color: "var(--text-secondary)",
                         borderBottom: "1px solid var(--border)",
                     }}
@@ -1113,8 +1129,9 @@ function CodeBlock({ content, info }: { content: string; info?: string }) {
             ) : null}
             {diffLines.length > 0 ? (
                 <div
-                    className="max-w-full overflow-auto text-[0.8em] leading-relaxed"
+                    className="max-w-full overflow-auto leading-relaxed"
                     style={{
+                        fontSize: codeFontSize,
                         maxHeight: DIFF_PANEL_MAX_HEIGHT,
                         fontFamily: "var(--font-mono, monospace)",
                     }}
@@ -1125,8 +1142,9 @@ function CodeBlock({ content, info }: { content: string; info?: string }) {
                 </div>
             ) : (
                 <pre
-                    className="max-w-full overflow-y-auto p-3 text-[0.8em] leading-relaxed"
+                    className="max-w-full overflow-y-auto p-3 leading-relaxed"
                     style={{
+                        fontSize: codeFontSize,
                         margin: 0,
                         whiteSpace: "pre-wrap",
                         overflowWrap: "anywhere",
@@ -1157,6 +1175,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     content,
     className,
     pillMetrics,
+    chatFontSize = 14,
 }: MarkdownContentProps) {
     const blocks = useMemo(() => parseBlocks(content), [content]);
 
@@ -1176,6 +1195,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                         key={i}
                         content={block.content}
                         info={block.info}
+                        chatFontSize={chatFontSize}
                     />
                 ) : (
                     <TextBlock
