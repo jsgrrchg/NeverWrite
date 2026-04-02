@@ -256,6 +256,90 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
     });
 
+    it("recovers an active restored tab when its session has not been hydrated yet", async () => {
+        const sessionA = createSession("session-a", "First conversation");
+        const restoredSession = createSession(
+            "session-restored",
+            "Recovered conversation",
+        );
+        const originalLoadSession = useChatStore.getState().loadSession;
+        const loadSession = vi.fn(async (sessionId: string) => {
+            expect(sessionId).toBe(restoredSession.sessionId);
+            useChatStore.setState((state) => ({
+                ...state,
+                sessionsById: {
+                    ...state.sessionsById,
+                    [restoredSession.sessionId]: restoredSession,
+                },
+                sessionOrder: [
+                    restoredSession.sessionId,
+                    ...state.sessionOrder.filter(
+                        (candidate) => candidate !== restoredSession.sessionId,
+                    ),
+                ],
+                activeSessionId: restoredSession.sessionId,
+                composerPartsBySessionId: {
+                    ...state.composerPartsBySessionId,
+                    [restoredSession.sessionId]: [],
+                },
+            }));
+        });
+        useChatStore.setState({ loadSession });
+
+        try {
+            useChatStore.setState((state) => ({
+                ...state,
+                runtimeConnection: { status: "ready", message: null },
+                setupStatus: {
+                    runtimeId: "codex-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+                runtimes: [runtimeDescriptor],
+                sessionsById: {
+                    [sessionA.sessionId]: sessionA,
+                },
+                sessionOrder: [sessionA.sessionId],
+                activeSessionId: sessionA.sessionId,
+                composerPartsBySessionId: {
+                    [sessionA.sessionId]: [],
+                },
+            }));
+            useChatTabsStore.setState({
+                tabs: [
+                    {
+                        id: "tab-restored",
+                        sessionId: restoredSession.sessionId,
+                    },
+                ],
+                activeTabId: "tab-restored",
+            });
+
+            renderComponent(<AIChatPanel />);
+
+            await waitFor(() => {
+                expect(loadSession).toHaveBeenCalledWith(
+                    restoredSession.sessionId,
+                );
+                expect(useChatStore.getState().activeSessionId).toBe(
+                    "session-restored",
+                );
+                expect(
+                    useChatStore.getState().sessionsById[
+                        restoredSession.sessionId
+                    ],
+                ).toMatchObject({
+                    sessionId: restoredSession.sessionId,
+                });
+            });
+        } finally {
+            useChatStore.setState({ loadSession: originalLoadSession });
+        }
+    });
+
     it("opens a new active tab after creating a chat", async () => {
         const sessionA = createSession("session-a", "First conversation");
         const sessionC = createSession("session-c", "Fresh session");

@@ -1006,10 +1006,12 @@ interface ChatStore {
     initialize: () => Promise<void>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
+            id: string;
             sessionId: string;
             historySessionId?: string | null;
             runtimeId?: string | null;
         }>,
+        activeTabId?: string | null,
     ) => Promise<void>;
     syncAutoContextForVault: (vaultPath: string | null) => void;
     setSelectedRuntime: (runtimeId: string | null) => void;
@@ -4927,7 +4929,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        reconcileRestoredWorkspaceTabs: async (tabs) => {
+        reconcileRestoredWorkspaceTabs: async (tabs, activeTabId = null) => {
             if (tabs.length === 0) {
                 return;
             }
@@ -5003,6 +5005,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             for (const sessionId of sessionIdsNeedingCatalog) {
                 await ensureSessionAgentCatalogLoaded(sessionId);
+            }
+
+            const activeSessionId = activeTabId
+                ? (tabs.find((tab) => tab.id === activeTabId)?.sessionId ??
+                  null)
+                : null;
+            if (!activeSessionId) {
+                return;
+            }
+
+            let activeSession = get().sessionsById[activeSessionId] ?? null;
+            if (!activeSession) {
+                return;
+            }
+
+            if (
+                activeSession.runtimeState !== "live" &&
+                !activeSession.isResumingSession
+            ) {
+                const resumedSessionId =
+                    await get().resumeSession(activeSessionId);
+                activeSession =
+                    (resumedSessionId
+                        ? get().sessionsById[resumedSessionId]
+                        : null) ?? null;
+            }
+
+            if (!activeSession) {
+                return;
+            }
+
+            await ensureSessionAgentCatalogLoaded(activeSession.sessionId);
+            if (activeSession.runtimeState === "live") {
+                await get().ensureSessionTranscriptLoaded(
+                    activeSession.sessionId,
+                    "latest",
+                );
             }
         },
 

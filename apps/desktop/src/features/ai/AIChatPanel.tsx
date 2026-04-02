@@ -96,6 +96,7 @@ export function AIChatPanel() {
         customBinaryPath?: string;
     } | null>(null);
     const tabDrivenSessionIdRef = useRef<string | null>(null);
+    const recoveringTabSessionIdRef = useRef<string | null>(null);
     const suppressedAutoTabSessionIdRef = useRef<string | null>(null);
     // Data selectors — only subscribe to data that drives renders
     const runtimes = useChatStore((s) => s.runtimes);
@@ -722,6 +723,43 @@ export function AIChatPanel() {
         ensureSessionTab,
         setActiveTab,
         tabs,
+        tabsReady,
+    ]);
+
+    useEffect(() => {
+        if (
+            recoveringTabSessionIdRef.current &&
+            recoveringTabSessionIdRef.current !== activeTabSessionId
+        ) {
+            recoveringTabSessionIdRef.current = null;
+        }
+
+        if (shouldFocusSelectedRuntime || !tabsReady || !activeTabSessionId) {
+            return;
+        }
+
+        if (currentSession) {
+            if (recoveringTabSessionIdRef.current === activeTabSessionId) {
+                recoveringTabSessionIdRef.current = null;
+            }
+            return;
+        }
+
+        if (recoveringTabSessionIdRef.current === activeTabSessionId) {
+            return;
+        }
+
+        recoveringTabSessionIdRef.current = activeTabSessionId;
+        void chatActions.loadSession(activeTabSessionId).finally(() => {
+            if (recoveringTabSessionIdRef.current === activeTabSessionId) {
+                recoveringTabSessionIdRef.current = null;
+            }
+        });
+    }, [
+        activeTabSessionId,
+        chatActions,
+        currentSession,
+        shouldFocusSelectedRuntime,
         tabsReady,
     ]);
 
