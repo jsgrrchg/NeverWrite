@@ -1732,6 +1732,138 @@ function canRecreateSessionForAdditionalRoots(
     return !state.queuedMessageEditBySessionId[sessionId];
 }
 
+type SessionLocalStateSnapshot = {
+    composerParts: AIComposerPart[];
+    queuedMessages: QueuedChatMessage[];
+    queuedMessageEdit: QueuedMessageEditState | undefined;
+    activeQueuedMessage: DeferredQueuedMessage | undefined;
+    pausedQueue: PausedQueueState | undefined;
+};
+
+function snapshotSessionLocalState(
+    state: Pick<
+        ChatStore,
+        | "composerPartsBySessionId"
+        | "queuedMessagesBySessionId"
+        | "queuedMessageEditBySessionId"
+        | "activeQueuedMessageBySessionId"
+        | "pausedQueueBySessionId"
+    >,
+    sessionId: string,
+): SessionLocalStateSnapshot {
+    return {
+        composerParts:
+            state.composerPartsBySessionId[sessionId] ??
+            createEmptyComposerParts(),
+        queuedMessages: state.queuedMessagesBySessionId[sessionId] ?? [],
+        queuedMessageEdit: state.queuedMessageEditBySessionId[sessionId],
+        activeQueuedMessage: state.activeQueuedMessageBySessionId[sessionId],
+        pausedQueue: state.pausedQueueBySessionId[sessionId],
+    };
+}
+
+function migrateSessionLocalState(
+    fromSessionId: string,
+    toSession: AIChatSession,
+    shouldApply?: (state: ChatStore) => boolean,
+): boolean {
+    let migrated = false;
+
+    useChatStore.setState((state) => {
+        if (shouldApply && !shouldApply(state)) {
+            return state;
+        }
+
+        const localState = snapshotSessionLocalState(state, fromSessionId);
+        const nextSessionsById = { ...state.sessionsById };
+        delete nextSessionsById[fromSessionId];
+
+        const nextComposerParts = {
+            ...state.composerPartsBySessionId,
+        };
+        delete nextComposerParts[fromSessionId];
+        nextComposerParts[toSession.sessionId] = localState.composerParts;
+
+        const nextQueuedMessagesBySessionId = {
+            ...state.queuedMessagesBySessionId,
+        };
+        delete nextQueuedMessagesBySessionId[fromSessionId];
+        if (localState.queuedMessages.length > 0) {
+            nextQueuedMessagesBySessionId[toSession.sessionId] =
+                localState.queuedMessages;
+        }
+
+        const nextQueuedMessageEditBySessionId = {
+            ...state.queuedMessageEditBySessionId,
+        };
+        delete nextQueuedMessageEditBySessionId[fromSessionId];
+        if (localState.queuedMessageEdit) {
+            nextQueuedMessageEditBySessionId[toSession.sessionId] =
+                localState.queuedMessageEdit;
+        }
+
+        const nextActiveQueuedMessageBySessionId = {
+            ...state.activeQueuedMessageBySessionId,
+        };
+        delete nextActiveQueuedMessageBySessionId[fromSessionId];
+        if (localState.activeQueuedMessage) {
+            nextActiveQueuedMessageBySessionId[toSession.sessionId] =
+                localState.activeQueuedMessage;
+        }
+
+        const nextPausedQueueBySessionId = {
+            ...state.pausedQueueBySessionId,
+        };
+        delete nextPausedQueueBySessionId[fromSessionId];
+        if (localState.pausedQueue) {
+            nextPausedQueueBySessionId[toSession.sessionId] =
+                localState.pausedQueue;
+        }
+
+        migrated = true;
+
+        return {
+            runtimes: hydrateRuntimesFromSessions(state.runtimes, [toSession]),
+            sessionsById: {
+                ...nextSessionsById,
+                [toSession.sessionId]: toSession,
+            },
+            sessionOrder: touchSessionOrder(
+                state.sessionOrder.filter((id) => id !== fromSessionId),
+                toSession.sessionId,
+            ),
+            activeSessionId:
+                state.activeSessionId === fromSessionId
+                    ? toSession.sessionId
+                    : state.activeSessionId,
+            composerPartsBySessionId: nextComposerParts,
+            queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
+            queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+            activeQueuedMessageBySessionId: nextActiveQueuedMessageBySessionId,
+            pausedQueueBySessionId: nextPausedQueueBySessionId,
+        };
+    });
+
+    if (!migrated) {
+        return false;
+    }
+
+    clearStaleStreamingCheck(fromSessionId);
+    _queueDrainLocks.delete(fromSessionId);
+    replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
+    useChatTabsStore
+        .getState()
+        .replaceSessionId(
+            fromSessionId,
+            toSession.sessionId,
+            toSession.historySessionId,
+            toSession.runtimeId,
+        );
+    registerOpenEditorBaselines(toSession.sessionId);
+
+    return true;
+}
+
 function registerOpenEditorBaselines(sessionId: string) {
     const tabs = useEditorStore.getState().tabs;
     for (const tab of tabs) {
@@ -1966,117 +2098,38 @@ async function replaceEmptySessionForAdditionalRoots(
         return sessionId;
     }
 
-    const previousParts =
-        latestState.composerPartsBySessionId[sessionId] ??
-        createEmptyComposerParts();
-    const previousQueue =
-        latestState.queuedMessagesBySessionId[sessionId] ?? [];
-    const previousQueuedMessageEdit =
-        latestState.queuedMessageEditBySessionId[sessionId];
-    const previousActiveQueuedMessage =
-        latestState.activeQueuedMessageBySessionId[sessionId];
-    const previousPausedQueue = latestState.pausedQueueBySessionId[sessionId];
     const migratedSession: AIChatSession = {
         ...replacementSession,
         attachments: latestSession.attachments.map(cloneAttachment),
         resumeContextPending: latestSession.resumeContextPending ?? false,
     };
 
-    useChatStore.setState((currentState) => {
-        const currentSession = currentState.sessionsById[sessionId];
-        if (
-            !currentSession ||
-            !canRecreateSessionForAdditionalRoots(
-                currentSession,
-                sessionId,
-                currentState,
-            )
-        ) {
-            return currentState;
+    const migrated = migrateSessionLocalState(
+        sessionId,
+        migratedSession,
+        (currentState) => {
+            const currentSession = currentState.sessionsById[sessionId];
+            return Boolean(
+                currentSession &&
+                canRecreateSessionForAdditionalRoots(
+                    currentSession,
+                    sessionId,
+                    currentState,
+                ),
+            );
+        },
+    );
+    if (!migrated) {
+        await aiDeleteRuntimeSession(migratedSession.sessionId).catch(() => {});
+        if (vaultPath) {
+            await aiDeleteSessionHistory(
+                vaultPath,
+                migratedSession.historySessionId,
+            ).catch(() => {});
         }
+        return sessionId;
+    }
 
-        const nextSessionsById = { ...currentState.sessionsById };
-        delete nextSessionsById[sessionId];
-
-        const nextComposerParts = {
-            ...currentState.composerPartsBySessionId,
-        };
-        delete nextComposerParts[sessionId];
-        nextComposerParts[migratedSession.sessionId] = previousParts;
-
-        const nextQueuedMessagesBySessionId = {
-            ...currentState.queuedMessagesBySessionId,
-        };
-        delete nextQueuedMessagesBySessionId[sessionId];
-        if (previousQueue.length > 0) {
-            nextQueuedMessagesBySessionId[migratedSession.sessionId] =
-                previousQueue;
-        }
-
-        const nextQueuedMessageEditBySessionId = {
-            ...currentState.queuedMessageEditBySessionId,
-        };
-        delete nextQueuedMessageEditBySessionId[sessionId];
-        if (previousQueuedMessageEdit) {
-            nextQueuedMessageEditBySessionId[migratedSession.sessionId] =
-                previousQueuedMessageEdit;
-        }
-
-        const nextActiveQueuedMessageBySessionId = {
-            ...currentState.activeQueuedMessageBySessionId,
-        };
-        delete nextActiveQueuedMessageBySessionId[sessionId];
-        if (previousActiveQueuedMessage) {
-            nextActiveQueuedMessageBySessionId[migratedSession.sessionId] =
-                previousActiveQueuedMessage;
-        }
-
-        const nextPausedQueueBySessionId = {
-            ...currentState.pausedQueueBySessionId,
-        };
-        delete nextPausedQueueBySessionId[sessionId];
-        if (previousPausedQueue) {
-            nextPausedQueueBySessionId[migratedSession.sessionId] =
-                previousPausedQueue;
-        }
-
-        return {
-            runtimes: hydrateRuntimesFromSessions(currentState.runtimes, [
-                migratedSession,
-            ]),
-            sessionsById: {
-                ...nextSessionsById,
-                [migratedSession.sessionId]: migratedSession,
-            },
-            sessionOrder: touchSessionOrder(
-                currentState.sessionOrder.filter((id) => id !== sessionId),
-                migratedSession.sessionId,
-            ),
-            activeSessionId:
-                currentState.activeSessionId === sessionId
-                    ? migratedSession.sessionId
-                    : currentState.activeSessionId,
-            composerPartsBySessionId: nextComposerParts,
-            queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
-            queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
-            activeQueuedMessageBySessionId: nextActiveQueuedMessageBySessionId,
-            pausedQueueBySessionId: nextPausedQueueBySessionId,
-        };
-    });
-
-    clearStaleStreamingCheck(sessionId);
-    _queueDrainLocks.delete(sessionId);
-    replaceChatRowUiSessionId(sessionId, migratedSession.sessionId);
-    useChatTabsStore
-        .getState()
-        .replaceSessionId(
-            sessionId,
-            migratedSession.sessionId,
-            migratedSession.historySessionId,
-            migratedSession.runtimeId,
-        );
-
-    registerOpenEditorBaselines(migratedSession.sessionId);
     await persistSessionNow(migratedSession);
     await aiDeleteRuntimeSession(sessionId).catch(() => {});
     if (vaultPath) {
@@ -5732,8 +5785,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                 }
 
-                registerOpenEditorBaselines(resumedSession.sessionId);
-
                 const migratedSession = startNewWorkCycle(
                     replaceSessionTranscript(
                         {
@@ -5768,106 +5819,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 );
 
-                set((currentState) => {
-                    const previousParts =
-                        currentState.composerPartsBySessionId[sessionId] ??
-                        createEmptyComposerParts();
-                    const previousQueue =
-                        currentState.queuedMessagesBySessionId[sessionId] ?? [];
-                    const previousQueuedMessageEdit =
-                        currentState.queuedMessageEditBySessionId[sessionId];
-                    const previousActiveQueuedMessage =
-                        currentState.activeQueuedMessageBySessionId[sessionId];
-                    const previousPausedQueue =
-                        currentState.pausedQueueBySessionId[sessionId];
-                    const nextSessionsById = { ...currentState.sessionsById };
-                    delete nextSessionsById[sessionId];
-
-                    const nextComposerParts = {
-                        ...currentState.composerPartsBySessionId,
-                    };
-                    delete nextComposerParts[sessionId];
-                    nextComposerParts[migratedSession.sessionId] =
-                        previousParts;
-
-                    const nextQueuedMessagesBySessionId = {
-                        ...currentState.queuedMessagesBySessionId,
-                    };
-                    delete nextQueuedMessagesBySessionId[sessionId];
-                    if (previousQueue.length > 0) {
-                        nextQueuedMessagesBySessionId[
-                            migratedSession.sessionId
-                        ] = previousQueue;
-                    }
-
-                    const nextQueuedMessageEditBySessionId = {
-                        ...currentState.queuedMessageEditBySessionId,
-                    };
-                    delete nextQueuedMessageEditBySessionId[sessionId];
-                    if (previousQueuedMessageEdit) {
-                        nextQueuedMessageEditBySessionId[
-                            migratedSession.sessionId
-                        ] = previousQueuedMessageEdit;
-                    }
-
-                    const nextActiveQueuedMessageBySessionId = {
-                        ...currentState.activeQueuedMessageBySessionId,
-                    };
-                    delete nextActiveQueuedMessageBySessionId[sessionId];
-                    if (previousActiveQueuedMessage) {
-                        nextActiveQueuedMessageBySessionId[
-                            migratedSession.sessionId
-                        ] = previousActiveQueuedMessage;
-                    }
-
-                    const nextPausedQueueBySessionId = {
-                        ...currentState.pausedQueueBySessionId,
-                    };
-                    delete nextPausedQueueBySessionId[sessionId];
-                    if (previousPausedQueue) {
-                        nextPausedQueueBySessionId[migratedSession.sessionId] =
-                            previousPausedQueue;
-                    }
-
-                    return {
-                        runtimes: hydrateRuntimesFromSessions(
-                            currentState.runtimes,
-                            [migratedSession],
-                        ),
-                        sessionsById: {
-                            ...nextSessionsById,
-                            [migratedSession.sessionId]: migratedSession,
-                        },
-                        sessionOrder: touchSessionOrder(
-                            currentState.sessionOrder.filter(
-                                (id) => id !== sessionId,
-                            ),
-                            migratedSession.sessionId,
-                        ),
-                        activeSessionId:
-                            currentState.activeSessionId === sessionId
-                                ? migratedSession.sessionId
-                                : currentState.activeSessionId,
-                        composerPartsBySessionId: nextComposerParts,
-                        queuedMessagesBySessionId:
-                            nextQueuedMessagesBySessionId,
-                        queuedMessageEditBySessionId:
-                            nextQueuedMessageEditBySessionId,
-                        activeQueuedMessageBySessionId:
-                            nextActiveQueuedMessageBySessionId,
-                        pausedQueueBySessionId: nextPausedQueueBySessionId,
-                    };
-                });
-                _queueDrainLocks.delete(sessionId);
-                replaceChatRowUiSessionId(sessionId, migratedSession.sessionId);
-                useChatTabsStore
-                    .getState()
-                    .replaceSessionId(
-                        sessionId,
-                        migratedSession.sessionId,
-                        migratedSession.historySessionId,
-                        migratedSession.runtimeId,
-                    );
+                migrateSessionLocalState(sessionId, migratedSession);
 
                 return migratedSession.sessionId;
             } catch (error) {
