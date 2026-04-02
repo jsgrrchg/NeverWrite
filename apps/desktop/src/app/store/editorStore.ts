@@ -259,6 +259,55 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
     return null;
 }
 
+function insertNormalizedTab(
+    state: Pick<
+        EditorStore,
+        | "tabs"
+        | "activeTabId"
+        | "activationHistory"
+        | "tabNavigationHistory"
+        | "tabNavigationIndex"
+    >,
+    incoming: Tab,
+    index?: number,
+) {
+    if (isGraphTab(incoming)) {
+        const existing = state.tabs.find((tab) => isGraphTab(tab));
+        if (existing) {
+            const tabs =
+                existing.title === incoming.title
+                    ? state.tabs
+                    : state.tabs.map((tab) =>
+                          tab.id === existing.id
+                              ? { ...tab, title: incoming.title }
+                              : tab,
+                      );
+            return {
+                tabs,
+                ...activateTab(
+                    {
+                        ...state,
+                        tabs,
+                    },
+                    existing.id,
+                ),
+            };
+        }
+    }
+
+    const tabs = state.tabs.filter((existing) => existing.id !== incoming.id);
+    const boundedIndex =
+        index === undefined
+            ? tabs.length
+            : Math.max(0, Math.min(index, tabs.length));
+
+    tabs.splice(boundedIndex, 0, incoming);
+    return {
+        tabs,
+        ...activateTab(state, incoming.id),
+    };
+}
+
 function patchCurrentHistoryEntry(
     tab: HistoryTab,
     patch: (entry: TabHistoryEntry) => TabHistoryEntry,
@@ -892,9 +941,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     hydrateTabs: (tabs, activeTabId) => {
+        const seenGraph = new Set<string>();
         const hydratedTabs: Tab[] = tabs.flatMap((tab): Tab[] => {
             const normalized = normalizeHydratedTab(tab);
-            return normalized ? [normalized] : [];
+            if (!normalized) {
+                return [];
+            }
+            if (isGraphTab(normalized)) {
+                if (seenGraph.size > 0) {
+                    return [];
+                }
+                seenGraph.add(normalized.id);
+            }
+            return [normalized];
         });
         const nextActiveTabId =
             activeTabId && hydratedTabs.some((tab) => tab.id === activeTabId)
@@ -916,19 +975,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             if (!incoming) {
                 return state;
             }
-            const tabs = state.tabs.filter(
-                (existing) => existing.id !== incoming.id,
-            );
-            const boundedIndex =
-                index === undefined
-                    ? tabs.length
-                    : Math.max(0, Math.min(index, tabs.length));
-
-            tabs.splice(boundedIndex, 0, incoming);
-            return {
-                tabs,
-                ...activateTab(state, incoming.id),
-            };
+            return insertNormalizedTab(state, incoming, index);
         });
     },
 
@@ -1188,17 +1235,28 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     handleNoteRenamed: (oldNoteId, newNoteId, newTitle) => {
         set((state) => ({
             tabs: state.tabs.map((t) => {
-                if (!isNoteTab(t) || t.noteId !== oldNoteId) return t;
-                return {
-                    ...t,
-                    noteId: newNoteId,
-                    title: newTitle,
-                    history: t.history?.map((entry) =>
-                        entry.kind === "note" && entry.noteId === oldNoteId
-                            ? { ...entry, noteId: newNoteId }
-                            : entry,
-                    ),
-                };
+                if (!isNoteTab(t)) {
+                    return t;
+                }
+
+                let didChange = false;
+                const history = t.history.map((entry) => {
+                    if (entry.kind !== "note" || entry.noteId !== oldNoteId) {
+                        return entry;
+                    }
+                    didChange = true;
+                    return {
+                        ...entry,
+                        noteId: newNoteId,
+                        title: newTitle,
+                    };
+                });
+
+                if (!didChange) {
+                    return t;
+                }
+
+                return buildTabFromHistory(t.id, history, t.historyIndex);
             }),
         }));
     },

@@ -119,6 +119,73 @@ export interface HistoryTabHandler<K extends HistoryTabKind> {
     isValidTab?: (tab: HistoryTabByKind<K>) => boolean;
 }
 
+function serializeNoteTabForSession(tab: NoteTab) {
+    return {
+        noteId: tab.noteId,
+        title: tab.title,
+        history: tab.history
+            .filter((entry): entry is NoteHistoryEntry => entry.kind === "note")
+            .map((entry) => ({
+                noteId: entry.noteId,
+                title: entry.title,
+            })),
+        historyIndex: tab.historyIndex,
+    };
+}
+
+function serializePdfTabForSession(tab: PdfTab) {
+    return {
+        entryId: tab.entryId,
+        title: tab.title,
+        path: tab.path,
+        page: tab.page,
+        zoom: tab.zoom,
+        viewMode: tab.viewMode,
+        history: tab.history
+            .filter((entry): entry is PdfHistoryEntry => entry.kind === "pdf")
+            .map((entry) => ({
+                entryId: entry.entryId,
+                title: entry.title,
+                path: entry.path,
+                page: entry.page,
+                zoom: entry.zoom,
+                viewMode: entry.viewMode,
+            })),
+        historyIndex: tab.historyIndex,
+    };
+}
+
+function serializeFileTabForSession(tab: FileTab) {
+    return {
+        relativePath: tab.relativePath,
+        title: tab.title,
+        path: tab.path,
+        mimeType: tab.mimeType,
+        viewer: tab.viewer,
+        history: tab.history
+            .filter((entry): entry is FileHistoryEntry => entry.kind === "file")
+            .map((entry) => ({
+                relativePath: entry.relativePath,
+                title: entry.title,
+                path: entry.path,
+                mimeType: entry.mimeType,
+                viewer: entry.viewer,
+            })),
+        historyIndex: tab.historyIndex,
+    };
+}
+
+function serializeMapTabForSession(tab: MapTab) {
+    return {
+        relativePath: tab.relativePath,
+        title: tab.title,
+    };
+}
+
+function createSessionFingerprint(kind: HistoryTabKind, payload: unknown) {
+    return `|${kind}|${JSON.stringify(payload)}`;
+}
+
 // Invariants:
 // - Only note/pdf/file/map belong to the history-tab capability model.
 // - Special tabs like graph/review stay outside this registry on purpose.
@@ -151,18 +218,8 @@ const noteTabHandler: HistoryTabHandler<"note"> = {
             tab.historyIndex,
         ) as NoteTab,
     fingerprint: (tab) =>
-        `|note|${tab.noteId}|${tab.title}|${tab.historyIndex}|${tab.history.length}`,
-    serializeForSession: (tab) => ({
-        noteId: tab.noteId,
-        title: tab.title,
-        history: tab.history
-            .filter((entry): entry is NoteHistoryEntry => entry.kind === "note")
-            .map((entry) => ({
-                noteId: entry.noteId,
-                title: entry.title,
-            })),
-        historyIndex: tab.historyIndex,
-    }),
+        createSessionFingerprint("note", serializeNoteTabForSession(tab)),
+    serializeForSession: serializeNoteTabForSession,
 };
 
 const pdfTabHandler: HistoryTabHandler<"pdf"> = {
@@ -184,26 +241,8 @@ const pdfTabHandler: HistoryTabHandler<"pdf"> = {
         buildTabFromHistory(id, history, historyIndex) as PdfTab,
     matchesOpenTarget: (tab, payload) => tab.entryId === payload.entryId,
     fingerprint: (tab) =>
-        `|pdf|${tab.entryId}|${tab.title}|${tab.historyIndex}|${tab.history.length}`,
-    serializeForSession: (tab) => ({
-        entryId: tab.entryId,
-        title: tab.title,
-        path: tab.path,
-        page: tab.page,
-        zoom: tab.zoom,
-        viewMode: tab.viewMode,
-        history: tab.history
-            .filter((entry): entry is PdfHistoryEntry => entry.kind === "pdf")
-            .map((entry) => ({
-                entryId: entry.entryId,
-                title: entry.title,
-                path: entry.path,
-                page: entry.page,
-                zoom: entry.zoom,
-                viewMode: entry.viewMode,
-            })),
-        historyIndex: tab.historyIndex,
-    }),
+        createSessionFingerprint("pdf", serializePdfTabForSession(tab)),
+    serializeForSession: serializePdfTabForSession,
 };
 
 const fileTabHandler: HistoryTabHandler<"file"> = {
@@ -250,24 +289,8 @@ const fileTabHandler: HistoryTabHandler<"file"> = {
             tab.historyIndex,
         ) as FileTab,
     fingerprint: (tab) =>
-        `|file|${tab.relativePath}|${tab.title}|${tab.mimeType ?? ""}`,
-    serializeForSession: (tab) => ({
-        relativePath: tab.relativePath,
-        title: tab.title,
-        path: tab.path,
-        mimeType: tab.mimeType,
-        viewer: tab.viewer,
-        history: tab.history
-            .filter((entry): entry is FileHistoryEntry => entry.kind === "file")
-            .map((entry) => ({
-                relativePath: entry.relativePath,
-                title: entry.title,
-                path: entry.path,
-                mimeType: entry.mimeType,
-                viewer: entry.viewer,
-            })),
-        historyIndex: tab.historyIndex,
-    }),
+        createSessionFingerprint("file", serializeFileTabForSession(tab)),
+    serializeForSession: serializeFileTabForSession,
 };
 
 const mapTabHandler: HistoryTabHandler<"map"> = {
@@ -291,11 +314,9 @@ const mapTabHandler: HistoryTabHandler<"map"> = {
         buildTabFromHistory(id, history, historyIndex) as MapTab,
     matchesOpenTarget: (tab, payload) =>
         tab.relativePath === payload.relativePath,
-    fingerprint: (tab) => `|map|${tab.relativePath}|${tab.title}`,
-    serializeForSession: (tab) => ({
-        relativePath: tab.relativePath,
-        title: tab.title,
-    }),
+    fingerprint: (tab) =>
+        createSessionFingerprint("map", serializeMapTabForSession(tab)),
+    serializeForSession: serializeMapTabForSession,
     isValidTab: (tab) => tab.relativePath.length > 0,
 };
 
