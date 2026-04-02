@@ -13,21 +13,9 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
-    type FileHistoryEntry,
-    type FileTab,
-    type FileTabInput,
     type FileViewerMode,
     type HistoryTab,
-    type GraphTab,
-    type MapTab,
-    type MapTabInput,
     type NavigableHistoryTab,
-    type NoteHistoryEntry,
-    type NoteTab,
-    type NoteTabInput,
-    type PdfHistoryEntry,
-    type PdfTab,
-    type PdfTabInput,
     type PdfViewMode,
     type RecentlyClosedTab,
     type ReviewTab,
@@ -40,9 +28,7 @@ import {
     createHistorySnapshot,
     getOpenableHistoryTabHandler,
     normalizeHistoryTab,
-    type HistoryTabHandler,
     type OpenableHistoryPayload,
-    type OpenableHistoryTabKind,
 } from "./editorTabRegistry";
 import {
     buildResourceDeleteUpdate,
@@ -56,8 +42,6 @@ import {
     buildPersistedSession,
     getEditorSessionSignature,
     isSessionReady,
-    markSessionReady,
-    readPersistedSession,
     writePersistedSession,
 } from "./editorSession";
 import { useSettingsStore } from "./settingsStore";
@@ -129,6 +113,7 @@ function pushTabToNavigation(
 function activateTab(
     state: Pick<
         EditorStore,
+        | "tabs"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
@@ -173,7 +158,7 @@ function getReusableHistoryTab(
     return normalizeHistoryTab(activeTab) as NavigableHistoryTab;
 }
 
-function openOrReuseHistoryTab<K extends OpenableHistoryTabKind>(
+function openOrReuseHistoryTab(
     state: Pick<
         EditorStore,
         | "tabs"
@@ -182,14 +167,12 @@ function openOrReuseHistoryTab<K extends OpenableHistoryTabKind>(
         | "tabNavigationHistory"
         | "tabNavigationIndex"
     >,
-    payload: Extract<OpenableHistoryPayload, { kind: K }>,
+    payload: OpenableHistoryPayload,
 ) {
-    const handler = getOpenableHistoryTabHandler(
-        payload.kind,
-    ) as HistoryTabHandler<K>;
+    const handler = getOpenableHistoryTabHandler(payload.kind);
 
     if (getTabOpenBehavior() === "new_tab") {
-        const newTab = handler.createInitialTab(payload);
+        const newTab = handler.createInitialTab(payload as never);
         return {
             tabs: [...state.tabs, newTab],
             ...activateTab(state, newTab.id),
@@ -198,7 +181,7 @@ function openOrReuseHistoryTab<K extends OpenableHistoryTabKind>(
 
     const activeTab = getReusableHistoryTab(state);
     if (!activeTab) {
-        const newTab = handler.createInitialTab(payload);
+        const newTab = handler.createInitialTab(payload as never);
         return {
             tabs: [...state.tabs, newTab],
             ...activateTab(state, newTab.id),
@@ -206,14 +189,13 @@ function openOrReuseHistoryTab<K extends OpenableHistoryTabKind>(
     }
 
     if (activeTab.kind === payload.kind) {
-        const typedActiveTab = activeTab as Extract<HistoryTab, { kind: K }>;
-        if (handler.matchesOpenTarget(typedActiveTab, payload)) {
+        if (handler.matchesOpenTarget(activeTab as never, payload as never)) {
             if (!handler.replaceCurrentEntry) {
                 return state;
             }
             const nextTab = handler.replaceCurrentEntry(
-                typedActiveTab,
-                payload,
+                activeTab as never,
+                payload as never,
             );
             return {
                 tabs: replaceTab(state.tabs, nextTab.id, nextTab),
@@ -224,7 +206,7 @@ function openOrReuseHistoryTab<K extends OpenableHistoryTabKind>(
     const kept = activeTab.history.slice(0, activeTab.historyIndex);
     kept.push(
         createHistorySnapshot(activeTab),
-        handler.createOpenEntry(payload),
+        handler.createOpenEntry(payload as never),
     );
     const nextTab = handler.buildFromHistory(
         activeTab.id,
@@ -313,6 +295,9 @@ function patchCurrentHistoryEntry(
     patch: (entry: TabHistoryEntry) => TabHistoryEntry,
 ): HistoryTab {
     const normalized = normalizeHistoryTab(tab);
+    if (!normalized) {
+        return tab;
+    }
     const currentEntry = normalized.history[normalized.historyIndex];
 
     if (!currentEntry) {

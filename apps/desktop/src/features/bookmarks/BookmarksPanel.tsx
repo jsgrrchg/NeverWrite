@@ -469,6 +469,7 @@ export function BookmarksPanel() {
                       }
                     : {
                           id: crypto.randomUUID(),
+                          kind: "note",
                           noteId: note.id,
                           title: note.title,
                           content,

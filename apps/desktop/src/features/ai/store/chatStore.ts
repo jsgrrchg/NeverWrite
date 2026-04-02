@@ -5068,7 +5068,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            let activeSession = get().sessionsById[activeSessionId] ?? null;
+            let activeSession: AIChatSession | null =
+                get().sessionsById[activeSessionId] ?? null;
             if (!activeSession) {
                 return;
             }

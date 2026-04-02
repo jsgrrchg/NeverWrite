@@ -13,6 +13,7 @@ describe("buildTabFileDragDetail", () => {
     it("builds a note mention payload for note tabs", () => {
         const tab: NoteTab = {
             id: "note-1",
+            kind: "note",
             noteId: "notes/daily.md",
             title: "Daily",
             content: "",
@@ -39,6 +40,7 @@ describe("buildTabFileDragDetail", () => {
     it("prefers a resolved absolute note path when available", () => {
         const tab: NoteTab = {
             id: "note-1",
+            kind: "note",
             noteId: "notes/daily.md",
             title: "Daily",
             content: "",

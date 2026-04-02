@@ -4,7 +4,7 @@ import {
     getCurrentWebviewWindow,
 } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
-import type { Tab } from "./store/editorStore";
+import type { Tab, TabInput } from "./store/editorStore";
 import { getPathBaseName } from "./utils/path";
 import { getManagedWindowChromeOptions } from "./utils/platform";
 import { readSearchParam } from "./utils/safeBrowser";
@@ -82,7 +82,7 @@ async function safeSetItem(key: string, value: string) {
 }
 
 export interface DetachedWindowPayload {
-    tabs: Tab[];
+    tabs: TabInput[];
     activeTabId: string | null;
     vaultPath: string | null;
 }
@@ -176,7 +176,7 @@ export function readDetachedWindowPayload(label: string) {
 }
 
 export function createDetachedWindowPayload(
-    tab: Tab,
+    tab: TabInput,
     vaultPath: string | null,
 ): DetachedWindowPayload {
     return {
