@@ -2534,6 +2534,16 @@ describe("chatStore", () => {
         const detachedSessionId = "persisted:history-42";
         const resumedSessionId = "codex-session-resumed";
         const messageId = "plan:resume";
+        const queuedMessage = createQueuedMessage(
+            "queued-resume",
+            "Queued after resume",
+        );
+        const editedQueuedMessage = createQueuedMessage(
+            "queued-edit",
+            "Edit after resume",
+        );
+        const draftParts = createTextParts("Resume draft");
+        const previousDraftParts = createTextParts("Previous draft");
         const activeSession =
             useChatStore.getState().sessionsById[getActiveSessionId()]!;
 
@@ -2569,6 +2579,58 @@ describe("chatStore", () => {
         useChatRowUiStore.getState().patchRow(detachedSessionId, messageId, {
             expanded: false,
         });
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "tab-detached",
+                    sessionId: detachedSessionId,
+                },
+            ],
+            activeTabId: "tab-detached",
+        });
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [detachedSessionId]: draftParts,
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [detachedSessionId]: [queuedMessage, editedQueuedMessage],
+            },
+            queuedMessageEditBySessionId: {
+                ...state.queuedMessageEditBySessionId,
+                [detachedSessionId]: {
+                    item: editedQueuedMessage,
+                    originalIndex: 1,
+                    previousItemId: queuedMessage.id,
+                    nextItemId: null,
+                    previousComposerParts: previousDraftParts,
+                    previousAttachments: [],
+                },
+            },
+            activeQueuedMessageBySessionId: {
+                ...state.activeQueuedMessageBySessionId,
+                [detachedSessionId]: {
+                    item: queuedMessage,
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: editedQueuedMessage.id,
+                },
+            },
+            pausedQueueBySessionId: {
+                ...state.pausedQueueBySessionId,
+                [detachedSessionId]: {
+                    reinstateAfterNextManualSend: [
+                        {
+                            item: editedQueuedMessage,
+                            originalIndex: 1,
+                            previousItemId: queuedMessage.id,
+                            nextItemId: null,
+                        },
+                    ],
+                },
+            },
+        }));
 
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_create_session") {
@@ -2608,6 +2670,76 @@ describe("chatStore", () => {
             useChatStore.getState().sessionsById[resumedSessionId]
                 ?.activePlanMessageId,
         ).toBe(messageId);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    resumedSessionId
+                ] ?? [],
+            ),
+        ).toBe("Resume draft");
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[resumedSessionId],
+        ).toEqual([queuedMessage, editedQueuedMessage]);
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[
+                resumedSessionId
+            ],
+        ).toMatchObject({
+            item: editedQueuedMessage,
+            previousComposerParts: previousDraftParts,
+        });
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                resumedSessionId
+            ],
+        ).toMatchObject({
+            item: queuedMessage,
+            nextItemId: editedQueuedMessage.id,
+        });
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[resumedSessionId],
+        ).toMatchObject({
+            reinstateAfterNextManualSend: [
+                expect.objectContaining({
+                    item: editedQueuedMessage,
+                }),
+            ],
+        });
+        expect(
+            useChatStore.getState().composerPartsBySessionId[detachedSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[
+                detachedSessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[
+                detachedSessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                detachedSessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[detachedSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().sessionsById[resumedSessionId],
+        ).toMatchObject({
+            isResumingSession: false,
+            runtimeState: "live",
+        });
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            {
+                id: "tab-detached",
+                sessionId: resumedSessionId,
+                historySessionId: "history-42",
+                runtimeId: "codex-acp",
+            },
+        ]);
     });
 
     it("adds the user message and turns the session into error when the runtime fails", async () => {
@@ -8248,6 +8380,100 @@ describe("chatStore", () => {
         ).toEqual(["low", "medium", "high", "xhigh"]);
     });
 
+    it('keeps setModel observably aligned with setConfigOption("model") for live ACP sessions', async () => {
+        await useChatStore.getState().initialize();
+
+        const firstSessionId = getActiveSessionId();
+        const firstSession =
+            useChatStore.getState().sessionsById[firstSessionId]!;
+        const secondSessionId = "codex-session-model-compare";
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_set_config_option") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (args.input as {
+                              session_id?: string;
+                              option_id?: string;
+                              value?: string;
+                          })
+                        : undefined;
+
+                if (input?.option_id === "model") {
+                    return {
+                        ...sessionPayload,
+                        session_id:
+                            input.session_id ?? sessionPayload.session_id,
+                        model_id: input.value ?? "test-model",
+                        config_options: [
+                            {
+                                ...acpConfigOptions[0],
+                                value: input.value ?? "test-model",
+                            },
+                            {
+                                ...acpConfigOptions[1],
+                                value: "low",
+                                options: [
+                                    { value: "low", label: "Low" },
+                                    { value: "medium", label: "Medium" },
+                                    { value: "high", label: "High" },
+                                    { value: "xhigh", label: "Extra High" },
+                                ],
+                            },
+                        ],
+                    };
+                }
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(firstSession, secondSessionId, {
+                historySessionId: "history-model-compare",
+                runtimeState: "live",
+                isPersistedSession: false,
+            }),
+            true,
+        );
+
+        await useChatStore.getState().setModel("wide-model", firstSessionId);
+        await useChatStore
+            .getState()
+            .setConfigOption("model", "wide-model", secondSessionId);
+
+        const modelSession =
+            useChatStore.getState().sessionsById[firstSessionId]!;
+        const configSession =
+            useChatStore.getState().sessionsById[secondSessionId]!;
+        const prefs = JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}");
+        const modelSelectionCalls = invokeMock.mock.calls.filter(
+            ([command, args]) =>
+                command === "ai_set_config_option" &&
+                typeof args === "object" &&
+                args !== null &&
+                "input" in args &&
+                (args.input as { option_id?: string; value?: string })
+                    .option_id === "model" &&
+                (args.input as { option_id?: string; value?: string }).value ===
+                    "wide-model",
+        );
+
+        expect(modelSession.modelId).toBe("wide-model");
+        expect(configSession.modelId).toBe("wide-model");
+        expect(modelSession.modeId).toBe(configSession.modeId);
+        expect(modelSession.configOptions).toEqual(configSession.configOptions);
+        expect(prefs).toMatchObject({
+            modelId: "wide-model",
+        });
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_set_model",
+            ),
+        ).toHaveLength(0);
+        expect(modelSelectionCalls).toHaveLength(2);
+    });
+
     it("preserves a fresher session-updated model change when ai_set_config_option returns stale data", async () => {
         await useChatStore.getState().initialize();
 
@@ -8829,6 +9055,262 @@ describe("chatStore", () => {
         ).toHaveLength(3);
     });
 
+    it("resumes a persisted session before applying a config option mutation", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const persistedSessionId = "codex-session-restored-option";
+        const resumedSessionId = "codex-session-restored-option-live";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+        const resumeSession = vi.fn(async (sessionId: string) => {
+            const persistedSession =
+                useChatStore.getState().sessionsById[sessionId]!;
+            useChatStore.setState((state) => {
+                const resumedSession = cloneSessionForTest(
+                    activeSession,
+                    resumedSessionId,
+                    {
+                        historySessionId:
+                            persistedSession.historySessionId ?? sessionId,
+                        runtimeState: "live",
+                        isPersistedSession: false,
+                    },
+                );
+                const nextSessionsById = { ...state.sessionsById };
+                delete nextSessionsById[sessionId];
+                nextSessionsById[resumedSessionId] = resumedSession;
+
+                return {
+                    sessionsById: nextSessionsById,
+                    sessionOrder: state.sessionOrder.map((id) =>
+                        id === sessionId ? resumedSessionId : id,
+                    ),
+                    activeSessionId:
+                        state.activeSessionId === sessionId
+                            ? resumedSessionId
+                            : state.activeSessionId,
+                };
+            });
+
+            return resumedSessionId;
+        });
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, persistedSessionId, {
+                historySessionId: "history-restored-option",
+                runtimeState: "persisted_only",
+                isPersistedSession: true,
+                models: [],
+                modes: [],
+                configOptions: [],
+            }),
+            true,
+        );
+        useChatStore.setState({ resumeSession });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_set_config_option") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (args.input as {
+                              session_id?: string;
+                              option_id?: string;
+                              value?: string;
+                          })
+                        : undefined;
+
+                expect(input).toMatchObject({
+                    session_id: resumedSessionId,
+                    option_id: "reasoning_effort",
+                    value: "high",
+                });
+
+                return {
+                    ...sessionPayload,
+                    session_id: resumedSessionId,
+                    config_options: [
+                        {
+                            ...acpConfigOptions[0],
+                            value: "test-model",
+                        },
+                        {
+                            ...acpConfigOptions[1],
+                            value: "high",
+                        },
+                    ],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .setConfigOption("reasoning_effort", "high", persistedSessionId);
+
+        const restored = useChatStore.getState().sessionsById[resumedSessionId];
+        const prefs = JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}");
+
+        expect(resumeSession).toHaveBeenCalledWith(persistedSessionId);
+        expect(useChatStore.getState().sessionsById[persistedSessionId]).toBe(
+            undefined,
+        );
+        expect(
+            restored?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+        expect(prefs).toMatchObject({
+            configOptions: {
+                reasoning_effort: "high",
+            },
+        });
+    });
+
+    it("does not simulate a persisted model change when resumeSession cannot make it live", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const persistedSessionId = "codex-session-model-resume-failure";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+        const resumeSession = vi.fn(async () => null);
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, persistedSessionId, {
+                historySessionId: "history-model-resume-failure",
+                runtimeState: "persisted_only",
+                isPersistedSession: true,
+                modelId: "test-model",
+                models: [],
+                modes: [],
+                configOptions: [],
+            }),
+            true,
+        );
+        useChatStore.setState({ resumeSession });
+
+        await useChatStore
+            .getState()
+            .setModel("wide-model", persistedSessionId);
+
+        expect(resumeSession).toHaveBeenCalledWith(persistedSessionId);
+        expect(
+            useChatStore.getState().sessionsById[persistedSessionId],
+        ).toMatchObject({
+            sessionId: persistedSessionId,
+            runtimeState: "persisted_only",
+            modelId: "test-model",
+        });
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) =>
+                    command === "ai_set_model" ||
+                    command === "ai_set_config_option",
+            ),
+        ).toHaveLength(0);
+        expect(localStorage.getItem(AI_PREFS_KEY)).toBeNull();
+    });
+
+    it("does not simulate a resumed config option change when the remote mutation fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const persistedSessionId = "codex-session-option-remote-failure";
+        const resumedSessionId = "codex-session-option-remote-failure-live";
+        const activeSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+        const resumeSession = vi.fn(async (sessionId: string) => {
+            const persistedSession =
+                useChatStore.getState().sessionsById[sessionId]!;
+            useChatStore.setState((state) => {
+                const resumedSession = cloneSessionForTest(
+                    activeSession,
+                    resumedSessionId,
+                    {
+                        historySessionId:
+                            persistedSession.historySessionId ?? sessionId,
+                        runtimeState: "live",
+                        isPersistedSession: false,
+                    },
+                );
+                const nextSessionsById = { ...state.sessionsById };
+                delete nextSessionsById[sessionId];
+                nextSessionsById[resumedSessionId] = resumedSession;
+
+                return {
+                    sessionsById: nextSessionsById,
+                    sessionOrder: state.sessionOrder.map((id) =>
+                        id === sessionId ? resumedSessionId : id,
+                    ),
+                    activeSessionId:
+                        state.activeSessionId === sessionId
+                            ? resumedSessionId
+                            : state.activeSessionId,
+                };
+            });
+
+            return resumedSessionId;
+        });
+
+        useChatStore.getState().upsertSession(
+            cloneSessionForTest(activeSession, persistedSessionId, {
+                historySessionId: "history-option-remote-failure",
+                runtimeState: "persisted_only",
+                isPersistedSession: true,
+                models: [],
+                modes: [],
+                configOptions: [],
+            }),
+            true,
+        );
+        useChatStore.setState({ resumeSession });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_set_config_option") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (args.input as {
+                              session_id?: string;
+                              option_id?: string;
+                              value?: string;
+                          })
+                        : undefined;
+
+                expect(input).toMatchObject({
+                    session_id: resumedSessionId,
+                    option_id: "reasoning_effort",
+                    value: "high",
+                });
+                throw new Error("remote option failure");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .setConfigOption("reasoning_effort", "high", persistedSessionId);
+
+        const restored =
+            useChatStore.getState().sessionsById[resumedSessionId] ?? null;
+        const prefs = JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}");
+
+        expect(resumeSession).toHaveBeenCalledWith(persistedSessionId);
+        expect(restored?.runtimeState).toBe("live");
+        expect(
+            restored?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("medium");
+        expect(restored?.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "remote option failure",
+        });
+        expect(prefs.configOptions ?? {}).toEqual({});
+    });
+
     it("supports targeting a non-active live session for send, user input and stop actions", async () => {
         await useChatStore.getState().initialize();
 
@@ -9329,6 +9811,82 @@ describe("chatStore", () => {
         });
     });
 
+    it("resolveReviewHunks marks rejected hunks as conflict when the applied file changed on disk", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-hunk-conflict",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc",
+                    new_text: "aaa\nBBB\nccc",
+                },
+            ],
+        });
+        useEditorStore.getState().openReview(activeSessionId, {
+            title: "Review Codex",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        const projection = buildReviewProjection(entry);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return "different-hash";
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                entry.identityKey,
+                "rejected",
+                entry.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [remaining] = getVisibleBuffer(activeSessionId);
+        expect(remaining).toMatchObject({
+            identityKey: entry.identityKey,
+            conflictHash: "different-hash",
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog
+                ?.lastRejectUndo,
+        ).toBeNull();
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === activeSessionId,
+                ),
+        ).toBeDefined();
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_restore_text_file",
+            expect.anything(),
+        );
+    });
+
     it("resolveReviewHunks accepts only the selected accumulated hunk and preserves later agent hunks", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -9415,6 +9973,49 @@ describe("chatStore", () => {
             "aaXa\nBBB\nccc\nDDD",
         );
         expect(buildReviewProjection(remaining!).hunks).toHaveLength(1);
+    });
+
+    it("keeps move-only tracked files pending after accepting the last text hunk", async () => {
+        const file = createTrackedFile(
+            "/notes/file-renamed.md",
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+            {
+                originPath: "/notes/file.md",
+                previousPath: "/notes/file.md",
+                reviewState: "finalized",
+            },
+        );
+        const session = createSessionWithTrackedFiles("session-move-only", [
+            file,
+        ]);
+        const projection = buildReviewProjection(file);
+
+        useChatStore.setState({
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        });
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                session.sessionId,
+                file.identityKey,
+                "accepted",
+                file.version,
+                [projection.hunks[0]!.id],
+            );
+
+        const [remaining] = getVisibleBuffer(session.sessionId);
+        expect(remaining).toMatchObject({
+            path: "/notes/file-renamed.md",
+            originPath: "/notes/file.md",
+            previousPath: "/notes/file.md",
+        });
+        expect(remaining?.unreviewedEdits).toEqual(emptyPatch());
+        expect(buildReviewProjection(remaining!).hunks).toHaveLength(0);
     });
 
     it("resolveReviewHunks does not depend on the visual projection to accept hunks", async () => {
