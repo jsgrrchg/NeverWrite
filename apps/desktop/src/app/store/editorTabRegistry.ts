@@ -12,7 +12,6 @@ import {
     ensureNoteTabHistory,
     ensurePdfTabDefaults,
     isFileTab,
-    isMapTab,
     isNoteTab,
     isPdfTab,
     type FileHistoryEntry,
@@ -30,7 +29,6 @@ import {
     type PdfHistoryEntry,
     type PdfTab,
     type PdfTabInput,
-    type PdfViewMode,
     type TabHistoryEntry,
 } from "./editorTabs";
 
@@ -330,7 +328,7 @@ export const historyTabHandlers: {
 };
 
 export function getHistoryTabHandler<K extends HistoryTabKind>(kind: K) {
-    return historyTabHandlers[kind];
+    return historyTabHandlers[kind] as HistoryTabHandler<K>;
 }
 
 export function getHistoryTabKind(tab: HistoryTabInput): HistoryTabKind {
@@ -342,10 +340,10 @@ export function getHistoryTabKind(tab: HistoryTabInput): HistoryTabKind {
 
 export function normalizeHistoryTab(tab: HistoryTabInput): HistoryTab | null {
     const kind = getHistoryTabKind(tab);
-    const handler = getHistoryTabHandler(kind);
-    const normalized = handler.normalizeTab(
-        tab as HistoryTabInputByKind<typeof kind>,
-    );
+    const handler = getHistoryTabHandler(kind) as HistoryTabHandler<
+        typeof kind
+    >;
+    const normalized = handler.normalizeTab(tab as never);
     return handler.isValidTab && !handler.isValidTab(normalized)
         ? null
         : normalized;
@@ -358,7 +356,5 @@ export function getOpenableHistoryTabHandler<K extends OpenableHistoryTabKind>(
 }
 
 export function createHistorySnapshot(tab: HistoryTab): TabHistoryEntry {
-    return getHistoryTabHandler(tab.kind).entryFromTab(
-        tab as HistoryTabByKind<typeof tab.kind>,
-    );
+    return getHistoryTabHandler(tab.kind).entryFromTab(tab as never);
 }

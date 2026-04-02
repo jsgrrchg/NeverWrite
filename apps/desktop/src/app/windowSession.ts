@@ -7,7 +7,7 @@ import {
     safeStorageRemoveItem,
     safeStorageSetItem,
 } from "./utils/safeStorage";
-import type { Tab } from "./store/editorStore";
+import type { TabInput } from "./store/editorStore";
 
 const WINDOW_SESSION_DESCRIPTOR_PREFIX = "vaultai:window-session:";
 const WINDOW_SESSION_SNAPSHOT_KEY = "vaultai:window-session-snapshot";
@@ -50,7 +50,7 @@ export function buildWindowSessionEntry(args: {
     label: string;
     windowMode: "main" | "note" | "settings";
     vaultPath: string | null;
-    tabs: Tab[];
+    tabs: TabInput[];
     activeTabId: string | null;
 }): PersistedWindowSessionEntry | null {
     const { label, windowMode, vaultPath, tabs, activeTabId } = args;

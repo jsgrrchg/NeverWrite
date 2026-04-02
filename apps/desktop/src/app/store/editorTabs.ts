@@ -44,16 +44,32 @@ export type TabHistoryEntry =
     | FileHistoryEntry
     | MapHistoryEntry;
 
-export type NoteHistoryEntryInput = Omit<NoteHistoryEntry, "kind"> & {
+export type NoteHistoryEntryInput = Omit<
+    NoteHistoryEntry,
+    "kind" | "content"
+> & {
     kind?: "note";
+    content?: string;
 };
 
-export type PdfHistoryEntryInput = Omit<PdfHistoryEntry, "kind"> & {
+export type PdfHistoryEntryInput = Omit<
+    PdfHistoryEntry,
+    "kind" | "page" | "zoom" | "viewMode"
+> & {
     kind?: "pdf";
+    page?: number;
+    zoom?: number;
+    viewMode?: PdfViewMode;
 };
 
-export type FileHistoryEntryInput = Omit<FileHistoryEntry, "kind"> & {
+export type FileHistoryEntryInput = Omit<
+    FileHistoryEntry,
+    "kind" | "content" | "mimeType" | "viewer"
+> & {
     kind?: "file";
+    content?: string;
+    mimeType?: string | null;
+    viewer?: FileViewerMode;
 };
 
 export type MapHistoryEntryInput = Omit<MapHistoryEntry, "kind"> & {
@@ -135,17 +151,31 @@ export type NoteTabInput = Omit<
     historyIndex?: number;
 };
 
-export type PdfTabInput = Omit<PdfTab, "history" | "historyIndex"> & {
+export type PdfTabInput = Omit<
+    PdfTab,
+    "kind" | "history" | "historyIndex" | "page" | "zoom" | "viewMode"
+> & {
+    kind?: "pdf";
+    page?: number;
+    zoom?: number;
+    viewMode?: PdfViewMode;
     history?: TabHistoryEntryInput[];
     historyIndex?: number;
 };
 
-export type FileTabInput = Omit<FileTab, "history" | "historyIndex"> & {
+export type FileTabInput = Omit<
+    FileTab,
+    "kind" | "history" | "historyIndex" | "mimeType" | "viewer"
+> & {
+    kind?: "file";
+    mimeType?: string | null;
+    viewer?: FileViewerMode;
     history?: TabHistoryEntryInput[];
     historyIndex?: number;
 };
 
-export type MapTabInput = Omit<MapTab, "history" | "historyIndex"> & {
+export type MapTabInput = Omit<MapTab, "kind" | "history" | "historyIndex"> & {
+    kind?: "map";
     history?: TabHistoryEntryInput[];
     historyIndex?: number;
 };
@@ -171,6 +201,19 @@ export type NavigableHistoryTabInput =
     | FileTabInput;
 export type TransientTab = ReviewTab | GraphTab;
 export type ResourceBackedTab = NoteTab | FileTab;
+export type TabCloseReason =
+    | "user"
+    | "bulk-user"
+    | "delete"
+    | "cleanup"
+    | "detach"
+    | "stale-doc"
+    | "dispatch-failed";
+
+export interface RecentlyClosedTab {
+    tab: Tab;
+    index: number;
+}
 
 type AnyTabLike = Tab | TabInput;
 
@@ -384,7 +427,7 @@ export function normalizeHistoryEntry(
         return createNoteHistoryEntry(
             "noteId" in entry ? entry.noteId : "",
             entry.title,
-            "content" in entry ? entry.content : "",
+            "content" in entry ? (entry.content ?? "") : "",
         );
     }
 
@@ -415,7 +458,7 @@ export function normalizeHistoryEntry(
         "relativePath" in entry ? entry.relativePath : "",
         entry.title,
         path,
-        "content" in entry ? entry.content : "",
+        "content" in entry ? (entry.content ?? "") : "",
         mimeType,
         "viewer" in entry
             ? (entry.viewer ?? inferFileViewer(path, mimeType))

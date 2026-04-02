@@ -81,6 +81,7 @@ describe("editorReviewSync", () => {
             noteId: "notes/current",
             openTab: {
                 id: "tab-1",
+                kind: "note",
                 noteId: "notes/current",
                 title: "Current",
                 content: "old body",
@@ -114,6 +115,7 @@ describe("editorReviewSync", () => {
             noteId: "notes/current",
             openTab: {
                 id: "tab-1",
+                kind: "note",
                 noteId: "notes/current",
                 title: "Current",
                 content: "old body",
