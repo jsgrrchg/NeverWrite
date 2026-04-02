@@ -121,6 +121,17 @@ beforeEach(() => {
         activationHistory: [],
         tabNavigationHistory: [],
         tabNavigationIndex: -1,
+        pendingReveal: null,
+        pendingSelectionReveal: null,
+        currentSelection: null,
+        _pendingForceReloads: new Set(),
+        _pendingForceFileReloads: new Set(),
+        _noteReloadVersions: {},
+        _fileReloadVersions: {},
+        _noteReloadMetadata: {},
+        _fileReloadMetadata: {},
+        noteExternalConflicts: new Set(),
+        fileExternalConflicts: new Set(),
     });
     useSettingsStore.getState().reset();
     useVaultStore.setState({ vaultPath: null });
@@ -1640,6 +1651,74 @@ describe("editorStore tab management", () => {
             origin: "external",
             revision: 3,
             opId: "external-3",
+        });
+    });
+
+    it("updates title and content when clean file tabs reload from disk", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeFileTab({
+                    id: "file-tab-a",
+                    relativePath: "src/a.ts",
+                    title: "old.ts",
+                    path: "/vault/src/a.ts",
+                    content: "old body",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                }),
+            ],
+            activeTabId: "file-tab-a",
+        });
+
+        useEditorStore.getState().reloadFileContent("src/a.ts", {
+            title: "new.ts",
+            content: "new body",
+        });
+
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            title: "new.ts",
+            content: "new body",
+        });
+        expect(useEditorStore.getState()._fileReloadVersions["src/a.ts"]).toBe(
+            1,
+        );
+    });
+
+    it("tracks forced reload state for file tabs through the direct API", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeFileTab({
+                    id: "file-tab-a",
+                    relativePath: "src/a.ts",
+                    title: "a.ts",
+                    path: "/vault/src/a.ts",
+                    content: "before",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                }),
+            ],
+            activeTabId: "file-tab-a",
+        });
+
+        useEditorStore.getState().forceReloadFileContent("src/a.ts", {
+            title: "a.ts",
+            content: "after",
+            origin: "external",
+            revision: 7,
+            opId: "external-7",
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.tabs[0]).toMatchObject({
+            title: "a.ts",
+            content: "after",
+        });
+        expect(state._pendingForceFileReloads.has("src/a.ts")).toBe(true);
+        expect(state._fileReloadVersions["src/a.ts"]).toBe(1);
+        expect(state._fileReloadMetadata["src/a.ts"]).toMatchObject({
+            origin: "external",
+            revision: 7,
+            opId: "external-7",
         });
     });
 
