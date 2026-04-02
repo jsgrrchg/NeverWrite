@@ -2517,6 +2517,33 @@ function markTrackedConflict(
     };
 }
 
+function markTrackedFileConflictAndPersist(
+    sessionId: string,
+    identityKey: string,
+    currentHash: string | null,
+) {
+    useChatStore.setState((state) => {
+        const currentSession = state.sessionsById[sessionId];
+        if (!currentSession) return state;
+
+        return {
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: markTrackedConflict(
+                    currentSession,
+                    identityKey,
+                    currentHash,
+                ),
+            },
+        };
+    });
+
+    const updatedSession = useChatStore.getState().sessionsById[sessionId];
+    if (updatedSession) {
+        void persistSession(updatedSession);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ActionLog helpers
 // ---------------------------------------------------------------------------
@@ -6919,26 +6946,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const restoreCheck = await hasConflict(vaultPath, tracked);
 
                 if (restoreCheck.conflict) {
-                    set((state) => {
-                        const currentSession = state.sessionsById[sessionId];
-                        if (!currentSession) return state;
-
-                        return {
-                            sessionsById: {
-                                ...state.sessionsById,
-                                [sessionId]: markTrackedConflict(
-                                    currentSession,
-                                    identityKey,
-                                    restoreCheck.currentHash,
-                                ),
-                            },
-                        };
-                    });
-
-                    const updatedSession = get().sessionsById[sessionId];
-                    if (updatedSession) {
-                        void persistSession(updatedSession);
-                    }
+                    markTrackedFileConflictAndPersist(
+                        sessionId,
+                        identityKey,
+                        restoreCheck.currentHash,
+                    );
                     return;
                 }
 
@@ -7026,26 +7038,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const restoreCheck = await hasConflict(vaultPath, tracked);
 
                 if (restoreCheck.conflict) {
-                    set((state) => {
-                        const currentSession = state.sessionsById[sessionId];
-                        if (!currentSession) return state;
-
-                        return {
-                            sessionsById: {
-                                ...state.sessionsById,
-                                [sessionId]: markTrackedConflict(
-                                    currentSession,
-                                    identityKey,
-                                    restoreCheck.currentHash,
-                                ),
-                            },
-                        };
-                    });
-
-                    const updatedSession = get().sessionsById[sessionId];
-                    if (updatedSession) {
-                        void persistSession(updatedSession);
-                    }
+                    markTrackedFileConflictAndPersist(
+                        sessionId,
+                        identityKey,
+                        restoreCheck.currentHash,
+                    );
                     return;
                 }
 
@@ -7343,27 +7340,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const restoreCheck = await hasConflict(vaultPath, tracked);
 
                     if (restoreCheck.conflict) {
-                        set((state) => {
-                            const currentSession =
-                                state.sessionsById[sessionId];
-                            if (!currentSession) return state;
-
-                            return {
-                                sessionsById: {
-                                    ...state.sessionsById,
-                                    [sessionId]: markTrackedConflict(
-                                        currentSession,
-                                        identityKey,
-                                        restoreCheck.currentHash,
-                                    ),
-                                },
-                            };
-                        });
-
-                        const updatedSession = get().sessionsById[sessionId];
-                        if (updatedSession) {
-                            void persistSession(updatedSession);
-                        }
+                        markTrackedFileConflictAndPersist(
+                            sessionId,
+                            identityKey,
+                            restoreCheck.currentHash,
+                        );
                         return;
                     }
                 }
