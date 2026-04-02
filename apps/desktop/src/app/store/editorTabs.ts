@@ -742,16 +742,3 @@ export function ensureNoteTabHistory(tab: NoteTabInput): NoteTab {
         0,
     ) as NoteTab;
 }
-
-export function normalizeHistoryTab(tab: HistoryTabInput): HistoryTab {
-    if (isNoteTab(tab)) {
-        return ensureNoteTabHistory(tab);
-    }
-    if (isPdfTab(tab)) {
-        return ensurePdfTabDefaults(tab);
-    }
-    if (isFileTab(tab)) {
-        return ensureFileTabDefaults(tab);
-    }
-    return ensureMapTabDefaults(tab);
-}

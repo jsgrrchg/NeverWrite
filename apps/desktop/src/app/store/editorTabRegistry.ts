@@ -1,0 +1,270 @@
+import {
+    buildTabFromHistory,
+    createFileHistoryEntry,
+    createFileTab,
+    createHistoryEntryFromTab,
+    createNoteHistoryEntry,
+    createNoteTab,
+    createPdfHistoryEntry,
+    createPdfTab,
+    ensureFileTabDefaults,
+    ensureMapTabDefaults,
+    ensureNoteTabHistory,
+    ensurePdfTabDefaults,
+    isFileTab,
+    isMapTab,
+    isNoteTab,
+    isPdfTab,
+    type FileHistoryEntry,
+    type FileTab,
+    type FileTabInput,
+    type FileViewerMode,
+    type HistoryTab,
+    type HistoryTabInput,
+    type MapHistoryEntry,
+    type MapTab,
+    type MapTabInput,
+    type NoteHistoryEntry,
+    type NoteTab,
+    type NoteTabInput,
+    type PdfHistoryEntry,
+    type PdfTab,
+    type PdfTabInput,
+    type PdfViewMode,
+    type TabHistoryEntry,
+} from "./editorTabs";
+
+interface HistoryTabByKindMap {
+    note: NoteTab;
+    pdf: PdfTab;
+    file: FileTab;
+    map: MapTab;
+}
+
+interface HistoryTabInputByKindMap {
+    note: NoteTabInput;
+    pdf: PdfTabInput;
+    file: FileTabInput;
+    map: MapTabInput;
+}
+
+interface HistoryEntryByKindMap {
+    note: NoteHistoryEntry;
+    pdf: PdfHistoryEntry;
+    file: FileHistoryEntry;
+    map: MapHistoryEntry;
+}
+
+interface OpenPayloadByKindMap {
+    note: {
+        kind: "note";
+        noteId: string;
+        title: string;
+        content: string;
+    };
+    pdf: {
+        kind: "pdf";
+        entryId: string;
+        title: string;
+        path: string;
+    };
+    file: {
+        kind: "file";
+        relativePath: string;
+        title: string;
+        path: string;
+        content: string;
+        mimeType: string | null;
+        viewer: FileViewerMode;
+    };
+    map: {
+        kind: "map";
+        relativePath: string;
+        title: string;
+    };
+}
+
+export type HistoryTabKind = keyof HistoryTabByKindMap;
+export type OpenableHistoryTabKind = Exclude<HistoryTabKind, "map">;
+export type HistoryTabByKind<K extends HistoryTabKind> = HistoryTabByKindMap[K];
+export type HistoryTabInputByKind<K extends HistoryTabKind> =
+    HistoryTabInputByKindMap[K];
+export type HistoryEntryByKind<K extends HistoryTabKind> =
+    HistoryEntryByKindMap[K];
+export type HistoryOpenPayload<K extends HistoryTabKind> = OpenPayloadByKindMap[K];
+export type OpenableHistoryPayload = HistoryOpenPayload<OpenableHistoryTabKind>;
+
+export interface HistoryTabHandler<K extends HistoryTabKind> {
+    kind: K;
+    normalizeTab: (input: HistoryTabInputByKind<K>) => HistoryTabByKind<K>;
+    createInitialTab: (payload: HistoryOpenPayload<K>) => HistoryTabByKind<K>;
+    createOpenEntry: (payload: HistoryOpenPayload<K>) => HistoryEntryByKind<K>;
+    entryFromTab: (tab: HistoryTabByKind<K>) => HistoryEntryByKind<K>;
+    buildFromHistory: (
+        id: string,
+        history: TabHistoryEntry[],
+        historyIndex: number,
+    ) => HistoryTabByKind<K>;
+    matchesOpenTarget: (
+        tab: HistoryTabByKind<K>,
+        payload: HistoryOpenPayload<K>,
+    ) => boolean;
+    replaceCurrentEntry?: (
+        tab: HistoryTabByKind<K>,
+        payload: HistoryOpenPayload<K>,
+    ) => HistoryTabByKind<K>;
+    isValidTab?: (tab: HistoryTabByKind<K>) => boolean;
+}
+
+const noteTabHandler: HistoryTabHandler<"note"> = {
+    kind: "note",
+    normalizeTab: (input) => ensureNoteTabHistory(input),
+    createInitialTab: (payload) =>
+        createNoteTab(payload.noteId, payload.title, payload.content),
+    createOpenEntry: (payload) =>
+        createNoteHistoryEntry(payload.noteId, payload.title, payload.content),
+    entryFromTab: (tab) => createHistoryEntryFromTab(tab) as NoteHistoryEntry,
+    buildFromHistory: (id, history, historyIndex) =>
+        buildTabFromHistory(id, history, historyIndex) as NoteTab,
+    matchesOpenTarget: (tab, payload) => tab.noteId === payload.noteId,
+    replaceCurrentEntry: (tab, payload) =>
+        buildTabFromHistory(
+            tab.id,
+            tab.history.map((entry, index) =>
+                index === tab.historyIndex && entry.kind === "note"
+                    ? createNoteHistoryEntry(
+                          payload.noteId,
+                          payload.title,
+                          payload.content,
+                      )
+                    : entry,
+            ),
+            tab.historyIndex,
+        ) as NoteTab,
+};
+
+const pdfTabHandler: HistoryTabHandler<"pdf"> = {
+    kind: "pdf",
+    normalizeTab: (input) => ensurePdfTabDefaults(input),
+    createInitialTab: (payload) =>
+        createPdfTab(payload.entryId, payload.title, payload.path),
+    createOpenEntry: (payload) =>
+        createPdfHistoryEntry(
+            payload.entryId,
+            payload.title,
+            payload.path,
+            1,
+            1,
+            "continuous",
+        ),
+    entryFromTab: (tab) => createHistoryEntryFromTab(tab) as PdfHistoryEntry,
+    buildFromHistory: (id, history, historyIndex) =>
+        buildTabFromHistory(id, history, historyIndex) as PdfTab,
+    matchesOpenTarget: (tab, payload) => tab.entryId === payload.entryId,
+};
+
+const fileTabHandler: HistoryTabHandler<"file"> = {
+    kind: "file",
+    normalizeTab: (input) => ensureFileTabDefaults(input),
+    createInitialTab: (payload) =>
+        createFileTab(
+            payload.relativePath,
+            payload.title,
+            payload.path,
+            payload.content,
+            payload.mimeType,
+            payload.viewer,
+        ),
+    createOpenEntry: (payload) =>
+        createFileHistoryEntry(
+            payload.relativePath,
+            payload.title,
+            payload.path,
+            payload.content,
+            payload.mimeType,
+            payload.viewer,
+        ),
+    entryFromTab: (tab) => createHistoryEntryFromTab(tab) as FileHistoryEntry,
+    buildFromHistory: (id, history, historyIndex) =>
+        buildTabFromHistory(id, history, historyIndex) as FileTab,
+    matchesOpenTarget: (tab, payload) =>
+        tab.relativePath === payload.relativePath,
+    replaceCurrentEntry: (tab, payload) =>
+        buildTabFromHistory(
+            tab.id,
+            tab.history.map((entry, index) =>
+                index === tab.historyIndex && entry.kind === "file"
+                    ? createFileHistoryEntry(
+                          payload.relativePath,
+                          payload.title,
+                          payload.path,
+                          payload.content,
+                          payload.mimeType,
+                          payload.viewer,
+                      )
+                    : entry,
+            ),
+            tab.historyIndex,
+        ) as FileTab,
+};
+
+const mapTabHandler: HistoryTabHandler<"map"> = {
+    kind: "map",
+    normalizeTab: (input) => ensureMapTabDefaults(input),
+    createInitialTab: (payload) => ({
+        id: crypto.randomUUID(),
+        kind: "map",
+        relativePath: payload.relativePath,
+        title: payload.title,
+        history: [],
+        historyIndex: -1,
+    }),
+    createOpenEntry: (payload) => ({
+        kind: "map",
+        relativePath: payload.relativePath,
+        title: payload.title,
+    }),
+    entryFromTab: (tab) => createHistoryEntryFromTab(tab) as MapHistoryEntry,
+    buildFromHistory: (id, history, historyIndex) =>
+        buildTabFromHistory(id, history, historyIndex) as MapTab,
+    matchesOpenTarget: (tab, payload) =>
+        tab.relativePath === payload.relativePath,
+    isValidTab: (tab) => tab.relativePath.length > 0,
+};
+
+export const historyTabHandlers: {
+    [K in HistoryTabKind]: HistoryTabHandler<K>;
+} = {
+    note: noteTabHandler,
+    pdf: pdfTabHandler,
+    file: fileTabHandler,
+    map: mapTabHandler,
+};
+
+export function getHistoryTabHandler<K extends HistoryTabKind>(kind: K) {
+    return historyTabHandlers[kind];
+}
+
+export function getHistoryTabKind(tab: HistoryTabInput): HistoryTabKind {
+    if (isNoteTab(tab)) return "note";
+    if (isPdfTab(tab)) return "pdf";
+    if (isFileTab(tab)) return "file";
+    return "map";
+}
+
+export function normalizeHistoryTab(tab: HistoryTabInput): HistoryTab | null {
+    const kind = getHistoryTabKind(tab);
+    const handler = getHistoryTabHandler(kind);
+    const normalized = handler.normalizeTab(
+        tab as HistoryTabInputByKind<typeof kind>,
+    );
+    return handler.isValidTab && !handler.isValidTab(normalized)
+        ? null
+        : normalized;
+}
+
+export function getOpenableHistoryTabHandler<K extends OpenableHistoryTabKind>(
+    kind: K,
+) {
+    return getHistoryTabHandler(kind);
+}

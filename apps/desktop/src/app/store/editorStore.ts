@@ -2,18 +2,10 @@ import { create } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import {
     buildTabFromHistory,
-    createFileHistoryEntry,
-    createFileTab,
     createGraphTab,
-    createHistoryEntryFromTab,
-    createNoteHistoryEntry,
-    createNoteTab,
-    createPdfHistoryEntry,
-    createPdfTab,
     createMapTab,
     ensureFileTabDefaults,
     ensureFileTabHistory,
-    ensureMapTabDefaults,
     ensureNoteTabHistory,
     ensurePdfTabDefaults,
     isFileTab,
@@ -23,11 +15,11 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
-    normalizeHistoryTab,
     type FileHistoryEntry,
     type FileTab,
     type FileTabInput,
     type FileViewerMode,
+    type HistoryTab,
     type GraphTab,
     type MapTab,
     type MapTabInput,
@@ -45,6 +37,14 @@ import {
     type TabInput,
     type TabCloseReason,
 } from "./editorTabs";
+import {
+    getHistoryTabHandler,
+    getOpenableHistoryTabHandler,
+    normalizeHistoryTab,
+    type HistoryTabHandler,
+    type OpenableHistoryPayload,
+    type OpenableHistoryTabKind,
+} from "./editorTabRegistry";
 import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { useSettingsStore } from "./settingsStore";
@@ -199,6 +199,119 @@ function activateTab(
         tabNavigationHistory: navigation.history,
         tabNavigationIndex: navigation.index,
     };
+}
+
+function replaceTab(tabs: Tab[], tabId: string, nextTab: Tab) {
+    return tabs.map((tab) => (tab.id === tabId ? nextTab : tab));
+}
+
+function getReusableHistoryTab(
+    state: Pick<EditorStore, "tabs" | "activeTabId">,
+): HistoryTab | null {
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    if (!activeTab || !isHistoryTab(activeTab) || isMapTab(activeTab)) {
+        return null;
+    }
+    return normalizeHistoryTab(activeTab);
+}
+
+function createHistorySnapshot(tab: HistoryTab): TabHistoryEntry {
+    if (isNoteTab(tab)) {
+        return getHistoryTabHandler("note").entryFromTab(tab);
+    }
+    if (isPdfTab(tab)) {
+        return getHistoryTabHandler("pdf").entryFromTab(tab);
+    }
+    if (isFileTab(tab)) {
+        return getHistoryTabHandler("file").entryFromTab(tab);
+    }
+    return getHistoryTabHandler("map").entryFromTab(tab);
+}
+
+function openOrReuseHistoryTab<K extends OpenableHistoryTabKind>(
+    state: Pick<
+        EditorStore,
+        | "tabs"
+        | "activeTabId"
+        | "activationHistory"
+        | "tabNavigationHistory"
+        | "tabNavigationIndex"
+    >,
+    payload: Extract<OpenableHistoryPayload, { kind: K }>,
+) {
+    const handler = getOpenableHistoryTabHandler(
+        payload.kind,
+    ) as HistoryTabHandler<K>;
+
+    if (getTabOpenBehavior() === "new_tab") {
+        const newTab = handler.createInitialTab(payload);
+        return {
+            tabs: [...state.tabs, newTab],
+            ...activateTab(state, newTab.id),
+        };
+    }
+
+    const activeTab = getReusableHistoryTab(state);
+    if (!activeTab) {
+        const newTab = handler.createInitialTab(payload);
+        return {
+            tabs: [...state.tabs, newTab],
+            ...activateTab(state, newTab.id),
+        };
+    }
+
+    if (activeTab.kind === payload.kind) {
+        const typedActiveTab = activeTab as Extract<HistoryTab, { kind: K }>;
+        if (handler.matchesOpenTarget(typedActiveTab, payload)) {
+            if (!handler.replaceCurrentEntry) {
+                return state;
+            }
+            const nextTab = handler.replaceCurrentEntry(
+                typedActiveTab,
+                payload,
+            );
+            return {
+                tabs: replaceTab(state.tabs, nextTab.id, nextTab),
+            };
+        }
+    }
+
+    const kept = activeTab.history.slice(0, activeTab.historyIndex);
+    kept.push(
+        createHistorySnapshot(activeTab),
+        handler.createOpenEntry(payload),
+    );
+    const nextTab = handler.buildFromHistory(
+        activeTab.id,
+        kept,
+        kept.length - 1,
+    );
+    return {
+        tabs: replaceTab(state.tabs, activeTab.id, nextTab),
+    };
+}
+
+function normalizeHydratedTab(tab: TabInput): Tab | null {
+    if (isReviewTab(tab)) {
+        return null;
+    }
+    if (isHistoryTab(tab)) {
+        return normalizeHistoryTab(tab);
+    }
+    if (isGraphTab(tab)) {
+        return tab;
+    }
+    return null;
+}
+
+function normalizeExternalTab(tab: TabInput): Tab | null {
+    if (isHistoryTab(tab)) {
+        return normalizeHistoryTab(tab);
+    }
+    if (isReviewTab(tab) || isGraphTab(tab)) {
+        return tab;
+    }
+    return null;
 }
 
 function getSessionKey(vaultPath: string) {
@@ -407,109 +520,25 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     fileExternalConflicts: new Set<string>(),
 
     openNote: (noteId, title, content) => {
-        set((state) => {
-            if (getTabOpenBehavior() === "new_tab") {
-                const newTab = createNoteTab(noteId, title, content);
-                return {
-                    tabs: [...state.tabs, newTab],
-                    ...activateTab(state, newTab.id),
-                };
-            }
-
-            const activeTab = state.tabs.find(
-                (t) => t.id === state.activeTabId,
-            );
-            if (activeTab && isHistoryTab(activeTab) && !isMapTab(activeTab)) {
-                const tab = normalizeHistoryTab(activeTab);
-                if (isNoteTab(tab) && tab.noteId === noteId) {
-                    return {
-                        tabs: state.tabs.map((tabItem) =>
-                            tabItem.id === tab.id
-                                ? buildTabFromHistory(
-                                      tab.id,
-                                      tab.history.map((entry, index) =>
-                                          index === tab.historyIndex &&
-                                          entry.kind === "note"
-                                              ? createNoteHistoryEntry(
-                                                    noteId,
-                                                    title,
-                                                    content,
-                                                )
-                                              : entry,
-                                      ),
-                                      tab.historyIndex,
-                                  )
-                                : tabItem,
-                        ),
-                    };
-                }
-                const kept = tab.history.slice(0, tab.historyIndex);
-                kept.push(
-                    createHistoryEntryFromTab(tab),
-                    createNoteHistoryEntry(noteId, title, content),
-                );
-                return {
-                    tabs: state.tabs.map((tabItem) =>
-                        tabItem.id === tab.id
-                            ? buildTabFromHistory(tab.id, kept, kept.length - 1)
-                            : tabItem,
-                    ),
-                };
-            }
-
-            const newTab = createNoteTab(noteId, title, content);
-            return {
-                tabs: [...state.tabs, newTab],
-                ...activateTab(state, newTab.id),
-            };
-        });
+        set((state) =>
+            openOrReuseHistoryTab(state, {
+                kind: "note",
+                noteId,
+                title,
+                content,
+            }),
+        );
     },
 
     openPdf: (entryId, title, path) => {
-        set((state) => {
-            if (getTabOpenBehavior() === "new_tab") {
-                const newTab = createPdfTab(entryId, title, path);
-                return {
-                    tabs: [...state.tabs, newTab],
-                    ...activateTab(state, newTab.id),
-                };
-            }
-
-            const activeTab = state.tabs.find(
-                (t) => t.id === state.activeTabId,
-            );
-            if (activeTab && isHistoryTab(activeTab) && !isMapTab(activeTab)) {
-                const tab = normalizeHistoryTab(activeTab);
-                if (isPdfTab(tab) && tab.entryId === entryId) {
-                    return state;
-                }
-                const kept = tab.history.slice(0, tab.historyIndex);
-                kept.push(
-                    createHistoryEntryFromTab(tab),
-                    createPdfHistoryEntry(
-                        entryId,
-                        title,
-                        path,
-                        1,
-                        1,
-                        "continuous",
-                    ),
-                );
-                return {
-                    tabs: state.tabs.map((tabItem) =>
-                        tabItem.id === tab.id
-                            ? buildTabFromHistory(tab.id, kept, kept.length - 1)
-                            : tabItem,
-                    ),
-                };
-            }
-
-            const newTab = createPdfTab(entryId, title, path);
-            return {
-                tabs: [...state.tabs, newTab],
-                ...activateTab(state, newTab.id),
-            };
-        });
+        set((state) =>
+            openOrReuseHistoryTab(state, {
+                kind: "pdf",
+                entryId,
+                title,
+                path,
+            }),
+        );
     },
 
     openMap: (relativePath, title) => {
@@ -543,86 +572,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     openFile: (relativePath, title, path, content, mimeType, viewer) => {
-        set((state) => {
-            if (getTabOpenBehavior() === "new_tab") {
-                const newTab = createFileTab(
-                    relativePath,
-                    title,
-                    path,
-                    content,
-                    mimeType,
-                    viewer,
-                );
-                return {
-                    tabs: [...state.tabs, newTab],
-                    ...activateTab(state, newTab.id),
-                };
-            }
-
-            const activeTab = state.tabs.find(
-                (t) => t.id === state.activeTabId,
-            );
-            if (activeTab && isHistoryTab(activeTab) && !isMapTab(activeTab)) {
-                const tab = normalizeHistoryTab(activeTab);
-                if (isFileTab(tab) && tab.relativePath === relativePath) {
-                    return {
-                        tabs: state.tabs.map((tabItem) =>
-                            tabItem.id !== tab.id
-                                ? tabItem
-                                : buildTabFromHistory(
-                                      tab.id,
-                                      tab.history.map((entry, index) =>
-                                          index === tab.historyIndex &&
-                                          entry.kind === "file"
-                                              ? createFileHistoryEntry(
-                                                    relativePath,
-                                                    title,
-                                                    path,
-                                                    content,
-                                                    mimeType,
-                                                    viewer,
-                                                )
-                                              : entry,
-                                      ),
-                                      tab.historyIndex,
-                                  ),
-                        ),
-                    };
-                }
-                const kept = tab.history.slice(0, tab.historyIndex);
-                kept.push(
-                    createHistoryEntryFromTab(tab),
-                    createFileHistoryEntry(
-                        relativePath,
-                        title,
-                        path,
-                        content,
-                        mimeType,
-                        viewer,
-                    ),
-                );
-                return {
-                    tabs: state.tabs.map((tabItem) =>
-                        tabItem.id === tab.id
-                            ? buildTabFromHistory(tab.id, kept, kept.length - 1)
-                            : tabItem,
-                    ),
-                };
-            }
-
-            const newTab = createFileTab(
+        set((state) =>
+            openOrReuseHistoryTab(state, {
+                kind: "file",
                 relativePath,
                 title,
                 path,
                 content,
                 mimeType,
                 viewer,
-            );
-            return {
-                tabs: [...state.tabs, newTab],
-                ...activateTab(state, newTab.id),
-            };
-        });
+            }),
+        );
     },
 
     openReview: (sessionId, options) => {
@@ -732,7 +692,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         if (targetIndex < 0 || targetIndex >= tab.history.length) return;
         if (targetIndex === tab.historyIndex) return;
 
-        const currentSnapshot = createHistoryEntryFromTab(tab);
+        const currentSnapshot = createHistorySnapshot(tab);
         const history = tab.history.map((h, i) =>
             i === tab.historyIndex ? currentSnapshot : h,
         );
@@ -1002,25 +962,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     hydrateTabs: (tabs, activeTabId) => {
-        const hydratedTabs: Tab[] = tabs
-            .filter((tab) => !isReviewTab(tab))
-            .flatMap((tab): Tab[] => {
-                if (isHistoryTab(tab)) {
-                    if (isMapTab(tab)) {
-                        const mapTab = ensureMapTabDefaults(tab);
-                        return mapTab.relativePath ? [mapTab] : [];
-                    }
-                    return [normalizeHistoryTab(tab)];
-                }
-                if (isGraphTab(tab)) {
-                    return [tab];
-                }
-                if (isMapTab(tab)) {
-                    const mapTab = ensureMapTabDefaults(tab);
-                    return mapTab.relativePath ? [mapTab] : [];
-                }
-                return [];
-            });
+        const hydratedTabs: Tab[] = tabs.flatMap((tab): Tab[] => {
+            const normalized = normalizeHydratedTab(tab);
+            return normalized ? [normalized] : [];
+        });
         const nextActiveTabId =
             activeTabId && hydratedTabs.some((tab) => tab.id === activeTabId)
                 ? activeTabId
@@ -1037,16 +982,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     insertExternalTab: (tab, index) => {
         set((state) => {
-            const incoming: Tab | null = isHistoryTab(tab)
-                ? isMapTab(tab)
-                    ? (() => {
-                          const mapTab = ensureMapTabDefaults(tab);
-                          return mapTab.relativePath ? mapTab : null;
-                      })()
-                    : normalizeHistoryTab(tab)
-                : isReviewTab(tab) || isGraphTab(tab)
-                  ? tab
-                  : null;
+            const incoming = normalizeExternalTab(tab);
             if (!incoming) {
                 return state;
             }
