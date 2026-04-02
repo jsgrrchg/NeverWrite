@@ -946,32 +946,35 @@ export function FileTextTabView() {
                 </div>
             )}
             <div
-                className="flex items-center justify-between gap-2 px-3 py-2"
+                className="flex items-center justify-between gap-2 px-3 shrink-0"
                 style={{
+                    height: 34,
                     borderBottom: "1px solid var(--border)",
                     backgroundColor: "var(--bg-secondary)",
                 }}
             >
-                <div className="min-w-0">
-                    <div
-                        className="text-[13px] font-medium truncate leading-tight"
+                <div
+                    className="min-w-0 truncate text-[11px]"
+                    title={tab.relativePath}
+                >
+                    <span
+                        className="font-medium"
                         style={{ color: "var(--text-primary)" }}
                     >
                         {tab.title}
-                    </div>
-                    <div
-                        className="text-[11px] truncate leading-tight"
+                    </span>
+                    <span
+                        className="ml-1.5"
                         style={{ color: "var(--text-secondary)" }}
-                        title={tab.relativePath}
                     >
                         {tab.relativePath}
-                    </div>
+                    </span>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1 shrink-0">
                     <button
                         type="button"
                         onClick={() => void openPath(tab.path)}
-                        className="rounded-md px-2 py-1 text-[11px]"
+                        className="rounded px-1.5 py-0.5 text-[10px]"
                         style={{
                             border: "1px solid var(--border)",
                             backgroundColor: "var(--bg-primary)",
@@ -983,7 +986,7 @@ export function FileTextTabView() {
                     <button
                         type="button"
                         onClick={() => void revealItemInDir(tab.path)}
-                        className="rounded-md px-2 py-1 text-[11px]"
+                        className="rounded px-1.5 py-0.5 text-[10px]"
                         style={{
                             border: "1px solid var(--border)",
                             backgroundColor: "var(--bg-primary)",

@@ -59,33 +59,36 @@ export function FileTabView() {
 function FileHeader({ tab, children }: { tab: FileTab; children?: ReactNode }) {
     return (
         <div
-            className="flex items-center justify-between gap-2 px-3 py-2"
+            className="flex items-center justify-between gap-2 px-3 shrink-0"
             style={{
+                height: 34,
                 borderBottom: "1px solid var(--border)",
                 backgroundColor: "var(--bg-secondary)",
             }}
         >
-            <div className="min-w-0">
-                <div
-                    className="text-[13px] font-medium truncate leading-tight"
+            <div
+                className="min-w-0 truncate text-[11px]"
+                title={tab.relativePath}
+            >
+                <span
+                    className="font-medium"
                     style={{ color: "var(--text-primary)" }}
                 >
                     {tab.title}
-                </div>
-                <div
-                    className="text-[11px] truncate leading-tight"
+                </span>
+                <span
+                    className="ml-1.5"
                     style={{ color: "var(--text-secondary)" }}
-                    title={tab.relativePath}
                 >
                     {tab.relativePath}
-                </div>
+                </span>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1 shrink-0">
                 {children}
                 <button
                     type="button"
                     onClick={() => void openPath(tab.path)}
-                    className="rounded-md px-2 py-1 text-[11px]"
+                    className="inline-flex items-center rounded px-1.5 text-[10px]"
                     style={headerButtonStyle}
                 >
                     Open Externally
@@ -93,7 +96,7 @@ function FileHeader({ tab, children }: { tab: FileTab; children?: ReactNode }) {
                 <button
                     type="button"
                     onClick={() => void revealItemInDir(tab.path)}
-                    className="rounded-md px-2 py-1 text-[11px]"
+                    className="inline-flex items-center rounded px-1.5 text-[10px]"
                     style={headerButtonStyle}
                 >
                     Reveal in Finder
@@ -204,7 +207,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                 <button
                     type="button"
                     onClick={setFit}
-                    className="rounded-md px-2.5 py-1.5 text-xs"
+                    className="inline-flex items-center rounded px-1.5 text-[10px]"
                     style={isFit ? activeHeaderButtonStyle : headerButtonStyle}
                 >
                     Fit
@@ -212,7 +215,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                 <button
                     type="button"
                     onClick={setActual}
-                    className="rounded-md px-2.5 py-1.5 text-xs"
+                    className="inline-flex items-center rounded px-1.5 text-[10px]"
                     style={
                         !isFit && zoom === 1
                             ? activeHeaderButtonStyle
@@ -223,10 +226,10 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                 </button>
                 {!isFit && (
                     <span
-                        className="text-xs tabular-nums"
+                        className="text-[10px] tabular-nums"
                         style={{
                             color: "var(--text-secondary)",
-                            minWidth: 48,
+                            minWidth: 40,
                             textAlign: "center",
                         }}
                     >
@@ -326,6 +329,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
 }
 
 const headerButtonStyle = {
+    height: 22,
     border: "1px solid var(--border)",
     backgroundColor: "var(--bg-primary)",
     color: "var(--text-primary)",
