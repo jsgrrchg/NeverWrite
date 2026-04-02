@@ -91,7 +91,8 @@ export type HistoryTabInputByKind<K extends HistoryTabKind> =
     HistoryTabInputByKindMap[K];
 export type HistoryEntryByKind<K extends HistoryTabKind> =
     HistoryEntryByKindMap[K];
-export type HistoryOpenPayload<K extends HistoryTabKind> = OpenPayloadByKindMap[K];
+export type HistoryOpenPayload<K extends HistoryTabKind> =
+    OpenPayloadByKindMap[K];
 export type OpenableHistoryPayload = HistoryOpenPayload<OpenableHistoryTabKind>;
 
 export interface HistoryTabHandler<K extends HistoryTabKind> {
@@ -113,6 +114,8 @@ export interface HistoryTabHandler<K extends HistoryTabKind> {
         tab: HistoryTabByKind<K>,
         payload: HistoryOpenPayload<K>,
     ) => HistoryTabByKind<K>;
+    fingerprint: (tab: HistoryTabByKind<K>) => string;
+    serializeForSession: (tab: HistoryTabByKind<K>) => unknown;
     isValidTab?: (tab: HistoryTabByKind<K>) => boolean;
 }
 
@@ -141,6 +144,19 @@ const noteTabHandler: HistoryTabHandler<"note"> = {
             ),
             tab.historyIndex,
         ) as NoteTab,
+    fingerprint: (tab) =>
+        `|note|${tab.noteId}|${tab.title}|${tab.historyIndex}|${tab.history.length}`,
+    serializeForSession: (tab) => ({
+        noteId: tab.noteId,
+        title: tab.title,
+        history: tab.history
+            .filter((entry): entry is NoteHistoryEntry => entry.kind === "note")
+            .map((entry) => ({
+                noteId: entry.noteId,
+                title: entry.title,
+            })),
+        historyIndex: tab.historyIndex,
+    }),
 };
 
 const pdfTabHandler: HistoryTabHandler<"pdf"> = {
@@ -161,6 +177,27 @@ const pdfTabHandler: HistoryTabHandler<"pdf"> = {
     buildFromHistory: (id, history, historyIndex) =>
         buildTabFromHistory(id, history, historyIndex) as PdfTab,
     matchesOpenTarget: (tab, payload) => tab.entryId === payload.entryId,
+    fingerprint: (tab) =>
+        `|pdf|${tab.entryId}|${tab.title}|${tab.historyIndex}|${tab.history.length}`,
+    serializeForSession: (tab) => ({
+        entryId: tab.entryId,
+        title: tab.title,
+        path: tab.path,
+        page: tab.page,
+        zoom: tab.zoom,
+        viewMode: tab.viewMode,
+        history: tab.history
+            .filter((entry): entry is PdfHistoryEntry => entry.kind === "pdf")
+            .map((entry) => ({
+                entryId: entry.entryId,
+                title: entry.title,
+                path: entry.path,
+                page: entry.page,
+                zoom: entry.zoom,
+                viewMode: entry.viewMode,
+            })),
+        historyIndex: tab.historyIndex,
+    }),
 };
 
 const fileTabHandler: HistoryTabHandler<"file"> = {
@@ -206,6 +243,25 @@ const fileTabHandler: HistoryTabHandler<"file"> = {
             ),
             tab.historyIndex,
         ) as FileTab,
+    fingerprint: (tab) =>
+        `|file|${tab.relativePath}|${tab.title}|${tab.mimeType ?? ""}`,
+    serializeForSession: (tab) => ({
+        relativePath: tab.relativePath,
+        title: tab.title,
+        path: tab.path,
+        mimeType: tab.mimeType,
+        viewer: tab.viewer,
+        history: tab.history
+            .filter((entry): entry is FileHistoryEntry => entry.kind === "file")
+            .map((entry) => ({
+                relativePath: entry.relativePath,
+                title: entry.title,
+                path: entry.path,
+                mimeType: entry.mimeType,
+                viewer: entry.viewer,
+            })),
+        historyIndex: tab.historyIndex,
+    }),
 };
 
 const mapTabHandler: HistoryTabHandler<"map"> = {
@@ -229,6 +285,11 @@ const mapTabHandler: HistoryTabHandler<"map"> = {
         buildTabFromHistory(id, history, historyIndex) as MapTab,
     matchesOpenTarget: (tab, payload) =>
         tab.relativePath === payload.relativePath,
+    fingerprint: (tab) => `|map|${tab.relativePath}|${tab.title}`,
+    serializeForSession: (tab) => ({
+        relativePath: tab.relativePath,
+        title: tab.title,
+    }),
     isValidTab: (tab) => tab.relativePath.length > 0,
 };
 

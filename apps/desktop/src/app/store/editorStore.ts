@@ -45,7 +45,14 @@ import {
     type OpenableHistoryPayload,
     type OpenableHistoryTabKind,
 } from "./editorTabRegistry";
-import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
+import {
+    buildPersistedSession,
+    getEditorSessionSignature,
+    isSessionReady,
+    markSessionReady,
+    readPersistedSession,
+    writePersistedSession,
+} from "./editorSession";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
@@ -86,66 +93,9 @@ export type {
     TabInput,
     TransientTab,
 } from "./editorTabs";
+export { markSessionReady, readPersistedSession } from "./editorSession";
 
-const SESSION_KEY = "vaultai.session.tabs";
-const SESSION_KEY_PREFIX = "vaultai.session.tabs:";
 const MAX_RECENTLY_CLOSED_TABS = 20;
-
-interface PersistedSession {
-    tabs?: TabInput[];
-    activeTabId?: string | null;
-    noteIds: Array<{
-        noteId: string;
-        title: string;
-        history?: Array<{ noteId: string; title: string }>;
-        historyIndex?: number;
-    }>;
-    pdfTabs?: Array<{
-        entryId: string;
-        title: string;
-        path: string;
-        page?: number;
-        zoom?: number;
-        viewMode?: PdfViewMode;
-        history?: Array<{
-            entryId: string;
-            title: string;
-            path: string;
-            page?: number;
-            zoom?: number;
-            viewMode?: PdfViewMode;
-        }>;
-        historyIndex?: number;
-    }>;
-    fileTabs?: Array<{
-        relativePath: string;
-        title: string;
-        path: string;
-        mimeType?: string | null;
-        viewer?: FileViewerMode;
-        content?: string;
-        history?: Array<{
-            relativePath: string;
-            title: string;
-            path: string;
-            mimeType?: string | null;
-            viewer?: FileViewerMode;
-        }>;
-        historyIndex?: number;
-    }>;
-    mapTabs?: Array<{
-        relativePath: string;
-        title: string;
-        filePath?: string;
-    }>;
-    hasGraphTab?: boolean;
-    activeNoteId: string | null;
-    activePdfEntryId?: string | null;
-    activeFilePath?: string | null;
-    activeMapRelativePath?: string | null;
-    activeMapFilePath?: string | null;
-    activeGraphTab?: boolean;
-}
 
 function pushTabToActivation(history: string[], tabId: string) {
     return [...history.filter((id) => id !== tabId), tabId];
@@ -312,32 +262,6 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
         return tab;
     }
     return null;
-}
-
-function getSessionKey(vaultPath: string) {
-    return `${SESSION_KEY_PREFIX}${vaultPath}`;
-}
-
-export function readPersistedSession(
-    vaultPath: string | null,
-): PersistedSession | null {
-    try {
-        const raw =
-            (vaultPath ? safeStorageGetItem(getSessionKey(vaultPath)) : null) ??
-            safeStorageGetItem(SESSION_KEY);
-        if (!raw) return null;
-        return JSON.parse(raw) as PersistedSession;
-    } catch {
-        return null;
-    }
-}
-
-// Only start persisting after the session has been restored,
-// to avoid overwriting saved data with the initial empty state.
-let sessionReady = false;
-
-export function markSessionReady() {
-    sessionReady = true;
 }
 function shouldRememberClosedTab(reason: TabCloseReason) {
     return reason === "user" || reason === "bulk-user";
@@ -1575,136 +1499,22 @@ let _lastSessionJson = "";
 let _lastSessionSig = "";
 
 useEditorStore.subscribe((state) => {
-    if (!sessionReady) return;
+    if (!isSessionReady()) return;
 
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
 
-    // Cheap fingerprint: skip expensive serialization on content-only edits
-    let sig = state.activeTabId ?? "";
-    for (const t of state.tabs) {
-        if (isReviewTab(t)) {
-            // Review tabs are transient — skip persistence fingerprint
-            continue;
-        } else if (isNoteTab(t)) {
-            sig += `|note|${t.noteId}|${t.title}|${t.historyIndex}|${t.history.length}`;
-        } else if (isMapTab(t)) {
-            sig += `|map|${t.relativePath}|${t.title}`;
-        } else if (isGraphTab(t)) {
-            sig += `|graph`;
-        } else if (isFileTab(t)) {
-            sig += `|file|${t.relativePath}|${t.title}|${t.mimeType ?? ""}`;
-        } else {
-            const pdfTab = ensurePdfTabDefaults(t);
-            sig += `|pdf|${pdfTab.entryId}|${pdfTab.title}|${pdfTab.historyIndex}|${pdfTab.history.length}`;
-        }
-    }
+    const sig = getEditorSessionSignature(state);
     if (sig === _lastSessionSig) return;
     _lastSessionSig = sig;
 
-    const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
-    const persistedTabs = state.tabs
-        .filter(
-            (tab): tab is NoteTab | PdfTab | FileTab =>
-                isHistoryTab(tab) && !isMapTab(tab),
-        )
-        .map((tab) => normalizeHistoryTab(tab));
-    const noteTabs = persistedTabs.filter((tab): tab is NoteTab =>
-        isNoteTab(tab),
-    );
-    const session: PersistedSession = {
-        activeTabId: activeTab?.id ?? null,
-        noteIds: noteTabs
-            .filter((t) => t.noteId)
-            .map((t) => ({
-                noteId: t.noteId,
-                title: t.title,
-                history: t.history
-                    .filter((h): h is NoteHistoryEntry => h.kind === "note")
-                    .map((h) => ({
-                        noteId: h.noteId,
-                        title: h.title,
-                    })),
-                historyIndex: t.historyIndex,
-            })),
-        pdfTabs: persistedTabs.flatMap((rawTab) => {
-            if (!isPdfTab(rawTab)) return [];
-            const t = ensurePdfTabDefaults(rawTab);
-            return [
-                {
-                    entryId: t.entryId,
-                    title: t.title,
-                    path: t.path,
-                    page: t.page,
-                    zoom: t.zoom,
-                    viewMode: t.viewMode,
-                    history: t.history
-                        .filter(
-                            (entry): entry is PdfHistoryEntry =>
-                                entry.kind === "pdf",
-                        )
-                        .map((entry) => ({
-                            entryId: entry.entryId,
-                            title: entry.title,
-                            path: entry.path,
-                            page: entry.page,
-                            zoom: entry.zoom,
-                            viewMode: entry.viewMode,
-                        })),
-                    historyIndex: t.historyIndex,
-                },
-            ];
-        }),
-        fileTabs: persistedTabs.flatMap((rawTab) => {
-            if (!isFileTab(rawTab)) return [];
-            const t = ensureFileTabHistory(rawTab);
-            return [
-                {
-                    relativePath: t.relativePath,
-                    title: t.title,
-                    path: t.path,
-                    mimeType: t.mimeType,
-                    viewer: t.viewer,
-                    history: t.history
-                        .filter((h): h is FileHistoryEntry => h.kind === "file")
-                        .map((h) => ({
-                            relativePath: h.relativePath,
-                            title: h.title,
-                            path: h.path,
-                            mimeType: h.mimeType,
-                            viewer: h.viewer,
-                        })),
-                    historyIndex: t.historyIndex,
-                },
-            ];
-        }),
-        mapTabs: state.tabs
-            .filter((t): t is MapTab => isMapTab(t))
-            .map((t) => ({
-                relativePath: t.relativePath,
-                title: t.title,
-            })),
-        hasGraphTab: state.tabs.some((t) => isGraphTab(t)),
-        activeNoteId:
-            activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
-        activePdfEntryId:
-            activeTab && isPdfTab(activeTab) ? activeTab.entryId : null,
-        activeFilePath:
-            activeTab && isFileTab(activeTab) ? activeTab.relativePath : null,
-        activeMapRelativePath:
-            activeTab && isMapTab(activeTab) ? activeTab.relativePath : null,
-        activeGraphTab: activeTab ? isGraphTab(activeTab) : false,
-    };
+    const session = buildPersistedSession(state);
     const json = JSON.stringify(session);
     if (json === _lastSessionJson) return;
 
     if (_sessionTimer) clearTimeout(_sessionTimer);
     _sessionTimer = setTimeout(() => {
-        try {
-            safeStorageSetItem(getSessionKey(vaultPath), json);
-            _lastSessionJson = json;
-        } catch (error) {
-            console.warn("Failed to persist editor session", error);
-        }
+        writePersistedSession(vaultPath, session);
+        _lastSessionJson = json;
     }, 500);
 });
