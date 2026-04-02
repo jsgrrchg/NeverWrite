@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isFileTab,
+    isGraphTab,
     isMapTab,
     isNoteTab,
+    isPdfTab,
+    isReviewTab,
     markSessionReady,
     readPersistedSession,
     useEditorStore,
@@ -10,6 +13,7 @@ import {
     type MapTabInput,
 } from "./editorStore";
 import { useSettingsStore } from "./settingsStore";
+import { safeStorageClear } from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
 
 function makeTab(overrides: {
@@ -108,6 +112,8 @@ function makeMapTab(overrides: {
 }
 
 beforeEach(() => {
+    safeStorageClear();
+    localStorage.clear();
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
@@ -117,6 +123,13 @@ beforeEach(() => {
         tabNavigationIndex: -1,
     });
     useSettingsStore.getState().reset();
+    useVaultStore.setState({ vaultPath: null });
+});
+
+afterEach(() => {
+    vi.restoreAllMocks();
+    safeStorageClear();
+    localStorage.clear();
 });
 
 describe("editorStore session persistence", () => {
@@ -294,15 +307,14 @@ describe("editorStore session persistence", () => {
 
         expect(setItemMock).toHaveBeenCalled();
         expect(warnSpy).toHaveBeenCalledWith(
-            "Failed to persist editor session",
+            "Failed to persist safe storage item:",
+            "vaultai.session.tabs:/vaults/quota-2026",
             quotaError,
         );
-
         Object.defineProperty(window.localStorage, "setItem", {
             configurable: true,
             value: originalSetItem,
         });
-        warnSpy.mockRestore();
     });
 
     it("falls back to the legacy global session key when needed", () => {
@@ -363,6 +375,197 @@ describe("editorStore map tabs", () => {
         expect(activeTab && isMapTab(activeTab) && activeTab.relativePath).toBe(
             "Excalidraw/Legacy.excalidraw",
         );
+    });
+});
+
+describe("editorStore hydration and external insertion", () => {
+    beforeEach(() => {
+        useVaultStore.setState({ vaultPath: "/vaults/project-alpha" });
+    });
+
+    it("hydrates mixed persisted tabs, drops review tabs, and keeps the requested active tab", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "note-1",
+                    noteId: "notes/alpha",
+                    title: "Alpha",
+                    content: "Alpha body",
+                    history: [{ noteId: "notes/alpha", title: "Alpha" }],
+                    historyIndex: 0,
+                },
+                {
+                    id: "pdf-1",
+                    kind: "pdf",
+                    entryId: "docs/spec",
+                    title: "spec.pdf",
+                    path: "/vault/docs/spec.pdf",
+                    history: [
+                        {
+                            entryId: "docs/spec",
+                            title: "spec.pdf",
+                            path: "/vault/docs/spec.pdf",
+                        },
+                    ],
+                    historyIndex: 0,
+                },
+                {
+                    id: "file-1",
+                    kind: "file",
+                    relativePath: "src/app.ts",
+                    title: "app.ts",
+                    path: "/vault/src/app.ts",
+                    content: "console.log('ok')",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                    history: [
+                        {
+                            relativePath: "src/app.ts",
+                            title: "app.ts",
+                            path: "/vault/src/app.ts",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        },
+                    ],
+                    historyIndex: 0,
+                },
+                {
+                    id: "map-1",
+                    kind: "map",
+                    title: "Board",
+                    relativePath: "",
+                    filePath:
+                        "/vaults/project-alpha/Excalidraw/Board.excalidraw",
+                } as MapTabInput & { filePath: string },
+                {
+                    id: "review-1",
+                    kind: "ai-review",
+                    sessionId: "session-1",
+                    title: "Review",
+                },
+                {
+                    id: "graph-1",
+                    kind: "graph",
+                    title: "Graph View",
+                },
+            ],
+            "graph-1",
+        );
+
+        const state = useEditorStore.getState();
+        expect(state.tabs).toHaveLength(5);
+        expect(state.tabs.some((tab) => isReviewTab(tab))).toBe(false);
+        expect(state.activeTabId).toBe("graph-1");
+        expect(state.tabs.find((tab) => tab.id === "note-1")).toMatchObject({
+            kind: "note",
+            historyIndex: 0,
+        });
+        expect(state.tabs.find((tab) => tab.id === "pdf-1")).toMatchObject({
+            kind: "pdf",
+            page: 1,
+            zoom: 1,
+            viewMode: "continuous",
+        });
+        expect(state.tabs.find((tab) => tab.id === "file-1")).toMatchObject({
+            kind: "file",
+            content: "console.log('ok')",
+        });
+        expect(state.tabs.find((tab) => tab.id === "map-1")).toMatchObject({
+            kind: "map",
+            relativePath: "Excalidraw/Board.excalidraw",
+        });
+        expect(state.tabs.find((tab) => tab.id === "graph-1")).toMatchObject({
+            kind: "graph",
+            title: "Graph View",
+        });
+    });
+
+    it("normalizes external tabs by kind and activates the inserted tab", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "note-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "A",
+                }),
+            ],
+            activeTabId: "note-a",
+            activationHistory: ["note-a"],
+            tabNavigationHistory: ["note-a"],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore.getState().insertExternalTab(
+            {
+                id: "file-1",
+                kind: "file",
+                relativePath: "src/server.ts",
+                title: "server.ts",
+                path: "/vault/src/server.ts",
+                content: "export {}",
+                mimeType: "text/typescript",
+                viewer: "text",
+                history: [
+                    {
+                        relativePath: "src/server.ts",
+                        title: "server.ts",
+                        path: "/vault/src/server.ts",
+                        mimeType: "text/typescript",
+                        viewer: "text",
+                    },
+                ],
+                historyIndex: 0,
+            },
+            0,
+        );
+
+        let state = useEditorStore.getState();
+        expect(state.tabs.map((tab) => tab.id)).toEqual(["file-1", "note-a"]);
+        expect(state.activeTabId).toBe("file-1");
+        expect(state.tabs[0]).toMatchObject({
+            kind: "file",
+            content: "export {}",
+        });
+
+        useEditorStore.getState().insertExternalTab({
+            id: "review-1",
+            kind: "ai-review",
+            sessionId: "session-1",
+            title: "Review",
+        });
+
+        state = useEditorStore.getState();
+        expect(state.tabs[state.tabs.length - 1]).toMatchObject({
+            id: "review-1",
+            kind: "ai-review",
+        });
+        expect(state.activeTabId).toBe("review-1");
+
+        useEditorStore.getState().insertExternalTab({
+            id: "graph-1",
+            kind: "graph",
+            title: "Graph View",
+        });
+
+        state = useEditorStore.getState();
+        expect(state.tabs[state.tabs.length - 1]).toMatchObject({
+            id: "graph-1",
+            kind: "graph",
+        });
+        expect(state.activeTabId).toBe("graph-1");
+    });
+
+    it("skips invalid external map tabs that cannot resolve a relative path", () => {
+        useEditorStore.getState().insertExternalTab({
+            id: "map-invalid",
+            kind: "map",
+            title: "Broken map",
+            relativePath: "",
+        });
+
+        expect(useEditorStore.getState().tabs).toEqual([]);
+        expect(useEditorStore.getState().activeTabId).toBeNull();
     });
 });
 
@@ -1081,6 +1284,69 @@ describe("editorStore tab history mode", () => {
 });
 
 describe("editorStore tab management", () => {
+    it("opens graph as a singleton and reactivates the existing tab", () => {
+        useEditorStore.getState().openGraph();
+        const firstGraphTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => isGraphTab(tab));
+
+        useEditorStore.getState().openGraph();
+
+        const state = useEditorStore.getState();
+        const graphTabs = state.tabs.filter((tab) => isGraphTab(tab));
+        expect(graphTabs).toHaveLength(1);
+        expect(state.activeTabId).toBe(firstGraphTab?.id ?? null);
+    });
+
+    it("opens review tabs in background, updates the existing one, and closes by session id", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+            ],
+            activeTabId: "tab-a",
+            activationHistory: ["tab-a"],
+            tabNavigationHistory: ["tab-a"],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore.getState().openReview("session-1", {
+            background: true,
+            title: "Initial review",
+        });
+
+        let state = useEditorStore.getState();
+        const reviewTab = state.tabs.find((tab) => isReviewTab(tab));
+        expect(reviewTab).toMatchObject({
+            kind: "ai-review",
+            sessionId: "session-1",
+            title: "Initial review",
+        });
+        expect(state.activeTabId).toBe("tab-a");
+
+        useEditorStore.getState().openReview("session-1", {
+            title: "Updated review",
+        });
+
+        state = useEditorStore.getState();
+        const updatedReviewTab = state.tabs.find((tab) => isReviewTab(tab));
+        expect(state.tabs.filter((tab) => isReviewTab(tab))).toHaveLength(1);
+        expect(updatedReviewTab).toMatchObject({
+            title: "Updated review",
+        });
+        expect(state.activeTabId).toBe(updatedReviewTab?.id ?? null);
+
+        useEditorStore.getState().closeReview("session-1");
+
+        state = useEditorStore.getState();
+        expect(state.tabs.some((tab) => isReviewTab(tab))).toBe(false);
+        expect(state.activeTabId).toBe("tab-a");
+    });
+
     it("returns to the most recently active tab when closing the current one", () => {
         useEditorStore.setState({
             tabs: [
@@ -1464,6 +1730,44 @@ describe("editorStore tab management", () => {
             origin: "agent",
             revision: 5,
             opId: "agent-5",
+        });
+    });
+
+    it("updates pdf page, zoom, and view mode on the current history entry", () => {
+        useEditorStore.setState({
+            tabs: [
+                makePdfTab({
+                    id: "pdf-tab-a",
+                    entryId: "docs/guide",
+                    title: "guide.pdf",
+                    path: "/vault/docs/guide.pdf",
+                    page: 1,
+                    zoom: 1,
+                    viewMode: "continuous",
+                }),
+            ],
+            activeTabId: "pdf-tab-a",
+        });
+
+        useEditorStore.getState().updatePdfPage("pdf-tab-a", 4);
+        useEditorStore.getState().updatePdfZoom("pdf-tab-a", 1.75);
+        useEditorStore.getState().updatePdfViewMode("pdf-tab-a", "single");
+
+        const pdfTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === "pdf-tab-a");
+        expect(isPdfTab(pdfTab) ? pdfTab : null).toMatchObject({
+            page: 4,
+            zoom: 1.75,
+            viewMode: "single",
+        });
+        expect(
+            isPdfTab(pdfTab) ? pdfTab.history[pdfTab.historyIndex] : null,
+        ).toMatchObject({
+            kind: "pdf",
+            page: 4,
+            zoom: 1.75,
+            viewMode: "single",
         });
     });
 });
