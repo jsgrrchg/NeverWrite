@@ -641,6 +641,52 @@ async function ensureSessionAgentCatalogLoaded(
     return resolved ? resolved.sessionId : null;
 }
 
+type PreparedAgentConfigSession =
+    | { kind: "abort" }
+    | { kind: "live"; session: AIChatSession }
+    | { kind: "preference-only"; session: AIChatSession };
+
+async function prepareSessionForAgentConfigMutation(
+    requestedSessionId?: string,
+): Promise<PreparedAgentConfigSession> {
+    const resolvedSessionId =
+        requestedSessionId ?? useChatStore.getState().activeSessionId;
+    if (!resolvedSessionId) {
+        return { kind: "abort" };
+    }
+
+    let session = useChatStore.getState().sessionsById[resolvedSessionId];
+    if (!session || session.isResumingSession) {
+        return { kind: "abort" };
+    }
+
+    if (session.runtimeState !== "live") {
+        const liveSessionId =
+            await ensureLiveSessionForAgentConfigChange(resolvedSessionId);
+        if (
+            liveSessionId &&
+            liveSessionId !== resolvedSessionId &&
+            useChatStore.getState().sessionsById[liveSessionId]
+        ) {
+            session = useChatStore.getState().sessionsById[liveSessionId]!;
+        } else if (session.isPersistedSession) {
+            return { kind: "abort" };
+        }
+    }
+
+    if (session.runtimeState === "live" && !sessionHasAgentCatalog(session)) {
+        await ensureSessionAgentCatalogLoaded(session.sessionId);
+        session =
+            useChatStore.getState().sessionsById[session.sessionId] ?? session;
+    }
+
+    if (session.runtimeState !== "live") {
+        return { kind: "preference-only", session };
+    }
+
+    return { kind: "live", session };
+}
+
 function getModelConfigOption(session: Pick<AIChatSession, "configOptions">) {
     return session.configOptions.find((option) => option.category === "model");
 }
@@ -5875,39 +5921,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setModel: async (modelId, sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
-            if (!resolvedSessionId) return;
-            let session = get().sessionsById[resolvedSessionId];
-            if (!session) return;
-            if (session.isResumingSession) {
+            const preparedSession =
+                await prepareSessionForAgentConfigMutation(sessionId);
+            if (preparedSession.kind === "abort") {
                 return;
             }
 
-            if (session.runtimeState !== "live") {
-                const liveSessionId =
-                    await ensureLiveSessionForAgentConfigChange(
-                        resolvedSessionId,
-                    );
-                if (
-                    liveSessionId &&
-                    liveSessionId !== resolvedSessionId &&
-                    get().sessionsById[liveSessionId]
-                ) {
-                    session = get().sessionsById[liveSessionId]!;
-                } else if (session.isPersistedSession) {
-                    return;
-                }
-            }
-
-            if (
-                session.runtimeState === "live" &&
-                !sessionHasAgentCatalog(session)
-            ) {
-                await ensureSessionAgentCatalogLoaded(session.sessionId);
-                session = get().sessionsById[session.sessionId] ?? session;
-            }
-
-            if (session.runtimeState !== "live") {
+            if (preparedSession.kind === "preference-only") {
+                const { session } = preparedSession;
                 set((state) => ({
                     sessionsById: (() => {
                         const currentSession =
@@ -5935,6 +5956,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            const { session } = preparedSession;
             try {
                 const modelConfig = getModelConfigOption(session);
                 const updatedSession =
@@ -5968,39 +5990,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setMode: async (modeId, sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
-            if (!resolvedSessionId) return;
-            let session = get().sessionsById[resolvedSessionId];
-            if (!session) return;
-            if (session.isResumingSession) {
+            const preparedSession =
+                await prepareSessionForAgentConfigMutation(sessionId);
+            if (preparedSession.kind === "abort") {
                 return;
             }
 
-            if (session.runtimeState !== "live") {
-                const liveSessionId =
-                    await ensureLiveSessionForAgentConfigChange(
-                        resolvedSessionId,
-                    );
-                if (
-                    liveSessionId &&
-                    liveSessionId !== resolvedSessionId &&
-                    get().sessionsById[liveSessionId]
-                ) {
-                    session = get().sessionsById[liveSessionId]!;
-                } else if (session.isPersistedSession) {
-                    return;
-                }
-            }
-
-            if (
-                session.runtimeState === "live" &&
-                !sessionHasAgentCatalog(session)
-            ) {
-                await ensureSessionAgentCatalogLoaded(session.sessionId);
-                session = get().sessionsById[session.sessionId] ?? session;
-            }
-
-            if (session.runtimeState !== "live") {
+            if (preparedSession.kind === "preference-only") {
+                const { session } = preparedSession;
                 set((state) => ({
                     sessionsById: (() => {
                         const currentSession =
@@ -6028,6 +6025,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            const { session } = preparedSession;
             try {
                 const updatedSession = await aiSetMode(
                     session.sessionId,
@@ -6053,39 +6051,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setConfigOption: async (optionId, value, sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
-            if (!resolvedSessionId) return;
-            let session = get().sessionsById[resolvedSessionId];
-            if (!session) return;
-            if (session.isResumingSession) {
+            const preparedSession =
+                await prepareSessionForAgentConfigMutation(sessionId);
+            if (preparedSession.kind === "abort") {
                 return;
             }
 
-            if (session.runtimeState !== "live") {
-                const liveSessionId =
-                    await ensureLiveSessionForAgentConfigChange(
-                        resolvedSessionId,
-                    );
-                if (
-                    liveSessionId &&
-                    liveSessionId !== resolvedSessionId &&
-                    get().sessionsById[liveSessionId]
-                ) {
-                    session = get().sessionsById[liveSessionId]!;
-                } else if (session.isPersistedSession) {
-                    return;
-                }
-            }
-
-            if (
-                session.runtimeState === "live" &&
-                !sessionHasAgentCatalog(session)
-            ) {
-                await ensureSessionAgentCatalogLoaded(session.sessionId);
-                session = get().sessionsById[session.sessionId] ?? session;
-            }
-
-            if (session.runtimeState !== "live") {
+            if (preparedSession.kind === "preference-only") {
+                const { session } = preparedSession;
                 set((state) => {
                     const currentSession = hydrateSessionCatalogFromRuntime(
                         state.sessionsById[session.sessionId]!,
@@ -6125,6 +6098,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            const { session } = preparedSession;
             try {
                 const updatedSession = await aiSetConfigOption(
                     session.sessionId,
