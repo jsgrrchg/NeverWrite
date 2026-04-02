@@ -1412,12 +1412,15 @@ export default function App() {
                 })),
                 chatState.activeSessionId,
             );
+            const restoredChatWorkspace = useChatTabsStore.getState();
             await useChatStore.getState().reconcileRestoredWorkspaceTabs(
-                useChatTabsStore.getState().tabs.map((tab) => ({
+                restoredChatWorkspace.tabs.map((tab) => ({
+                    id: tab.id,
                     sessionId: tab.sessionId,
                     historySessionId: tab.historySessionId ?? null,
                     runtimeId: tab.runtimeId ?? null,
                 })),
+                restoredChatWorkspace.activeTabId,
             );
             markChatTabsReady();
         })();

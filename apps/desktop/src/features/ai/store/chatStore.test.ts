@@ -1858,18 +1858,46 @@ describe("chatStore", () => {
                 };
             }
 
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    sessionId: "history-1",
+                    startIndex: 0,
+                    limit: 1,
+                });
+                return {
+                    session_id: "history-1",
+                    total_messages: 1,
+                    start_index: 0,
+                    end_index: 1,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Recovered from disk",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+
             return sessionPayload;
         });
 
         await useChatStore.getState().initialize();
 
-        await useChatStore.getState().reconcileRestoredWorkspaceTabs([
-            {
-                sessionId: "codex-session-existing",
-                historySessionId: "history-1",
-                runtimeId: "codex-acp",
-            },
-        ]);
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+            [
+                {
+                    id: "tab-restored",
+                    sessionId: "codex-session-existing",
+                    historySessionId: "history-1",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            "tab-restored",
+        );
 
         const session =
             useChatStore.getState().sessionsById["codex-session-existing"]!;
@@ -1877,6 +1905,111 @@ describe("chatStore", () => {
         expect(session.models).toHaveLength(1);
         expect(session.modes).toHaveLength(1);
         expect(session.configOptions).not.toHaveLength(0);
+    });
+
+    it("loads the active restored workspace session after history metadata is reconciled", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 200,
+                        message_count: 2,
+                        title: "Restored title",
+                        preview: "Recovered latest",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    sessionId: "history-1",
+                    startIndex: 0,
+                    limit: 2,
+                });
+                return {
+                    session_id: "history-1",
+                    total_messages: 2,
+                    start_index: 0,
+                    end_index: 2,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Recovered from disk",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "m2",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Recovered reply",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const sessionBefore =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(sessionBefore.messages).toHaveLength(0);
+        expect(sessionBefore.persistedMessageCount ?? 0).toBe(0);
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+            [
+                {
+                    id: "tab-restored",
+                    sessionId: "codex-session-existing",
+                    historySessionId: "history-1",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            "tab-restored",
+        );
+
+        const sessionAfter =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(sessionAfter.historySessionId).toBe("history-1");
+        expect(sessionAfter.persistedMessageCount).toBe(2);
+        expect(sessionAfter.messages.map((message) => message.id)).toEqual([
+            "m1",
+            "m2",
+        ]);
     });
 
     it("loads only the latest persisted transcript page for the active live session on initialize", async () => {
