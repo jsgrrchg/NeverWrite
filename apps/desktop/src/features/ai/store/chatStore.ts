@@ -2517,7 +2517,7 @@ function markTrackedConflict(
     };
 }
 
-function markTrackedFileConflictAndPersist(
+function markTrackedFileConflict(
     sessionId: string,
     identityKey: string,
     currentHash: string | null,
@@ -2537,7 +2537,14 @@ function markTrackedFileConflictAndPersist(
             },
         };
     });
+}
 
+function markTrackedFileConflictAndPersist(
+    sessionId: string,
+    identityKey: string,
+    currentHash: string | null,
+) {
+    markTrackedFileConflict(sessionId, identityKey, currentHash);
     const updatedSession = useChatStore.getState().sessionsById[sessionId];
     if (updatedSession) {
         void persistSession(updatedSession);
@@ -2939,6 +2946,20 @@ async function executeRestoreAction(
     return { action, change };
 }
 
+async function rejectTrackedFileAndReload(
+    vaultPath: string,
+    tracked: TrackedFile,
+): Promise<RestoreAction> {
+    const liveText = await readTrackedFileLiveText(tracked);
+    const { action: restoreAction, change } = await executeRestoreAction(
+        vaultPath,
+        tracked,
+        liveText,
+    );
+    reloadEditorAfterRestore(tracked, restoreAction, change);
+    return restoreAction;
+}
+
 /**
  * After a reject/undo writes content to disk, force-reload the open editor tab
  * so CodeMirror reflects the new content immediately.
@@ -3005,6 +3026,43 @@ function reloadEditorAfterRestore(
     } else {
         reloadOpenEditorContent(restoredPath, action.content, change);
     }
+}
+
+function canRestoreRejectUndoSnapshot(
+    snapshot: TrackedFile,
+    currentHash: string | null,
+) {
+    if (
+        snapshot.status.kind === "created" &&
+        snapshot.status.existingFileContent === null
+    ) {
+        return currentHash === null;
+    }
+
+    const expectedContent =
+        snapshot.status.kind === "created"
+            ? (snapshot.status.existingFileContent ?? snapshot.diffBase)
+            : snapshot.diffBase;
+    return currentHash === hashTextContent(expectedContent);
+}
+
+async function restoreRejectUndoSnapshotAndReload(
+    vaultPath: string,
+    snapshot: TrackedFile,
+) {
+    const change = await aiRestoreTextFile({
+        vaultPath,
+        path: snapshot.path,
+        previousPath:
+            snapshot.status.kind === "created" &&
+            snapshot.status.existingFileContent === null
+                ? undefined
+                : snapshot.originPath !== snapshot.path
+                  ? snapshot.originPath
+                  : null,
+        content: snapshot.currentText,
+    });
+    reloadOpenEditorContent(snapshot.path, snapshot.currentText, change);
 }
 
 function applyUserEditToTrackedFileInSession(
@@ -6999,10 +7057,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const {
                     ctx: { tracked, vaultPath },
                 } = prepared;
-                const liveText = await readTrackedFileLiveText(tracked);
-                const { action: restoreAction, change } =
-                    await executeRestoreAction(vaultPath, tracked, liveText);
-                reloadEditorAfterRestore(tracked, restoreAction, change);
+                const restoreAction = await rejectTrackedFileAndReload(
+                    vaultPath,
+                    tracked,
+                );
 
                 set((state) => {
                     const currentSession = state.sessionsById[sessionId];
@@ -7147,33 +7205,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const restoreCheck = await hasConflict(vaultPath, tracked);
 
                     if (restoreCheck.conflict) {
-                        set((state) => {
-                            const currentSession =
-                                state.sessionsById[sessionId];
-                            if (!currentSession) return state;
-
-                            return {
-                                sessionsById: {
-                                    ...state.sessionsById,
-                                    [sessionId]: markTrackedConflict(
-                                        currentSession,
-                                        identityKey,
-                                        restoreCheck.currentHash,
-                                    ),
-                                },
-                            };
-                        });
+                        markTrackedFileConflict(
+                            sessionId,
+                            identityKey,
+                            restoreCheck.currentHash,
+                        );
                         continue;
                     }
 
-                    const liveText = await readTrackedFileLiveText(tracked);
-                    const { action: restoreAction, change } =
-                        await executeRestoreAction(
-                            vaultPath,
-                            tracked,
-                            liveText,
-                        );
-                    reloadEditorAfterRestore(tracked, restoreAction, change);
+                    const restoreAction = await rejectTrackedFileAndReload(
+                        vaultPath,
+                        tracked,
+                    );
 
                     removedIdentityKeys.add(identityKey);
                     if (restoreAction.kind !== "skip") {
@@ -7487,64 +7530,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             // Restore each file on disk from its pre-reject snapshot
             for (const [identityKey, snapshot] of Object.entries(snapshots)) {
                 try {
-                    // Verify the disk hasn't changed since the reject
                     const currentHash = await aiGetTextFileHash(
                         vaultPath,
                         snapshot.path,
                     );
-                    if (
-                        snapshot.status.kind === "created" &&
-                        snapshot.status.existingFileContent === null
-                    ) {
-                        // Reject deleted this file. If it exists now, someone
-                        // created a new file at the same path — skip to avoid
-                        // overwriting.
-                        if (currentHash !== null) continue;
-                    } else {
-                        // Reject restored diffBase (or existingFileContent).
-                        // If the disk differs from what the reject wrote,
-                        // someone edited it — skip.
-                        const expectedContent =
-                            snapshot.status.kind === "created"
-                                ? (snapshot.status.existingFileContent ??
-                                  snapshot.diffBase)
-                                : snapshot.diffBase;
-                        const expectedHash = hashTextContent(expectedContent);
-                        if (currentHash !== expectedHash) continue;
+                    if (!canRestoreRejectUndoSnapshot(snapshot, currentHash)) {
+                        continue;
                     }
 
-                    // Write the agent's currentText back (undo the rejection)
-                    if (
-                        snapshot.status.kind === "created" &&
-                        snapshot.status.existingFileContent === null
-                    ) {
-                        // File was created by agent — re-create it
-                        const change = await aiRestoreTextFile({
-                            vaultPath,
-                            path: snapshot.path,
-                            content: snapshot.currentText,
-                        });
-                        reloadOpenEditorContent(
-                            snapshot.path,
-                            snapshot.currentText,
-                            change,
-                        );
-                    } else {
-                        const change = await aiRestoreTextFile({
-                            vaultPath,
-                            path: snapshot.path,
-                            previousPath:
-                                snapshot.originPath !== snapshot.path
-                                    ? snapshot.originPath
-                                    : null,
-                            content: snapshot.currentText,
-                        });
-                        reloadOpenEditorContent(
-                            snapshot.path,
-                            snapshot.currentText,
-                            change,
-                        );
-                    }
+                    await restoreRejectUndoSnapshotAndReload(
+                        vaultPath,
+                        snapshot,
+                    );
                     restoredSnapshots[identityKey] = snapshot;
                 } catch (error) {
                     caughtError = error;
