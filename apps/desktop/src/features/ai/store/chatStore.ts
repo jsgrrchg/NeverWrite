@@ -2544,6 +2544,66 @@ function markTrackedFileConflictAndPersist(
     }
 }
 
+type ReadyTrackedFileMutation = {
+    session: AIChatSession;
+    tracked: TrackedFile & { isText: true };
+    vaultPath: string;
+};
+
+type PreparedTrackedFileMutation =
+    | { kind: "abort" }
+    | { kind: "conflict" }
+    | { kind: "ready"; ctx: ReadyTrackedFileMutation };
+
+type TrackedFileMutationScope = "text" | "rejectable-text";
+
+async function prepareTrackedFileMutation(
+    sessionId: string,
+    identityKey: string,
+    scope: TrackedFileMutationScope,
+): Promise<PreparedTrackedFileMutation> {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) {
+        return { kind: "abort" };
+    }
+
+    const session = useChatStore.getState().sessionsById[sessionId];
+    if (!session) {
+        return { kind: "abort" };
+    }
+
+    const tracked = findTrackedFileInAccumulatedSession(session, identityKey);
+    if (!tracked || !tracked.isText) {
+        return { kind: "abort" };
+    }
+
+    if (
+        scope === "rejectable-text" &&
+        getTrackedFileReviewState(tracked) === "pending"
+    ) {
+        return { kind: "abort" };
+    }
+
+    const restoreCheck = await hasConflict(vaultPath, tracked);
+    if (restoreCheck.conflict) {
+        markTrackedFileConflictAndPersist(
+            sessionId,
+            identityKey,
+            restoreCheck.currentHash,
+        );
+        return { kind: "conflict" };
+    }
+
+    return {
+        kind: "ready",
+        ctx: {
+            session,
+            tracked,
+            vaultPath,
+        },
+    };
+}
+
 // ---------------------------------------------------------------------------
 // ActionLog helpers
 // ---------------------------------------------------------------------------
@@ -6928,32 +6988,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         rejectEditedFile: async (sessionId, identityKey) => {
-            const { sessionsById } = get();
-            const vaultPath = useVaultStore.getState().vaultPath;
-            if (!vaultPath) return;
-
-            const session = sessionsById[sessionId];
-            if (!session) return;
-
-            const tracked = findTrackedFileInAccumulatedSession(
-                session,
-                identityKey,
-            );
-            if (!tracked || !tracked.isText) return;
-            if (getTrackedFileReviewState(tracked) === "pending") return;
-
             try {
-                const restoreCheck = await hasConflict(vaultPath, tracked);
+                const prepared = await prepareTrackedFileMutation(
+                    sessionId,
+                    identityKey,
+                    "rejectable-text",
+                );
+                if (prepared.kind !== "ready") return;
 
-                if (restoreCheck.conflict) {
-                    markTrackedFileConflictAndPersist(
-                        sessionId,
-                        identityKey,
-                        restoreCheck.currentHash,
-                    );
-                    return;
-                }
-
+                const {
+                    ctx: { tracked, vaultPath },
+                } = prepared;
                 const liveText = await readTrackedFileLiveText(tracked);
                 const { action: restoreAction, change } =
                     await executeRestoreAction(vaultPath, tracked, liveText);
@@ -7019,33 +7064,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             identityKey,
             mergedText,
         ) => {
-            const { sessionsById } = get();
-            const vaultPath = useVaultStore.getState().vaultPath;
-            if (!vaultPath) return;
-
-            const session = sessionsById[sessionId];
-            if (!session) return;
-
-            const tracked = findTrackedFileInAccumulatedSession(
-                session,
-                identityKey,
-            );
-            if (!tracked || !tracked.isText) {
-                return;
-            }
-
             try {
-                const restoreCheck = await hasConflict(vaultPath, tracked);
+                const prepared = await prepareTrackedFileMutation(
+                    sessionId,
+                    identityKey,
+                    "text",
+                );
+                if (prepared.kind !== "ready") return;
 
-                if (restoreCheck.conflict) {
-                    markTrackedFileConflictAndPersist(
-                        sessionId,
-                        identityKey,
-                        restoreCheck.currentHash,
-                    );
-                    return;
-                }
-
+                const {
+                    ctx: { tracked, vaultPath },
+                } = prepared;
                 const change = await aiRestoreTextFile({
                     vaultPath,
                     path: tracked.path,
