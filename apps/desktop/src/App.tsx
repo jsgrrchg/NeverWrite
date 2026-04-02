@@ -60,16 +60,17 @@ import {
 } from "./app/windowSession";
 import {
     useEditorStore,
-    type TabInput,
     isFileTab,
     isGraphTab,
     isMapTab,
     isNoteTab,
     isPdfTab,
     isReviewTab,
-    readPersistedSession,
-    markSessionReady,
 } from "./app/store/editorStore";
+import {
+    markSessionReady,
+    restorePersistedSession,
+} from "./app/store/editorSession";
 import { useVaultStore, type VaultNoteChange } from "./app/store/vaultStore";
 import { useLayoutStore } from "./app/store/layoutStore";
 import { useSettingsStore } from "./app/store/settingsStore";
@@ -94,7 +95,6 @@ import {
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
-import { toVaultRelativePath } from "./app/utils/vaultPaths";
 
 function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
     return (
@@ -1248,262 +1248,11 @@ export default function App() {
 
     const restoreSessionForCurrentVault = useCallback(async () => {
         const vaultPath = useVaultStore.getState().vaultPath;
-        const session = readPersistedSession(vaultPath);
-        if (
-            !session?.noteIds.length &&
-            !session?.tabs?.length &&
-            !session?.pdfTabs?.length &&
-            !session?.fileTabs?.length &&
-            !session?.mapTabs?.length &&
-            !session?.hasGraphTab
-        ) {
-            return;
-        }
-
-        const restoredTabs: TabInput[] = [];
-
-        if (session?.tabs?.length) {
-            restoredTabs.push(...session.tabs);
-        } else {
-            for (const entry of session?.noteIds ?? []) {
-                try {
-                    const detail = await vaultInvoke<{ content: string }>(
-                        "read_note",
-                        {
-                            noteId: entry.noteId,
-                        },
-                    );
-                    const history = (
-                        entry.history ?? [
-                            { noteId: entry.noteId, title: entry.title },
-                        ]
-                    ).map((h) => ({
-                        noteId: h.noteId,
-                        title: h.title,
-                        content: "",
-                    }));
-                    const historyIndex = Math.min(
-                        entry.historyIndex ?? history.length - 1,
-                        history.length - 1,
-                    );
-                    if (history[historyIndex]) {
-                        history[historyIndex].content = detail.content;
-                    }
-                    restoredTabs.push({
-                        id: crypto.randomUUID(),
-                        noteId: entry.noteId,
-                        title: entry.title,
-                        content: detail.content,
-                        history,
-                        historyIndex,
-                    });
-                } catch {
-                    // Nota eliminada o no encontrada, se omite
-                }
-            }
-
-            for (const pdfEntry of session?.pdfTabs ?? []) {
-                const history = (
-                    pdfEntry.history ?? [
-                        {
-                            entryId: pdfEntry.entryId,
-                            title: pdfEntry.title,
-                            path: pdfEntry.path,
-                            page: pdfEntry.page ?? 1,
-                            zoom: pdfEntry.zoom ?? 1,
-                            viewMode: pdfEntry.viewMode ?? "continuous",
-                        },
-                    ]
-                ).map((entry) => ({
-                    entryId: entry.entryId,
-                    title: entry.title,
-                    path: entry.path,
-                    page: entry.page ?? 1,
-                    zoom: entry.zoom ?? 1,
-                    viewMode: entry.viewMode ?? "continuous",
-                }));
-                const historyIndex = Math.min(
-                    pdfEntry.historyIndex ?? history.length - 1,
-                    history.length - 1,
-                );
-                const currentEntry = history[historyIndex];
-                restoredTabs.push({
-                    id: crypto.randomUUID(),
-                    kind: "pdf",
-                    entryId: currentEntry?.entryId ?? pdfEntry.entryId,
-                    title: currentEntry?.title ?? pdfEntry.title,
-                    path: currentEntry?.path ?? pdfEntry.path,
-                    page: currentEntry?.page ?? pdfEntry.page ?? 1,
-                    zoom: currentEntry?.zoom ?? pdfEntry.zoom ?? 1,
-                    viewMode:
-                        currentEntry?.viewMode ??
-                        pdfEntry.viewMode ??
-                        "continuous",
-                    history,
-                    historyIndex,
-                });
-            }
-
-            for (const fileEntry of session?.fileTabs ?? []) {
-                let content = fileEntry.content ?? "";
-                const viewer =
-                    fileEntry.viewer ??
-                    (fileEntry.mimeType?.startsWith("image/")
-                        ? "image"
-                        : "text");
-
-                if (!content && viewer === "text") {
-                    try {
-                        const detail = await vaultInvoke<{ content: string }>(
-                            "read_vault_file",
-                            {
-                                relativePath: fileEntry.relativePath,
-                            },
-                        );
-                        content = detail.content;
-                    } catch {
-                        content = "";
-                    }
-                }
-
-                const history = (
-                    fileEntry.history ?? [
-                        {
-                            relativePath: fileEntry.relativePath,
-                            title: fileEntry.title,
-                            path: fileEntry.path,
-                            mimeType: fileEntry.mimeType ?? null,
-                            viewer,
-                        },
-                    ]
-                ).map((h) => ({
-                    relativePath: h.relativePath,
-                    title: h.title,
-                    path: h.path,
-                    mimeType: h.mimeType ?? null,
-                    viewer:
-                        h.viewer ??
-                        (h.mimeType?.startsWith("image/") ? "image" : "text"),
-                    content: "",
-                }));
-                const historyIndex = Math.min(
-                    fileEntry.historyIndex ?? history.length - 1,
-                    history.length - 1,
-                );
-                if (history[historyIndex]) {
-                    history[historyIndex].content = content;
-                }
-
-                restoredTabs.push({
-                    id: crypto.randomUUID(),
-                    kind: "file",
-                    relativePath: fileEntry.relativePath,
-                    title: fileEntry.title,
-                    path: fileEntry.path,
-                    mimeType: fileEntry.mimeType ?? null,
-                    viewer,
-                    content,
-                    history,
-                    historyIndex,
-                });
-            }
-        }
-
-        const currentVaultPath = useVaultStore.getState().vaultPath;
-
-        if (EXCALIDRAW_RUNTIME_SUPPORTED) {
-            for (const mapEntry of session?.mapTabs ?? []) {
-                const relativePath =
-                    mapEntry.relativePath ||
-                    (mapEntry.filePath
-                        ? toVaultRelativePath(
-                              mapEntry.filePath,
-                              currentVaultPath,
-                          )
-                        : null);
-                if (!relativePath) {
-                    continue;
-                }
-
-                if (
-                    restoredTabs.some(
-                        (tab) =>
-                            tab.kind === "map" &&
-                            tab.relativePath === relativePath,
-                    )
-                ) {
-                    continue;
-                }
-
-                restoredTabs.push({
-                    id: crypto.randomUUID(),
-                    kind: "map",
-                    relativePath,
-                    title: mapEntry.title,
-                });
-            }
-        }
-
-        if (session?.hasGraphTab) {
-            restoredTabs.push({
-                id: crypto.randomUUID(),
-                kind: "graph",
-                title: "Graph View",
-            });
-        }
-
-        if (!restoredTabs.length) return;
-
-        // Find active tab: check PDF first, then note
-        let activeTab: TabInput | undefined;
-        if (session?.activeGraphTab) {
-            activeTab = restoredTabs.find((tab) => tab.kind === "graph");
-        }
-        const activeLegacyMapRelativePath = session?.activeMapFilePath
-            ? toVaultRelativePath(session.activeMapFilePath, currentVaultPath)
-            : null;
-        if (
-            EXCALIDRAW_RUNTIME_SUPPORTED &&
-            !activeTab &&
-            session?.activeMapRelativePath
-        ) {
-            activeTab = restoredTabs.find(
-                (tab) =>
-                    tab.kind === "map" &&
-                    tab.relativePath === session.activeMapRelativePath,
-            );
-        }
-        if (
-            EXCALIDRAW_RUNTIME_SUPPORTED &&
-            !activeTab &&
-            activeLegacyMapRelativePath
-        ) {
-            activeTab = restoredTabs.find(
-                (tab) =>
-                    tab.kind === "map" &&
-                    tab.relativePath === activeLegacyMapRelativePath,
-            );
-        }
-        if (!activeTab && session?.activePdfEntryId) {
-            activeTab = restoredTabs.find(
-                (tab) =>
-                    tab.kind === "pdf" &&
-                    tab.entryId === session.activePdfEntryId,
-            );
-        }
-        if (!activeTab && session?.activeNoteId) {
-            activeTab = restoredTabs.find(
-                (tab) => isNoteTab(tab) && tab.noteId === session.activeNoteId,
-            );
-        }
-        if (!activeTab && session?.activeFilePath) {
-            activeTab = restoredTabs.find(
-                (tab) =>
-                    isFileTab(tab) &&
-                    tab.relativePath === session.activeFilePath,
-            );
-        }
-        hydrateTabs(restoredTabs, activeTab?.id ?? null);
+        const restored = await restorePersistedSession(vaultPath, {
+            includeMaps: EXCALIDRAW_RUNTIME_SUPPORTED,
+        });
+        if (!restored) return;
+        hydrateTabs(restored.tabs, restored.activeTabId);
     }, [hydrateTabs]);
 
     useEffect(() => {
