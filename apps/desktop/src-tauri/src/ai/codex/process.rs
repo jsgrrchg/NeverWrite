@@ -10,7 +10,6 @@ const CODEX_VENDOR_RELATIVE_PATH: &str = "../../../vendor/codex-acp";
 #[derive(Debug, Clone)]
 pub struct CodexProcessSpec {
     pub binary_path: PathBuf,
-    pub home_dir: PathBuf,
     pub cwd: Option<PathBuf>,
 }
 
@@ -84,15 +83,6 @@ impl CodexRuntime {
         )
     }
 
-    pub fn home_dir(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let base = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| error.to_string())?;
-
-        Ok(base.join("codex"))
-    }
-
     pub fn process_spec(
         &self,
         app: &AppHandle,
@@ -109,7 +99,6 @@ impl CodexRuntime {
             binary_path: resolved
                 .path
                 .ok_or_else(|| "No Codex runtime binary is configured.".to_string())?,
-            home_dir: self.home_dir(app)?,
             cwd,
         })
     }
