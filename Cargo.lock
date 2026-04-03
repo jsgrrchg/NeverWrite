@@ -5801,6 +5801,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tokio-util",
+ "toml 0.8.2",
  "url",
  "uuid",
  "vault-ai-ai",
