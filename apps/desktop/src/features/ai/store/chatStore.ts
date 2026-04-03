@@ -1128,11 +1128,6 @@ interface ChatStore {
         sessionId?: string,
     ) => Promise<void>;
     rejectEditedFile: (sessionId: string, identityKey: string) => Promise<void>;
-    resolveEditedFileWithMergedText: (
-        sessionId: string,
-        identityKey: string,
-        mergedText: string,
-    ) => Promise<void>;
     rejectAllEditedFiles: (sessionId: string) => Promise<void>;
     keepEditedFile: (sessionId: string, identityKey: string) => void;
     keepAllEditedFiles: (sessionId: string) => void;
@@ -7216,69 +7211,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     message: getAiErrorMessage(
                         error,
                         "Failed to reject the file changes.",
-                    ),
-                });
-            }
-        },
-
-        resolveEditedFileWithMergedText: async (
-            sessionId,
-            identityKey,
-            mergedText,
-        ) => {
-            try {
-                const prepared = await prepareTrackedFileMutation(
-                    sessionId,
-                    identityKey,
-                    "text",
-                );
-                if (prepared.kind !== "ready") return;
-
-                const {
-                    ctx: { tracked, vaultPath },
-                } = prepared;
-                const change = await aiRestoreTextFile({
-                    vaultPath,
-                    path: tracked.path,
-                    previousPath:
-                        tracked.originPath !== tracked.path
-                            ? tracked.originPath
-                            : null,
-                    content: mergedText,
-                });
-                reloadOpenEditorContent(tracked.path, mergedText, change);
-
-                set((state) => {
-                    const currentSession = state.sessionsById[sessionId];
-                    if (!currentSession) return state;
-
-                    const updated = removeTrackedFileFromActionLog(
-                        currentSession,
-                        identityKey,
-                    );
-
-                    return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [sessionId]: updated,
-                        },
-                    };
-                });
-
-                const updatedSession = get().sessionsById[sessionId];
-                if (updatedSession) {
-                    void persistSession(updatedSession);
-                    closeReviewIfSessionHasNoPendingEdits(
-                        sessionId,
-                        updatedSession,
-                    );
-                }
-            } catch (error) {
-                get().applySessionError({
-                    session_id: sessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to resolve the file hunks.",
                     ),
                 });
             }

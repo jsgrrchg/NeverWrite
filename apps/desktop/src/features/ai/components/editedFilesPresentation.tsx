@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { LanguageSupport } from "@codemirror/language";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import type { AIFileDiff } from "../types";
 import {
     computeDecisionHunks,
     computeDiffLines,
-    computeMergedText,
     computeVisualDiffBlocks,
     type DiffLine,
 } from "../diff/reviewDiff";
@@ -693,7 +692,6 @@ export function EditedFileDiffPreview({
     reviewHunks,
     onKeep,
     onReject,
-    onResolveHunks,
     onResolveReviewHunks,
 }: {
     diff: AIFileDiff;
@@ -708,10 +706,6 @@ export function EditedFileDiffPreview({
     reviewHunks?: ReviewHunk[];
     onKeep?: (identityKey: string) => void | Promise<void>;
     onReject?: (identityKey: string) => void | Promise<void>;
-    onResolveHunks?: (
-        identityKey: string,
-        mergedText: string,
-    ) => void | Promise<void>;
     onResolveReviewHunks?: (
         identityKey: string,
         decision: "accepted" | "rejected",
@@ -719,15 +713,6 @@ export function EditedFileDiffPreview({
         hunkIds: ReviewHunkId[],
     ) => void | Promise<void>;
 }) {
-    const [hunkDecisionState, setHunkDecisionState] = useState<{
-        key: string;
-        map: Map<string, HunkDecision>;
-    }>({
-        key: "",
-        map: new Map(),
-    });
-    const autoResolvedSignatureRef = useRef<string | null>(null);
-
     const lines = useMemo(
         () => (expanded ? computeDiffLines(diff) : []),
         [diff, expanded],
@@ -761,8 +746,6 @@ export function EditedFileDiffPreview({
             ),
         [reviewHunks],
     );
-    const decisionStateKey = `${file?.identityKey ?? ""}:${semanticHunks.map((hunk) => hunk.idKey).join("|")}`;
-    const immediateHunkMode = !!onResolveReviewHunks;
     const interactiveHunksEnabled =
         expanded &&
         !!file &&
@@ -770,132 +753,31 @@ export function EditedFileDiffPreview({
         file.conflictHash == null &&
         visualBlocks.length > 0 &&
         semanticHunks.length > 0 &&
-        (immediateHunkMode || (!!onKeep && !!onReject && !!onResolveHunks));
+        !!onResolveReviewHunks;
     const renderBlocks = useMemo(() => buildDiffRenderBlocks(lines), [lines]);
     const visualBlockByIndex = useMemo(
         () => new Map(visualBlocks.map((block) => [block.index, block])),
         [visualBlocks],
     );
-    const hunkDecisions = useMemo(
-        () =>
-            hunkDecisionState.key === decisionStateKey
-                ? hunkDecisionState.map
-                : new Map<string, HunkDecision>(),
-        [decisionStateKey, hunkDecisionState],
-    );
-
-    useEffect(() => {
-        autoResolvedSignatureRef.current = null;
-    }, [decisionStateKey]);
 
     const handleHunkDecision = useCallback(
         (hunkIndex: number, decision: HunkDecision) => {
-            if (immediateHunkMode && file) {
-                const reviewHunk = reviewHunkByIndex.get(hunkIndex);
-                if (reviewHunk) {
-                    void onResolveReviewHunks?.(
-                        file.identityKey,
-                        decision,
-                        reviewHunk.trackedVersion,
-                        [reviewHunk.id],
-                    );
-                }
-            } else {
-                const semanticHunk = semanticHunkByIndex.get(hunkIndex);
-                if (!semanticHunk) {
-                    return;
-                }
-                setHunkDecisionState((current) => {
-                    const next = new Map(
-                        current.key === decisionStateKey
-                            ? current.map
-                            : undefined,
-                    );
-                    next.set(semanticHunk.idKey, decision);
-                    return {
-                        key: decisionStateKey,
-                        map: next,
-                    };
-                });
+            if (!file) {
+                return;
+            }
+
+            const reviewHunk = reviewHunkByIndex.get(hunkIndex);
+            if (reviewHunk) {
+                void onResolveReviewHunks?.(
+                    file.identityKey,
+                    decision,
+                    reviewHunk.trackedVersion,
+                    [reviewHunk.id],
+                );
             }
         },
-        [
-            decisionStateKey,
-            file,
-            immediateHunkMode,
-            onResolveReviewHunks,
-            reviewHunkByIndex,
-            semanticHunkByIndex,
-        ],
+        [file, onResolveReviewHunks, reviewHunkByIndex],
     );
-
-    // Auto-resolve: only in accumulation mode (no onResolveHunk)
-    useEffect(() => {
-        if (immediateHunkMode) return;
-        if (!interactiveHunksEnabled || !file || semanticHunks.length === 0) {
-            return;
-        }
-
-        if (hunkDecisions.size !== semanticHunks.length) {
-            autoResolvedSignatureRef.current = null;
-            return;
-        }
-
-        const signature = JSON.stringify(
-            semanticHunks.map((hunk) => [
-                hunk.idKey,
-                hunkDecisions.get(hunk.idKey),
-            ]),
-        );
-        if (autoResolvedSignatureRef.current === signature) {
-            return;
-        }
-        autoResolvedSignatureRef.current = signature;
-
-        const identityKey = file.identityKey;
-        const decisions = semanticHunks.map((hunk) =>
-            hunkDecisions.get(hunk.idKey),
-        );
-
-        if (decisions.every((decision) => decision === "accepted")) {
-            void onKeep?.(identityKey);
-            return;
-        }
-
-        if (decisions.every((decision) => decision === "rejected")) {
-            void onReject?.(identityKey);
-            return;
-        }
-
-        const mergedText = computeMergedText(
-            file.diffBase,
-            file.currentText,
-            semanticHunks,
-            new Map<number, HunkDecision>(
-                semanticHunks
-                    .map((hunk) => {
-                        const decision = hunkDecisions.get(hunk.idKey);
-                        return decision
-                            ? ([hunk.index, decision] as const)
-                            : null;
-                    })
-                    .filter(
-                        (entry): entry is readonly [number, HunkDecision] =>
-                            entry != null,
-                    ),
-            ),
-        );
-        void onResolveHunks?.(identityKey, mergedText);
-    }, [
-        file,
-        hunkDecisions,
-        immediateHunkMode,
-        interactiveHunksEnabled,
-        onKeep,
-        onReject,
-        onResolveHunks,
-        semanticHunks,
-    ]);
 
     if (!expanded) {
         return null;
@@ -1081,32 +963,12 @@ export function EditedFileDiffPreview({
                                                     reviewHunkByIndex.get(
                                                         segment.decisionHunkIndex,
                                                     );
-                                                const decision = semanticHunk
-                                                    ? hunkDecisions.get(
-                                                          semanticHunk.idKey,
-                                                      )
-                                                    : undefined;
                                                 const reviewTrackedVersion =
                                                     reviewHunk?.trackedVersion ??
                                                     file.version;
                                                 const reviewHunkKey =
                                                     reviewHunk?.id.key ??
                                                     semanticHunk?.idKey;
-                                                const wrapperStyle =
-                                                    decision === "accepted"
-                                                        ? {
-                                                              backgroundColor:
-                                                                  "color-mix(in srgb, var(--diff-add) 6%, transparent)",
-                                                              opacity: 0.6,
-                                                          }
-                                                        : decision ===
-                                                            "rejected"
-                                                          ? {
-                                                                backgroundColor:
-                                                                    "color-mix(in srgb, var(--diff-remove) 6%, transparent)",
-                                                                opacity: 0.4,
-                                                            }
-                                                          : undefined;
 
                                                 return (
                                                     <div
@@ -1130,14 +992,12 @@ export function EditedFileDiffPreview({
                                                             overflow: "hidden",
                                                             backgroundColor:
                                                                 "color-mix(in srgb, var(--bg-elevated) 70%, transparent)",
-                                                            ...wrapperStyle,
                                                         }}
                                                     >
                                                         <HunkActionBar
                                                             hunkIndex={
                                                                 segment.decisionHunkIndex
                                                             }
-                                                            decision={decision}
                                                             onAccept={() =>
                                                                 handleHunkDecision(
                                                                     segment.decisionHunkIndex,
@@ -1150,42 +1010,12 @@ export function EditedFileDiffPreview({
                                                                     "rejected",
                                                                 )
                                                             }
-                                                            onUndo={() =>
-                                                                setHunkDecisionState(
-                                                                    (
-                                                                        current,
-                                                                    ) => {
-                                                                        const next =
-                                                                            new Map(
-                                                                                current.key ===
-                                                                                    decisionStateKey
-                                                                                    ? current.map
-                                                                                    : undefined,
-                                                                            );
-                                                                        if (
-                                                                            semanticHunk
-                                                                        ) {
-                                                                            next.delete(
-                                                                                semanticHunk.idKey,
-                                                                            );
-                                                                        }
-                                                                        return {
-                                                                            key: decisionStateKey,
-                                                                            map: next,
-                                                                        };
-                                                                    },
-                                                                )
-                                                            }
+                                                            onUndo={() => {}}
                                                         />
                                                         <div
                                                             style={{
                                                                 paddingTop: 4,
                                                                 paddingRight: 4,
-                                                                textDecoration:
-                                                                    decision ===
-                                                                    "rejected"
-                                                                        ? "line-through"
-                                                                        : "none",
                                                             }}
                                                         >
                                                             {segment.lines.map(
