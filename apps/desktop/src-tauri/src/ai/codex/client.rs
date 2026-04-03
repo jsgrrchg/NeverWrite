@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::Path,
     process::Stdio,
     rc::Rc,
     sync::{
@@ -40,10 +41,7 @@ use crate::ai::emit::{
     AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
 
-use super::{
-    process::CodexProcessSpec,
-    setup::{apply_auth_env, prepare_effective_home_config},
-};
+use super::{process::CodexProcessSpec, setup::apply_auth_env};
 
 const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
 const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
@@ -1074,20 +1072,8 @@ impl RuntimeActor {
             ));
         }
 
-        std::fs::create_dir_all(&spec.home_dir).map_err(|error| error.to_string())?;
-        prepare_effective_home_config(&spec.home_dir)?;
-
         let mut command = Command::new(&spec.binary_path);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .env("CODEX_HOME", &spec.home_dir);
-        apply_auth_env(&mut command)?;
-
-        if let Some(cwd) = spec.cwd.as_ref() {
-            command.current_dir(cwd);
-        }
+        prepare_runtime_command(&mut command, spec.cwd.as_deref())?;
 
         let mut child = command.spawn().map_err(|error| error.to_string())?;
         let stdin = child
@@ -2024,9 +2010,25 @@ fn collect_tool_call_update_diffs(
         .unwrap_or_default()
 }
 
+fn prepare_runtime_command(command: &mut Command, cwd: Option<&Path>) -> Result<(), String> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_remove("CODEX_HOME");
+    apply_auth_env(command)?;
+
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{Diff, Meta, ToolCallId, ToolKind};
+    use std::{env, ffi::OsStr, path::PathBuf};
 
     use super::*;
 
@@ -2273,5 +2275,28 @@ mod tests {
             tools.terminal_summary(session_id, tool_call_id).as_deref(),
             Some("fmt output\n\n[process exited: code 0]")
         );
+    }
+
+    #[test]
+    fn prepare_runtime_command_removes_inherited_codex_home() {
+        let original = env::var_os("CODEX_HOME");
+        env::set_var("CODEX_HOME", "/tmp/inherited-codex-home");
+
+        let mut command = Command::new("true");
+        prepare_runtime_command(&mut command, Some(PathBuf::from("/tmp").as_path())).unwrap();
+
+        let codex_home_env = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("CODEX_HOME"))
+            .map(|(_, value)| value);
+
+        match original {
+            Some(value) => env::set_var("CODEX_HOME", value),
+            None => env::remove_var("CODEX_HOME"),
+        }
+
+        assert_eq!(codex_home_env, Some(None));
+        assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/tmp")));
     }
 }
