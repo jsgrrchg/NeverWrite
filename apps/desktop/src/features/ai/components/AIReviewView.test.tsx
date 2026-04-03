@@ -21,8 +21,6 @@ const defaultChatActions = {
     keepEditedFile: useChatStore.getState().keepEditedFile,
     keepAllEditedFiles: useChatStore.getState().keepAllEditedFiles,
     rejectAllEditedFiles: useChatStore.getState().rejectAllEditedFiles,
-    resolveEditedFileWithMergedText:
-        useChatStore.getState().resolveEditedFileWithMergedText,
     resolveReviewHunks: useChatStore.getState().resolveReviewHunks,
 };
 
@@ -564,7 +562,6 @@ describe("AIReviewView", () => {
             keepEditedFile: vi.fn(),
             keepAllEditedFiles: vi.fn(),
             rejectAllEditedFiles: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             resolveReviewHunks,
         });
 
@@ -644,7 +641,6 @@ describe("AIReviewView", () => {
             keepEditedFile: vi.fn(),
             keepAllEditedFiles: vi.fn(),
             rejectAllEditedFiles: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             resolveReviewHunks: vi.fn(async () => {}),
         });
 

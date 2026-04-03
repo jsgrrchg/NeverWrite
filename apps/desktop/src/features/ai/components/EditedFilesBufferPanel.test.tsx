@@ -230,7 +230,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -252,8 +251,8 @@ describe("EditedFilesBufferPanel", () => {
             screen.getAllByRole("button", { name: "Open File" })[0],
         ).toBeEnabled();
         expect(
-            screen.getAllByRole("button", { name: "Review Diff" }),
-        ).toHaveLength(2);
+            screen.queryByRole("button", { name: "Review Diff" }),
+        ).not.toBeInTheDocument();
         expect(screen.getAllByRole("button", { name: "Reject" })).toHaveLength(
             2,
         );
@@ -273,7 +272,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -298,10 +296,30 @@ describe("EditedFilesBufferPanel", () => {
         ]);
         setVaultEntries([]);
         invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_entry") {
+                expect(args).toMatchObject({
+                    relativePath: "tmp/result.txt",
+                });
+                return {
+                    id: "/vault/tmp/result.txt",
+                    path: "/vault/tmp/result.txt",
+                    relative_path: "tmp/result.txt",
+                    title: "result",
+                    file_name: "result.txt",
+                    extension: "txt",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 4,
+                    mime_type: "text/plain",
+                    is_text_like: true,
+                    open_in_app: true,
+                    viewer_kind: "text",
+                };
+            }
             if (command === "read_vault_file") {
                 expect(args).toMatchObject({
                     relativePath: "tmp/result.txt",
-                    vaultPath: "/vault",
                 });
                 return {
                     path: "/vault/tmp/result.txt",
@@ -321,7 +339,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -348,7 +365,7 @@ describe("EditedFilesBufferPanel", () => {
         });
     });
 
-    it("keeps Review Diff available inline even when Open File is disabled", async () => {
+    it("keeps Review available even when Open File is disabled", async () => {
         const session = createSession("session-inline", [
             createTrackedFile("/vault/tmp/result.bin", {
                 diffBase: "alpha",
@@ -364,7 +381,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -375,46 +391,16 @@ describe("EditedFilesBufferPanel", () => {
             screen.getByRole("button", { name: "Open File" }),
         ).toBeDisabled();
 
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
 
         expect(
-            screen.getByTestId("edited-buffer-diff:/vault/tmp/result.bin"),
-        ).toBeInTheDocument();
-        expect(screen.getByText("beta")).toBeInTheDocument();
-        expect(screen.getByText("alpha")).toBeInTheDocument();
-    });
-
-    it("renders exact hunk line numbers in the inline review diff", () => {
-        // Create a file where the unreviewedEdits produce hunks at specific positions
-        const lines = Array.from({ length: 12 }, (_, i) => `line-${i + 1}`);
-        const newLines = [...lines];
-        newLines[7] = "beta"; // change at line 8 (0-indexed: 7)
-        const session = createSession("session-inline-hunks", [
-            createTrackedFile("/vault/tmp/result.txt", {
-                diffBase: lines.join("\n"),
-                currentText: newLines.join("\n"),
-            }),
-        ]);
-
-        setVaultEntries([]);
-        useChatStore.setState((state) => ({
-            ...state,
-            activeSessionId: session.sessionId,
-            sessionsById: {
-                [session.sessionId]: session,
-            },
-            rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            rejectAllEditedFiles: vi.fn(async () => {}),
-            keepAllEditedFiles: vi.fn(),
-        }));
-
-        renderComponent(<EditedFilesBufferPanel />);
-
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
-
-        expect(screen.getAllByText("8").length).toBeGreaterThanOrEqual(1);
-        expect(screen.getByText("beta")).toBeInTheDocument();
+            useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) =>
+                        isReviewTab(tab) && tab.sessionId === session.sessionId,
+                ),
+        ).toBeDefined();
     });
 
     it("opens the full review tab from the panel action", () => {
@@ -442,7 +428,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -477,7 +462,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -485,7 +469,10 @@ describe("EditedFilesBufferPanel", () => {
         renderComponent(<EditedFilesBufferPanel />);
 
         expect(
-            screen.getAllByRole("button", { name: "Review Diff" }),
+            screen.queryByRole("button", { name: "Review Diff" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.getAllByRole("button", { name: "Open File" }),
         ).toHaveLength(5);
         expect(screen.getByTestId("edited-files-buffer-list")).toHaveStyle({
             maxHeight: "208px",
@@ -505,7 +492,6 @@ describe("EditedFilesBufferPanel", () => {
                 [session.sessionId]: session,
             },
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
@@ -535,207 +521,6 @@ describe("EditedFilesBufferPanel", () => {
         ).toBeInTheDocument();
     });
 
-    it("resolves mixed per-hunk decisions via immediate mode", async () => {
-        const resolveReviewHunks = vi.fn(async () => {});
-        const session = createSession("session-hunk-resolve", [
-            createTrackedFile("/vault/src/mixed.ts", {
-                diffBase: "a\nold1\nc\nd\nold2\nf",
-                currentText: "a\nnew1\nc\nd\nnew2\nf",
-            }),
-        ]);
-
-        useChatStore.setState((state) => ({
-            ...state,
-            activeSessionId: session.sessionId,
-            sessionsById: {
-                [session.sessionId]: session,
-            },
-            keepEditedFile: vi.fn(),
-            rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            rejectAllEditedFiles: vi.fn(async () => {}),
-            keepAllEditedFiles: vi.fn(),
-            resolveReviewHunks,
-        }));
-
-        renderComponent(<EditedFilesBufferPanel />);
-
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
-        fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
-
-        await waitFor(() =>
-            expect(resolveReviewHunks).toHaveBeenCalledWith(
-                "session-hunk-resolve",
-                "/vault/src/mixed.ts",
-                "accepted",
-                1,
-                expect.arrayContaining([
-                    expect.objectContaining({
-                        trackedVersion: 1,
-                        key: expect.any(String),
-                    }),
-                ]),
-            ),
-        );
-
-        fireEvent.click(screen.getByRole("button", { name: "Reject hunk 2" }));
-
-        await waitFor(() =>
-            expect(resolveReviewHunks).toHaveBeenCalledWith(
-                "session-hunk-resolve",
-                "/vault/src/mixed.ts",
-                "rejected",
-                1,
-                expect.arrayContaining([
-                    expect.objectContaining({
-                        trackedVersion: 1,
-                        key: expect.any(String),
-                    }),
-                ]),
-            ),
-        );
-    });
-
-    it("renders nearby changes in one visual block but resolves them independently", async () => {
-        const resolveReviewHunks = vi.fn(async () => {});
-        const session = createSession("session-nearby-hunks", [
-            createTrackedFile("/vault/src/nearby.ts", {
-                diffBase: "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl",
-                currentText: "a\nb\nC\nd\ne\nf\ng\nH\ni\nj\nk\nl",
-            }),
-        ]);
-
-        useChatStore.setState((state) => ({
-            ...state,
-            activeSessionId: session.sessionId,
-            sessionsById: {
-                [session.sessionId]: session,
-            },
-            keepEditedFile: vi.fn(),
-            rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            rejectAllEditedFiles: vi.fn(async () => {}),
-            keepAllEditedFiles: vi.fn(),
-            resolveReviewHunks,
-        }));
-
-        renderComponent(<EditedFilesBufferPanel />);
-
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
-
-        expect(
-            screen.getByRole("button", { name: "Accept hunk 1" }),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByRole("button", { name: "Accept hunk 2" }),
-        ).toBeInTheDocument();
-
-        fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
-
-        await waitFor(() =>
-            expect(resolveReviewHunks).toHaveBeenCalledWith(
-                "session-nearby-hunks",
-                "/vault/src/nearby.ts",
-                "accepted",
-                1,
-                expect.arrayContaining([
-                    expect.objectContaining({
-                        trackedVersion: 1,
-                        key: expect.any(String),
-                    }),
-                ]),
-            ),
-        );
-    });
-
-    it("treats accepted decision hunks via immediate resolve", async () => {
-        const resolveReviewHunks = vi.fn(async () => {});
-        const session = createSession("session-hunk-keep", [
-            createTrackedFile("/vault/src/keep.ts", {
-                diffBase: "a\nold1\nc\nd\nold2\nf",
-                currentText: "a\nnew1\nc\nd\nnew2\nf",
-            }),
-        ]);
-
-        useChatStore.setState((state) => ({
-            ...state,
-            activeSessionId: session.sessionId,
-            sessionsById: {
-                [session.sessionId]: session,
-            },
-            keepEditedFile: vi.fn(),
-            rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            rejectAllEditedFiles: vi.fn(async () => {}),
-            keepAllEditedFiles: vi.fn(),
-            resolveReviewHunks,
-        }));
-
-        renderComponent(<EditedFilesBufferPanel />);
-
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
-        fireEvent.click(screen.getByRole("button", { name: "Accept hunk 1" }));
-
-        await waitFor(() =>
-            expect(resolveReviewHunks).toHaveBeenCalledWith(
-                "session-hunk-keep",
-                "/vault/src/keep.ts",
-                "accepted",
-                1,
-                expect.arrayContaining([
-                    expect.objectContaining({
-                        trackedVersion: 1,
-                        key: expect.any(String),
-                    }),
-                ]),
-            ),
-        );
-    });
-
-    it("treats rejected decision hunks via immediate resolve", async () => {
-        const resolveReviewHunks = vi.fn(async () => {});
-        const session = createSession("session-hunk-reject", [
-            createTrackedFile("/vault/src/reject.ts", {
-                diffBase: "a\nold1\nc\nd\nold2\nf",
-                currentText: "a\nnew1\nc\nd\nnew2\nf",
-            }),
-        ]);
-
-        useChatStore.setState((state) => ({
-            ...state,
-            activeSessionId: session.sessionId,
-            sessionsById: {
-                [session.sessionId]: session,
-            },
-            keepEditedFile: vi.fn(),
-            rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
-            rejectAllEditedFiles: vi.fn(async () => {}),
-            keepAllEditedFiles: vi.fn(),
-            resolveReviewHunks,
-        }));
-
-        renderComponent(<EditedFilesBufferPanel />);
-
-        fireEvent.click(screen.getByRole("button", { name: "Review Diff" }));
-        fireEvent.click(screen.getByRole("button", { name: "Reject hunk 1" }));
-
-        await waitFor(() =>
-            expect(resolveReviewHunks).toHaveBeenCalledWith(
-                "session-hunk-reject",
-                "/vault/src/reject.ts",
-                "rejected",
-                1,
-                expect.arrayContaining([
-                    expect.objectContaining({
-                        trackedVersion: 1,
-                        key: expect.any(String),
-                    }),
-                ]),
-            ),
-        );
-    });
-
     it("keeps file-level actions for add and delete entries without per-hunk buttons", async () => {
         const session = createSession("session-file-level-only", [
             createTrackedFile("/vault/src/added.ts", {
@@ -758,24 +543,20 @@ describe("EditedFilesBufferPanel", () => {
             },
             keepEditedFile: vi.fn(),
             rejectEditedFile: vi.fn(async () => {}),
-            resolveEditedFileWithMergedText: vi.fn(async () => {}),
             rejectAllEditedFiles: vi.fn(async () => {}),
             keepAllEditedFiles: vi.fn(),
         }));
 
         renderComponent(<EditedFilesBufferPanel />);
 
-        const reviewButtons = screen.getAllByRole("button", {
-            name: "Review Diff",
-        });
-        fireEvent.click(reviewButtons[0]!);
-        fireEvent.click(reviewButtons[1]!);
-
         expect(
             screen.queryByRole("button", { name: /Accept hunk/i }),
         ).not.toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: /Reject hunk/i }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Review Diff" }),
         ).not.toBeInTheDocument();
         expect(screen.getAllByRole("button", { name: "Keep" }).length).toBe(2);
         expect(screen.getAllByRole("button", { name: "Reject" }).length).toBe(

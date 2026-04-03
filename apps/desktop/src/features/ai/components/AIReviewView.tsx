@@ -207,9 +207,6 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     );
     const rejectEditedFile = useChatStore((state) => state.rejectEditedFile);
     const keepEditedFile = useChatStore((state) => state.keepEditedFile);
-    const resolveEditedFileWithMergedText = useChatStore(
-        (state) => state.resolveEditedFileWithMergedText,
-    );
     const rejectAllEditedFiles = useChatStore(
         (state) => state.rejectAllEditedFiles,
     );
@@ -701,13 +698,6 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                         }
                         onRejectItem={(identityKey) =>
                             void rejectEditedFile(tab.sessionId, identityKey)
-                        }
-                        onResolveHunks={(identityKey, mergedText) =>
-                            void resolveEditedFileWithMergedText(
-                                tab.sessionId,
-                                identityKey,
-                                mergedText,
-                            )
                         }
                         onResolveReviewHunks={
                             hasActionLog

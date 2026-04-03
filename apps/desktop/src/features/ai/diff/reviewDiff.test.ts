@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
     clampDiffZoom,
-    computeChangeHunks,
     computeDecisionHunks,
     computeDiffLines,
     computeDiffStats,
     computeFileDiffStats,
-    computeMergedText,
     computeVisualDiffBlocks,
     computeUnifiedDiffLines,
     createDiffFromTrackedFile,
@@ -339,7 +337,7 @@ describe("reviewDiff", () => {
         });
     });
 
-    describe("computeChangeHunks", () => {
+    describe("computeVisualDiffBlocks with exact hunks", () => {
         it("returns normalized exact hunks when metadata is available", () => {
             const diff: AIFileDiff = {
                 path: "exact.md",
@@ -360,7 +358,7 @@ describe("reviewDiff", () => {
                 ],
             };
 
-            expect(computeChangeHunks(diff)).toEqual([
+            expect(computeVisualDiffBlocks(diff)).toEqual([
                 {
                     index: 0,
                     decisionHunkIndexes: [0],
@@ -491,8 +489,8 @@ describe("reviewDiff", () => {
         });
     });
 
-    describe("computeVisualDiffBlocks", () => {
-        it("keeps compatibility by returning merged visual blocks", () => {
+    describe("computeVisualDiffBlocks fallback", () => {
+        it("returns merged visual blocks for nearby fallback changes", () => {
             const diff: AIFileDiff = {
                 path: "nearby.md",
                 kind: "update",
@@ -501,97 +499,6 @@ describe("reviewDiff", () => {
             };
 
             expect(computeVisualDiffBlocks(diff)).toHaveLength(1);
-            expect(computeChangeHunks(diff)).toEqual(
-                computeVisualDiffBlocks(diff),
-            );
-        });
-    });
-
-    describe("computeMergedText", () => {
-        it("merges accepted and rejected hunks back into a single document", () => {
-            const baseText = [
-                "l1",
-                "l2",
-                "l3",
-                "l4",
-                "l5",
-                "l6",
-                "l7",
-                "l8",
-                "l9",
-                "l10",
-                "l11",
-                "l12",
-                "l13",
-                "l14",
-                "l15",
-                "l16",
-                "l17",
-                "l18",
-                "l19",
-                "l20",
-            ].join("\n");
-            const appliedText = [
-                "l1",
-                "L2",
-                "l3",
-                "l4",
-                "l5",
-                "l6",
-                "l7",
-                "l8",
-                "l9",
-                "l10",
-                "l11",
-                "l12",
-                "l13",
-                "l14",
-                "l15",
-                "l16",
-                "l17",
-                "L18",
-                "l19",
-                "l20",
-            ].join("\n");
-
-            const { decisionHunks } = groupDiffLinesIntoHunks(
-                baseText,
-                appliedText,
-            );
-            const merged = computeMergedText(
-                baseText,
-                appliedText,
-                decisionHunks,
-                new Map([
-                    [0, "accepted"],
-                    [1, "rejected"],
-                ]),
-            );
-
-            expect(merged).toBe(
-                [
-                    "l1",
-                    "L2",
-                    "l3",
-                    "l4",
-                    "l5",
-                    "l6",
-                    "l7",
-                    "l8",
-                    "l9",
-                    "l10",
-                    "l11",
-                    "l12",
-                    "l13",
-                    "l14",
-                    "l15",
-                    "l16",
-                    "l17",
-                    "l18",
-                    "l19",
-                    "l20",
-                ].join("\n"),
-            );
         });
     });
 

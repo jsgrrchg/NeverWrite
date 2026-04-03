@@ -24,7 +24,6 @@ function FullRowActions({
     lineWrapping,
     onKeep,
     onReject,
-    onResolveHunks,
     onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
@@ -33,7 +32,6 @@ function FullRowActions({
     lineWrapping: boolean;
     onKeep: () => void;
     onReject: () => void;
-    onResolveHunks: (mergedText: string) => void;
     onResolveReviewHunks?: (
         decision: "accepted" | "rejected",
         trackedVersion: number,
@@ -53,11 +51,6 @@ function FullRowActions({
             reviewHunks={reviewProjection.hunks}
             onKeep={onKeep}
             onReject={onReject}
-            onResolveHunks={
-                canResolveHunks
-                    ? (_, mergedText) => onResolveHunks(mergedText)
-                    : undefined
-            }
             onResolveReviewHunks={
                 canResolveHunks && onResolveReviewHunks
                     ? (_, decision, trackedVersion, hunkIds) =>
@@ -81,7 +74,6 @@ function FullRow({
     onToggle,
     onKeep,
     onReject,
-    onResolveHunks,
     onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
@@ -91,7 +83,6 @@ function FullRow({
     onToggle: () => void;
     onKeep: () => void;
     onReject: () => void;
-    onResolveHunks: (mergedText: string) => void;
     onResolveReviewHunks?: (
         decision: "accepted" | "rejected",
         trackedVersion: number,
@@ -290,7 +281,6 @@ function FullRow({
                     lineWrapping={lineWrapping}
                     onKeep={onKeep}
                     onReject={onReject}
-                    onResolveHunks={onResolveHunks}
                     onResolveReviewHunks={onResolveReviewHunks}
                 />
             ) : null}
@@ -474,7 +464,6 @@ export function EditedFilesReviewList({
     onToggleItem,
     onKeepItem,
     onRejectItem,
-    onResolveHunks,
     onResolveReviewHunks,
 }: {
     items: ReviewFileItem[];
@@ -485,7 +474,6 @@ export function EditedFilesReviewList({
     onToggleItem?: (identityKey: string) => void;
     onKeepItem?: (identityKey: string) => void;
     onRejectItem: (identityKey: string) => void;
-    onResolveHunks?: (identityKey: string, mergedText: string) => void;
     onResolveReviewHunks?: (
         identityKey: string,
         decision: "accepted" | "rejected",
@@ -520,9 +508,6 @@ export function EditedFilesReviewList({
                     onToggle={() => onToggleItem?.(item.file.identityKey)}
                     onKeep={() => onKeepItem?.(item.file.identityKey)}
                     onReject={() => onRejectItem(item.file.identityKey)}
-                    onResolveHunks={(mergedText) =>
-                        onResolveHunks?.(item.file.identityKey, mergedText)
-                    }
                     onResolveReviewHunks={
                         onResolveReviewHunks
                             ? (decision, trackedVersion, hunkIds) =>

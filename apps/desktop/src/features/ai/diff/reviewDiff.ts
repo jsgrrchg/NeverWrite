@@ -43,14 +43,12 @@ export interface VisualDiffBlock extends ChangeHunk {
     decisionHunkIndexes: number[];
 }
 
-export interface StructuredDiffResult {
+interface StructuredDiffResult {
     hunks: VisualDiffBlock[];
     decisionHunks: DecisionHunk[];
     visualBlocks: VisualDiffBlock[];
     lines: DiffLine[];
 }
-
-export type GroupedDiffResult = StructuredDiffResult;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -244,7 +242,7 @@ function buildVisualDiffLine(
     };
 }
 
-function buildExactHunkData(hunks: AIFileDiffHunk[]): GroupedDiffResult {
+function buildExactHunkData(hunks: AIFileDiffHunk[]): StructuredDiffResult {
     const decisionHunks: DecisionHunk[] = [];
     const visualBlocks: VisualDiffBlock[] = [];
     const lines: DiffLine[] = [];
@@ -396,7 +394,9 @@ export function computeUnifiedDiffLines(text: string): DiffLine[] {
 export function groupDiffLinesIntoHunks(
     baseText: string,
     appliedText: string,
-): GroupedDiffResult {
+): StructuredDiffResult {
+    // Visual fallback only: used when a diff arrives as raw old/new text
+    // without exact hunks. Canonical review resolution lives in ActionLog.
     const baseLines = splitDiffText(baseText);
     const appliedLines = splitDiffText(appliedText);
     const ops = buildDiffOps(baseLines, appliedLines);
@@ -581,6 +581,10 @@ export function computeDiffLines(diff: AIFileDiff): DiffLine[] {
         return buildExactHunkData(diff.hunks).lines;
     }
 
+    // Prefer exact hunks whenever available. The remaining paths are
+    // presentation fallbacks for transcript/history diffs that only carry
+    // old/new snapshots.
+
     const oldLines = splitDiffText(diff.old_text);
     const newLines = splitDiffText(diff.new_text);
     const isPureMove =
@@ -627,10 +631,6 @@ export function computeDiffLines(diff: AIFileDiff): DiffLine[] {
         .lines;
 }
 
-export function computeChangeHunks(diff: AIFileDiff): ChangeHunk[] {
-    return computeVisualDiffBlocks(diff);
-}
-
 export function computeVisualDiffBlocks(diff: AIFileDiff): VisualDiffBlock[] {
     if (diff.is_text === false) {
         return [];
@@ -639,6 +639,9 @@ export function computeVisualDiffBlocks(diff: AIFileDiff): VisualDiffBlock[] {
     if (diff.hunks && diff.hunks.length > 0) {
         return buildExactHunkData(diff.hunks).hunks;
     }
+
+    // Match the same exact-hunks-first policy as computeDiffLines(). Without
+    // metadata, this remains a visual fallback for transcript/history diffs.
 
     const oldLines = splitDiffText(diff.old_text);
     const newLines = splitDiffText(diff.new_text);
@@ -667,6 +670,9 @@ export function computeDecisionHunks(diff: AIFileDiff): DecisionHunk[] {
         return buildExactHunkData(diff.hunks).decisionHunks;
     }
 
+    // Decision hunks are exact when metadata exists; otherwise they mirror the
+    // fallback visual segmentation used for non-interactive transcript diffs.
+
     const oldLines = splitDiffText(diff.old_text);
     const newLines = splitDiffText(diff.new_text);
     const isPureMove =
@@ -683,38 +689,6 @@ export function computeDecisionHunks(diff: AIFileDiff): DecisionHunk[] {
 
     return groupDiffLinesIntoHunks(diff.old_text ?? "", diff.new_text ?? "")
         .decisionHunks;
-}
-
-export function computeMergedText(
-    baseText: string,
-    appliedText: string,
-    hunks: ChangeHunk[],
-    decisions: Map<number, "accepted" | "rejected">,
-): string {
-    const baseLines = splitDiffText(baseText);
-    const appliedLines = splitDiffText(appliedText);
-    const orderedHunks = [...hunks].sort((left, right) =>
-        left.oldStart === right.oldStart
-            ? left.newStart - right.newStart
-            : left.oldStart - right.oldStart,
-    );
-    const result: string[] = [];
-    let basePos = 0;
-
-    for (const hunk of orderedHunks) {
-        result.push(...baseLines.slice(basePos, hunk.oldStart));
-
-        if (decisions.get(hunk.index) === "accepted") {
-            result.push(...appliedLines.slice(hunk.newStart, hunk.newEnd));
-        } else {
-            result.push(...baseLines.slice(hunk.oldStart, hunk.oldEnd));
-        }
-
-        basePos = hunk.oldEnd;
-    }
-
-    result.push(...baseLines.slice(basePos));
-    return result.join("\n");
 }
 
 export function computeFileDiffStats(diff: AIFileDiff): DiffStats {

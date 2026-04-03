@@ -80,9 +80,6 @@ export function EditedFilesBufferPanel({
     );
     const keepEditedFile = useChatStore((state) => state.keepEditedFile);
     const rejectEditedFile = useChatStore((state) => state.rejectEditedFile);
-    const resolveEditedFileWithMergedText = useChatStore(
-        (state) => state.resolveEditedFileWithMergedText,
-    );
     const rejectAllEditedFiles = useChatStore(
         (state) => state.rejectAllEditedFiles,
     );
@@ -399,13 +396,6 @@ export function EditedFilesBufferPanel({
                         }
                         onRejectItem={(identityKey) =>
                             void rejectEditedFile(activeSessionId, identityKey)
-                        }
-                        onResolveHunks={(identityKey, mergedText) =>
-                            void resolveEditedFileWithMergedText(
-                                activeSessionId,
-                                identityKey,
-                                mergedText,
-                            )
                         }
                         onResolveReviewHunks={
                             hasActionLog
