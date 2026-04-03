@@ -40,7 +40,10 @@ use crate::ai::emit::{
     AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
 
-use super::{process::CodexProcessSpec, setup::apply_auth_env};
+use super::{
+    process::CodexProcessSpec,
+    setup::{apply_auth_env, prepare_effective_home_config},
+};
 
 const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
 const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
@@ -1072,6 +1075,7 @@ impl RuntimeActor {
         }
 
         std::fs::create_dir_all(&spec.home_dir).map_err(|error| error.to_string())?;
+        prepare_effective_home_config(&spec.home_dir)?;
 
         let mut command = Command::new(&spec.binary_path);
         command

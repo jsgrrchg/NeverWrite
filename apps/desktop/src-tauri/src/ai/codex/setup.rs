@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -14,6 +14,8 @@ use crate::ai::secret_store::{
 };
 
 const SETUP_FILE_NAME: &str = "setup.json";
+const EFFECTIVE_CONFIG_FILE_NAME: &str = "config.toml";
+const OVERLAY_CONFIG_FILE_NAME: &str = "config.vaultai.toml";
 const CODEX_API_KEY_SECRET: &str = "codex_api_key";
 const OPENAI_API_KEY_SECRET: &str = "openai_api_key";
 
@@ -232,6 +234,22 @@ pub fn apply_auth_env(command: &mut tokio::process::Command) -> Result<(), Strin
     Ok(())
 }
 
+pub fn prepare_effective_home_config(home_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(home_dir).map_err(|error| error.to_string())?;
+
+    let effective_path = effective_config_path(home_dir);
+    let overlay_path = overlay_config_path(home_dir);
+    let global_path = global_config_path();
+
+    bootstrap_overlay_config(&overlay_path, &effective_path)?;
+    sync_overlay_projects_from_effective(&global_path, &overlay_path, &effective_path)?;
+
+    let mut effective = load_toml_table(&global_path)?;
+    let overlay = load_toml_table(&overlay_path)?;
+    merge_tables(&mut effective, overlay);
+    write_toml_table_if_changed(&effective_path, &effective)
+}
+
 fn detect_auth_method(config: &CodexSetupConfig) -> Result<Option<String>, String> {
     if config.auth_method.as_deref() == Some("chatgpt") {
         return Ok(Some("chatgpt".to_string()));
@@ -320,6 +338,159 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
     });
 
     methods
+}
+
+fn effective_config_path(home_dir: &Path) -> PathBuf {
+    home_dir.join(EFFECTIVE_CONFIG_FILE_NAME)
+}
+
+fn overlay_config_path(home_dir: &Path) -> PathBuf {
+    home_dir.join(OVERLAY_CONFIG_FILE_NAME)
+}
+
+fn global_config_path() -> PathBuf {
+    user_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".codex")
+        .join(EFFECTIVE_CONFIG_FILE_NAME)
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        env::var_os("USERPROFILE").map(PathBuf::from).or_else(|| {
+            let drive = env::var_os("HOMEDRIVE")?;
+            let path = env::var_os("HOMEPATH")?;
+            Some(PathBuf::from(format!(
+                "{}{}",
+                PathBuf::from(drive).to_string_lossy(),
+                PathBuf::from(path).to_string_lossy()
+            )))
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn bootstrap_overlay_config(overlay_path: &Path, effective_path: &Path) -> Result<(), String> {
+    if overlay_path.exists() || !effective_path.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(effective_path).map_err(|error| error.to_string())?;
+    fs::write(overlay_path, raw).map_err(|error| error.to_string())
+}
+
+fn sync_overlay_projects_from_effective(
+    global_path: &Path,
+    overlay_path: &Path,
+    effective_path: &Path,
+) -> Result<(), String> {
+    if !overlay_path.exists() || !effective_path.exists() {
+        return Ok(());
+    }
+
+    let global = load_toml_table(global_path)?;
+    let effective = load_toml_table(effective_path)?;
+    let mut overlay = load_toml_table(overlay_path)?;
+
+    let global_projects = table_child(&global, "projects");
+    let effective_projects = table_child(&effective, "projects");
+    let Some(local_projects) = subtract_table(effective_projects, global_projects) else {
+        if overlay.remove("projects").is_some() {
+            write_toml_table_if_changed(overlay_path, &overlay)?;
+        }
+        return Ok(());
+    };
+
+    let should_write =
+        overlay.get("projects").and_then(toml::Value::as_table) != Some(&local_projects);
+
+    if !should_write {
+        return Ok(());
+    }
+
+    overlay.insert("projects".to_string(), toml::Value::Table(local_projects));
+    write_toml_table_if_changed(overlay_path, &overlay)
+}
+
+fn load_toml_table(path: &Path) -> Result<toml::Table, String> {
+    if !path.exists() {
+        return Ok(toml::Table::new());
+    }
+
+    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let value: toml::Value = toml::from_str(&raw).map_err(|error| error.to_string())?;
+    match value {
+        toml::Value::Table(table) => Ok(table),
+        _ => Err(format!("Expected a TOML table in {}", path.display())),
+    }
+}
+
+fn write_toml_table_if_changed(path: &Path, table: &toml::Table) -> Result<(), String> {
+    let serialized = toml::to_string_pretty(table).map_err(|error| error.to_string())?;
+    let current = fs::read_to_string(path).ok();
+    if current.as_deref() == Some(serialized.as_str()) {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
+    for (key, overlay_value) in overlay {
+        match base.get_mut(&key) {
+            Some(base_value) => merge_values(base_value, overlay_value),
+            None => {
+                base.insert(key, overlay_value);
+            }
+        }
+    }
+}
+
+fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
+            merge_tables(base_table, overlay_table);
+        }
+        (base_value, overlay_value) => {
+            *base_value = overlay_value;
+        }
+    }
+}
+
+fn table_child<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Table> {
+    table.get(key)?.as_table()
+}
+
+fn subtract_table(
+    effective: Option<&toml::Table>,
+    global: Option<&toml::Table>,
+) -> Option<toml::Table> {
+    let effective = effective?;
+    let mut result = toml::Table::new();
+
+    for (key, effective_value) in effective {
+        let differs_from_global = global
+            .and_then(|table| table.get(key))
+            .is_none_or(|global_value| global_value != effective_value);
+        if differs_from_global {
+            result.insert(key.clone(), effective_value.clone());
+        }
+    }
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 fn load_setup_config_from_path(path: &Path) -> Result<CodexSetupConfig, String> {
@@ -518,5 +689,154 @@ mod tests {
         TestSecretStore::uninstall();
 
         assert_eq!(detected.as_deref(), Some("codex-api-key"));
+    }
+
+    fn temp_codex_home(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!(
+            "vaultai-codex-home-tests-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp codex home");
+        dir
+    }
+
+    #[test]
+    fn merge_tables_keeps_global_defaults_and_local_overrides() {
+        let mut base: toml::Table = toml::from_str(
+            r#"
+[mcp_servers.fff]
+command = "/global/fff"
+
+[projects."/global"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Table = toml::from_str(
+            r#"
+[mcp_servers.fff]
+command = "/local/fff"
+
+[projects."/local"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+
+        merge_tables(&mut base, overlay);
+
+        let fff = base["mcp_servers"]["fff"]["command"].as_str();
+        let global_project = base["projects"]["/global"]["trust_level"].as_str();
+        let local_project = base["projects"]["/local"]["trust_level"].as_str();
+
+        assert_eq!(fff, Some("/local/fff"));
+        assert_eq!(global_project, Some("trusted"));
+        assert_eq!(local_project, Some("trusted"));
+    }
+
+    #[test]
+    fn prepare_effective_home_config_merges_global_and_overlay() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_home = env::var_os("HOME");
+        let fake_home = temp_codex_home("merge-global");
+        let codex_dir = fake_home.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join(EFFECTIVE_CONFIG_FILE_NAME),
+            r#"
+model = "gpt-5.4"
+
+[mcp_servers.fff]
+command = "/Users/jfg/.local/bin/fff-mcp"
+
+[plugins."github@openai-curated"]
+enabled = true
+"#,
+        )
+        .unwrap();
+        env::set_var("HOME", &fake_home);
+
+        let home_dir = temp_codex_home("effective-home");
+        fs::write(
+            overlay_config_path(&home_dir),
+            r#"
+model_reasoning_effort = "high"
+
+[projects."/Users/jfg/Documents/DEVELOPMENT/VaultAI"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+
+        prepare_effective_home_config(&home_dir).unwrap();
+        let effective = fs::read_to_string(effective_config_path(&home_dir)).unwrap();
+
+        if let Some(value) = original_home {
+            env::set_var("HOME", value);
+        } else {
+            env::remove_var("HOME");
+        }
+
+        assert!(effective.contains("[mcp_servers.fff]"));
+        assert!(effective.contains("model = \"gpt-5.4\""));
+        assert!(effective.contains("model_reasoning_effort = \"high\""));
+        assert!(effective.contains("[plugins.\"github@openai-curated\"]"));
+        assert!(effective.contains("[projects.\"/Users/jfg/Documents/DEVELOPMENT/VaultAI\"]"));
+    }
+
+    #[test]
+    fn prepare_effective_home_config_syncs_local_projects_back_to_overlay() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_home = env::var_os("HOME");
+        let fake_home = temp_codex_home("project-sync-global");
+        let codex_dir = fake_home.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join(EFFECTIVE_CONFIG_FILE_NAME),
+            r#"
+[projects."/global"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+        env::set_var("HOME", &fake_home);
+
+        let home_dir = temp_codex_home("project-sync-home");
+        fs::write(
+            overlay_config_path(&home_dir),
+            r#"
+[projects."/local-before"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            effective_config_path(&home_dir),
+            r#"
+[projects."/global"]
+trust_level = "trusted"
+
+[projects."/local-after"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+
+        prepare_effective_home_config(&home_dir).unwrap();
+        let overlay = fs::read_to_string(overlay_config_path(&home_dir)).unwrap();
+        let effective = fs::read_to_string(effective_config_path(&home_dir)).unwrap();
+
+        if let Some(value) = original_home {
+            env::set_var("HOME", value);
+        } else {
+            env::remove_var("HOME");
+        }
+
+        assert!(overlay.contains("[projects.\"/local-after\"]"));
+        assert!(!overlay.contains("[projects.\"/global\"]"));
+        assert!(effective.contains("[projects.\"/global\"]"));
+        assert!(effective.contains("[projects.\"/local-after\"]"));
     }
 }
