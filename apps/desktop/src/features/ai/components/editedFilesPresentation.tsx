@@ -690,8 +690,6 @@ export function EditedFileDiffPreview({
     compactLineNumbers = false,
     file,
     reviewHunks,
-    onKeep,
-    onReject,
     onResolveReviewHunks,
 }: {
     diff: AIFileDiff;
@@ -704,8 +702,6 @@ export function EditedFileDiffPreview({
     compactLineNumbers?: boolean;
     file?: TrackedFile;
     reviewHunks?: ReviewHunk[];
-    onKeep?: (identityKey: string) => void | Promise<void>;
-    onReject?: (identityKey: string) => void | Promise<void>;
     onResolveReviewHunks?: (
         identityKey: string,
         decision: "accepted" | "rejected",

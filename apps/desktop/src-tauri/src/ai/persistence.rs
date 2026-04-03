@@ -1228,6 +1228,7 @@ mod tests {
             start_index: Some(0),
             message_count: Some(2),
             title: Some("Hello".to_string()),
+            custom_title: None,
             preview: Some("Assistant reply".to_string()),
             messages: vec![
                 PersistedMessage {
@@ -1492,6 +1493,7 @@ mod tests {
             start_index: Some(1),
             message_count: Some(3),
             title: Some("Hello".to_string()),
+            custom_title: None,
             preview: Some("Plan: Next step".to_string()),
             messages: vec![
                 PersistedMessage {
@@ -1672,6 +1674,7 @@ mod tests {
             start_index: Some(1),
             message_count: Some(expected_messages.len()),
             title: Some("Hello".to_string()),
+            custom_title: None,
             preview: Some("Plan: Confirm restore".to_string()),
             messages: expected_messages[1..].to_vec(),
         };

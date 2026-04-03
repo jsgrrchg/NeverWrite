@@ -22,16 +22,12 @@ function FullRowActions({
     expanded,
     diffZoom,
     lineWrapping,
-    onKeep,
-    onReject,
     onResolveReviewHunks,
 }: {
     item: ReviewFileItem;
     expanded: boolean;
     diffZoom: number;
     lineWrapping: boolean;
-    onKeep: () => void;
-    onReject: () => void;
     onResolveReviewHunks?: (
         decision: "accepted" | "rejected",
         trackedVersion: number,
@@ -49,8 +45,6 @@ function FullRowActions({
             compactLineNumbers
             file={file}
             reviewHunks={reviewProjection.hunks}
-            onKeep={onKeep}
-            onReject={onReject}
             onResolveReviewHunks={
                 canResolveHunks && onResolveReviewHunks
                     ? (_, decision, trackedVersion, hunkIds) =>
@@ -279,8 +273,6 @@ function FullRow({
                     expanded={expanded}
                     diffZoom={diffZoom}
                     lineWrapping={lineWrapping}
-                    onKeep={onKeep}
-                    onReject={onReject}
                     onResolveReviewHunks={onResolveReviewHunks}
                 />
             ) : null}
