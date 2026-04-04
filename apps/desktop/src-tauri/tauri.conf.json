@@ -19,7 +19,11 @@
     "bundle": {
         "active": true,
         "targets": ["app", "nsis", "msi"],
-        "resources": ["binaries/*", "embedded/**/*"],
+        "resources": {
+            "binaries/": "binaries/",
+            "embedded/": "embedded/",
+            "../dist/": "frontend-dist/"
+        },
         "macOS": {
             "minimumSystemVersion": "12.0",
             "entitlements": "Entitlements.plist"
@@ -34,7 +38,7 @@
     },
     "app": {
         "security": {
-            "csp": "default-src 'self'; connect-src 'self' asset: https://www.youtube.com vaultai-file: http://vaultai-file.localhost https://vaultai-file.localhost; worker-src 'self' blob:; img-src 'self' asset: https: http: data: vaultai-file: http://vaultai-file.localhost https://vaultai-file.localhost; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
+            "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost asset: https://www.youtube.com vaultai-file: http://vaultai-file.localhost https://vaultai-file.localhost; worker-src 'self' blob:; img-src 'self' asset: https: http: data: vaultai-file: http://vaultai-file.localhost https://vaultai-file.localhost; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com",
             "assetProtocol": {
                 "enable": false,
                 "scope": []

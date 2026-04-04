@@ -123,6 +123,17 @@ export function getCurrentWindowLabel() {
     return getCurrentWebviewWindow().label;
 }
 
+function resolveWindowUrl(url: string) {
+    if (/^https?:\/\//i.test(url)) return url;
+    if (
+        window.location.protocol !== "http:" &&
+        window.location.protocol !== "https:"
+    ) {
+        return url;
+    }
+    return new URL(url, window.location.origin).toString();
+}
+
 function getWebviewWindowChromeOptions(): {
     decorations?: boolean;
     titleBarStyle?: "overlay";
@@ -360,7 +371,7 @@ export async function openSettingsWindow(vaultPath: string | null = null) {
         ? `/?window=settings&vault=${encodeURIComponent(vaultPath)}`
         : "/?window=settings";
     const win = new WebviewWindow(label, {
-        url,
+        url: resolveWindowUrl(url),
         title: "Settings — VaultAI",
         width: 820,
         height: 560,
@@ -379,7 +390,7 @@ export async function openSettingsWindow(vaultPath: string | null = null) {
 export async function openVaultWindow(vaultPath: string) {
     const label = `vault-${crypto.randomUUID()}`;
     const win = new WebviewWindow(label, {
-        url: `/?vault=${encodeURIComponent(vaultPath)}`,
+        url: resolveWindowUrl(`/?vault=${encodeURIComponent(vaultPath)}`),
         title: getPathBaseName(vaultPath) || "Vault",
         width: 1200,
         height: 800,
@@ -410,7 +421,7 @@ export async function openDetachedNoteWindow(
     );
 
     const detachedWindow = new WebviewWindow(label, {
-        url: getDetachedNoteWindowUrl(payload.vaultPath),
+        url: resolveWindowUrl(getDetachedNoteWindowUrl(payload.vaultPath)),
         title: options?.title ?? payload.tabs[0]?.title ?? "Note",
         width: DETACH_WINDOW_WIDTH,
         height: DETACH_WINDOW_HEIGHT,
@@ -467,7 +478,9 @@ export async function createGhostWindow(
     const pos = getGhostWindowPosition(screenX, screenY);
 
     const ghost = new WebviewWindow(label, {
-        url: `/?window=ghost&title=${encodeURIComponent(title)}`,
+        url: resolveWindowUrl(
+            `/?window=ghost&title=${encodeURIComponent(title)}`,
+        ),
         title: "",
         width: GHOST_WINDOW_WIDTH,
         height: GHOST_WINDOW_HEIGHT,

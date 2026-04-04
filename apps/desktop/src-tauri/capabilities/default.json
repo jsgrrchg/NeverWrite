@@ -2,6 +2,20 @@
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "default",
     "description": "Default capabilities for VaultAI",
+    "remote": {
+        "urls": [
+            "http://localhost:32146",
+            "http://localhost:32147",
+            "http://localhost:32148",
+            "http://localhost:32149",
+            "http://localhost:32150",
+            "http://127.0.0.1:32146",
+            "http://127.0.0.1:32147",
+            "http://127.0.0.1:32148",
+            "http://127.0.0.1:32149",
+            "http://127.0.0.1:32150"
+        ]
+    },
     "windows": ["main", "note-*", "settings-*", "vault-*", "ghost-*"],
     "permissions": [
         "core:default",

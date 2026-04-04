@@ -2,6 +2,7 @@ mod ai;
 mod clipper_api;
 mod devtools;
 mod file_preview_gateway;
+mod frontend_server;
 mod maps;
 mod spellcheck;
 
@@ -5616,13 +5617,16 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let (tl_x, tl_y) = (14.0, 20.0);
 
-            let mut main_window_builder = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("VaultAI")
-            .inner_size(1200.0, 800.0);
+            let main_window_url = if let Some(url) = frontend_server::start(app.handle().clone())? {
+                tauri::WebviewUrl::External(url)
+            } else {
+                tauri::WebviewUrl::App("index.html".into())
+            };
+
+            let mut main_window_builder =
+                tauri::WebviewWindowBuilder::new(app, "main", main_window_url)
+                    .title("VaultAI")
+                    .inner_size(1200.0, 800.0);
 
             #[cfg(target_os = "macos")]
             {
