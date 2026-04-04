@@ -1,8 +1,15 @@
 import { type Extension, Facet } from "@codemirror/state";
-import { EditorView, ViewPlugin } from "@codemirror/view";
+import { EditorView, type ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { ReviewHunk } from "../../ai/diff/reviewProjection";
+import { EditorGeometryRefreshController } from "./editorGeometryRefresh";
 
-// ── Facet to pass hunks into the plugin ────────────────────────
+export interface ChangeRailGeometryMarker {
+    key: string;
+    topRatio: number;
+    heightRatio: number;
+}
+
+// Facet to pass hunks into the plugin
 export const changeRailHunksFacet = Facet.define<
     readonly ReviewHunk[],
     readonly ReviewHunk[]
@@ -12,84 +19,162 @@ export const changeRailHunksFacet = Facet.define<
     },
 });
 
-// ── Constants ──────────────────────────────────────────────────
 const RAIL_WIDTH = 3;
 const MARKER_MIN_HEIGHT = 3;
 
-// ── ViewPlugin ─────────────────────────────────────────────────
+function clamp(value: number, min: number, max: number) {
+    return Math.min(Math.max(value, min), max);
+}
+
+function clampDocPos(view: EditorView, pos: number) {
+    return Math.max(0, Math.min(pos, view.state.doc.length));
+}
+
+function roundGeometry(value: number) {
+    return Math.round(value * 1000) / 1000;
+}
+
+function buildMarkerSignature(markers: readonly ChangeRailGeometryMarker[]) {
+    return markers
+        .map(
+            (marker) =>
+                `${marker.key}:${roundGeometry(marker.topRatio)}:${roundGeometry(marker.heightRatio)}`,
+        )
+        .join(",");
+}
+
+function readChangeRailGeometryKey(view: EditorView) {
+    return JSON.stringify([
+        Math.round(view.contentHeight * 100) / 100,
+        view.scrollDOM.clientHeight,
+        view.scrollDOM.clientWidth,
+        view.contentDOM.clientWidth,
+        Math.round(view.defaultLineHeight * 100) / 100,
+        window.devicePixelRatio || 1,
+    ]);
+}
+
+export function deriveChangeRailGeometry(
+    view: EditorView,
+    hunks: readonly ReviewHunk[],
+): ChangeRailGeometryMarker[] {
+    if (hunks.length === 0) {
+        return [];
+    }
+
+    const contentHeight = Math.max(view.contentHeight, 1);
+    const fallbackBlockHeight = Math.max(view.defaultLineHeight, 1);
+
+    return hunks.map((hunk) => {
+        const from = clampDocPos(view, hunk.currentFrom);
+        const to = clampDocPos(view, hunk.currentTo);
+        const startBlock = view.lineBlockAt(from);
+        const endBlock =
+            to > from
+                ? view.lineBlockAt(clampDocPos(view, Math.max(from, to - 1)))
+                : startBlock;
+
+        const rawTop = Number.isFinite(startBlock.top) ? startBlock.top : 0;
+        const rawBottom = Number.isFinite(endBlock.bottom)
+            ? endBlock.bottom
+            : rawTop + fallbackBlockHeight;
+        const height = Math.max(rawBottom - rawTop, fallbackBlockHeight);
+        const heightRatio = clamp(height / contentHeight, 0, 1);
+        const maxTopRatio = Math.max(0, 1 - heightRatio);
+
+        return {
+            key: hunk.id.key,
+            topRatio: clamp(rawTop / contentHeight, 0, maxTopRatio),
+            heightRatio,
+        };
+    });
+}
+
 const changeRailPlugin = ViewPlugin.fromClass(
     class {
         readonly rail: HTMLElement;
-        private view: EditorView;
+        private readonly view: EditorView;
         private markers: HTMLElement[] = [];
-        private lastSignature = "";
+        private lastRenderSignature = "";
+        private readonly geometryRefresh: EditorGeometryRefreshController;
 
         constructor(view: EditorView) {
             this.view = view;
             this.rail = document.createElement("div");
             this.rail.className = "cm-change-rail";
             view.dom.appendChild(this.rail);
+            this.geometryRefresh = new EditorGeometryRefreshController({
+                view,
+                readKey: readChangeRailGeometryKey,
+                onGeometryChange: () => {
+                    this.render();
+                },
+            });
             this.render();
         }
 
-        update() {
-            this.render();
+        update(update: ViewUpdate) {
+            if (
+                update.docChanged ||
+                update.startState.facet(changeRailHunksFacet) !==
+                    update.state.facet(changeRailHunksFacet)
+            ) {
+                this.render();
+            }
+            this.geometryRefresh.update(update);
         }
 
         private render() {
             const hunks = this.view.state.facet(changeRailHunksFacet);
-            const docLines = this.view.state.doc.lines;
-            if (docLines === 0 || hunks.length === 0) {
+            if (hunks.length === 0) {
                 if (this.markers.length > 0) {
                     this.clearMarkers();
-                    this.lastSignature = "";
+                    this.lastRenderSignature = "";
                 }
                 this.rail.style.display = "none";
                 return;
             }
 
-            // Build a quick signature to avoid redundant DOM work
-            const sig = hunks
-                .map((h) => `${h.visualStartLine}:${h.visualEndLine}`)
-                .join(",");
-            if (sig === this.lastSignature) {
+            const markers = deriveChangeRailGeometry(this.view, hunks);
+            const signature = buildMarkerSignature(markers);
+            if (signature === this.lastRenderSignature) {
                 this.rail.style.display = "";
                 return;
             }
-            this.lastSignature = sig;
+
+            this.lastRenderSignature = signature;
             this.clearMarkers();
             this.rail.style.display = "";
 
-            for (const hunk of hunks) {
-                const startFrac = hunk.visualStartLine / docLines;
-                const endFrac = (hunk.visualEndLine + 1) / docLines;
-
+            for (const markerData of markers) {
                 const marker = document.createElement("div");
                 marker.className = "cm-change-rail-marker";
-                marker.style.top = `${(startFrac * 100).toFixed(3)}%`;
-                const heightPct = (endFrac - startFrac) * 100;
+                marker.dataset.changeRailKey = markerData.key;
+                marker.style.top = `${(markerData.topRatio * 100).toFixed(3)}%`;
+                const heightPct = markerData.heightRatio * 100;
                 marker.style.height =
                     heightPct < 0.3
                         ? `${MARKER_MIN_HEIGHT}px`
                         : `${heightPct.toFixed(3)}%`;
-
                 this.rail.appendChild(marker);
                 this.markers.push(marker);
             }
         }
 
         private clearMarkers() {
-            for (const m of this.markers) m.remove();
+            for (const marker of this.markers) {
+                marker.remove();
+            }
             this.markers = [];
         }
 
         destroy() {
+            this.geometryRefresh.destroy();
             this.rail.remove();
         }
     },
 );
 
-// ── Theme ──────────────────────────────────────────────────────
 const changeRailTheme = EditorView.baseTheme({
     ".cm-change-rail": {
         position: "absolute",
@@ -111,7 +196,6 @@ const changeRailTheme = EditorView.baseTheme({
     },
 });
 
-// ── Public API ─────────────────────────────────────────────────
 export function createChangeRailExtension(
     hunks: readonly ReviewHunk[],
 ): Extension[] {

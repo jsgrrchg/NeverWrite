@@ -1,15 +1,10 @@
-import { Text } from "@codemirror/state";
-import { Chunk } from "@codemirror/merge";
 import { describe, expect, it } from "vitest";
 import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import {
     buildPatchFromTexts,
     buildTextRangePatchFromTexts,
 } from "../ai/store/actionLogModel";
-import {
-    deriveFileChangePresentation,
-    deriveMarkersFromChunks,
-} from "./changePresentationModel";
+import { deriveFileChangePresentation } from "./changePresentationModel";
 
 function makeTrackedFile(
     diffBase: string,
@@ -42,17 +37,6 @@ function replaceLines(
         { length: lineCount },
         (_, index) => replacements[index] ?? `line-${index}`,
     ).join("\n");
-}
-
-function buildMarkers(diffBase: string, currentText: string) {
-    return deriveMarkersFromChunks(
-        Chunk.build(
-            Text.of(diffBase.split("\n")),
-            Text.of(currentText.split("\n")),
-        ),
-        Text.of(currentText.split("\n")),
-        "finalized",
-    );
 }
 
 describe("changePresentationModel", () => {
@@ -136,50 +120,6 @@ describe("changePresentationModel", () => {
         expect(presentation.preferReview).toBe(true);
         expect(presentation.showInlineActions).toBe(false);
         expect(presentation.showWordDiff).toBe(false);
-    });
-
-    it("derives add markers from merge chunks", () => {
-        const markers = buildMarkers("alpha\nbeta", "alpha\nbeta\nnew line");
-
-        expect(markers).toHaveLength(1);
-        expect(markers[0]?.kind).toBe("add");
-        expect(markers[0]?.startLine).toBe(2);
-        expect(markers[0]?.endLine).toBe(3);
-    });
-
-    it("derives add markers from merge chunks for modified lines", () => {
-        const markers = buildMarkers("alpha\nbeta", "alpha\nBETA");
-
-        expect(markers).toHaveLength(1);
-        expect(markers[0]?.kind).toBe("add");
-        expect(markers[0]?.heightRatio).toBeGreaterThan(0);
-    });
-
-    it("derives delete markers from merge chunks", () => {
-        const markers = buildMarkers("alpha\nbeta\ngamma", "alpha\ngamma");
-
-        expect(markers).toHaveLength(1);
-        expect(markers[0]?.kind).toBe("delete");
-        expect(markers[0]?.startLine).toBe(1);
-        expect(markers[0]?.endLine).toBe(1);
-    });
-
-    it("keeps add markers stable at EOF", () => {
-        const markers = buildMarkers("alpha\nbeta", "alpha\nbeta\ngamma");
-
-        expect(markers).toHaveLength(1);
-        expect(markers[0]?.kind).toBe("add");
-        expect(markers[0]?.startLine).toBe(2);
-        expect(markers[0]?.endLine).toBe(3);
-    });
-
-    it("keeps delete markers stable near EOF", () => {
-        const markers = buildMarkers("alpha\nbeta\ngamma", "alpha\nbeta");
-
-        expect(markers).toHaveLength(1);
-        expect(markers[0]?.kind).toBe("delete");
-        expect(markers[0]?.startLine).toBe(2);
-        expect(markers[0]?.endLine).toBe(2);
     });
 
     it("suppresses inline actions while review is pending", () => {

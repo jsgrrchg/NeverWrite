@@ -19,6 +19,7 @@ import type {
     ReviewHunkId,
 } from "../../ai/diff/reviewProjection";
 import { logWarn } from "../../../app/utils/runtimeLog";
+import { EditorGeometryRefreshController } from "./editorGeometryRefresh";
 
 export interface ReviewProjectionDecisionPayload {
     decision: "accepted" | "rejected";
@@ -972,102 +973,21 @@ function readReviewControlsGeometryKey(view: EditorView) {
 const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
     class {
         private readonly view: EditorView;
-        private resizeObserver: ResizeObserver | null = null;
-        private mutationObserver: MutationObserver | null = null;
-        private readonly fontSet: FontFaceSet | null =
-            typeof document !== "undefined" && "fonts" in document
-                ? (document.fonts as FontFaceSet)
-                : null;
-        private destroyed = false;
-        private refreshFrame: number | null = null;
-        private refreshScheduled = false;
-        private lastGeometryKey: string;
-        private readonly handleWindowResize = () => {
-            this.scheduleRefresh();
-        };
-        private readonly handleWindowFocus = () => {
-            this.scheduleRefresh();
-        };
-        private readonly handleVisibilityChange = () => {
-            if (document.visibilityState === "visible") {
-                this.scheduleRefresh();
-            }
-        };
-        private readonly handleViewportResize = () => {
-            this.scheduleRefresh();
-        };
-        private readonly handleFontEvent = () => {
-            this.scheduleRefresh();
-        };
+        private readonly geometryRefresh: EditorGeometryRefreshController;
 
         constructor(view: EditorView) {
             this.view = view;
-            this.lastGeometryKey = readReviewControlsGeometryKey(view);
-
-            if (typeof ResizeObserver !== "undefined") {
-                this.resizeObserver = new ResizeObserver(() => {
-                    this.scheduleRefresh();
-                });
-                this.resizeObserver.observe(view.dom);
-                this.resizeObserver.observe(view.scrollDOM);
-                this.resizeObserver.observe(view.contentDOM);
-            }
-
-            if (typeof MutationObserver !== "undefined") {
-                this.mutationObserver = new MutationObserver(() => {
-                    this.scheduleRefresh();
-                });
-                this.mutationObserver.observe(view.dom, {
-                    attributes: true,
-                    attributeFilter: ["class", "style"],
-                });
-                this.mutationObserver.observe(view.scrollDOM, {
-                    attributes: true,
-                    attributeFilter: ["class", "style"],
-                });
-                this.mutationObserver.observe(view.contentDOM, {
-                    attributes: true,
-                    attributeFilter: ["class", "style"],
-                });
-                this.mutationObserver.observe(document.documentElement, {
-                    attributes: true,
-                    attributeFilter: ["class", "style"],
-                });
-                if (document.body) {
-                    this.mutationObserver.observe(document.body, {
-                        attributes: true,
-                        attributeFilter: ["class", "style"],
+            this.geometryRefresh = new EditorGeometryRefreshController({
+                view,
+                readKey: readReviewControlsGeometryKey,
+                onGeometryChange: () => {
+                    this.view.dispatch({
+                        effects: [refreshReviewControlsGeometryEffect.of(null)],
                     });
-                }
-            }
-
-            if (this.fontSet) {
-                this.fontSet.addEventListener(
-                    "loadingdone",
-                    this.handleFontEvent as EventListener,
-                );
-                this.fontSet.ready
-                    .then(() => {
-                        if (!this.destroyed && this.view.dom.isConnected) {
-                            this.scheduleRefresh();
-                        }
-                    })
-                    .catch(() => {
-                        // Ignore font API readiness errors and keep fallback
-                        // listeners (resize/viewport/focus) active.
-                    });
-            }
-
-            window.addEventListener("resize", this.handleWindowResize);
-            window.addEventListener("focus", this.handleWindowFocus);
-            document.addEventListener(
-                "visibilitychange",
-                this.handleVisibilityChange,
-            );
-            window.visualViewport?.addEventListener(
-                "resize",
-                this.handleViewportResize,
-            );
+                },
+                observeDocumentRoot: true,
+                observeBody: true,
+            });
         }
 
         update(update: {
@@ -1075,68 +995,11 @@ const reviewProjectionControlsGeometryPlugin = ViewPlugin.fromClass(
             heightChanged: boolean;
             viewportChanged: boolean;
         }) {
-            if (
-                update.geometryChanged ||
-                update.heightChanged ||
-                update.viewportChanged
-            ) {
-                this.scheduleRefresh();
-            }
-        }
-
-        private scheduleRefresh() {
-            if (this.destroyed || this.refreshScheduled) {
-                return;
-            }
-
-            this.refreshScheduled = true;
-            this.refreshFrame = requestAnimationFrame(() => {
-                this.refreshFrame = null;
-                this.refreshScheduled = false;
-
-                if (this.destroyed || !this.view.dom.isConnected) {
-                    return;
-                }
-
-                const nextGeometryKey = readReviewControlsGeometryKey(
-                    this.view,
-                );
-                if (nextGeometryKey === this.lastGeometryKey) {
-                    return;
-                }
-
-                this.lastGeometryKey = nextGeometryKey;
-                this.view.dispatch({
-                    effects: [refreshReviewControlsGeometryEffect.of(null)],
-                });
-            });
+            this.geometryRefresh.update(update);
         }
 
         destroy() {
-            this.destroyed = true;
-            if (this.refreshFrame !== null) {
-                cancelAnimationFrame(this.refreshFrame);
-                this.refreshFrame = null;
-            }
-            this.refreshScheduled = false;
-            this.resizeObserver?.disconnect();
-            this.mutationObserver?.disconnect();
-            if (this.fontSet) {
-                this.fontSet.removeEventListener(
-                    "loadingdone",
-                    this.handleFontEvent as EventListener,
-                );
-            }
-            window.removeEventListener("resize", this.handleWindowResize);
-            window.removeEventListener("focus", this.handleWindowFocus);
-            document.removeEventListener(
-                "visibilitychange",
-                this.handleVisibilityChange,
-            );
-            window.visualViewport?.removeEventListener(
-                "resize",
-                this.handleViewportResize,
-            );
+            this.geometryRefresh.destroy();
         }
     },
 );

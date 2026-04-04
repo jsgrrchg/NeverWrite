@@ -1,39 +1,14 @@
-import type { Text } from "@codemirror/state";
-import type { Chunk } from "@codemirror/merge";
-import type {
-    LineEdit,
-    ReviewState,
-    TrackedFile,
-} from "../ai/diff/actionLogTypes";
+import type { LineEdit, TrackedFile } from "../ai/diff/actionLogTypes";
 import {
     getTrackedFileReviewState,
     syncDerivedLinePatch,
 } from "../ai/store/actionLogModel";
-import {
-    getChunkKind,
-    getChunkLineRangeInDocB,
-    getChunkMarkerKey,
-} from "./mergeChunkRange";
 
 export type ChangePresentationLevel =
     | "small"
     | "medium"
     | "large"
     | "very-large";
-
-export type ChangeRailMarkerKind = "add" | "delete";
-
-export interface ChangeRailMarker {
-    key: string;
-    startLine: number;
-    endLine: number;
-    // Visual anchor for the rail marker only. Never use as review identity.
-    anchorLine: number;
-    kind: ChangeRailMarkerKind;
-    reviewState: ReviewState;
-    topRatio: number;
-    heightRatio: number;
-}
 
 export interface FileChangePresentation {
     level: ChangePresentationLevel;
@@ -129,34 +104,6 @@ export function deriveFileChangePresentation(
     };
 }
 
-export function deriveMarkersFromChunks(
-    chunks: readonly Chunk[],
-    docB: Text,
-    reviewState: ReviewState,
-): ChangeRailMarker[] {
-    const totalLines = Math.max(docB.lines, 1);
-
-    return chunks.map((chunk, index) => {
-        const range = getChunkLineRangeInDocB(chunk, docB);
-        const lineSpan = Math.max(range.endLine - range.startLine, 1);
-        const minHeightRatio = 1 / totalLines;
-        const heightRatio = clamp(lineSpan / totalLines, minHeightRatio, 1);
-        const rawTopRatio = totalLines <= 1 ? 0 : range.anchorLine / totalLines;
-        const maxTopRatio = Math.max(0, 1 - heightRatio);
-
-        return {
-            key: getChunkMarkerKey(chunk, index),
-            startLine: range.startLine,
-            endLine: range.endLine,
-            anchorLine: range.anchorLine,
-            kind: getChunkKind(chunk),
-            reviewState,
-            topRatio: clamp(rawTopRatio, 0, maxTopRatio),
-            heightRatio,
-        };
-    });
-}
-
 function classifyPresentationLevel(metrics: {
     hunkCount: number;
     totalChangedLines: number;
@@ -212,10 +159,6 @@ function getVisibleCharCount(
 
 function splitLinesForDisplay(text: string) {
     return text.length === 0 ? [""] : text.split("\n");
-}
-
-function clamp(value: number, min: number, max: number) {
-    return Math.min(Math.max(value, min), max);
 }
 
 export function buildFileChangePresentation(
