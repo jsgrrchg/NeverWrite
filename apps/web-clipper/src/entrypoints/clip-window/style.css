@@ -71,8 +71,8 @@ body,
 }
 
 body {
-    min-width: 383px;
-    min-height: 585px;
+    min-width: 460px;
+    min-height: 700px;
     color: var(--text-primary);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;

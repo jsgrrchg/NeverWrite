@@ -85,7 +85,10 @@ export function SettingsPage({ settings, onChange }: SettingsPageProps) {
     }
 
     return (
-        <div className="flex flex-1 flex-col overflow-y-auto">
+        <div
+            className="flex flex-1 flex-col overflow-y-auto"
+            style={{ zoom: 1.2 }}
+        >
             <div className="flex flex-col gap-1 px-4 pt-5 pb-4">
                 <h2 className="text-sm font-semibold tracking-tight text-fg">
                     Vaults

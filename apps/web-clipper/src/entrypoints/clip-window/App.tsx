@@ -518,7 +518,10 @@ export function App(_props: AppProps) {
 
             {view === "clip" && (
                 <>
-                    <div className="flex-1 overflow-y-auto">
+                    <div
+                        className="flex-1 overflow-y-auto"
+                        style={{ zoom: 1.2 }}
+                    >
                         {isLoading && (
                             <div className="flex flex-col gap-2.5 px-3 pt-3">
                                 <div className="h-2.5 w-14 animate-pulse rounded bg-surface-hover" />
