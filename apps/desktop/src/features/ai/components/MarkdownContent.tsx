@@ -16,6 +16,7 @@ import {
     isTextLikeVaultPath,
 } from "../../../app/utils/vaultEntries";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { resolveVaultAbsolutePath } from "../../../app/utils/vaultPaths";
 import {
     DIFF_PANEL_MAX_HEIGHT,
     computeUnifiedDiffLines,
@@ -58,6 +59,43 @@ function parseVaultReference(value: string) {
     };
 }
 
+function isExternalReference(value: string) {
+    const trimmed = value.trim();
+    return trimmed.length === 0
+        ? true
+        : trimmed.startsWith("#") ||
+              /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ||
+              trimmed.startsWith("//");
+}
+
+function resolveVaultLocalPath(
+    value: string,
+    options?: { allowRelative?: boolean },
+) {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (isExternalReference(trimmed)) return null;
+    if (!options?.allowRelative && !trimmed.startsWith("/")) return null;
+    return resolveVaultAbsolutePath(
+        trimmed,
+        useVaultStore.getState().vaultPath,
+    );
+}
+
+function resolveVaultNoteReference(
+    value: string,
+    options?: { allowRelative?: boolean },
+) {
+    const parsed = parseVaultReference(value);
+    if (!parsed) return null;
+    const resolvedPath = resolveVaultLocalPath(parsed.path, options);
+    if (!resolvedPath) return null;
+    return {
+        ...parsed,
+        path: resolvedPath,
+    };
+}
+
 function parseExcalidrawReference(value: string) {
     const trimmed = value.trim();
     if (!/\.excalidraw$/i.test(trimmed)) return null;
@@ -82,9 +120,10 @@ function parsePdfReference(value: string) {
 
 function parseTextFileReference(value: string) {
     const trimmed = value.trim();
-    if (!trimmed.startsWith("/")) return null;
+    const resolvedPath = resolveVaultLocalPath(trimmed);
+    if (!resolvedPath) return null;
     if (
-        parseVaultReference(trimmed) ||
+        parseVaultReference(resolvedPath) ||
         parseExcalidrawReference(trimmed) ||
         parsePdfReference(trimmed)
     ) {
@@ -92,21 +131,54 @@ function parseTextFileReference(value: string) {
     }
     const entry = useVaultStore
         .getState()
-        .entries.find((candidate) => candidate.path === trimmed);
+        .entries.find((candidate) => candidate.path === resolvedPath);
     if (entry) {
         if (entry.kind !== "file" || !canOpenVaultFileEntryInApp(entry)) {
             return null;
         }
     } else if (
-        !isTextLikeVaultPath(trimmed) &&
-        !isImageLikeVaultPath(trimmed)
+        !isTextLikeVaultPath(resolvedPath) &&
+        !isImageLikeVaultPath(resolvedPath)
     ) {
         return null;
     }
 
     return {
-        path: trimmed,
-        fileName: trimmed.split("/").pop() ?? trimmed,
+        path: resolvedPath,
+        fileName: resolvedPath.split("/").pop() ?? resolvedPath,
+    };
+}
+
+function parseRelativeTextFileReference(value: string) {
+    const trimmed = value.trim();
+    const resolvedPath = resolveVaultLocalPath(trimmed, {
+        allowRelative: true,
+    });
+    if (!resolvedPath) return null;
+    if (
+        parseVaultReference(resolvedPath) ||
+        parseExcalidrawReference(trimmed) ||
+        parsePdfReference(trimmed)
+    ) {
+        return null;
+    }
+    const entry = useVaultStore
+        .getState()
+        .entries.find((candidate) => candidate.path === resolvedPath);
+    if (entry) {
+        if (entry.kind !== "file" || !canOpenVaultFileEntryInApp(entry)) {
+            return null;
+        }
+    } else if (
+        !isTextLikeVaultPath(resolvedPath) &&
+        !isImageLikeVaultPath(resolvedPath)
+    ) {
+        return null;
+    }
+
+    return {
+        path: resolvedPath,
+        fileName: resolvedPath.split("/").pop() ?? resolvedPath,
     };
 }
 
@@ -287,7 +359,7 @@ function renderInlineMarkdown(
         } else if (match[2]) {
             // inline code — render vault files as pills
             const codeText = full.slice(1, -1);
-            const parsedReference = parseVaultReference(codeText);
+            const parsedReference = resolveVaultNoteReference(codeText);
             const pdfRef = !parsedReference
                 ? parsePdfReference(codeText)
                 : null;
@@ -388,12 +460,17 @@ function renderInlineMarkdown(
             if (linkMatch) {
                 const url = linkMatch[2];
                 const decoded = decodeURIComponent(url);
-                const parsedUrlReference = parseVaultReference(decoded);
-                const parsedLabelReference = parseVaultReference(linkMatch[1]);
+                const parsedUrlReference = resolveVaultNoteReference(decoded, {
+                    allowRelative: true,
+                });
+                const parsedLabelReference = resolveVaultNoteReference(
+                    linkMatch[1],
+                    {
+                        allowRelative: true,
+                    },
+                );
                 const parsedReference =
-                    parsedUrlReference && decoded.startsWith("/")
-                        ? parsedUrlReference
-                        : parsedLabelReference;
+                    parsedUrlReference ?? parsedLabelReference;
                 const excalidrawRef =
                     parseExcalidrawReference(decoded) ??
                     parseExcalidrawReference(linkMatch[1]);
@@ -401,8 +478,8 @@ function renderInlineMarkdown(
                     parsePdfReference(decoded) ??
                     parsePdfReference(linkMatch[1]);
                 const textFileRef =
-                    parseTextFileReference(decoded) ??
-                    parseTextFileReference(linkMatch[1]);
+                    parseRelativeTextFileReference(decoded) ??
+                    parseRelativeTextFileReference(linkMatch[1]);
                 if (excalidrawRef) {
                     parts.push(
                         <ChatInlinePill

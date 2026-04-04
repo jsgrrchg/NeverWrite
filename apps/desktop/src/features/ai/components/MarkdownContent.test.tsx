@@ -22,6 +22,92 @@ const pillMetrics = {
 };
 
 describe("MarkdownContent", () => {
+    it("renders relative markdown note links as internal file pills", () => {
+        setVaultNotes([
+            {
+                id: "README.md",
+                title: "README",
+                path: "/vault/README.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="En [README](README.md) pone lo mismo."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "README" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: "README" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("opens relative markdown text file links in a new tab from the context menu", async () => {
+        const invokeMock = vi.mocked(invoke);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "apps/web-clipper/package.json",
+                });
+                return {
+                    path: "/vault/apps/web-clipper/package.json",
+                    relative_path: "apps/web-clipper/package.json",
+                    file_name: "package.json",
+                    mime_type: "application/json",
+                    content: '{ "name": "web-clipper" }',
+                };
+            }
+            throw new Error(`Unexpected invoke call: ${command}`);
+        });
+
+        setVaultEntries([
+            {
+                id: "apps/web-clipper/package.json",
+                path: "/vault/apps/web-clipper/package.json",
+                relative_path: "apps/web-clipper/package.json",
+                title: "package.json",
+                file_name: "package.json",
+                extension: "json",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "application/json",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="Coincide con [apps/web-clipper/package.json](apps/web-clipper/package.json)."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        fireEvent.contextMenu(
+            screen.getByRole("button", { name: "package.json" }),
+            {
+                clientX: 28,
+                clientY: 32,
+            },
+        );
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(1);
+        });
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            kind: "file",
+            title: "package.json",
+            path: "/vault/apps/web-clipper/package.json",
+        });
+    });
+
     it("opens markdown file pills in a new tab from the context menu", async () => {
         setVaultNotes([
             {
