@@ -3,13 +3,14 @@ import { useLayoutStore } from "../../app/store/layoutStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import { formatShortcutAction } from "../../app/shortcuts/format";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import { useAppUpdateStore } from "../../features/updates/store";
 
 export type SidebarView = "files" | "search" | "tags" | "bookmarks" | "maps";
 
 interface ActivityBarProps {
     active: SidebarView;
     onChange: (view: SidebarView) => void;
-    onOpenSettings: () => void;
+    onOpenSettings: (section?: string) => void;
 }
 
 const items: { id: SidebarView; title: string; icon: React.ReactNode }[] = [
@@ -164,6 +165,9 @@ export function ActivityBar({
     const openSettingsShortcut = formatShortcutAction(
         "open_settings",
         platform,
+    );
+    const updateAvailable = useAppUpdateStore(
+        (state) => !!state.status?.update,
     );
 
     const handleToggleTerminalPanel = () => {
@@ -510,11 +514,18 @@ export function ActivityBar({
 
             {/* Settings gear at bottom */}
             <button
-                onClick={onOpenSettings}
-                title={`Settings (${openSettingsShortcut})`}
+                onClick={() =>
+                    onOpenSettings(updateAvailable ? "updates" : undefined)
+                }
+                title={
+                    updateAvailable
+                        ? `Settings (${openSettingsShortcut}) · Update available`
+                        : `Settings (${openSettingsShortcut})`
+                }
                 className="flex items-center justify-center rounded"
                 style={{
                     ...baseButtonStyle,
+                    position: "relative",
                     color: "var(--text-secondary)",
                     backgroundColor: "transparent",
                     opacity: 0.7,
@@ -533,6 +544,23 @@ export function ActivityBar({
                     e.currentTarget.style.color = "var(--text-secondary)";
                 }}
             >
+                {updateAvailable ? (
+                    <span
+                        aria-hidden="true"
+                        style={{
+                            position: "absolute",
+                            top: 6,
+                            right: 6,
+                            width: 7,
+                            height: 7,
+                            borderRadius: "50%",
+                            background:
+                                "linear-gradient(180deg, #f97316, #ef4444)",
+                            boxShadow:
+                                "0 0 0 2px color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
+                        }}
+                    />
+                ) : null}
                 <svg
                     width="20"
                     height="20"

@@ -1,3 +1,4 @@
+import { emitTo } from "@tauri-apps/api/event";
 import {
     WebviewWindow,
     getAllWebviewWindows,
@@ -27,6 +28,7 @@ const DETACH_OUTSIDE_MARGIN = 30;
 const DETACHED_WINDOW_CURSOR_OFFSET_X = 120;
 const DETACHED_WINDOW_CURSOR_OFFSET_Y = 18;
 export const ATTACH_EXTERNAL_TAB_EVENT = "vaultai:attach-external-tab";
+export const SETTINGS_OPEN_SECTION_EVENT = "vaultai:settings-open-section";
 
 /**
  * Purge stale localStorage entries left behind by closed/crashed windows.
@@ -358,18 +360,34 @@ function settingsWindowLabel(vaultPath: string | null): string {
     return `settings-${hash.toString(36)}`;
 }
 
-export async function openSettingsWindow(vaultPath: string | null = null) {
+export async function openSettingsWindow(
+    vaultPath: string | null = null,
+    options?: {
+        section?: string;
+    },
+) {
     const label = settingsWindowLabel(vaultPath);
     const existing = await getAllWebviewWindows();
     const settingsWin = existing.find((w) => w.label === label);
     if (settingsWin) {
         await settingsWin.show();
         await settingsWin.setFocus();
+        if (options?.section) {
+            await emitTo(label, SETTINGS_OPEN_SECTION_EVENT, {
+                section: options.section,
+            });
+        }
         return;
     }
-    const url = vaultPath
-        ? `/?window=settings&vault=${encodeURIComponent(vaultPath)}`
-        : "/?window=settings";
+    const params = new URLSearchParams();
+    params.set("window", "settings");
+    if (vaultPath) {
+        params.set("vault", vaultPath);
+    }
+    if (options?.section) {
+        params.set("section", options.section);
+    }
+    const url = `/?${params.toString()}`;
     const win = new WebviewWindow(label, {
         url: resolveWindowUrl(url),
         title: "Settings — VaultAI",

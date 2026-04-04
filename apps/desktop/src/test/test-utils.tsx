@@ -37,6 +37,7 @@ export function setEditorTabs(
         _fileReloadVersions: {},
         _noteReloadMetadata: {},
         _fileReloadMetadata: {},
+        dirtyTabIds: new Set<string>(),
         noteExternalConflicts: new Set<string>(),
         fileExternalConflicts: new Set<string>(),
     });

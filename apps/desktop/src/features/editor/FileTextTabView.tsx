@@ -375,6 +375,7 @@ export function FileTextTabView() {
                     detail.content,
                 );
                 const store = useEditorStore.getState();
+                store.setTabDirty(targetTab.id, false);
                 store.updateFileHistoryTitle(
                     targetTab.id,
                     targetTab.relativePath,
@@ -505,9 +506,16 @@ export function FileTextTabView() {
                         }
 
                         const content = update.state.doc.toString();
+                        const lastSaved =
+                            lastSavedContentByPathRef.current.get(
+                                currentTab.relativePath,
+                            ) ?? currentTab.content;
                         useEditorStore
                             .getState()
                             .updateTabContent(currentTab.id, content);
+                        useEditorStore
+                            .getState()
+                            .setTabDirty(currentTab.id, content !== lastSaved);
                         scheduleSave(currentTab, content);
                     }),
                     syntaxCompartmentRef.current.of(getSyntaxExtension(isDark)),
@@ -579,7 +587,9 @@ export function FileTextTabView() {
             currentTab.relativePath,
             currentTab.content,
         );
-        useEditorStore.getState().clearCurrentSelection();
+        const store = useEditorStore.getState();
+        store.setTabDirty(currentTab.id, false);
+        store.clearCurrentSelection();
     }, [replaceEditorDocument, saveFile, tab?.id, tab?.relativePath]);
 
     useEffect(() => {
@@ -593,6 +603,7 @@ export function FileTextTabView() {
                 currentTab.relativePath,
                 currentTab.content,
             );
+            useEditorStore.getState().setTabDirty(currentTab.id, false);
         }
     }, [tab?.content, tab?.relativePath]);
 
@@ -684,9 +695,9 @@ export function FileTextTabView() {
                         incomingContent,
                     );
                 }
-                useEditorStore
-                    .getState()
-                    .clearFileExternalConflict(relativePath);
+                const store = useEditorStore.getState();
+                store.setTabDirty(currentTab.id, false);
+                store.clearFileExternalConflict(relativePath);
                 return;
             }
 
@@ -698,9 +709,9 @@ export function FileTextTabView() {
                         relativePath,
                         incomingContent,
                     );
-                    useEditorStore
-                        .getState()
-                        .clearFileExternalConflict(relativePath);
+                    const store = useEditorStore.getState();
+                    store.setTabDirty(currentTab.id, false);
+                    store.clearFileExternalConflict(relativePath);
                     return;
                 }
                 useEditorStore
@@ -714,7 +725,9 @@ export function FileTextTabView() {
             }
             acknowledgeIncomingRevision();
             clearPendingLocalAck();
-            useEditorStore.getState().clearFileExternalConflict(relativePath);
+            const store = useEditorStore.getState();
+            store.setTabDirty(currentTab.id, false);
+            store.clearFileExternalConflict(relativePath);
             lastSavedContentByPathRef.current.set(
                 relativePath,
                 incomingContent,

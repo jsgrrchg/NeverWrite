@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{AboutMetadataBuilder, Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 use vault_ai_index::{IndexBuildPhase, VaultIndex};
 use vault_ai_types::{
@@ -61,6 +62,18 @@ const MAX_GRAPH_QUERY_CACHE_RESULT_NOTE_IDS: usize = 4_096;
 const VAULT_CHANGE_ORIGIN_USER: &str = "user";
 const VAULT_CHANGE_ORIGIN_AGENT: &str = "agent";
 const VAULT_CHANGE_ORIGIN_EXTERNAL: &str = "external";
+const DEFAULT_UPDATER_CHANNEL: &str = "stable";
+const UPDATER_PUBLIC_KEY_ENV_VARS: [&str; 2] =
+    ["VAULTAI_UPDATER_PUBLIC_KEY", "TAURI_UPDATER_PUBLIC_KEY"];
+const UPDATER_ENDPOINT_ENV_VARS: [&str; 1] = ["VAULTAI_UPDATER_ENDPOINT"];
+const UPDATER_BASE_URL_ENV_VARS: [&str; 2] =
+    ["VAULTAI_UPDATER_BASE_URL", "VAULTAI_APPCAST_BASE_URL"];
+const UPDATER_CHANNEL_ENV_VARS: [&str; 1] = ["VAULTAI_UPDATER_CHANNEL"];
+const UPDATER_ALLOWED_FEED_HOSTS_ENV_VARS: [&str; 1] = ["VAULTAI_UPDATER_ALLOWED_FEED_HOSTS"];
+const UPDATER_ALLOWED_DOWNLOAD_HOSTS_ENV_VARS: [&str; 1] =
+    ["VAULTAI_UPDATER_ALLOWED_DOWNLOAD_HOSTS"];
+const UPDATER_ALLOW_PROD_ENDPOINTS_IN_NON_PROD_ENV_VARS: [&str; 1] =
+    ["VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD"];
 
 #[cfg(target_os = "macos")]
 static MACOS_DOCK_MENU_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
@@ -91,6 +104,337 @@ fn debug_timing_enabled() -> bool {
 #[cfg(not(feature = "debug-logs"))]
 fn debug_timing_enabled() -> bool {
     false
+}
+
+fn read_first_nonempty_env<const N: usize>(keys: [&str; N]) -> Option<String> {
+    keys.into_iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn read_updater_channel_from_env() -> String {
+    read_first_nonempty_env(UPDATER_CHANNEL_ENV_VARS)
+        .unwrap_or_else(|| DEFAULT_UPDATER_CHANNEL.to_string())
+}
+
+fn read_env_flag<const N: usize>(keys: [&str; N]) -> bool {
+    read_first_nonempty_env(keys).is_some_and(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn read_csv_env<const N: usize>(keys: [&str; N]) -> Vec<String> {
+    read_first_nonempty_env(keys)
+        .map(|value| {
+            value
+                .split(',')
+                .map(|item| item.trim().trim_end_matches('.').to_ascii_lowercase())
+                .filter(|item| !item.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn build_updater_endpoint(base_url: &str, channel: &str) -> String {
+    format!(
+        "{}/{}/latest.json",
+        base_url.trim_end_matches('/'),
+        channel.trim_matches('/'),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdaterRuntimeMode {
+    Production,
+    NonProduction,
+}
+
+fn current_updater_runtime_mode() -> UpdaterRuntimeMode {
+    if cfg!(debug_assertions) {
+        UpdaterRuntimeMode::NonProduction
+    } else {
+        UpdaterRuntimeMode::Production
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(
+        host.trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase()
+            .as_str(),
+        "localhost" | "127.0.0.1" | "::1"
+    )
+}
+
+fn host_matches_allowlist(host: &str, allowlist: &[String]) -> bool {
+    let normalized_host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    allowlist.iter().any(|allowed_host| {
+        normalized_host == *allowed_host || normalized_host.ends_with(&format!(".{allowed_host}"))
+    })
+}
+
+fn validate_url_common(url: &Url, label: &str) -> Result<(), String> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!(
+            "{label} must not contain embedded credentials: {url}"
+        ));
+    }
+    if url.query().is_some() {
+        return Err(format!("{label} must not contain query parameters: {url}"));
+    }
+    if url.fragment().is_some() {
+        return Err(format!("{label} must not contain fragments: {url}"));
+    }
+    Ok(())
+}
+
+fn validate_production_feed_host(url: &Url, allowed_feed_hosts: &[String]) -> Result<(), String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("Updater endpoint must include a hostname in production: {url}"))?;
+    if !allowed_feed_hosts.is_empty() {
+        if host_matches_allowlist(host, allowed_feed_hosts) {
+            return Ok(());
+        }
+        return Err(format!(
+            "Updater endpoint host '{host}' is not in VAULTAI_UPDATER_ALLOWED_FEED_HOSTS."
+        ));
+    }
+    if host.to_ascii_lowercase().ends_with(".github.io") {
+        return Ok(());
+    }
+    Err(format!(
+        "Updater endpoint host '{host}' is not allowed. Production default only permits GitHub Pages hosts (*.github.io)."
+    ))
+}
+
+fn validate_production_download_host(
+    url: &Url,
+    allowed_download_hosts: &[String],
+) -> Result<(), String> {
+    let host = url.host_str().ok_or_else(|| {
+        format!("Updater download URL must include a hostname in production: {url}")
+    })?;
+    if !allowed_download_hosts.is_empty() {
+        if host_matches_allowlist(host, allowed_download_hosts) {
+            return Ok(());
+        }
+        return Err(format!(
+            "Updater download host '{host}' is not in VAULTAI_UPDATER_ALLOWED_DOWNLOAD_HOSTS."
+        ));
+    }
+    if host.eq_ignore_ascii_case("github.com") {
+        return Ok(());
+    }
+    Err(format!(
+        "Updater download host '{host}' is not allowed. Production default only permits github.com release URLs."
+    ))
+}
+
+fn validate_updater_endpoint_url(
+    url: &Url,
+    runtime_mode: UpdaterRuntimeMode,
+    allow_prod_endpoints_in_non_prod: bool,
+    allowed_feed_hosts: &[String],
+) -> Result<(), String> {
+    validate_url_common(url, "Updater endpoint")?;
+    if !url.path().ends_with("/latest.json") {
+        return Err(format!(
+            "Updater endpoint must end with '/latest.json': {url}"
+        ));
+    }
+
+    let production_rules_apply =
+        runtime_mode == UpdaterRuntimeMode::Production || allow_prod_endpoints_in_non_prod;
+    if production_rules_apply {
+        if url.scheme() != "https" {
+            return Err(format!(
+                "Updater endpoint must use https in production-like mode: {url}"
+            ));
+        }
+        return validate_production_feed_host(url, allowed_feed_hosts);
+    }
+
+    match url.scheme() {
+        "file" => Ok(()),
+        "http" | "https" => {
+            let host = url.host_str().ok_or_else(|| {
+                format!("Non-production updater endpoint must include a hostname: {url}")
+            })?;
+            if is_loopback_host(host) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Non-production updater endpoint must stay local (loopback or file URL). Refusing public feed: {url}. Set VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true only for explicit one-off validation."
+                ))
+            }
+        }
+        _ => Err(format!(
+            "Unsupported updater endpoint scheme '{}': {url}",
+            url.scheme()
+        )),
+    }
+}
+
+fn validate_update_download_url(
+    url: &Url,
+    runtime_mode: UpdaterRuntimeMode,
+    allow_prod_endpoints_in_non_prod: bool,
+    allowed_download_hosts: &[String],
+) -> Result<(), String> {
+    validate_url_common(url, "Updater download URL")?;
+
+    let production_rules_apply =
+        runtime_mode == UpdaterRuntimeMode::Production || allow_prod_endpoints_in_non_prod;
+    if production_rules_apply {
+        if url.scheme() != "https" {
+            return Err(format!(
+                "Updater download URL must use https in production-like mode: {url}"
+            ));
+        }
+        return validate_production_download_host(url, allowed_download_hosts);
+    }
+
+    match url.scheme() {
+        "file" => Ok(()),
+        "http" | "https" => {
+            let host = url.host_str().ok_or_else(|| {
+                format!("Non-production updater download URL must include a hostname: {url}")
+            })?;
+            if is_loopback_host(host) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Non-production updater download URL must stay local (loopback or file URL). Refusing public asset URL: {url}. Set VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true only for explicit one-off validation."
+                ))
+            }
+        }
+        _ => Err(format!(
+            "Unsupported updater download scheme '{}': {url}",
+            url.scheme()
+        )),
+    }
+}
+
+fn load_updater_runtime_config() -> UpdaterRuntimeConfig {
+    let channel = read_updater_channel_from_env();
+    let pubkey = read_first_nonempty_env(UPDATER_PUBLIC_KEY_ENV_VARS);
+    let runtime_mode = current_updater_runtime_mode();
+    let allowed_feed_hosts = read_csv_env(UPDATER_ALLOWED_FEED_HOSTS_ENV_VARS);
+    let allowed_download_hosts = read_csv_env(UPDATER_ALLOWED_DOWNLOAD_HOSTS_ENV_VARS);
+    let allow_prod_endpoints_in_non_prod =
+        read_env_flag(UPDATER_ALLOW_PROD_ENDPOINTS_IN_NON_PROD_ENV_VARS);
+
+    let endpoint_display = read_first_nonempty_env(UPDATER_ENDPOINT_ENV_VARS).or_else(|| {
+        read_first_nonempty_env(UPDATER_BASE_URL_ENV_VARS)
+            .map(|base_url| build_updater_endpoint(&base_url, &channel))
+    });
+
+    let (endpoint, endpoint_error) = match endpoint_display.as_deref() {
+        Some(endpoint) => match Url::parse(endpoint) {
+            Ok(url) => match validate_updater_endpoint_url(
+                &url,
+                runtime_mode,
+                allow_prod_endpoints_in_non_prod,
+                &allowed_feed_hosts,
+            ) {
+                Ok(()) => (Some(url), None),
+                Err(error) => (None, Some(error)),
+            },
+            Err(error) => (
+                None,
+                Some(format!("Invalid updater endpoint '{endpoint}': {error}")),
+            ),
+        },
+        None => (None, None),
+    };
+
+    UpdaterRuntimeConfig {
+        channel,
+        endpoint,
+        endpoint_display,
+        endpoint_error,
+        pubkey,
+        runtime_mode,
+        allowed_download_hosts,
+        allow_prod_endpoints_in_non_prod,
+    }
+}
+
+fn updater_plugin_builder(config: &UpdaterRuntimeConfig) -> tauri_plugin_updater::Builder {
+    let mut builder = tauri_plugin_updater::Builder::new();
+    if let Some(pubkey) = config.pubkey.as_ref() {
+        builder = builder.pubkey(pubkey.clone());
+    }
+    builder
+}
+
+fn build_update_status(
+    app: &AppHandle,
+    updater_config: &UpdaterRuntimeConfig,
+    update: Option<AvailableUpdateDto>,
+) -> AppUpdateStatusDto {
+    let message = if updater_config.pubkey.is_none() {
+        Some(
+            "Updater public key is not configured. Set VAULTAI_UPDATER_PUBLIC_KEY before checking for updates."
+                .to_string(),
+        )
+    } else if let Some(error) = updater_config.endpoint_error.as_ref() {
+        Some(error.clone())
+    } else if updater_config.endpoint.is_none() {
+        Some(
+            "Updater endpoint is not configured. Set VAULTAI_UPDATER_ENDPOINT or VAULTAI_UPDATER_BASE_URL."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    AppUpdateStatusDto {
+        enabled: message.is_none(),
+        current_version: app.package_info().version.to_string(),
+        channel: updater_config.channel.clone(),
+        endpoint: updater_config.endpoint_display.clone(),
+        message,
+        update,
+    }
+}
+
+fn validate_available_update(
+    update: &tauri_plugin_updater::Update,
+    updater_config: &UpdaterRuntimeConfig,
+) -> Result<(), String> {
+    if update.version.trim().is_empty() {
+        return Err("Updater returned an empty version.".to_string());
+    }
+    if update.target.trim().is_empty() {
+        return Err("Updater returned an empty target.".to_string());
+    }
+    validate_update_download_url(
+        &update.download_url,
+        updater_config.runtime_mode,
+        updater_config.allow_prod_endpoints_in_non_prod,
+        &updater_config.allowed_download_hosts,
+    )
+}
+
+fn serialize_available_update(update: tauri_plugin_updater::Update) -> AvailableUpdateDto {
+    AvailableUpdateDto {
+        body: update.body,
+        current_version: update.current_version,
+        version: update.version,
+        date: update.date.map(|date| date.to_string()),
+        target: update.target,
+        download_url: update.download_url.to_string(),
+        raw_json: update.raw_json,
+    }
 }
 
 fn serialized_payload_bytes<T: Serialize>(value: &T) -> Option<usize> {
@@ -191,6 +535,41 @@ impl AppState {
             next_change_op_id: 0,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct UpdaterRuntimeConfig {
+    channel: String,
+    endpoint: Option<Url>,
+    endpoint_display: Option<String>,
+    endpoint_error: Option<String>,
+    pubkey: Option<String>,
+    runtime_mode: UpdaterRuntimeMode,
+    allowed_download_hosts: Vec<String>,
+    allow_prod_endpoints_in_non_prod: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableUpdateDto {
+    body: Option<String>,
+    current_version: String,
+    version: String,
+    date: Option<String>,
+    target: String,
+    download_url: String,
+    raw_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateStatusDto {
+    enabled: bool,
+    current_version: String,
+    channel: String,
+    endpoint: Option<String>,
+    message: Option<String>,
+    update: Option<AvailableUpdateDto>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2247,6 +2626,108 @@ fn wait_for_job_completion(app: &AppHandle, vault_path: &str, job_id: u64) -> Re
 }
 
 // --- Tauri commands ---
+
+#[tauri::command]
+fn get_app_update_configuration(
+    app: AppHandle,
+    updater_config: tauri::State<UpdaterRuntimeConfig>,
+) -> AppUpdateStatusDto {
+    build_update_status(&app, &updater_config, None)
+}
+
+#[tauri::command]
+async fn check_for_app_update(
+    app: AppHandle,
+    updater_config: tauri::State<'_, UpdaterRuntimeConfig>,
+) -> Result<AppUpdateStatusDto, String> {
+    let baseline = build_update_status(&app, &updater_config, None);
+    if !baseline.enabled {
+        return Ok(baseline);
+    }
+
+    let endpoint = updater_config
+        .endpoint
+        .clone()
+        .ok_or("Updater endpoint is missing at runtime.")?;
+
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("Failed to prepare updater request: {error}"))?
+        .build()
+        .map_err(|error| format!("Failed to initialize updater: {error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("Failed to check for updates: {error}"))?;
+
+    let serialized_update = match update {
+        Some(update) => {
+            validate_available_update(&update, &updater_config)
+                .map_err(|error| format!("Rejected updater metadata: {error}"))?;
+            Some(serialize_available_update(update))
+        }
+        None => None,
+    };
+
+    Ok(build_update_status(
+        &app,
+        &updater_config,
+        serialized_update,
+    ))
+}
+
+#[tauri::command]
+async fn download_and_install_app_update(
+    version: String,
+    target: String,
+    app: AppHandle,
+    updater_config: tauri::State<'_, UpdaterRuntimeConfig>,
+) -> Result<(), String> {
+    let baseline = build_update_status(&app, &updater_config, None);
+    if !baseline.enabled {
+        return Err(baseline
+            .message
+            .unwrap_or_else(|| "Updater is not enabled.".to_string()));
+    }
+
+    let endpoint = updater_config
+        .endpoint
+        .clone()
+        .ok_or("Updater endpoint is missing at runtime.")?;
+
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("Failed to prepare updater request: {error}"))?
+        .build()
+        .map_err(|error| format!("Failed to initialize updater: {error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("Failed to check for updates: {error}"))?
+        .ok_or("No update is currently available.")?;
+
+    validate_available_update(&update, &updater_config)
+        .map_err(|error| format!("Rejected updater metadata: {error}"))?;
+
+    if update.version != version {
+        return Err(format!(
+            "Update changed while preparing install. Expected version {version}, got {}.",
+            update.version
+        ));
+    }
+
+    if update.target != target {
+        return Err(format!(
+            "Update target changed while preparing install. Expected target {target}, got {}.",
+            update.target
+        ));
+    }
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| format!("Failed to download and install the update: {error}"))
+}
 
 #[tauri::command]
 fn open_vault(
@@ -5584,6 +6065,8 @@ pub(crate) fn web_clipper_save_note(
 }
 
 pub fn run() {
+    let updater_runtime_config = load_updater_runtime_config();
+
     let builder = tauri::Builder::default()
         .register_uri_scheme_protocol(
             file_preview_gateway::FILE_PREVIEW_SCHEME,
@@ -5592,6 +6075,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(updater_plugin_builder(&updater_runtime_config).build())
+        .manage(updater_runtime_config)
         .manage(Mutex::new(AppState::new()))
         .manage(Mutex::new(ai::AiManager::new()))
         .manage(ai::auth_terminal::AiAuthTerminalManager::new())
@@ -5663,6 +6148,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_app_update_configuration,
+            check_for_app_update,
+            download_and_install_app_update,
             open_vault,
             start_open_vault,
             get_vault_open_state,
@@ -5781,6 +6269,93 @@ mod tests {
         fs::write(dir.join("folder/note.md"), b"# Note").unwrap();
         let vault = Vault::open(dir.clone()).unwrap();
         (dir, vault)
+    }
+
+    #[test]
+    fn updater_endpoint_accepts_github_pages_in_production() {
+        let endpoint = Url::parse("https://vaultai.github.io/VaultAI/stable/latest.json").unwrap();
+
+        assert!(validate_updater_endpoint_url(
+            &endpoint,
+            UpdaterRuntimeMode::Production,
+            false,
+            &[],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn updater_endpoint_rejects_public_feed_in_non_production_by_default() {
+        let endpoint = Url::parse("https://vaultai.github.io/VaultAI/stable/latest.json").unwrap();
+
+        let error =
+            validate_updater_endpoint_url(&endpoint, UpdaterRuntimeMode::NonProduction, false, &[])
+                .unwrap_err();
+
+        assert!(error.contains("must stay local"));
+    }
+
+    #[test]
+    fn updater_endpoint_accepts_loopback_feed_in_non_production() {
+        let endpoint = Url::parse("http://127.0.0.1:8787/stable/latest.json").unwrap();
+
+        assert!(validate_updater_endpoint_url(
+            &endpoint,
+            UpdaterRuntimeMode::NonProduction,
+            false,
+            &[],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn updater_endpoint_rejects_non_github_pages_host_in_production_without_allowlist() {
+        let endpoint = Url::parse("https://updates.example.com/stable/latest.json").unwrap();
+
+        let error =
+            validate_updater_endpoint_url(&endpoint, UpdaterRuntimeMode::Production, false, &[])
+                .unwrap_err();
+
+        assert!(error.contains("not allowed"));
+    }
+
+    #[test]
+    fn updater_endpoint_accepts_allowlisted_host_in_production() {
+        let endpoint = Url::parse("https://updates.example.com/stable/latest.json").unwrap();
+        let allowed_hosts = vec!["updates.example.com".to_string()];
+
+        assert!(validate_updater_endpoint_url(
+            &endpoint,
+            UpdaterRuntimeMode::Production,
+            false,
+            &allowed_hosts,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn updater_download_rejects_non_github_host_in_production_without_allowlist() {
+        let download_url = Url::parse("https://cdn.example.com/VaultAI-setup.nsis.zip").unwrap();
+
+        let error =
+            validate_update_download_url(&download_url, UpdaterRuntimeMode::Production, false, &[])
+                .unwrap_err();
+
+        assert!(error.contains("github.com"));
+    }
+
+    #[test]
+    fn updater_download_accepts_allowlisted_host_in_production() {
+        let download_url = Url::parse("https://downloads.example.com/VaultAI.app.tar.gz").unwrap();
+        let allowed_hosts = vec!["downloads.example.com".to_string()];
+
+        assert!(validate_update_download_url(
+            &download_url,
+            UpdaterRuntimeMode::Production,
+            false,
+            &allowed_hosts,
+        )
+        .is_ok());
     }
 
     #[cfg(unix)]

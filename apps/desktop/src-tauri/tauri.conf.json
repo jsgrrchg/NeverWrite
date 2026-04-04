@@ -14,11 +14,16 @@
             "desktop": {
                 "schemes": ["vaultai"]
             }
+        },
+        "updater": {
+            "endpoints": [],
+            "pubkey": ""
         }
     },
     "bundle": {
         "active": true,
-        "targets": ["app", "nsis", "msi"],
+        "targets": ["app", "dmg", "nsis"],
+        "createUpdaterArtifacts": true,
         "resources": {
             "binaries/": "binaries/",
             "embedded/": "embedded/",

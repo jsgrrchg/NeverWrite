@@ -1,9 +1,11 @@
+import { emitTo } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createDetachedWindowPayload,
     findWindowTabDropTarget,
     getDetachedNoteWindowUrl,
+    openSettingsWindow,
     publishWindowTabDropZone,
 } from "./detachedWindows";
 
@@ -24,6 +26,7 @@ function createMockWindow(
 describe("detachedWindows", () => {
     beforeEach(() => {
         vi.mocked(getAllWebviewWindows).mockResolvedValue([]);
+        vi.mocked(emitTo).mockReset();
         localStorage.clear();
     });
 
@@ -124,5 +127,26 @@ describe("detachedWindows", () => {
         await expect(
             findWindowTabDropTarget(700, 20, "main", "/vaults/main"),
         ).resolves.toBe("note-2");
+    });
+
+    it("navigates an existing settings window to the requested section", async () => {
+        const existingWindow = {
+            label: "settings",
+            show: vi.fn().mockResolvedValue(undefined),
+            setFocus: vi.fn().mockResolvedValue(undefined),
+        };
+        vi.mocked(getAllWebviewWindows).mockResolvedValue([
+            existingWindow,
+        ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>);
+
+        await openSettingsWindow(null, { section: "updates" });
+
+        expect(existingWindow.show).toHaveBeenCalled();
+        expect(existingWindow.setFocus).toHaveBeenCalled();
+        expect(emitTo).toHaveBeenCalledWith(
+            "settings",
+            "vaultai:settings-open-section",
+            { section: "updates" },
+        );
     });
 });

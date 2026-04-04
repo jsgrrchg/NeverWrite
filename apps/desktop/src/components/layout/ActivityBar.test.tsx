@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ActivityBar } from "./ActivityBar";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useAppUpdateStore } from "../../features/updates/store";
 
 describe("ActivityBar integrated terminal button", () => {
     const originalUserAgent = navigator.userAgent;
@@ -38,6 +39,7 @@ describe("ActivityBar integrated terminal button", () => {
             bottomPanelHeight: 240,
             bottomPanelView: "terminal",
         });
+        useAppUpdateStore.getState().reset();
     });
 
     afterEach(() => {
@@ -121,5 +123,40 @@ describe("ActivityBar integrated terminal button", () => {
             screen.getByTitle("Enable Live Preview (Ctrl+E)"),
         ).toBeInTheDocument();
         expect(screen.getByTitle("Settings (Ctrl+,)")).toBeInTheDocument();
+    });
+
+    it("shows a badge on the settings button when an update is available", () => {
+        useAppUpdateStore.setState({
+            status: {
+                enabled: true,
+                currentVersion: "0.1.0",
+                channel: "stable",
+                endpoint: "https://updates.example.com/stable/latest.json",
+                message: null,
+                update: {
+                    currentVersion: "0.1.0",
+                    version: "0.2.0",
+                    date: "2026-04-04T12:00:00Z",
+                    body: "## Added\n\n- In-app updates.",
+                    rawJson: {},
+                    target: "darwin-aarch64",
+                    downloadUrl:
+                        "https://github.com/example/vaultai/releases/download/v0.2.0/VaultAI.app.tar.gz",
+                },
+            },
+            initialized: true,
+        });
+
+        render(
+            <ActivityBar
+                active="files"
+                onChange={() => {}}
+                onOpenSettings={() => {}}
+            />,
+        );
+
+        expect(
+            screen.getByTitle("Settings (⌘,) · Update available"),
+        ).toBeInTheDocument();
     });
 });

@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -32,8 +33,19 @@ import {
     buildSpellcheckLanguagesSummary,
 } from "../spellcheck/language";
 import { WindowChrome } from "../../components/layout/WindowChrome";
+import { SETTINGS_OPEN_SECTION_EVENT } from "../../app/detachedWindows";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import { readSearchParam } from "../../app/utils/safeBrowser";
+import { subscribeSafeStorage } from "../../app/utils/safeStorage";
+import { MarkdownContent } from "../ai/components/MarkdownContent";
+import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { AIProvidersSettings } from "./AIProvidersSettings";
+import { useAppUpdateStore } from "../updates/store";
+import {
+    collectSensitiveUpdateState,
+    listLiveWindowOperationalStates,
+    type SensitiveUpdateState,
+} from "../updates/sensitiveState";
 
 // --- Primitives ---
 
@@ -704,6 +716,22 @@ function formatSpellcheckCatalogSize(sizeBytes: number, sizeKnown: boolean) {
     }
 
     return `${Math.round(sizeBytes / 1024)} KB`;
+}
+
+function formatUpdateDate(date: string | undefined) {
+    if (!date) {
+        return "Unknown";
+    }
+
+    const parsed = new Date(date);
+    if (Number.isNaN(parsed.getTime())) {
+        return date;
+    }
+
+    return parsed.toLocaleString("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+    });
 }
 
 // --- Category content ---
@@ -1820,6 +1848,390 @@ function VaultSettings() {
     );
 }
 
+function UpdatesSettings() {
+    const status = useAppUpdateStore((state) => state.status);
+    const loading = useAppUpdateStore((state) => state.loading);
+    const checking = useAppUpdateStore((state) => state.checking);
+    const installing = useAppUpdateStore((state) => state.installing);
+    const error = useAppUpdateStore((state) => state.error);
+    const hasChecked = useAppUpdateStore((state) => state.hasChecked);
+    const lastCheckedAt = useAppUpdateStore((state) => state.lastCheckedAt);
+    const initialize = useAppUpdateStore((state) => state.initialize);
+    const checkNow = useAppUpdateStore((state) => state.checkNow);
+    const installAvailableUpdate = useAppUpdateStore(
+        (state) => state.installAvailableUpdate,
+    );
+    const [sensitiveState, setSensitiveState] = useState<SensitiveUpdateState>({
+        items: [],
+        requiresConfirmation: false,
+    });
+    const [confirmInstall, setConfirmInstall] = useState(false);
+
+    useEffect(() => {
+        void initialize({ backgroundCheck: true });
+    }, [initialize]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const refreshSensitiveState = async () => {
+            const next = collectSensitiveUpdateState(
+                await listLiveWindowOperationalStates(),
+            );
+            if (!cancelled) {
+                setSensitiveState(next);
+            }
+        };
+
+        void refreshSensitiveState();
+        const unsubscribeStorage = subscribeSafeStorage(() => {
+            void refreshSensitiveState();
+        });
+        const onFocus = () => {
+            void refreshSensitiveState();
+        };
+        window.addEventListener("focus", onFocus);
+
+        return () => {
+            cancelled = true;
+            unsubscribeStorage();
+            window.removeEventListener("focus", onFocus);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!sensitiveState.requiresConfirmation) {
+            setConfirmInstall(false);
+        }
+    }, [sensitiveState.requiresConfirmation]);
+
+    const effectiveError = error ?? status?.message ?? null;
+    const updaterStateLabel = loading
+        ? "Loading"
+        : installing
+          ? "Installing"
+          : status?.update
+            ? "Update available"
+            : status?.enabled
+              ? "Ready"
+              : "Not configured";
+    const lastCheckedLabel =
+        lastCheckedAt == null
+            ? "Never"
+            : formatUpdateDate(new Date(lastCheckedAt).toISOString());
+    const anyBusy = loading || checking || installing;
+
+    return (
+        <div>
+            <SectionLabel>Release feed</SectionLabel>
+            <Row
+                label="Current version"
+                control={
+                    <span
+                        style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary)",
+                            fontVariantNumeric: "tabular-nums",
+                        }}
+                    >
+                        {status?.currentVersion ?? "..."}
+                    </span>
+                }
+            />
+            <Row
+                label="Channel"
+                control={
+                    <span
+                        style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary)",
+                            textTransform: "lowercase",
+                        }}
+                    >
+                        {status?.channel ?? "stable"}
+                    </span>
+                }
+            />
+            <Row
+                label="Status"
+                description={
+                    !status?.enabled && !status?.endpoint
+                        ? "Set VAULTAI_UPDATER_BASE_URL to enable."
+                        : undefined
+                }
+                control={
+                    <span
+                        style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        {updaterStateLabel}
+                    </span>
+                }
+            />
+            <Row
+                label="Last check"
+                control={
+                    <span
+                        style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary)",
+                            fontVariantNumeric: "tabular-nums",
+                        }}
+                    >
+                        {lastCheckedLabel}
+                    </span>
+                }
+            />
+
+            <div
+                style={{
+                    paddingTop: 12,
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                }}
+            >
+                <button
+                    type="button"
+                    disabled={anyBusy}
+                    onClick={() => {
+                        setConfirmInstall(false);
+                        void checkNow();
+                    }}
+                    style={{
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        backgroundColor: "var(--bg-tertiary)",
+                        color: "var(--text-primary)",
+                        padding: "6px 10px",
+                        fontSize: 12,
+                        fontFamily: "inherit",
+                        cursor: anyBusy ? "not-allowed" : "pointer",
+                        opacity: anyBusy ? 0.5 : 1,
+                    }}
+                >
+                    {checking ? "Checking..." : "Check for updates"}
+                </button>
+                {status?.update ? (
+                    <button
+                        type="button"
+                        disabled={anyBusy}
+                        onClick={() => {
+                            if (
+                                sensitiveState.requiresConfirmation &&
+                                !confirmInstall
+                            ) {
+                                setConfirmInstall(true);
+                                return;
+                            }
+                            void installAvailableUpdate().catch(() => {});
+                        }}
+                        style={{
+                            borderRadius: 6,
+                            border: "1px solid var(--border)",
+                            backgroundColor: "var(--bg-tertiary)",
+                            color: "var(--text-primary)",
+                            padding: "6px 10px",
+                            fontSize: 12,
+                            fontFamily: "inherit",
+                            cursor: anyBusy ? "not-allowed" : "pointer",
+                            opacity: anyBusy ? 0.5 : 1,
+                        }}
+                    >
+                        {installing ? "Installing..." : "Download and install"}
+                    </button>
+                ) : null}
+            </div>
+
+            {effectiveError ? (
+                <div
+                    style={{
+                        marginTop: 12,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-secondary)",
+                        color: "var(--text-secondary)",
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                    }}
+                >
+                    {effectiveError}
+                </div>
+            ) : null}
+
+            {status?.update &&
+            confirmInstall &&
+            sensitiveState.requiresConfirmation ? (
+                <div
+                    style={{
+                        marginTop: 12,
+                        padding: "10px 12px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-secondary)",
+                    }}
+                >
+                    <div
+                        style={{
+                            fontSize: 12,
+                            fontWeight: 500,
+                            color: "var(--text-primary)",
+                            marginBottom: 6,
+                        }}
+                    >
+                        This update may interrupt active work.
+                    </div>
+                    <div
+                        style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary)",
+                            lineHeight: 1.5,
+                        }}
+                    >
+                        {sensitiveState.items.map((item) => (
+                            <div key={item.key} style={{ marginTop: 4 }}>
+                                <span style={{ fontWeight: 500 }}>
+                                    {item.title}:
+                                </span>{" "}
+                                {item.details.join(", ")}
+                            </div>
+                        ))}
+                    </div>
+                    <div
+                        style={{
+                            marginTop: 10,
+                            display: "flex",
+                            gap: 8,
+                        }}
+                    >
+                        <button
+                            type="button"
+                            disabled={installing}
+                            onClick={() => {
+                                void installAvailableUpdate().catch(() => {});
+                            }}
+                            style={{
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-tertiary)",
+                                color: "var(--text-primary)",
+                                padding: "6px 10px",
+                                fontSize: 12,
+                                fontFamily: "inherit",
+                                cursor: installing ? "not-allowed" : "pointer",
+                                opacity: installing ? 0.5 : 1,
+                            }}
+                        >
+                            {installing ? "Installing..." : "Install anyway"}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={installing}
+                            onClick={() => setConfirmInstall(false)}
+                            style={{
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                backgroundColor: "transparent",
+                                color: "var(--text-secondary)",
+                                padding: "6px 10px",
+                                fontSize: 12,
+                                fontFamily: "inherit",
+                                cursor: installing ? "not-allowed" : "pointer",
+                                opacity: installing ? 0.5 : 1,
+                            }}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            ) : null}
+
+            {status?.update ? (
+                <>
+                    <SectionLabel>Available update</SectionLabel>
+                    <Row
+                        label="Version"
+                        control={
+                            <span
+                                style={{
+                                    fontSize: 12,
+                                    color: "var(--text-secondary)",
+                                    fontVariantNumeric: "tabular-nums",
+                                }}
+                            >
+                                {status.update.version}
+                            </span>
+                        }
+                    />
+                    <Row
+                        label="Published"
+                        control={
+                            <span
+                                style={{
+                                    fontSize: 12,
+                                    color: "var(--text-secondary)",
+                                }}
+                            >
+                                {formatUpdateDate(status.update.date)}
+                            </span>
+                        }
+                    />
+                    {status.update.body?.trim() ? (
+                        <div
+                            style={{
+                                marginTop: 12,
+                                padding: 12,
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                background: "var(--bg-secondary)",
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontSize: 13,
+                                    lineHeight: 1.6,
+                                    color: "var(--text-primary)",
+                                }}
+                            >
+                                <MarkdownContent
+                                    content={status.update.body.trim()}
+                                    pillMetrics={getChatPillMetrics(13)}
+                                    chatFontSize={13}
+                                />
+                            </div>
+                        </div>
+                    ) : null}
+                </>
+            ) : hasChecked && !effectiveError ? (
+                <div
+                    style={{
+                        paddingTop: 16,
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                        lineHeight: 1.5,
+                    }}
+                >
+                    You're up to date.
+                </div>
+            ) : !hasChecked && !effectiveError ? (
+                <div
+                    style={{
+                        paddingTop: 16,
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                        lineHeight: 1.5,
+                    }}
+                >
+                    Check manually to see if a new version is available.
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 function DevelopersSettings() {
     const {
         developerModeEnabled,
@@ -2147,11 +2559,16 @@ type Category =
     | "appearance"
     | "editor"
     | "spellcheck"
+    | "updates"
     | "developers"
     | "vault"
     | "shortcuts"
     | "ai_providers"
     | "ai";
+
+function isCategory(value: string | null | undefined): value is Category {
+    return CATEGORIES.some((category) => category.id === value);
+}
 
 const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
     {
@@ -2216,6 +2633,21 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
                 <path
                     d="M2 12h5M4.5 4v8M3 4h3M9 12l1.5-3M14 12l-1.5-3M9 12l2.5-7h.5l2.5 7M10.5 9h2.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "updates",
+        label: "Updates",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7M3 12.5h10"
                     stroke="currentColor"
                     strokeWidth="1.2"
                     strokeLinecap="round"
@@ -2335,6 +2767,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Themes and visual preferences",
     editor: "Typography and text editing behavior",
     spellcheck: "Languages and dictionary management",
+    updates: "Manual update checks and appcast configuration",
     developers: "Advanced developer-facing file tree options",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
@@ -2347,11 +2780,24 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
 export function SettingsPanel({
     onClose,
     standalone = false,
+    initialCategory,
 }: {
     onClose: () => void;
     standalone?: boolean;
+    initialCategory?: Category;
 }) {
-    const [active, setActive] = useState<Category>("general");
+    const initializeUpdates = useAppUpdateStore((state) => state.initialize);
+    const updateAvailable = useAppUpdateStore(
+        (state) => !!state.status?.update,
+    );
+    const sectionFromUrl = standalone ? readSearchParam("section") : null;
+    const resolvedInitialCategory =
+        initialCategory && isCategory(initialCategory)
+            ? initialCategory
+            : isCategory(sectionFromUrl)
+              ? sectionFromUrl
+              : "general";
+    const [active, setActive] = useState<Category>(resolvedInitialCategory);
     const [search, setSearch] = useState("");
     const activeInfo = CATEGORIES.find((c) => c.id === active)!;
 
@@ -2360,12 +2806,52 @@ export function SettingsPanel({
         : onClose;
 
     useEffect(() => {
+        void initializeUpdates({ backgroundCheck: true });
+    }, [initializeUpdates]);
+
+    useEffect(() => {
+        if (initialCategory && initialCategory !== active) {
+            setActive(initialCategory);
+        }
+    }, [active, initialCategory]);
+
+    useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") handleClose();
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [standalone]);
+
+    useEffect(() => {
+        if (!standalone) {
+            return;
+        }
+
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
+
+        void listen<{ section?: string }>(
+            SETTINGS_OPEN_SECTION_EVENT,
+            (event) => {
+                const nextSection = event.payload?.section ?? null;
+                if (isCategory(nextSection)) {
+                    setActive(nextSection);
+                }
+            },
+        ).then((cleanup) => {
+            if (disposed) {
+                cleanup();
+                return;
+            }
+            unlisten = cleanup;
+        });
+
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
     }, [standalone]);
 
     return (
@@ -2553,6 +3039,8 @@ export function SettingsPanel({
                                     .includes(search.toLowerCase()),
                         ).map((cat) => {
                             const isActive = cat.id === active;
+                            const showUpdateBadge =
+                                cat.id === "updates" && updateAvailable;
                             return (
                                 <button
                                     key={cat.id}
@@ -2590,9 +3078,27 @@ export function SettingsPanel({
                                     }}
                                 >
                                     <span
-                                        style={{ opacity: isActive ? 1 : 0.6 }}
+                                        style={{
+                                            opacity: isActive ? 1 : 0.6,
+                                            position: "relative",
+                                            display: "inline-flex",
+                                        }}
                                     >
                                         {cat.icon}
+                                        {showUpdateBadge ? (
+                                            <span
+                                                aria-hidden="true"
+                                                style={{
+                                                    position: "absolute",
+                                                    top: -2,
+                                                    right: -4,
+                                                    width: 6,
+                                                    height: 6,
+                                                    borderRadius: "50%",
+                                                    background: "var(--accent)",
+                                                }}
+                                            />
+                                        ) : null}
                                     </span>
                                     {cat.label}
                                 </button>
@@ -2644,6 +3150,7 @@ export function SettingsPanel({
                         {active === "appearance" && <AppearanceSettings />}
                         {active === "editor" && <EditorSettings />}
                         {active === "spellcheck" && <SpellcheckSettings />}
+                        {active === "updates" && <UpdatesSettings />}
                         {active === "developers" && <DevelopersSettings />}
                         {active === "vault" && <VaultSettings />}
                         {active === "shortcuts" && <ShortcutsSettings />}

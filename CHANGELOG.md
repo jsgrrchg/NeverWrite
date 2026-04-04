@@ -34,4 +34,4 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [Unreleased]
+## [0.1.0]

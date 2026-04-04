@@ -1,4 +1,8 @@
-import type { LineEdit, TrackedFile } from "../ai/diff/actionLogTypes";
+import type {
+    LineEdit,
+    ReviewState,
+    TrackedFile,
+} from "../ai/diff/actionLogTypes";
 import {
     getTrackedFileReviewState,
     syncDerivedLinePatch,

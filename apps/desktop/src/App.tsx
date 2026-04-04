@@ -95,6 +95,11 @@ import {
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
+import { useAppUpdateStore } from "./features/updates/store";
+import {
+    buildWindowOperationalState,
+    writeWindowOperationalState,
+} from "./features/updates/sensitiveState";
 
 function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
     return (
@@ -1141,9 +1146,54 @@ export default function App() {
     }, []);
 
     const openSettings = useCallback(
-        () => void openSettingsWindow(vaultPath),
+        (section?: string) =>
+            void openSettingsWindow(
+                vaultPath,
+                section ? { section } : undefined,
+            ),
         [vaultPath],
     );
+
+    useEffect(() => {
+        if (windowMode !== "main") {
+            return;
+        }
+        void useAppUpdateStore.getState().initialize({ backgroundCheck: true });
+    }, [windowMode]);
+
+    useEffect(() => {
+        if (windowMode === "settings" || windowMode === "ghost") {
+            writeWindowOperationalState(getCurrentWindowLabel(), null);
+            return;
+        }
+
+        const label = getCurrentWindowLabel();
+        const publish = () => {
+            const editor = useEditorStore.getState();
+            const chat = useChatStore.getState();
+            writeWindowOperationalState(
+                label,
+                buildWindowOperationalState({
+                    label,
+                    windowMode,
+                    vaultPath,
+                    tabs: editor.tabs,
+                    dirtyTabIds: editor.dirtyTabIds,
+                    sessionsById: chat.sessionsById,
+                }),
+            );
+        };
+
+        publish();
+        const unsubscribeEditor = useEditorStore.subscribe(publish);
+        const unsubscribeChat = useChatStore.subscribe(publish);
+
+        return () => {
+            unsubscribeEditor();
+            unsubscribeChat();
+            writeWindowOperationalState(label, null);
+        };
+    }, [vaultPath, windowMode]);
 
     const openWebClipperClip = useCallback(
         (payload: WebClipperSavedPayload) => {

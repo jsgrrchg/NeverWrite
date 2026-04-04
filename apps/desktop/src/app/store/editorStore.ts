@@ -442,6 +442,7 @@ interface EditorStore {
     _fileReloadVersions: Record<string, number>;
     _noteReloadMetadata: Record<string, ResourceReloadMetadata | undefined>;
     _fileReloadMetadata: Record<string, ResourceReloadMetadata | undefined>;
+    dirtyTabIds: Set<string>;
     noteExternalConflicts: Set<string>;
     fileExternalConflicts: Set<string>;
     openNote: (noteId: string, title: string, content: string) => void;
@@ -467,6 +468,7 @@ interface EditorStore {
     closeTab: (tabId: string, options?: { reason?: TabCloseReason }) => void;
     reopenLastClosedTab: () => void;
     switchTab: (tabId: string) => void;
+    setTabDirty: (tabId: string, dirty: boolean) => void;
     updateTabContent: (tabId: string, content: string) => void;
     updateTabTitle: (tabId: string, title: string) => void;
     updateFileHistoryTitle: (
@@ -528,6 +530,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     _fileReloadVersions: {},
     _noteReloadMetadata: {},
     _fileReloadMetadata: {},
+    dirtyTabIds: new Set<string>(),
     noteExternalConflicts: new Set<string>(),
     fileExternalConflicts: new Set<string>(),
 
@@ -761,6 +764,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                         activeTabId,
                         recentlyClosedTabs,
                         activationHistory,
+                        dirtyTabIds: new Set(
+                            [...state.dirtyTabIds].filter((id) => id !== tabId),
+                        ),
                         tabNavigationHistory: navigation.history,
                         tabNavigationIndex: navigation.index,
                     };
@@ -774,6 +780,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 activeTabId,
                 recentlyClosedTabs,
                 activationHistory,
+                dirtyTabIds: new Set(
+                    [...state.dirtyTabIds].filter((id) => id !== tabId),
+                ),
                 tabNavigationHistory,
                 tabNavigationIndex,
             };
@@ -807,6 +816,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) =>
             state.activeTabId === tabId ? state : activateTab(state, tabId),
         ),
+
+    setTabDirty: (tabId, dirty) => {
+        set((state) => {
+            const alreadyDirty = state.dirtyTabIds.has(tabId);
+            if (alreadyDirty === dirty) {
+                return state;
+            }
+
+            const dirtyTabIds = new Set(state.dirtyTabIds);
+            if (dirty) {
+                dirtyTabIds.add(tabId);
+            } else {
+                dirtyTabIds.delete(tabId);
+            }
+
+            return { dirtyTabIds };
+        });
+    },
 
     updateTabContent: (tabId, content) => {
         set((state) => ({
@@ -951,6 +978,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             activationHistory: nextActiveTabId ? [nextActiveTabId] : [],
             tabNavigationHistory: nextActiveTabId ? [nextActiveTabId] : [],
             tabNavigationIndex: nextActiveTabId ? 0 : -1,
+            dirtyTabIds: new Set<string>(),
         });
     },
 

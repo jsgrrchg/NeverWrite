@@ -572,6 +572,7 @@ export function Editor({
     const markTabSaved = useCallback(
         (tabId: string, serializedContent: string) => {
             lastSavedContentByTabId.current.set(tabId, serializedContent);
+            useEditorStore.getState().setTabDirty(tabId, false);
         },
         [],
     );
@@ -2349,6 +2350,12 @@ export function Editor({
                         contentUpdateTimerRef.current = setTimeout(() => {
                             updateTabContent(tab.id, content);
                         }, 300);
+                        useEditorStore
+                            .getState()
+                            .setTabDirty(
+                                tab.id,
+                                isTabDirty(tab.noteId, content),
+                            );
                         setActiveFrontmatter(nextFrontmatter);
                         syncDerivedTitle(content, tab);
                         scheduleSaveRef.current(tab.id, doc);
@@ -2410,6 +2417,7 @@ export function Editor({
             cutSelectedText,
             syncFrontmatterFromContent,
             syncDerivedTitle,
+            isTabDirty,
             updateTabContent,
         ],
     );

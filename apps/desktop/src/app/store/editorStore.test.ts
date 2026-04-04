@@ -130,6 +130,7 @@ beforeEach(() => {
         _fileReloadVersions: {},
         _noteReloadMetadata: {},
         _fileReloadMetadata: {},
+        dirtyTabIds: new Set(),
         noteExternalConflicts: new Set(),
         fileExternalConflicts: new Set(),
     });
@@ -1495,6 +1496,42 @@ describe("editorStore tab management", () => {
         state = useEditorStore.getState();
         expect(state.tabs.some((tab) => isReviewTab(tab))).toBe(false);
         expect(state.activeTabId).toBe("tab-a");
+    });
+
+    it("tracks dirty tabs and clears them when the tab closes", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+                makeFileTab({
+                    id: "tab-b",
+                    relativePath: "src/app.ts",
+                    title: "app.ts",
+                    path: "/vault/src/app.ts",
+                    content: "export {};",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                }),
+            ],
+            activeTabId: "tab-a",
+        });
+
+        useEditorStore.getState().setTabDirty("tab-a", true);
+        useEditorStore.getState().setTabDirty("tab-b", true);
+
+        expect(useEditorStore.getState().dirtyTabIds).toEqual(
+            new Set(["tab-a", "tab-b"]),
+        );
+
+        useEditorStore.getState().closeTab("tab-a");
+
+        expect(useEditorStore.getState().dirtyTabIds).toEqual(
+            new Set(["tab-b"]),
+        );
     });
 
     it("returns to the most recently active tab when closing the current one", () => {

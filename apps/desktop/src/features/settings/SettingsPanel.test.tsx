@@ -1,9 +1,11 @@
 import { fireEvent, screen, within } from "@testing-library/react";
+import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { SettingsPanel } from "./SettingsPanel";
-import { renderComponent } from "../../test/test-utils";
+import { mockInvoke, renderComponent } from "../../test/test-utils";
+import { useAppUpdateStore } from "../updates/store";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -109,6 +111,9 @@ function setNavigatorIdentity(userAgent: string, platform: string) {
 afterEach(() => {
     setNavigatorIdentity(originalUserAgent, originalPlatform);
     localStorage.clear();
+    mockInvoke().mockReset();
+    vi.mocked(getAllWebviewWindows).mockResolvedValue([] as never[]);
+    useAppUpdateStore.getState().reset();
 });
 
 describe("SettingsPanel", () => {
@@ -293,5 +298,165 @@ describe("SettingsPanel", () => {
 
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+
+    it("checks updater metadata manually without starting an install", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "get_app_update_configuration") {
+                return {
+                    enabled: true,
+                    currentVersion: "0.1.0",
+                    channel: "stable",
+                    endpoint: "https://updates.example.com/stable/latest.json",
+                    message: null,
+                    update: null,
+                };
+            }
+
+            if (command === "check_for_app_update") {
+                return {
+                    enabled: true,
+                    currentVersion: "0.1.0",
+                    channel: "stable",
+                    endpoint: "https://updates.example.com/stable/latest.json",
+                    message: null,
+                    update: {
+                        currentVersion: "0.1.0",
+                        version: "0.2.0",
+                        date: "2026-04-04T12:00:00Z",
+                        body: "## Improvements\n- Added multi-target updater metadata.",
+                        rawJson: {},
+                        target: "darwin-aarch64",
+                        downloadUrl:
+                            "https://github.com/example/vaultai/releases/download/v0.2.0/VaultAI.app.tar.gz",
+                    },
+                };
+            }
+
+            return undefined;
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Updates" }));
+
+        expect(
+            await screen.findByRole("button", { name: "Check for updates" }),
+        ).toBeInTheDocument();
+        expect(screen.getByText("Update available")).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Check for updates" }),
+        );
+
+        expect(await screen.findByText("0.2.0")).toBeInTheDocument();
+        expect(
+            screen.getByText(/Added multi-target updater metadata\./),
+        ).toBeInTheDocument();
+    });
+
+    it("requires explicit confirmation before install when sensitive state exists", async () => {
+        vi.mocked(getAllWebviewWindows).mockResolvedValue([
+            { label: "main" },
+            { label: "note-1" },
+        ] as Awaited<ReturnType<typeof getAllWebviewWindows>>);
+        localStorage.setItem(
+            "vaultai:window-operational-state:main",
+            JSON.stringify({
+                label: "main",
+                windowMode: "main",
+                windowRole: "main",
+                windowTitle: "VaultAI",
+                dirtyTabs: ["Draft note"],
+                pendingReviewSessions: ["Refactor updater"],
+                activeAgentSessions: ["Release cleanup · Streaming response"],
+            }),
+        );
+        localStorage.setItem(
+            "vaultai:window-operational-state:note-1",
+            JSON.stringify({
+                label: "note-1",
+                windowMode: "note",
+                windowRole: "detached-note",
+                windowTitle: "Detached note",
+                dirtyTabs: [],
+                pendingReviewSessions: [],
+                activeAgentSessions: [],
+            }),
+        );
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "get_app_update_configuration") {
+                return {
+                    enabled: true,
+                    currentVersion: "0.1.0",
+                    channel: "stable",
+                    endpoint: "https://updates.example.com/stable/latest.json",
+                    message: null,
+                    update: null,
+                };
+            }
+
+            if (command === "check_for_app_update") {
+                return {
+                    enabled: true,
+                    currentVersion: "0.1.0",
+                    channel: "stable",
+                    endpoint: "https://updates.example.com/stable/latest.json",
+                    message: null,
+                    update: {
+                        currentVersion: "0.1.0",
+                        version: "0.2.0",
+                        date: "2026-04-04T12:00:00Z",
+                        body: "## Added\n\n- In-app install flow.",
+                        rawJson: {},
+                        target: "darwin-aarch64",
+                        downloadUrl:
+                            "https://github.com/example/vaultai/releases/download/v0.2.0/VaultAI.app.tar.gz",
+                    },
+                };
+            }
+
+            if (command === "download_and_install_app_update") {
+                return undefined;
+            }
+
+            return undefined;
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Updates" }));
+
+        expect(await screen.findByText("0.2.0")).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Download and install" }),
+        );
+
+        expect(
+            await screen.findByText("This update may interrupt active work."),
+        ).toBeInTheDocument();
+        expect(screen.getByText(/Unsaved editor tabs/)).toBeInTheDocument();
+        expect(
+            screen.getByText(/Pending inline review or agent changes/),
+        ).toBeInTheDocument();
+        expect(screen.getByText(/Active agent sessions/)).toBeInTheDocument();
+        expect(
+            screen.getByText(/Separate operational windows are open/),
+        ).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", {
+                name: "Install anyway",
+            }),
+        );
+
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "download_and_install_app_update",
+            {
+                version: "0.2.0",
+                target: "darwin-aarch64",
+            },
+        );
     });
 });
