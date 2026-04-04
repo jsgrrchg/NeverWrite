@@ -3,15 +3,15 @@ use std::sync::LazyLock;
 
 use super::frontmatter::extract_frontmatter;
 
-// Captura #tag: al inicio de línea o después de whitespace.
-// El grupo 1 es el nombre del tag.
+// Captures #tag: at the start of a line or after whitespace.
+// Capture group 1 is the tag name.
 static TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)#([a-zA-Z][a-zA-Z0-9_\-/]*)").unwrap());
 
 pub fn extract_tags(text: &str) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
 
-    // 1. Tags desde el campo tags:/tag: del frontmatter YAML
+    // 1. Tags from the YAML frontmatter tags:/tag: field.
     if let Some(fm) = extract_frontmatter(text) {
         for key in &["tags", "tag"] {
             if let Some(value) = fm.get(key) {
@@ -40,7 +40,7 @@ pub fn extract_tags(text: &str) -> Vec<String> {
         }
     }
 
-    // 2. Tags inline #tag del body
+    // 2. Inline #tag tags from the body.
     let content = strip_frontmatter(text);
     for cap in TAG_RE.captures_iter(content) {
         let tag = cap[1].to_string();

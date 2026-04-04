@@ -8,7 +8,7 @@ use vault_ai_vault::Vault;
 fn setup_vault() -> (TempDir, Vault) {
     let dir = TempDir::new().unwrap();
 
-    // Crear algunas notas de ejemplo
+    // Create some sample notes.
     fs::write(
         dir.path().join("nota1.md"),
         "---\ntitle: Primera Nota\ntags: [rust]\n---\n# Primera Nota\n\nContenido con [[nota2]] y #proyecto\n",
@@ -164,7 +164,7 @@ fn create_note_works() {
         .unwrap();
     assert_eq!(note.title, "Nueva");
 
-    // Verificar que el archivo existe
+    // Verify that the file exists.
     let read = vault.read_note("nueva").unwrap();
     assert_eq!(read.raw_markdown, "# Nueva\n\nContenido");
 }
@@ -225,9 +225,9 @@ fn rename_note_works() {
     let note = vault.rename_note("nota1", "renamed.md").unwrap();
     assert_eq!(note.id.0, "renamed");
 
-    // El viejo no existe
+    // The old file does not exist.
     assert!(vault.read_note("nota1").is_err());
-    // El nuevo sí
+    // The new file does exist.
     assert!(vault.read_note("renamed").is_ok());
 }
 

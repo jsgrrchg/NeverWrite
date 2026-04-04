@@ -52,7 +52,7 @@ fn build_sample_index() -> VaultIndex {
     VaultIndex::build(notes)
 }
 
-// --- Tests de construcción ---
+// --- Build tests ---
 
 #[test]
 fn build_index_has_all_notes() {
@@ -63,7 +63,7 @@ fn build_index_has_all_notes() {
 #[test]
 fn names_map_built_correctly() {
     let index = build_sample_index();
-    // "nota1" aparece dos veces (nota1 y carpeta/nota1)
+    // "nota1" appears twice (nota1 and carpeta/nota1).
     let nota1_entries = index.names.get("nota1").unwrap();
     assert_eq!(nota1_entries.len(), 2);
 
@@ -71,23 +71,23 @@ fn names_map_built_correctly() {
     assert_eq!(nota3_entries.len(), 1);
 }
 
-// --- Tests de backlinks ---
+// --- Backlink tests ---
 
 #[test]
 fn backlinks_a_to_b() {
     let index = build_sample_index();
-    // nota1 linka a nota2 → nota2 tiene backlink de nota1
+    // nota1 links to nota2 -> nota2 has a backlink from nota1.
     let backlinks = index.get_backlinks(&NoteId("nota2".into()));
     let bl_ids: Vec<&str> = backlinks.iter().map(|id| id.0.as_str()).collect();
     assert!(bl_ids.contains(&"nota1"));
-    // carpeta/nota1 también linka a nota2
+    // carpeta/nota1 also links to nota2.
     assert!(bl_ids.contains(&"carpeta/nota1"));
 }
 
 #[test]
 fn backlinks_bidirectional() {
     let index = build_sample_index();
-    // nota2 linka a nota1 → nota1 tiene backlink de nota2
+    // nota2 links to nota1 -> nota1 has a backlink from nota2.
     let backlinks = index.get_backlinks(&NoteId("nota1".into()));
     let bl_ids: Vec<&str> = backlinks.iter().map(|id| id.0.as_str()).collect();
     assert!(bl_ids.contains(&"nota2"));
@@ -96,13 +96,13 @@ fn backlinks_bidirectional() {
 #[test]
 fn backlinks_with_path() {
     let index = build_sample_index();
-    // nota2 linka a carpeta/nota3 → carpeta/nota3 tiene backlink de nota2
+    // nota2 links to carpeta/nota3 -> carpeta/nota3 has a backlink from nota2.
     let backlinks = index.get_backlinks(&NoteId("carpeta/nota3".into()));
     let bl_ids: Vec<&str> = backlinks.iter().map(|id| id.0.as_str()).collect();
     assert!(bl_ids.contains(&"nota2"));
 }
 
-// --- Tests de forward links ---
+// --- Forward link tests ---
 
 #[test]
 fn forward_links() {
@@ -113,7 +113,7 @@ fn forward_links() {
     assert!(fwd_ids.contains(&"carpeta/nota3"));
 }
 
-// --- Tests de tags ---
+// --- Tag tests ---
 
 #[test]
 fn tags_index() {
@@ -126,12 +126,12 @@ fn tags_index() {
     assert_eq!(web_notes[0].0, "carpeta/nota3");
 }
 
-// --- Tests de resolución de wikilinks ---
+// --- Wikilink resolution tests ---
 
 #[test]
 fn resolve_unique_name() {
     let index = build_sample_index();
-    // nota3 es único → se resuelve directamente
+    // nota3 is unique -> it resolves directly.
     let resolved = index.resolve_wikilink("nota3", &NoteId("nota1".into()));
     assert_eq!(resolved, Some(NoteId("carpeta/nota3".into())));
 }
@@ -139,12 +139,12 @@ fn resolve_unique_name() {
 #[test]
 fn resolve_ambiguous_by_proximity() {
     let index = build_sample_index();
-    // "nota1" es ambiguo (nota1 y carpeta/nota1)
-    // Desde carpeta/nota3, el más cercano es carpeta/nota1
+    // "nota1" is ambiguous (nota1 and carpeta/nota1).
+    // From carpeta/nota3, the closest match is carpeta/nota1.
     let resolved = index.resolve_wikilink("nota1", &NoteId("carpeta/nota3".into()));
     assert_eq!(resolved, Some(NoteId("carpeta/nota1".into())));
 
-    // Desde nota2 (raíz), el más cercano es nota1
+    // From nota2 (root), the closest match is nota1.
     let resolved = index.resolve_wikilink("nota1", &NoteId("nota2".into()));
     assert_eq!(resolved, Some(NoteId("nota1".into())));
 }
@@ -379,7 +379,7 @@ fn resolve_unique_long_title_prefix_does_not_guess_when_ambiguous() {
     assert_eq!(resolved, None);
 }
 
-// --- Tests de búsqueda ---
+// --- Search tests ---
 
 #[test]
 fn search_by_title() {
@@ -400,7 +400,7 @@ fn search_by_title_case_insensitive() {
 fn search_by_title_partial() {
     let index = build_sample_index();
     let results = index.search_by_title("Nota");
-    // Todas las notas tienen "Nota" en el título
+    // All notes have "Nota" in the title.
     assert_eq!(results.len(), 4);
 }
 
@@ -415,17 +415,17 @@ fn search_empty_query() {
 fn search_combined() {
     let index = build_sample_index();
     let results = index.search("carpeta");
-    // carpeta/nota3 y carpeta/nota1 coinciden por path
+    // carpeta/nota3 and carpeta/nota1 match by path.
     assert_eq!(results.len(), 2);
 }
 
-// --- Tests de reindex ---
+// --- Reindex tests ---
 
 #[test]
 fn reindex_note_updates_index() {
     let mut index = build_sample_index();
 
-    // Cambiar nota1: ahora linka a carpeta/nota3 en vez de nota2
+    // Change nota1: it now links to carpeta/nota3 instead of nota2.
     let updated = make_note(
         "nota1",
         "Nota Actualizada",
@@ -434,28 +434,28 @@ fn reindex_note_updates_index() {
     );
     index.reindex_note(updated);
 
-    // El título cambió
+    // The title changed.
     assert_eq!(
         index.metadata.get(&NoteId("nota1".into())).unwrap().title,
         "Nota Actualizada"
     );
 
-    // Forward links actualizados
+    // Forward links updated.
     let fwd = index.get_forward_links(&NoteId("nota1".into()));
     assert_eq!(fwd.len(), 1);
     assert_eq!(fwd[0].0, "carpeta/nota3");
 
-    // nota2 ya no tiene backlink de nota1
+    // nota2 no longer has a backlink from nota1.
     let bl = index.get_backlinks(&NoteId("nota2".into()));
     let bl_ids: Vec<&str> = bl.iter().map(|id| id.0.as_str()).collect();
     assert!(!bl_ids.contains(&"nota1"));
 
-    // El tag viejo ya no existe para nota1
+    // The old tag no longer exists for nota1.
     let rust_notes = index.get_notes_by_tag("rust");
     let rust_ids: Vec<&str> = rust_notes.iter().map(|id| id.0.as_str()).collect();
     assert!(!rust_ids.contains(&"nota1"));
 
-    // El tag nuevo sí existe
+    // The new tag does exist.
     let new_tag = index.get_notes_by_tag("nuevo-tag");
     assert_eq!(new_tag.len(), 1);
 }
@@ -468,7 +468,7 @@ fn remove_note_cleans_index() {
     assert_eq!(index.metadata.len(), 3);
     assert!(!index.metadata.contains_key(&NoteId("nota1".into())));
 
-    // Los backlinks de nota2 ya no incluyen nota1
+    // nota2 backlinks no longer include nota1.
     let bl = index.get_backlinks(&NoteId("nota2".into()));
     let bl_ids: Vec<&str> = bl.iter().map(|id| id.0.as_str()).collect();
     assert!(!bl_ids.contains(&"nota1"));

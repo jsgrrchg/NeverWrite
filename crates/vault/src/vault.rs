@@ -41,7 +41,7 @@ pub enum ScopedPathIntent {
 }
 
 impl Vault {
-    /// Abre un vault en el directorio dado. Valida que exista.
+    /// Opens a vault at the given directory path. Validates that it exists.
     pub fn open(path: PathBuf) -> Result<Self, VaultError> {
         if !path.is_dir() {
             return Err(VaultError::DirectoryNotFound(path));
@@ -49,7 +49,7 @@ impl Vault {
         Ok(Vault { root: path })
     }
 
-    /// Descubre todos los archivos `.md` del vault y devuelve metadata liviana por archivo.
+    /// Discovers all `.md` files in the vault and returns lightweight metadata for each file.
     pub fn discover_markdown_files(&self) -> Result<Vec<DiscoveredNoteFile>, VaultError> {
         let mut discovered = Vec::new();
 
@@ -92,7 +92,7 @@ impl Vault {
         Ok(discovered)
     }
 
-    /// Descubre todos los archivos del vault como `VaultEntryDto`.
+    /// Discovers all files in the vault as `VaultEntryDto`.
     pub fn discover_vault_entries(&self) -> Result<Vec<VaultEntryDto>, VaultError> {
         let mut entries = Vec::new();
 
@@ -126,7 +126,7 @@ impl Vault {
         Ok(entries)
     }
 
-    /// Descubre todos los archivos `.pdf` del vault y devuelve metadata liviana.
+    /// Discovers all `.pdf` files in the vault and returns lightweight metadata.
     pub fn discover_pdf_files(&self) -> Result<Vec<crate::pdf::DiscoveredPdfFile>, VaultError> {
         let mut discovered = Vec::new();
 
@@ -167,7 +167,7 @@ impl Vault {
         Ok(discovered)
     }
 
-    /// Convierte un path a un entry_id (path relativo sin extensión).
+    /// Converts a path to an entry_id (relative path without extension).
     pub fn path_to_entry_id(&self, path: &Path) -> String {
         path.strip_prefix(&self.root)
             .unwrap_or(path)
@@ -176,7 +176,7 @@ impl Vault {
             .to_string()
     }
 
-    /// Convierte un path a un relative_path con extensión.
+    /// Converts a path to a relative_path with extension.
     pub fn path_to_relative_path(&self, path: &Path) -> String {
         path.strip_prefix(&self.root)
             .unwrap_or(path)
@@ -198,7 +198,7 @@ impl Vault {
         self.resolve_validated_scoped_path(&path, relative_path, intent)
     }
 
-    /// Resuelve un note_id relativo sin extensión `.md` dentro del vault.
+    /// Resolves a relative note_id without the `.md` extension inside the vault.
     pub fn resolve_note_id_path(&self, note_id: &str) -> Result<PathBuf, VaultError> {
         let path = validate_untrusted_relative_path(note_id, false)
             .map_err(|_| VaultError::InvalidVaultPath(note_id.to_string()))?;
@@ -463,7 +463,7 @@ impl Vault {
         Ok(())
     }
 
-    /// Escanea recursivamente todos los archivos `.md` y los parsea.
+    /// Recursively scans all `.md` files and parses them.
     pub fn scan(&self) -> Result<Vec<NoteDocument>, VaultError> {
         self.parse_discovered_files(&self.discover_markdown_files()?, |_| {})
     }
@@ -483,7 +483,7 @@ impl Vault {
         Ok(notes)
     }
 
-    /// Convierte un path absoluto a un note_id (path relativo sin extensión .md).
+    /// Converts an absolute path to a note_id (relative path without the .md extension).
     pub fn path_to_id(&self, path: &Path) -> String {
         path.strip_prefix(&self.root)
             .unwrap_or(path)
@@ -492,7 +492,7 @@ impl Vault {
             .to_string()
     }
 
-    /// Convierte un note_id ya validado al path absoluto del archivo.
+    /// Converts an already validated note_id to the file's absolute path.
     pub(crate) fn id_to_path(&self, note_id: &str) -> PathBuf {
         self.root.join(format!("{}.md", note_id))
     }

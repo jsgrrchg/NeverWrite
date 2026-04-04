@@ -468,7 +468,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             node.style.transform = `translateX(${previousLeft - nextLeft}px)`;
 
             // FLIP animation: Play
-            // Usamos setTimeout para asegurar que el navegador registre el cambio de "none" a "transform"
+            // Use setTimeout to ensure the browser registers the change from "none" to "transform".
             setTimeout(() => {
                 if (node) {
                     node.style.transition =

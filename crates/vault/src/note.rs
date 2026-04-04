@@ -6,7 +6,7 @@ use crate::error::VaultError;
 use crate::vault::Vault;
 
 impl Vault {
-    /// Lee una nota por su ID, la parsea y devuelve el NoteDocument.
+    /// Reads a note by ID, parses it, and returns the NoteDocument.
     pub fn read_note(&self, note_id: &str) -> Result<NoteDocument, VaultError> {
         let path = self.resolve_note_id_path(note_id)?;
         if !path.exists() {
@@ -15,7 +15,7 @@ impl Vault {
         self.read_note_from_path(&path)
     }
 
-    /// Escribe contenido a una nota existente.
+    /// Writes content to an existing note.
     pub fn save_note(&self, note_id: &str, content: &str) -> Result<(), VaultError> {
         let path = self.resolve_note_id_path(note_id)?;
         if !path.exists() {
@@ -25,7 +25,7 @@ impl Vault {
         Ok(())
     }
 
-    /// Crea una nota nueva. `relative_path` es relativo a la raíz del vault (ej: "carpeta/nota.md").
+    /// Creates a new note. `relative_path` is relative to the vault root (for example, "folder/note.md").
     pub fn create_note(
         &self,
         relative_path: &str,
@@ -35,7 +35,7 @@ impl Vault {
         if path.exists() {
             return Err(VaultError::NoteAlreadyExists(path));
         }
-        // Crear directorios padre si no existen
+        // Create parent directories if they do not exist.
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -43,7 +43,7 @@ impl Vault {
         self.read_note_from_path(&path)
     }
 
-    /// Elimina una nota por su ID.
+    /// Deletes a note by ID.
     pub fn delete_note(&self, note_id: &str) -> Result<(), VaultError> {
         let path = self.resolve_note_id_path(note_id)?;
         if !path.exists() {
@@ -53,7 +53,7 @@ impl Vault {
         Ok(())
     }
 
-    /// Renombra/mueve una nota a un nuevo path relativo.
+    /// Renames or moves a note to a new relative path.
     pub fn rename_note(
         &self,
         note_id: &str,
@@ -67,7 +67,7 @@ impl Vault {
         if new_path.exists() {
             return Err(VaultError::NoteAlreadyExists(new_path));
         }
-        // Crear directorios padre si no existen
+        // Create parent directories if they do not exist.
         if let Some(parent) = new_path.parent() {
             fs::create_dir_all(parent)?;
         }

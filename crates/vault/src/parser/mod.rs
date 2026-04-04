@@ -9,7 +9,7 @@ pub use frontmatter::extract_frontmatter;
 pub use tags::extract_tags;
 pub use wikilinks::extract_wikilinks;
 
-/// Parsea el contenido markdown completo de una nota.
+/// Parses the full markdown content of a note.
 pub fn parse_note(id: &str, path: &std::path::Path, raw_markdown: &str) -> NoteDocument {
     let links = extract_wikilinks(raw_markdown);
     let tags = extract_tags(raw_markdown);
@@ -28,32 +28,32 @@ pub fn parse_note(id: &str, path: &std::path::Path, raw_markdown: &str) -> NoteD
     }
 }
 
-/// Deriva el título de la nota: frontmatter > primer H1 > nombre del archivo.
+/// Derives the note title: frontmatter > first H1 > filename.
 fn derive_title(
     path: &std::path::Path,
     raw_markdown: &str,
     frontmatter: Option<&serde_json::Value>,
 ) -> String {
-    // 1. Intentar desde frontmatter
+    // 1. Try frontmatter.
     if let Some(fm) = frontmatter {
         if let Some(title) = fm.get("title").and_then(|v| v.as_str()) {
             return title.to_string();
         }
     }
 
-    // 2. Intentar primer heading H1
+    // 2. Try the first H1 heading.
     for line in raw_markdown.lines() {
         let trimmed = line.trim();
         if let Some(title) = trimmed.strip_prefix("# ") {
             return title.to_string();
         }
-        // Saltar líneas vacías y frontmatter
+        // Skip empty lines and frontmatter.
         if !trimmed.is_empty() && !trimmed.starts_with("---") {
             break;
         }
     }
 
-    // 3. Nombre del archivo sin extensión
+    // 3. Filename without extension.
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Sin título")

@@ -331,7 +331,7 @@ textarea,
     display: none;
 }
 
-/* Drag region nativo de WebKit — funciona a nivel del SO, no JS */
+/* Native WebKit drag region: works at the OS level, not in JS. */
 .drag {
     -webkit-app-region: drag;
     cursor: default;

@@ -5,15 +5,15 @@ use vault_ai_types::NoteId;
 use crate::VaultIndex;
 
 impl VaultIndex {
-    /// Resuelve un wikilink a un NoteId.
-    /// `link_text`: el target del wikilink (ej: "Mi Nota" o "carpeta/nota").
-    /// `from_note`: el NoteId de la nota que contiene el wikilink.
+    /// Resolves a wikilink to a NoteId.
+    /// `link_text`: the wikilink target (for example, "My Note" or "folder/note").
+    /// `from_note`: the NoteId of the note that contains the wikilink.
     pub fn resolve_wikilink(&self, link_text: &str, from_note: &NoteId) -> Option<NoteId> {
         let from_parent_dir = self.parent_dirs.get(from_note)?;
         self.resolve_link_target(link_text, from_parent_dir)
     }
 
-    /// Devuelve las notas que apuntan a esta nota (backlinks).
+    /// Returns the notes that point to this note (backlinks).
     pub fn get_backlinks(&self, note_id: &NoteId) -> Vec<&NoteId> {
         self.backlinks
             .get(note_id)
@@ -21,7 +21,7 @@ impl VaultIndex {
             .unwrap_or_default()
     }
 
-    /// Devuelve las notas a las que apunta esta nota (forward links).
+    /// Returns the notes that this note points to (forward links).
     pub fn get_forward_links(&self, note_id: &NoteId) -> Vec<&NoteId> {
         self.forward_links
             .get(note_id)
@@ -29,7 +29,7 @@ impl VaultIndex {
             .unwrap_or_default()
     }
 
-    /// Devuelve las notas con un tag específico.
+    /// Returns the notes with a specific tag.
     pub fn get_notes_by_tag(&self, tag: &str) -> Vec<&NoteId> {
         self.tags
             .get(tag)
@@ -37,8 +37,8 @@ impl VaultIndex {
             .unwrap_or_default()
     }
 
-    /// BFS desde `root` hasta `max_depth` hops, usando forward_links + backlinks.
-    /// Devuelve (nodos visitados con su distancia, links internos al subgrafo).
+    /// BFS from `root` up to `max_depth` hops, using forward_links + backlinks.
+    /// Returns (visited nodes with their distance, internal links within the subgraph).
     pub fn get_local_graph(
         &self,
         root: &NoteId,

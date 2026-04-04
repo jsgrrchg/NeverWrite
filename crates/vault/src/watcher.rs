@@ -14,7 +14,7 @@ use crate::vault::{
     is_markdown_path, is_pdf_path, is_supported_image_path, is_supported_text_path, path_is_ignored,
 };
 
-/// Rastrea archivos escritos por la app para distinguirlos de cambios externos.
+/// Tracks files written by the app to distinguish them from external changes.
 #[derive(Debug, Clone)]
 pub struct WriteTracker {
     written: Arc<Mutex<HashMap<PathBuf, TrackedWrite>>>,
@@ -39,7 +39,7 @@ impl WriteTracker {
         }
     }
 
-    /// Registra un archivo escrito por la app, junto con la firma del contenido esperado.
+    /// Registers a file written by the app together with the expected content signature.
     pub fn track_content(&self, path: PathBuf, content: &str) {
         self.track_entry(
             path,
@@ -49,8 +49,8 @@ impl WriteTracker {
         );
     }
 
-    /// Registra un path que puede producir eventos propios sin contenido legible
-    /// (delete/rename). Se ignoran por una ventana corta.
+    /// Registers a path that may produce self-generated events without readable content
+    /// (delete/rename). They are ignored for a short time window.
     pub fn track_any(&self, path: PathBuf) {
         self.track_entry(path, TrackedWriteKind::Any);
     }
@@ -123,7 +123,7 @@ mod tests {
     }
 }
 
-/// Evento externo detectado por el watcher.
+/// External event detected by the watcher.
 #[derive(Debug, Clone)]
 pub enum VaultEvent {
     FileCreated(PathBuf),
@@ -132,8 +132,8 @@ pub enum VaultEvent {
     FileRenamed { from: PathBuf, to: PathBuf },
 }
 
-/// Inicia el file watcher en el directorio del vault.
-/// `on_event` se llama solo para cambios externos (no hechos por la app).
+/// Starts the file watcher in the vault directory.
+/// `on_event` is called only for external changes (not made by the app).
 pub fn start_watcher(
     root: PathBuf,
     write_tracker: WriteTracker,
@@ -143,7 +143,7 @@ pub fn start_watcher(
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         let Ok(event) = res else { return };
 
-        // Solo nos interesan notas, PDFs, imágenes soportadas y archivos de texto editables.
+        // We only care about notes, PDFs, supported images, and editable text files.
         let paths: Vec<&PathBuf> = event
             .paths
             .iter()

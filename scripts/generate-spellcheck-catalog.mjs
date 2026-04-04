@@ -106,7 +106,7 @@ const BUNDLED = [
 // ---------- wooorm/dictionaries: code → label mapping ----------
 
 const WOOORM_LANGUAGES = [
-    // Europa Occidental
+    // Western Europe
     { id: "fr", label: "French" },
     { id: "de", label: "German" },
     { id: "de-AT", label: "German (Austria)" },
@@ -124,7 +124,7 @@ const WOOORM_LANGUAGES = [
     { id: "fur", label: "Friulian" },
     { id: "fy", label: "Western Frisian" },
     { id: "br", label: "Breton" },
-    // Islas Británicas
+    // British Isles
     { id: "en", label: "English" },
     { id: "en-AU", label: "English (Australia)" },
     { id: "en-CA", label: "English (Canada)" },
@@ -133,7 +133,7 @@ const WOOORM_LANGUAGES = [
     { id: "ga", label: "Irish" },
     { id: "gd", label: "Scottish Gaelic" },
     { id: "cy", label: "Welsh" },
-    // Escandinavia y Báltico
+    // Scandinavia and the Baltics
     { id: "da", label: "Danish" },
     { id: "sv", label: "Swedish" },
     { id: "nb", label: "Norwegian Bokmål" },
@@ -144,7 +144,7 @@ const WOOORM_LANGUAGES = [
     { id: "lt", label: "Lithuanian" },
     { id: "ltg", label: "Latgalian" },
     { id: "lv", label: "Latvian" },
-    // Europa Central y del Este
+    // Central and Eastern Europe
     { id: "pl", label: "Polish" },
     { id: "cs", label: "Czech" },
     { id: "sk", label: "Slovak" },
@@ -156,7 +156,7 @@ const WOOORM_LANGUAGES = [
     { id: "sr", label: "Serbian (Cyrillic)" },
     { id: "sr-Latn", label: "Serbian (Latin)" },
     { id: "mk", label: "Macedonian" },
-    // Rusia y exURSS
+    // Russia and former USSR
     { id: "ru", label: "Russian" },
     { id: "uk", label: "Ukrainian" },
     { id: "hy", label: "Armenian" },
@@ -164,25 +164,25 @@ const WOOORM_LANGUAGES = [
     { id: "ka", label: "Georgian" },
     { id: "mn", label: "Mongolian" },
     { id: "tk", label: "Turkmen" },
-    // Medio Oriente
+    // Middle East
     { id: "he", label: "Hebrew" },
     { id: "fa", label: "Persian" },
     { id: "tr", label: "Turkish" },
-    // Asia del Sur
+    // South Asia
     { id: "ne", label: "Nepali" },
-    // Asia del Este y Sudeste
+    // East and Southeast Asia
     { id: "ko", label: "Korean" },
     { id: "vi", label: "Vietnamese" },
-    // África
+    // Africa
     { id: "rw", label: "Kinyarwanda" },
-    // América Latina (variantes no bundled)
+    // Latin America (non-bundled variants)
     { id: "es", label: "Spanish" },
     { id: "es-AR", label: "Spanish (Argentina)" },
     { id: "es-CL", label: "Spanish (Chile)" },
     { id: "es-CO", label: "Spanish (Colombia)" },
     { id: "es-MX", label: "Spanish (Mexico)" },
     { id: "es-VE", label: "Spanish (Venezuela)" },
-    // Lenguas construidas y clásicas
+    // Constructed and classical languages
     { id: "eo", label: "Esperanto" },
     { id: "ia", label: "Interlingua" },
     { id: "ie", label: "Interlingue" },
