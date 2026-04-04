@@ -133,6 +133,7 @@ import {
     safeStorageSetItem,
     subscribeSafeStorage,
 } from "../../../app/utils/safeStorage";
+import { logDebug, logError, logWarn } from "../../../app/utils/runtimeLog";
 
 const AI_PREFS_KEY = "vaultai.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "vaultai.ai.runtime-catalog";
@@ -2741,7 +2742,7 @@ function consolidateActionLogDiffs(
         diffs,
     );
     if (relevantBefore.length > 0 || relevantAfter.length > 0) {
-        console.debug("[tracked-review] consolidate agent diffs", {
+        logDebug("tracked-review", "consolidate agent diffs", {
             sessionId: session.sessionId,
             workCycleId,
             diffs: diffs.map((diff) => ({
@@ -2786,7 +2787,7 @@ function finalizeActionLogForWorkCycle(
         return session;
     }
 
-    console.debug("[tracked-review] finalize work cycle", {
+    logDebug("tracked-review", "finalize work cycle", {
         sessionId: session.sessionId,
         workCycleId: targetWorkCycleId,
         before: Object.values(files).map((file) =>
@@ -3149,7 +3150,7 @@ function applyUserEditToTrackedFileInSession(
             newFullText,
         );
 
-        console.debug("[tracked-review] apply user edit to tracked file", {
+        logDebug("tracked-review", "apply user edit to tracked file", {
             sessionId,
             fileId,
             trackedKey,
@@ -3825,7 +3826,7 @@ async function persistSessionNow(session: AIChatSession) {
             await aiPruneSessionHistories(vaultPath, historyRetentionDays);
         }
     } catch (error) {
-        console.warn("Failed to persist session history:", error);
+        logWarn("chat-store", "Failed to persist session history", error);
     }
 }
 
@@ -4248,8 +4249,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }),
                 ),
             }));
-            console.warn(
-                "Failed to load persisted session transcript page:",
+            logWarn(
+                "chat-store",
+                "Failed to load persisted session transcript page",
                 error,
             );
             return false;
@@ -8215,8 +8217,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 await pruneSessionHistoriesForCurrentVault(next);
                 await get().initialize();
             } catch (error) {
-                console.warn(
-                    "Failed to prune expired session histories:",
+                logWarn(
+                    "chat-store",
+                    "Failed to prune expired session histories",
                     error,
                 );
             }
@@ -8295,7 +8298,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     runtimeId: session.runtimeId,
                 });
             } catch (error) {
-                console.error("Failed to fork session:", error);
+                logError("chat-store", "Failed to fork session", error);
             }
         },
 

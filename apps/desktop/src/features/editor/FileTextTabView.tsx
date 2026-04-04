@@ -57,6 +57,7 @@ import {
     pruneFilePathStateCaches,
     type FilePathStateCacheCollection,
 } from "./filePathStateCache";
+import { logError } from "../../app/utils/runtimeLog";
 
 type SavedVaultFileDetail = {
     relative_path: string;
@@ -201,7 +202,7 @@ export function FileTextTabView() {
                 view.state.sliceDoc(selection.from, selection.to),
             );
         } catch (error) {
-            console.error("Error copying file selection:", error);
+            logError("file-editor", "Failed to copy file selection", error);
         }
     }, []);
 
@@ -227,7 +228,7 @@ export function FileTextTabView() {
             });
             view.focus();
         } catch (error) {
-            console.error("Error cutting file selection:", error);
+            logError("file-editor", "Failed to cut file selection", error);
         }
     }, []);
 
@@ -251,7 +252,7 @@ export function FileTextTabView() {
             });
             view.focus();
         } catch (error) {
-            console.error("Error pasting into file editor:", error);
+            logError("file-editor", "Failed to paste into file editor", error);
         }
     }, []);
 
@@ -384,7 +385,7 @@ export function FileTextTabView() {
                 pendingLocalOpIdByPathRef.current.delete(
                     targetTab.relativePath,
                 );
-                console.error("Error saving vault file:", error);
+                logError("file-editor", "Failed to save vault file", error);
             }
         },
         [],
@@ -875,7 +876,7 @@ export function FileTextTabView() {
                 .getState()
                 .clearFileExternalConflict(tab.relativePath);
         } catch (error) {
-            console.error("Error reloading vault file:", error);
+            logError("file-editor", "Failed to reload vault file", error);
         }
     }, [tab]);
 

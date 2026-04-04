@@ -1,9 +1,7 @@
 import { create } from "zustand";
 import { type SidebarView } from "../../components/layout/ActivityBar";
-import {
-    safeStorageGetItem,
-    safeStorageSetItem,
-} from "../utils/safeStorage";
+import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
+import { logWarn } from "../utils/runtimeLog";
 
 const SIDEBAR_WIDTH_KEY = "vaultai.sidebar.width";
 const SIDEBAR_COLLAPSED_KEY = "vaultai.sidebar.collapsed";
@@ -129,8 +127,7 @@ function readHydratedLayoutSnapshot(): LayoutSnapshot {
     );
 
     return {
-        sidebarCollapsed:
-            safeStorageGetItem(SIDEBAR_COLLAPSED_KEY) === "true",
+        sidebarCollapsed: safeStorageGetItem(SIDEBAR_COLLAPSED_KEY) === "true",
         sidebarWidth: parseStoredNumber(
             SIDEBAR_WIDTH_KEY,
             DEFAULT_SIDEBAR_WIDTH,
@@ -334,6 +331,8 @@ export function hydrateLayoutStore() {
     try {
         useLayoutStore.setState(readHydratedLayoutSnapshot());
     } catch (error) {
-        console.warn("Failed to hydrate layout store:", error);
+        logWarn("layout-store", "Failed to hydrate layout store", error, {
+            onceKey: "hydrate-layout-store",
+        });
     }
 }

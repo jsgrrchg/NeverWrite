@@ -52,6 +52,7 @@ import {
     formatPrimaryShortcut,
 } from "../../app/shortcuts/registry";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import { logError, logWarn } from "../../app/utils/runtimeLog";
 
 export const REQUEST_CLOSE_ACTIVE_TAB_EVENT =
     "vaultai:editor:request-close-active-tab";
@@ -632,7 +633,7 @@ export function Editor({
                 touchContent();
             } catch (e) {
                 pendingLocalOpIdByTabId.current.delete(tab.noteId);
-                console.error("Error al guardar nota:", e);
+                logError("editor", "Failed to save note", e);
                 return false;
             }
             return true;
@@ -693,7 +694,7 @@ export function Editor({
             });
             clearNoteExternalConflict(tab.noteId);
         } catch (error) {
-            console.error("Error reloading note from disk:", error);
+            logError("editor", "Failed to reload note from disk", error);
         }
     }, [clearNoteExternalConflict]);
 
@@ -925,9 +926,11 @@ export function Editor({
                     spellingSuggestions = response.suggestions;
                     spellingCorrect = response.correct;
                 } catch (error) {
-                    console.error(
-                        "Error loading title spellcheck suggestions:",
+                    logWarn(
+                        "editor",
+                        "Failed to load title spellcheck suggestions",
                         error,
+                        { onceKey: "title-spellcheck-suggestions" },
                     );
                 }
             }
@@ -962,9 +965,11 @@ export function Editor({
                             },
                         }));
                 } catch (error) {
-                    console.error(
-                        "Error loading title grammar suggestions:",
+                    logWarn(
+                        "editor",
+                        "Failed to load title grammar suggestions",
                         error,
+                        { onceKey: "title-grammar-suggestions" },
                     );
                 }
             }
@@ -1045,7 +1050,7 @@ export function Editor({
                 view.state.sliceDoc(selection.from, selection.to),
             );
         } catch (error) {
-            console.error("Error copying editor selection:", error);
+            logError("editor", "Failed to copy editor selection", error);
         }
     }, []);
 
@@ -1070,7 +1075,7 @@ export function Editor({
             });
             view.focus();
         } catch (error) {
-            console.error("Error cutting editor selection:", error);
+            logError("editor", "Failed to cut editor selection", error);
         }
     }, []);
 
@@ -1094,7 +1099,7 @@ export function Editor({
             });
             view.focus();
         } catch (error) {
-            console.error("Error pasting into editor:", error);
+            logError("editor", "Failed to paste into editor", error);
         }
     }, []);
 
@@ -1126,7 +1131,8 @@ export function Editor({
             }
             if (!didLogCoordinateLookupErrorRef.current) {
                 didLogCoordinateLookupErrorRef.current = true;
-                console.warn(
+                logWarn(
+                    "editor",
                     `Ignoring transient CodeMirror coordinate lookup failure in ${source}.`,
                     error,
                 );
@@ -1502,7 +1508,12 @@ export function Editor({
                 .catch((error) => {
                     if (requestId !== wikilinkSuggestionRequestIdRef.current)
                         return;
-                    console.error("Error loading wikilink suggestions:", error);
+                    logWarn(
+                        "editor",
+                        "Failed to load wikilink suggestions",
+                        error,
+                        { onceKey: "wikilink-suggestions" },
+                    );
                     setWikilinkSuggester((previous) => ({
                         x: left,
                         y: top,
@@ -1834,9 +1845,11 @@ export function Editor({
                     spellingSuggestions = response.suggestions;
                     spellingCorrect = response.correct;
                 } catch (error) {
-                    console.error(
-                        "Error loading spellcheck suggestions:",
+                    logWarn(
+                        "editor",
+                        "Failed to load spellcheck suggestions",
                         error,
+                        { onceKey: "spellcheck-suggestions" },
                     );
                 }
             }

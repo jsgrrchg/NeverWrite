@@ -1,3 +1,5 @@
+import { logWarn } from "./runtimeLog";
+
 const SAFE_STORAGE_EVENT = "vaultai:safe-storage";
 const STORAGE_PROBE_KEY = "__vaultai_storage_probe__";
 
@@ -66,7 +68,8 @@ function resolveBackend(): StorageBackend {
                 backend = {
                     kind: "local",
                     getItem: (key) => window.localStorage.getItem(key),
-                    setItem: (key, value) => window.localStorage.setItem(key, value),
+                    setItem: (key, value) =>
+                        window.localStorage.setItem(key, value),
                     removeItem: (key) => window.localStorage.removeItem(key),
                     clear: () => window.localStorage.clear(),
                     key: (index) => window.localStorage.key(index),
@@ -110,21 +113,44 @@ export function safeStorageGetItem(key: string): string | null {
     }
 }
 
-export function safeStorageSetItem(key: string, value: string) {
+export function safeStorageTrySetItem(key: string, value: string) {
     try {
         resolveBackend().setItem(key, value);
         dispatchSafeStorageEvent(key, value);
-    } catch (error) {
-        console.warn("Failed to persist safe storage item:", key, error);
+        return true;
+    } catch {
+        return false;
     }
+}
+
+export function safeStorageSetItem(key: string, value: string) {
+    if (safeStorageTrySetItem(key, value)) {
+        return true;
+    }
+    logWarn(
+        "safe-storage",
+        "Failed to persist safe storage item",
+        { key },
+        {
+            onceKey: `set:${key}`,
+        },
+    );
+    return false;
 }
 
 export function safeStorageRemoveItem(key: string) {
     try {
         resolveBackend().removeItem(key);
         dispatchSafeStorageEvent(key, null);
+        return true;
     } catch (error) {
-        console.warn("Failed to remove safe storage item:", key, error);
+        logWarn(
+            "safe-storage",
+            "Failed to remove safe storage item",
+            { key, error },
+            { onceKey: `remove:${key}` },
+        );
+        return false;
     }
 }
 
@@ -135,8 +161,12 @@ export function safeStorageClear() {
         for (const key of keys) {
             dispatchSafeStorageEvent(key, null);
         }
+        return true;
     } catch (error) {
-        console.warn("Failed to clear safe storage:", error);
+        logWarn("safe-storage", "Failed to clear safe storage", error, {
+            onceKey: "clear",
+        });
+        return false;
     }
 }
 

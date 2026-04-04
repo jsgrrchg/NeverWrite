@@ -18,6 +18,7 @@ import type {
     ReviewHunk,
     ReviewHunkId,
 } from "../../ai/diff/reviewProjection";
+import { logWarn } from "../../../app/utils/runtimeLog";
 
 export interface ReviewProjectionDecisionPayload {
     decision: "accepted" | "rejected";
@@ -544,11 +545,11 @@ function createDecisionButton(
                 : `Reject overlapping group (${options.changeCount} changes)`
             : options.changeCount > 1
               ? type === "accept"
-                ? `Accept ${options.changeCount} changes`
-                : `Reject ${options.changeCount} changes`
-            : type === "accept"
-              ? "Accept change"
-              : "Reject change";
+                  ? `Accept ${options.changeCount} changes`
+                  : `Reject ${options.changeCount} changes`
+              : type === "accept"
+                ? "Accept change"
+                : "Reject change";
     button.type = "button";
     button.className = `cm-review-action cm-review-action-${type}`;
     button.dataset.reviewDecision = type;
@@ -716,7 +717,7 @@ function warnControlOutOfRange(entry: ReviewControlEntry, docLines: number) {
     }
 
     outOfRangeControlWarningKeys.set(warningKey, true);
-    console.warn("[merge-inline] skipping out-of-range inline control", {
+    logWarn("merge-inline", "skipping out-of-range inline control", {
         controlId: entry.controlId,
         chunkId: entry.chunkId.key,
         trackedVersion: entry.chunkId.trackedVersion,

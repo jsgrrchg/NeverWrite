@@ -14,7 +14,9 @@ import {
     safeStorageLength,
     safeStorageRemoveItem,
     safeStorageSetItem,
+    safeStorageTrySetItem,
 } from "./utils/safeStorage";
+import { logWarn } from "./utils/runtimeLog";
 
 const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "vaultai:detached-window:";
@@ -65,19 +67,18 @@ async function purgeStaleLocalStorageEntries() {
  * from closed/crashed windows and retry once.
  */
 async function safeSetItem(key: string, value: string) {
-    try {
-        safeStorageSetItem(key, value);
-    } catch {
-        await purgeStaleLocalStorageEntries();
-        try {
-            safeStorageSetItem(key, value);
-        } catch (retryError) {
-            console.warn(
-                "localStorage.setItem failed after cleanup:",
-                key,
-                retryError,
-            );
-        }
+    if (safeStorageTrySetItem(key, value)) {
+        return;
+    }
+
+    await purgeStaleLocalStorageEntries();
+    if (!safeStorageSetItem(key, value)) {
+        logWarn(
+            "detached-window",
+            "localStorage.setItem failed after cleanup",
+            { key },
+            { onceKey: `detached-window:${key}` },
+        );
     }
 }
 

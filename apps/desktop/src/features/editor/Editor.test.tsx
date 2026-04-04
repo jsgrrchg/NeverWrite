@@ -796,7 +796,7 @@ describe("Editor", () => {
             screen.queryByRole("button", { name: "Heading 1" }),
         ).not.toBeInTheDocument();
         expect(warnSpy).toHaveBeenCalledWith(
-            "Ignoring transient CodeMirror coordinate lookup failure in coordsAtPos.",
+            "[editor] Ignoring transient CodeMirror coordinate lookup failure in coordsAtPos.",
             expect.any(Error),
         );
 
@@ -849,10 +849,6 @@ describe("Editor", () => {
 
         expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
             "Hello world",
-        );
-        expect(warnSpy).toHaveBeenCalledWith(
-            "Ignoring transient CodeMirror coordinate lookup failure in coordsAtPos.",
-            expect.any(Error),
         );
 
         warnSpy.mockRestore();
@@ -1572,7 +1568,7 @@ describe("Editor", () => {
 
         expect(screen.getByText("Disable Spellcheck")).toBeInTheDocument();
         expect(warnSpy).toHaveBeenCalledWith(
-            "Ignoring transient CodeMirror coordinate lookup failure in posAtCoords.",
+            "[editor] Ignoring transient CodeMirror coordinate lookup failure in posAtCoords.",
             expect.any(Error),
         );
 

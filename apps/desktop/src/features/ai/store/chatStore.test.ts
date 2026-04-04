@@ -2204,7 +2204,7 @@ describe("chatStore", () => {
         expect(session.messages).toHaveLength(0);
         expect(session.isLoadingPersistedMessages).toBe(false);
         expect(consoleWarnSpy).toHaveBeenCalledWith(
-            "Failed to load persisted session transcript page:",
+            "[chat-store] Failed to load persisted session transcript page",
             expect.any(Error),
         );
 

@@ -7,6 +7,7 @@ import {
     safeStorageRemoveItem,
     safeStorageSetItem,
 } from "../utils/safeStorage";
+import { logError, logWarn } from "../utils/runtimeLog";
 import { useEditorStore } from "./editorStore";
 import { useBookmarkStore } from "./bookmarkStore";
 
@@ -201,7 +202,9 @@ function syncRecentVaultsToNative(vaults: RecentVault[]) {
     }));
 
     void invoke("sync_recent_vaults", { vaults: top15 }).catch((error) => {
-        console.warn("Failed to sync recent vaults:", error);
+        logWarn("vault-store", "Failed to sync recent vaults", error, {
+            onceKey: "sync-recent-vaults",
+        });
     });
 }
 
@@ -475,7 +478,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 structureRevision: state.structureRevision + 1,
             }));
         } catch (error) {
-            console.error("Error refreshing vault entries:", error);
+            logError("vault-store", "Failed to refresh vault entries", error);
         }
     },
 
@@ -502,7 +505,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 tagsRevision: state.tagsRevision + 1,
             }));
         } catch (error) {
-            console.error("Error refreshing vault structure:", error);
+            logError("vault-store", "Failed to refresh vault structure", error);
         }
     },
 
@@ -581,7 +584,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             }));
             return note;
         } catch (e) {
-            console.error("Error al crear nota:", e);
+            logError("vault-store", "Failed to create note", e);
             return null;
         }
     },
@@ -600,7 +603,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             }));
             return entry;
         } catch (e) {
-            console.error("Error al crear carpeta:", e);
+            logError("vault-store", "Failed to create folder", e);
             return null;
         }
     },
@@ -639,7 +642,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 bookmarks.handleNoteDeleted(noteId);
             }
         } catch (e) {
-            console.error("Error al eliminar carpeta:", e);
+            logError("vault-store", "Failed to delete folder", e);
             throw e;
         }
     },
@@ -659,7 +662,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             useEditorStore.getState().handleNoteDeleted(noteId);
             useBookmarkStore.getState().handleNoteDeleted(noteId);
         } catch (e) {
-            console.error("Error al eliminar nota:", e);
+            logError("vault-store", "Failed to delete note", e);
         }
     },
 
@@ -694,7 +697,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             useBookmarkStore.getState().handleNoteRenamed(noteId, updated.id);
             return updated;
         } catch (e) {
-            console.error("Error al renombrar nota:", e);
+            logError("vault-store", "Failed to rename note", e);
             return null;
         }
     },

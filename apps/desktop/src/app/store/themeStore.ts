@@ -7,6 +7,7 @@ import {
     subscribeSafeStorage,
 } from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
+import { logWarn } from "../utils/runtimeLog";
 
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -183,7 +184,9 @@ export function hydrateThemeStore() {
             resolveTheme(preference.mode, preference.themeName),
         );
     } catch (error) {
-        console.warn("Failed to hydrate theme store:", error);
+        logWarn("theme-store", "Failed to hydrate theme store", error, {
+            onceKey: "hydrate-theme-store",
+        });
         useThemeStore.setState(
             resolveTheme(DEFAULT_THEME.mode, DEFAULT_THEME.themeName),
         );

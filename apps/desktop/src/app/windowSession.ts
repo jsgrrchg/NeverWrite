@@ -5,9 +5,10 @@ import {
     safeStorageKey,
     safeStorageLength,
     safeStorageRemoveItem,
-    safeStorageSetItem,
+    safeStorageTrySetItem,
 } from "./utils/safeStorage";
 import type { TabInput } from "./store/editorStore";
+import { logWarn } from "./utils/runtimeLog";
 
 const WINDOW_SESSION_DESCRIPTOR_PREFIX = "vaultai:window-session:";
 const WINDOW_SESSION_SNAPSHOT_KEY = "vaultai:window-session-snapshot";
@@ -94,10 +95,10 @@ export function writeWindowSessionEntry(
         safeStorageRemoveItem(key);
         return;
     }
-    try {
-        safeStorageSetItem(key, JSON.stringify(entry));
-    } catch (error) {
-        console.warn("Failed to write window session entry:", error);
+    if (!safeStorageTrySetItem(key, JSON.stringify(entry))) {
+        logWarn("window-session", "Failed to write window session entry", {
+            label,
+        });
     }
 }
 
@@ -193,15 +194,20 @@ export async function refreshWindowSessionSnapshot() {
             (entry): entry is PersistedWindowSessionEntry => entry !== null,
         );
 
-    try {
-        safeStorageSetItem(
+    if (
+        !safeStorageTrySetItem(
             WINDOW_SESSION_SNAPSHOT_KEY,
             JSON.stringify(
                 sortWindowSessionEntries(entries).map((entry) => entry.label),
             ),
+        )
+    ) {
+        logWarn(
+            "window-session",
+            "Failed to write window session snapshot",
+            undefined,
+            { onceKey: "window-session-snapshot" },
         );
-    } catch (error) {
-        console.warn("Failed to write window session snapshot:", error);
     }
 
     return entries;

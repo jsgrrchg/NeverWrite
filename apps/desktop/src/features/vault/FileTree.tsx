@@ -51,6 +51,7 @@ import {
     safeStorageSetItem,
     subscribeSafeStorage,
 } from "../../app/utils/safeStorage";
+import { logError } from "../../app/utils/runtimeLog";
 
 // --- Sort ---
 
@@ -2120,7 +2121,7 @@ export function FileTree() {
                 await refreshStructure();
                 return nextFolderPath;
             } catch (error) {
-                console.error("Error moving folder:", error);
+                logError("file-tree", "Failed to move folder", error);
                 return null;
             }
         },
@@ -2183,7 +2184,7 @@ export function FileTree() {
                 await useVaultStore.getState().refreshEntries();
                 return updated;
             } catch (error) {
-                console.error("Error moving vault entry:", error);
+                logError("file-tree", "Failed to move vault entry", error);
                 return null;
             }
         },
@@ -2784,7 +2785,7 @@ export function FileTree() {
         try {
             await openVaultFileEntry(entry, { newTab: true });
         } catch (error) {
-            console.error("Error opening file in new tab:", error);
+            logError("file-tree", "Failed to open file in new tab", error);
         }
     }, []);
 
@@ -2816,7 +2817,7 @@ export function FileTree() {
             closeOpenTabsForVaultPath(entry.path);
             await useVaultStore.getState().refreshEntries();
         } catch (error) {
-            console.error("Error moving vault entry to trash:", error);
+            logError("file-tree", "Failed to move vault entry to trash", error);
         }
     }, []);
 
@@ -2877,7 +2878,7 @@ export function FileTree() {
                 const detail = await readNoteContent(note.id);
                 openNote(note.id, note.title, detail.content);
             } catch (error) {
-                console.error("Error opening tree note:", error);
+                logError("file-tree", "Failed to open tree note", error);
             }
         },
         [openNote, readNoteContent],
@@ -2902,7 +2903,11 @@ export function FileTree() {
                     content,
                 });
             } catch (error) {
-                console.error("Error opening tree note in new tab:", error);
+                logError(
+                    "file-tree",
+                    "Failed to open tree note in new tab",
+                    error,
+                );
             }
         },
         [insertExternalTab, readNoteContent],
@@ -3133,7 +3138,7 @@ export function FileTree() {
                 setFocusedFolderPath(rootFolderPath);
                 await refreshStructure();
             } catch (error) {
-                console.error("Error copying folder:", error);
+                logError("file-tree", "Failed to copy folder", error);
             }
         },
         [allFolderPaths, refreshStructure, persistCopiedNote, vaultPath],
@@ -3369,7 +3374,7 @@ export function FileTree() {
                     return next;
                 });
             } catch (error) {
-                console.error("Error deleting folder:", error);
+                logError("file-tree", "Failed to delete folder", error);
             }
         },
         [closeTab, deleteFolder, vaultPath],
@@ -3424,7 +3429,7 @@ export function FileTree() {
                 });
                 touchContent();
             } catch (error) {
-                console.error("Error duplicating note:", error);
+                logError("file-tree", "Failed to duplicate note", error);
             }
         },
         [createNote, notes, readNoteContent, touchContent, updateNoteMetadata],

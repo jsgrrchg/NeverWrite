@@ -55,6 +55,7 @@ import {
     type EditorTarget,
 } from "./editorTargetResolver";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
+import { logDebug, logWarn } from "../../app/utils/runtimeLog";
 
 const MERGE_RESYNC_RETRY_DELAY_MS = 48;
 const MERGE_RESYNC_MAX_RETRIES = 3;
@@ -213,29 +214,24 @@ export function syncMergeViewForPaths(
     if (!isResolvedTargetActiveForCandidates(target, candidatePaths)) {
         clearMergeResyncRetry(view);
         setMergeTransitioning(view, true);
-        logMergeSyncState(
-            view,
-            "debug",
-            "[merge-inline] waiting for editor target",
-            {
-                candidatePaths,
-                sessionId,
-                identityKey: trackedFile.identityKey,
-                trackedVersion: trackedFile.version,
-                trackedPath: trackedFile.path,
-                inlineState: "waiting_for_editor_target",
-                transitionReason: target
-                    ? "target_not_active"
-                    : "target_not_resolved",
-                target,
-                editorDocSignature: buildNormalizedTextSignature(
-                    view.state.doc.toString(),
-                ),
-                trackedTextSignature: buildNormalizedTextSignature(
-                    trackedFile.currentText,
-                ),
-            },
-        );
+        logMergeSyncState(view, "debug", "waiting for editor target", {
+            candidatePaths,
+            sessionId,
+            identityKey: trackedFile.identityKey,
+            trackedVersion: trackedFile.version,
+            trackedPath: trackedFile.path,
+            inlineState: "waiting_for_editor_target",
+            transitionReason: target
+                ? "target_not_active"
+                : "target_not_resolved",
+            target,
+            editorDocSignature: buildNormalizedTextSignature(
+                view.state.doc.toString(),
+            ),
+            trackedTextSignature: buildNormalizedTextSignature(
+                trackedFile.currentText,
+            ),
+        });
         reconfigureMergeView(view, currentSignature, {
             shouldShowMerge: false,
             sessionId,
@@ -274,7 +270,7 @@ export function syncMergeViewForPaths(
         logMergeSyncState(
             view,
             "debug",
-            "[merge-inline] waiting for editor reload to settle",
+            "waiting for editor reload to settle",
             {
                 candidatePaths,
                 sessionId,
@@ -322,7 +318,7 @@ export function syncMergeViewForPaths(
         logMergeSyncState(
             view,
             "debug",
-            "[merge-inline] defer merge sync while editor is stale",
+            "defer merge sync while editor is stale",
             {
                 candidatePaths,
                 sessionId,
@@ -382,8 +378,8 @@ export function syncMergeViewForPaths(
             view,
             "warn",
             projectionState.projectionState === "projection_partial"
-                ? "[merge-inline] review projection partially degraded"
-                : "[merge-inline] review projection invalid",
+                ? "review projection partially degraded"
+                : "review projection invalid",
             {
                 candidatePaths,
                 sessionId,
@@ -525,8 +521,9 @@ export function syncMergeViewForPaths(
                                             ),
                                     },
                                 );
-                                console.debug(
-                                    "[merge-inline] stale inline decision ignored; refreshing",
+                                logDebug(
+                                    "merge-inline",
+                                    "stale inline decision ignored; refreshing",
                                     {
                                         sessionId: liveSessionId,
                                         identityKey: liveIdentityKey,
@@ -1034,8 +1031,7 @@ function logMergeSyncState(
 
     mergeDebugLogKeyByView.set(view, key);
 
-    const logger = level === "warn" ? console.warn : console.debug;
-    logger(message, {
+    const detail = {
         sessionId: payload.sessionId,
         identityKey: payload.identityKey,
         trackedVersion: payload.trackedVersion,
@@ -1058,5 +1054,18 @@ function logMergeSyncState(
         outOfRangeChunkCount: payload.outOfRangeChunkCount,
         maxStartLine: payload.maxStartLine,
         maxEndLine: payload.maxEndLine,
-    });
+        totalLines: payload.totalLines,
+        chunkCount: payload.chunkCount,
+        visibleChunkCount: payload.visibleChunkCount,
+        inlineSafeChunkCount: payload.inlineSafeChunkCount,
+        degradedChunkCount: payload.degradedChunkCount,
+        invalidChunkCount: payload.invalidChunkCount,
+        invalidChunkKeys: payload.invalidChunkKeys,
+        invalidHunkKeys: payload.invalidHunkKeys,
+    };
+    if (level === "warn") {
+        logWarn("merge-inline", message, detail, { onceKey: key });
+        return;
+    }
+    logDebug("merge-inline", message, detail, { onceKey: key });
 }
