@@ -728,7 +728,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     pointerOffsetY,
             );
 
-            // Instant visual feedback via CSS transform
             const content = contentRef.current;
             if (content) {
                 content.style.transformOrigin = "0 0";
@@ -738,7 +737,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             scrollContainer.scrollLeft = nextScrollLeft;
             scrollContainer.scrollTop = nextScrollTop;
 
-            // Debounce the actual re-render
             window.clearTimeout(pinchTimerRef.current);
             pendingWheelZoomRef.current = next;
             pinchTimerRef.current = window.setTimeout(() => {
