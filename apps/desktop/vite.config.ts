@@ -2,9 +2,51 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+function manualChunks(id: string) {
+    if (!id.includes("node_modules")) {
+        return;
+    }
+
+    if (id.includes("/react/") || id.includes("/react-dom/")) {
+        return "vendor-react";
+    }
+    if (id.includes("@codemirror")) {
+        return "vendor-codemirror";
+    }
+    if (
+        id.includes("react-force-graph") ||
+        id.includes("three") ||
+        id.includes("force-graph") ||
+        id.includes("3d-force-graph") ||
+        id.includes("d3-force-3d")
+    ) {
+        return "vendor-graph";
+    }
+    if (id.includes("pdfjs-dist")) {
+        return "vendor-pdf";
+    }
+    if (id.includes("@xterm") || id.includes("/xterm")) {
+        return "vendor-terminal";
+    }
+    if (id.includes("katex")) {
+        return "vendor-katex";
+    }
+}
+
 export default defineConfig({
     plugins: [react(), tailwindcss()],
     clearScreen: false,
+    build: {
+        // The desktop app intentionally ships several large lazy chunks
+        // (CodeMirror languages, graph tooling, Mermaid definitions).
+        // The default 500 kB warning threshold is too noisy for this bundle shape.
+        chunkSizeWarningLimit: 2000,
+        rollupOptions: {
+            output: {
+                manualChunks,
+            },
+        },
+    },
     server: {
         port: 5173,
         strictPort: true,

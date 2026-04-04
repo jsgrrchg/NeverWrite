@@ -3,7 +3,11 @@ import {
     Language,
     LanguageDescription,
     LanguageSupport,
+    StreamLanguage,
 } from "@codemirror/language";
+import { css } from "@codemirror/lang-css";
+import { html } from "@codemirror/lang-html";
+import { javascript } from "@codemirror/lang-javascript";
 
 type LanguageKey =
     | "c"
@@ -350,21 +354,13 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
         case "rust":
             return import("@codemirror/lang-rust").then(({ rust }) => rust());
         case "javascript":
-            return import("@codemirror/lang-javascript").then(
-                ({ javascript }) => javascript(),
-            );
+            return Promise.resolve(javascript());
         case "javascript-jsx":
-            return import("@codemirror/lang-javascript").then(
-                ({ javascript }) => javascript({ jsx: true }),
-            );
+            return Promise.resolve(javascript({ jsx: true }));
         case "typescript":
-            return import("@codemirror/lang-javascript").then(
-                ({ javascript }) => javascript({ typescript: true }),
-            );
+            return Promise.resolve(javascript({ typescript: true }));
         case "typescript-jsx":
-            return import("@codemirror/lang-javascript").then(
-                ({ javascript }) => javascript({ typescript: true, jsx: true }),
-            );
+            return Promise.resolve(javascript({ typescript: true, jsx: true }));
         case "json":
             return import("@codemirror/lang-json").then(({ json }) => json());
         case "python":
@@ -374,176 +370,121 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
         case "java":
             return import("@codemirror/lang-java").then(({ java }) => java());
         case "html":
-            return import("@codemirror/lang-html").then(({ html }) => html());
+            return Promise.resolve(html());
         case "css":
-            return import("@codemirror/lang-css").then(({ css }) => css());
+            return Promise.resolve(css());
         case "cmake":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/cmake"),
-            ]).then(([{ StreamLanguage }, { cmake }]) =>
-                StreamLanguage.define(cmake),
+            return import("@codemirror/legacy-modes/mode/cmake").then(
+                ({ cmake }) => StreamLanguage.define(cmake),
             );
         case "dockerfile":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/dockerfile"),
-            ]).then(([{ StreamLanguage }, { dockerFile }]) =>
-                StreamLanguage.define(dockerFile),
+            return import("@codemirror/legacy-modes/mode/dockerfile").then(
+                ({ dockerFile }) => StreamLanguage.define(dockerFile),
             );
         case "yaml":
             return import("@codemirror/lang-yaml").then(({ yaml }) => yaml());
         case "makefile":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/simple-mode"),
-            ]).then(([{ StreamLanguage }, { simpleMode }]) =>
-                StreamLanguage.define(
-                    simpleMode({
-                        start: [
-                            { regex: /#.*/, token: "comment" },
-                            { regex: /^\t.*/, token: "meta" },
-                            {
-                                regex: /^\s*(?:ifeq|ifneq|ifdef|ifndef|else|endif|include|-include|sinclude|export|unexport|override|private|define|endef|undefine|vpath)\b/,
-                                token: "keyword",
-                            },
-                            {
-                                regex: /^\s*[A-Za-z0-9_.-]+\s*(?::=|\?=|\+=|!=|=)/,
-                                token: "def",
-                            },
-                            {
-                                regex: /^\s*[^\s:#=]+(?=\s*:)/,
-                                token: "definition",
-                            },
-                            {
-                                regex: /\$\((?:[^()\\]|\\.)+\)|\$\{(?:[^{}\\]|\\.)+\}/,
-                                token: "variableName",
-                            },
-                            {
-                                regex: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/,
-                                token: "string",
-                            },
-                            { regex: /[:=]/, token: "operator" },
-                        ],
-                    }),
-                ),
+            return import("@codemirror/legacy-modes/mode/simple-mode").then(
+                ({ simpleMode }) =>
+                    StreamLanguage.define(
+                        simpleMode({
+                            start: [
+                                { regex: /#.*/, token: "comment" },
+                                { regex: /^\t.*/, token: "meta" },
+                                {
+                                    regex: /^\s*(?:ifeq|ifneq|ifdef|ifndef|else|endif|include|-include|sinclude|export|unexport|override|private|define|endef|undefine|vpath)\b/,
+                                    token: "keyword",
+                                },
+                                {
+                                    regex: /^\s*[A-Za-z0-9_.-]+\s*(?::=|\?=|\+=|!=|=)/,
+                                    token: "def",
+                                },
+                                {
+                                    regex: /^\s*[^\s:#=]+(?=\s*:)/,
+                                    token: "definition",
+                                },
+                                {
+                                    regex: /\$\((?:[^()\\]|\\.)+\)|\$\{(?:[^{}\\]|\\.)+\}/,
+                                    token: "variableName",
+                                },
+                                {
+                                    regex: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/,
+                                    token: "string",
+                                },
+                                { regex: /[:=]/, token: "operator" },
+                            ],
+                        }),
+                    ),
             );
         case "powershell":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/powershell"),
-            ]).then(([{ StreamLanguage }, { powerShell }]) =>
-                StreamLanguage.define(powerShell),
+            return import("@codemirror/legacy-modes/mode/powershell").then(
+                ({ powerShell }) => StreamLanguage.define(powerShell),
             );
         case "properties":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/properties"),
-            ]).then(([{ StreamLanguage }, { properties }]) =>
-                StreamLanguage.define(properties),
+            return import("@codemirror/legacy-modes/mode/properties").then(
+                ({ properties }) => StreamLanguage.define(properties),
             );
         case "protobuf":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/protobuf"),
-            ]).then(([{ StreamLanguage }, { protobuf }]) =>
-                StreamLanguage.define(protobuf),
+            return import("@codemirror/legacy-modes/mode/protobuf").then(
+                ({ protobuf }) => StreamLanguage.define(protobuf),
             );
         case "swift":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/swift"),
-            ]).then(([{ StreamLanguage }, { swift }]) =>
-                StreamLanguage.define(swift),
+            return import("@codemirror/legacy-modes/mode/swift").then(
+                ({ swift }) => StreamLanguage.define(swift),
             );
         case "shell":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/shell"),
-            ]).then(([{ StreamLanguage }, { shell }]) =>
-                StreamLanguage.define(shell),
+            return import("@codemirror/legacy-modes/mode/shell").then(
+                ({ shell }) => StreamLanguage.define(shell),
             );
         case "toml":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/toml"),
-            ]).then(([{ StreamLanguage }, { toml }]) =>
-                StreamLanguage.define(toml),
+            return import("@codemirror/legacy-modes/mode/toml").then(
+                ({ toml }) => StreamLanguage.define(toml),
             );
         case "go":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/go"),
-            ]).then(([{ StreamLanguage }, { go }]) =>
+            return import("@codemirror/legacy-modes/mode/go").then(({ go }) =>
                 StreamLanguage.define(go),
             );
         case "ruby":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/ruby"),
-            ]).then(([{ StreamLanguage }, { ruby }]) =>
-                StreamLanguage.define(ruby),
+            return import("@codemirror/legacy-modes/mode/ruby").then(
+                ({ ruby }) => StreamLanguage.define(ruby),
             );
         case "r":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/r"),
-            ]).then(([{ StreamLanguage }, { r }]) => StreamLanguage.define(r));
+            return import("@codemirror/legacy-modes/mode/r").then(({ r }) =>
+                StreamLanguage.define(r),
+            );
         case "clojure":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/clojure"),
-            ]).then(([{ StreamLanguage }, { clojure }]) =>
-                StreamLanguage.define(clojure),
+            return import("@codemirror/legacy-modes/mode/clojure").then(
+                ({ clojure }) => StreamLanguage.define(clojure),
             );
         case "haskell":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/haskell"),
-            ]).then(([{ StreamLanguage }, { haskell }]) =>
-                StreamLanguage.define(haskell),
+            return import("@codemirror/legacy-modes/mode/haskell").then(
+                ({ haskell }) => StreamLanguage.define(haskell),
             );
         case "erlang":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/erlang"),
-            ]).then(([{ StreamLanguage }, { erlang }]) =>
-                StreamLanguage.define(erlang),
+            return import("@codemirror/legacy-modes/mode/erlang").then(
+                ({ erlang }) => StreamLanguage.define(erlang),
             );
         case "perl":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/perl"),
-            ]).then(([{ StreamLanguage }, { perl }]) =>
-                StreamLanguage.define(perl),
+            return import("@codemirror/legacy-modes/mode/perl").then(
+                ({ perl }) => StreamLanguage.define(perl),
             );
         case "php":
             return import("@codemirror/lang-php").then(({ php }) => php());
         case "d":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/d"),
-            ]).then(([{ StreamLanguage }, { d }]) => StreamLanguage.define(d));
+            return import("@codemirror/legacy-modes/mode/d").then(({ d }) =>
+                StreamLanguage.define(d),
+            );
         case "lua":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/lua"),
-            ]).then(([{ StreamLanguage }, { lua }]) =>
+            return import("@codemirror/legacy-modes/mode/lua").then(({ lua }) =>
                 StreamLanguage.define(lua),
             );
         case "julia":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/julia"),
-            ]).then(([{ StreamLanguage }, { julia }]) =>
-                StreamLanguage.define(julia),
+            return import("@codemirror/legacy-modes/mode/julia").then(
+                ({ julia }) => StreamLanguage.define(julia),
             );
         case "groovy":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/groovy"),
-            ]).then(([{ StreamLanguage }, { groovy }]) =>
-                StreamLanguage.define(groovy),
+            return import("@codemirror/legacy-modes/mode/groovy").then(
+                ({ groovy }) => StreamLanguage.define(groovy),
             );
         case "sql":
             return import("@codemirror/lang-sql").then(({ sql }) => sql());
@@ -564,67 +505,40 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
                 sql({ dialect: SQLite }),
             );
         case "diff":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/diff"),
-            ]).then(([{ StreamLanguage }, { diff }]) =>
-                StreamLanguage.define(diff),
+            return import("@codemirror/legacy-modes/mode/diff").then(
+                ({ diff }) => StreamLanguage.define(diff),
             );
         case "sass":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/sass"),
-            ]).then(([{ StreamLanguage }, { sass }]) =>
-                StreamLanguage.define(sass),
+            return import("@codemirror/legacy-modes/mode/sass").then(
+                ({ sass }) => StreamLanguage.define(sass),
             );
         case "stylus":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/stylus"),
-            ]).then(([{ StreamLanguage }, { stylus }]) =>
-                StreamLanguage.define(stylus),
+            return import("@codemirror/legacy-modes/mode/stylus").then(
+                ({ stylus }) => StreamLanguage.define(stylus),
             );
         case "stex":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/stex"),
-            ]).then(([{ StreamLanguage }, { stex }]) =>
-                StreamLanguage.define(stex),
+            return import("@codemirror/legacy-modes/mode/stex").then(
+                ({ stex }) => StreamLanguage.define(stex),
             );
         case "tcl":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/tcl"),
-            ]).then(([{ StreamLanguage }, { tcl }]) =>
+            return import("@codemirror/legacy-modes/mode/tcl").then(({ tcl }) =>
                 StreamLanguage.define(tcl),
             );
         case "vb":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/vb"),
-            ]).then(([{ StreamLanguage }, { vb }]) =>
+            return import("@codemirror/legacy-modes/mode/vb").then(({ vb }) =>
                 StreamLanguage.define(vb),
             );
         case "wast":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/wast"),
-            ]).then(([{ StreamLanguage }, { wast }]) =>
-                StreamLanguage.define(wast),
+            return import("@codemirror/legacy-modes/mode/wast").then(
+                ({ wast }) => StreamLanguage.define(wast),
             );
         case "xml":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/xml"),
-            ]).then(([{ StreamLanguage }, { xml }]) =>
+            return import("@codemirror/legacy-modes/mode/xml").then(({ xml }) =>
                 StreamLanguage.define(xml),
             );
         case "pascal":
-            return Promise.all([
-                import("@codemirror/language"),
-                import("@codemirror/legacy-modes/mode/pascal"),
-            ]).then(([{ StreamLanguage }, { pascal }]) =>
-                StreamLanguage.define(pascal),
+            return import("@codemirror/legacy-modes/mode/pascal").then(
+                ({ pascal }) => StreamLanguage.define(pascal),
             );
         default:
             return Promise.resolve(null);

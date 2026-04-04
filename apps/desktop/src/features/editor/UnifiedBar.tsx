@@ -69,6 +69,11 @@ import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 
 const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
 const TAB_STRIP_FADE_WIDTH = 18;
+const EMPTY_TAB_STRIP_OVERFLOW_STATE = {
+    hasOverflow: false,
+    showLeadingFade: false,
+    showTrailingFade: false,
+};
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -439,11 +444,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         null,
     );
     const [externalFileDropActive, setExternalFileDropActive] = useState(false);
-    const [tabStripOverflowState, setTabStripOverflowState] = useState({
-        hasOverflow: false,
-        showLeadingFade: false,
-        showTrailingFade: false,
-    });
+    const [tabStripOverflowState, setTabStripOverflowState] = useState(
+        EMPTY_TAB_STRIP_OVERFLOW_STATE,
+    );
     const dragPreviewNodeRef = useRef<HTMLDivElement | null>(null);
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
@@ -757,20 +760,20 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         freeze: draggingTabId !== null,
     });
 
+    const clearTabStripOverflowState = useCallback(() => {
+        setTabStripOverflowState((current) =>
+            current.hasOverflow ||
+            current.showLeadingFade ||
+            current.showTrailingFade
+                ? EMPTY_TAB_STRIP_OVERFLOW_STATE
+                : current,
+        );
+    }, []);
+
     const syncTabStripOverflowState = useCallback(() => {
         const strip = tabStripRef.current;
         if (!strip) {
-            setTabStripOverflowState((current) =>
-                current.hasOverflow ||
-                current.showLeadingFade ||
-                current.showTrailingFade
-                    ? {
-                          hasOverflow: false,
-                          showLeadingFade: false,
-                          showTrailingFade: false,
-                      }
-                    : current,
-            );
+            clearTabStripOverflowState();
             return;
         }
 
@@ -791,12 +794,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 ? current
                 : next,
         );
-    }, [tabStripRef]);
+    }, [clearTabStripOverflowState, tabStripRef]);
+
+    const handleTabStripRef = useCallback(
+        (node: HTMLDivElement | null) => {
+            tabStripRef.current = node;
+            if (node === null) {
+                clearTabStripOverflowState();
+            }
+        },
+        [clearTabStripOverflowState, tabStripRef],
+    );
 
     useLayoutEffect(() => {
         const strip = tabStripRef.current;
         if (!strip) {
-            syncTabStripOverflowState();
             return;
         }
 
@@ -804,7 +816,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             syncTabStripOverflowState();
         };
 
-        syncTabStripOverflowState();
         const frame = window.requestAnimationFrame(syncTabStripOverflowState);
         let resizeObserver: ResizeObserver | null = null;
 
@@ -825,7 +836,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             resizeObserver?.disconnect();
             window.removeEventListener("resize", syncTabStripOverflowState);
         };
-    }, [syncTabStripOverflowState, tabLayout.density, tabOrderKey]);
+    }, [
+        syncTabStripOverflowState,
+        tabLayout.density,
+        tabOrderKey,
+        tabStripRef,
+    ]);
 
     const handleTabClick = useCallback(
         (tabId: string) => {
@@ -1496,7 +1512,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         >
                             <div className="no-drag relative flex min-w-0 flex-1 overflow-hidden">
                                 <div
-                                    ref={tabStripRef}
+                                    ref={handleTabStripRef}
                                     data-tab-strip="true"
                                     data-tab-density={tabLayout.density}
                                     data-tab-overflowing={

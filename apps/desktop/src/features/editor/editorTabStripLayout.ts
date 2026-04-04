@@ -1,10 +1,6 @@
 import { useLayoutEffect, useState, type RefObject } from "react";
 
-export type EditorTabDensity =
-    | "comfortable"
-    | "compact"
-    | "tight"
-    | "overflow";
+export type EditorTabDensity = "comfortable" | "compact" | "tight" | "overflow";
 
 export interface EditorTabLayout {
     density: EditorTabDensity;
@@ -42,10 +38,6 @@ function roundTo(value: number, decimals: number) {
 }
 
 function getVisualRatio(tabWidth: number) {
-    if (EDITOR_TAB_MAX_WIDTH === EDITOR_TAB_MIN_WIDTH) {
-        return 1;
-    }
-
     return clamp(
         (tabWidth - EDITOR_TAB_MIN_WIDTH) /
             (EDITOR_TAB_MAX_WIDTH - EDITOR_TAB_MIN_WIDTH),
@@ -112,7 +104,9 @@ function layoutsEqual(left: EditorTabLayout, right: EditorTabLayout) {
     );
 }
 
-function buildFallbackLayout(previousDensity?: EditorTabDensity): EditorTabLayout {
+function buildFallbackLayout(
+    previousDensity?: EditorTabDensity,
+): EditorTabLayout {
     return resolveEditorTabLayout({
         stripWidth: 0,
         tabCount: 1,
@@ -190,10 +184,6 @@ export function useResponsiveEditorTabLayout({
 
         const strip = stripRef.current;
         if (!strip) {
-            setLayout((current) => {
-                const next = buildFallbackLayout(current.density);
-                return layoutsEqual(current, next) ? current : next;
-            });
             return;
         }
 

@@ -99,6 +99,19 @@ function defineElementMetric<T extends keyof HTMLElement>(
     });
 }
 
+function resizeObserverEntry(
+    target: Element,
+    contentRect: DOMRectReadOnly,
+): ResizeObserverEntry {
+    return {
+        target,
+        contentRect,
+        borderBoxSize: [],
+        contentBoxSize: [],
+        devicePixelContentBoxSize: [],
+    } as ResizeObserverEntry;
+}
+
 describe("UnifiedBar tab strip drop", () => {
     beforeEach(() => {
         if (typeof window.PointerEvent === "undefined") {
@@ -492,15 +505,15 @@ describe("UnifiedBar tab strip drop", () => {
                 for (const resizeCallback of resizeCallbacks) {
                     resizeCallback(
                         [
-                            {
-                                target: strip!,
-                                contentRect: rect({
+                            resizeObserverEntry(
+                                strip!,
+                                rect({
                                     left: 0,
                                     top: 0,
                                     width: 420,
                                     height: 30,
                                 }),
-                            } as ResizeObserverEntry,
+                            ),
                         ],
                         {} as ResizeObserver,
                     );
@@ -520,15 +533,15 @@ describe("UnifiedBar tab strip drop", () => {
                 for (const resizeCallback of resizeCallbacks) {
                     resizeCallback(
                         [
-                            {
-                                target: strip!,
-                                contentRect: rect({
+                            resizeObserverEntry(
+                                strip!,
+                                rect({
                                     left: 0,
                                     top: 0,
                                     width: 560,
                                     height: 30,
                                 }),
-                            } as ResizeObserverEntry,
+                            ),
                         ],
                         {} as ResizeObserver,
                     );
@@ -630,15 +643,15 @@ describe("UnifiedBar tab strip drop", () => {
                 for (const resizeCallback of resizeCallbacks) {
                     resizeCallback(
                         [
-                            {
-                                target: strip!,
-                                contentRect: rect({
+                            resizeObserverEntry(
+                                strip!,
+                                rect({
                                     left: 0,
                                     top: 0,
                                     width: 360,
                                     height: 30,
                                 }),
-                            } as ResizeObserverEntry,
+                            ),
                         ],
                         {} as ResizeObserver,
                     );
