@@ -40,6 +40,7 @@ use crate::ai::emit::{
     AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
     AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
+use crate::ai::env::preferred_path_value;
 
 use super::{process::GeminiProcessSpec, setup::apply_auth_env};
 
@@ -1077,6 +1078,9 @@ impl RuntimeActor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        if let Some(path) = preferred_path_value() {
+            command.env("PATH", path);
+        }
         apply_auth_env(&mut command, &self.app, &spec.setup)?;
 
         if let Some(cwd) = spec.cwd.as_ref() {

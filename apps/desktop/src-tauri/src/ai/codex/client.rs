@@ -40,6 +40,7 @@ use crate::ai::emit::{
     AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
     AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
+use crate::ai::env::preferred_path_value;
 
 use super::{process::CodexProcessSpec, setup::apply_auth_env};
 
@@ -2016,6 +2017,9 @@ fn prepare_runtime_command(command: &mut Command, cwd: Option<&Path>) -> Result<
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env_remove("CODEX_HOME");
+    if let Some(path) = preferred_path_value() {
+        command.env("PATH", path);
+    }
     apply_auth_env(command)?;
 
     if let Some(cwd) = cwd {
@@ -2031,6 +2035,7 @@ mod tests {
     use std::{env, ffi::OsStr, path::PathBuf};
 
     use super::*;
+    use crate::ai::env::preferred_path_value;
 
     #[test]
     fn map_tool_call_extracts_structured_diffs() {
@@ -2290,6 +2295,11 @@ mod tests {
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("CODEX_HOME"))
             .map(|(_, value)| value);
+        let path_env = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("PATH"))
+            .and_then(|(_, value)| value);
 
         match original {
             Some(value) => env::set_var("CODEX_HOME", value),
@@ -2297,6 +2307,7 @@ mod tests {
         }
 
         assert_eq!(codex_home_env, Some(None));
+        assert_eq!(path_env, preferred_path_value().as_deref());
         assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/tmp")));
     }
 }

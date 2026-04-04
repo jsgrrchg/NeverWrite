@@ -41,6 +41,7 @@ use crate::ai::emit::{
     AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
     AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
 };
+use crate::ai::env::preferred_path_value;
 
 use super::{process::ClaudeProcessSpec, setup::apply_auth_env};
 
@@ -1474,6 +1475,9 @@ impl RuntimeActor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(path) = preferred_path_value() {
+            command.env("PATH", path);
+        }
         apply_auth_env(&mut command, &self.app, &spec.setup)?;
 
         if let Some(cwd) = spec.cwd.as_ref() {

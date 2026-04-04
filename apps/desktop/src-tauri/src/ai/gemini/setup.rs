@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, GEMINI_RUNTIME_ID};
 
+use crate::ai::env::find_program_on_preferred_path;
 #[cfg(test)]
 use crate::ai::secret_store::TestSecretStore;
 use crate::ai::secret_store::{
@@ -557,72 +558,7 @@ fn home_dir_fallback() -> Option<PathBuf> {
 }
 
 fn find_program(program: &str) -> Option<PathBuf> {
-    let candidate = PathBuf::from(program);
-    if candidate.is_absolute() {
-        return candidate.exists().then_some(candidate);
-    }
-
-    let paths = env::var_os("PATH")?;
-    for directory in env::split_paths(&paths) {
-        for candidate in executable_candidates(&directory, program) {
-            if candidate.exists() && candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
-}
-
-fn executable_candidates(directory: &Path, program: &str) -> Vec<PathBuf> {
-    let base = directory.join(program);
-
-    #[cfg(target_os = "windows")]
-    {
-        let mut candidates = vec![base.clone()];
-        let has_extension = Path::new(program).extension().is_some();
-
-        if !has_extension {
-            for extension in windows_path_extensions() {
-                let normalized = extension.trim();
-                if normalized.is_empty() {
-                    continue;
-                }
-                let ext = normalized.strip_prefix('.').unwrap_or(normalized);
-                candidates.push(directory.join(format!("{program}.{ext}")));
-            }
-
-            if !candidates.iter().any(|candidate| {
-                candidate
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
-            }) {
-                candidates.push(directory.join(format!("{program}.exe")));
-            }
-        }
-
-        return candidates;
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        vec![base]
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_path_extensions() -> Vec<String> {
-    env::var_os("PATHEXT")
-        .and_then(|value| value.into_string().ok())
-        .map(|raw| {
-            raw.split(';')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
+    find_program_on_preferred_path(program)
 }
 
 fn matches_google_login_selected_type(value: &str) -> bool {
