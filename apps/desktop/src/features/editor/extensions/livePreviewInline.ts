@@ -32,6 +32,7 @@ import {
     addLineDecoration,
 } from "./livePreviewHelpers";
 import {
+    selectionHasMultilineRangeTouchingLine,
     selectionTouchesLine,
     selectionTouchesRange,
 } from "./selectionActivity";
@@ -125,7 +126,7 @@ type RevealSensitiveRange = {
     key: string;
     from: number;
     to: number;
-    strategy: "line" | "range";
+    strategy: "line" | "range" | "multiline-line";
 };
 
 class InlineBreakWidget extends WidgetType {
@@ -369,6 +370,21 @@ function applyListContinuationLines(
         }
 
         const line = context.state.doc.line(lineNumber);
+        registerRevealSensitiveRange(
+            context,
+            "multiline-line",
+            line.from,
+            line.to,
+        );
+        if (
+            selectionHasMultilineRangeTouchingLine(
+                context.state,
+                line.from,
+                line.to,
+            )
+        ) {
+            continue;
+        }
         if (lineHasListDecoration(context.lineDecos, line.from)) continue;
 
         const leadingWhitespace = line.text.match(/^\s*/)?.[0] ?? "";
@@ -525,7 +541,13 @@ function getRevealSensitiveSignature(
         const active =
             range.strategy === "line"
                 ? selectionTouchesLine(state, range.from, range.to)
-                : selectionTouchesRange(state, range.from, range.to);
+                : range.strategy === "multiline-line"
+                  ? selectionHasMultilineRangeTouchingLine(
+                        state,
+                        range.from,
+                        range.to,
+                    )
+                  : selectionTouchesRange(state, range.from, range.to);
 
         if (active) {
             activeKeys.push(range.key);
@@ -720,6 +742,16 @@ const listMarkRule: NodeRule = (node, context) => {
     const listItem = findAncestor(node.node, "ListItem");
     const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
     const line = context.state.doc.lineAt(node.from);
+    registerRevealSensitiveRange(context, "multiline-line", line.from, line.to);
+    if (
+        selectionHasMultilineRangeTouchingLine(
+            context.state,
+            line.from,
+            line.to,
+        )
+    ) {
+        return;
+    }
     const hideTo = extendPastFollowingWhitespace(context.state, node.to);
     const activeEmptyItem = isActiveEmptyListLine(
         context.state,
@@ -866,10 +898,20 @@ const fencedCodeRule: NodeRule = (node, context) => {
 const taskMarkerRule: NodeRule = (node, context) => {
     if (node.name !== "TaskMarker") return;
 
+    const line = context.state.doc.lineAt(node.from);
+    registerRevealSensitiveRange(context, "multiline-line", line.from, line.to);
+    if (
+        selectionHasMultilineRangeTouchingLine(
+            context.state,
+            line.from,
+            line.to,
+        )
+    ) {
+        return;
+    }
     const prefixEnd = extendPastFollowingWhitespace(context.state, node.to);
     const text = context.state.doc.sliceString(node.from, node.to);
     const checked = text.includes("x") || text.includes("X");
-    const line = context.state.doc.lineAt(node.from);
     const indentWidth = measureLineLeadingIndent(line.text);
     const activeEmptyItem = isActiveEmptyListLine(
         context.state,
@@ -1063,6 +1105,21 @@ function applyLooseListFallback(context: BuildContext) {
 
     for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
         const line = context.state.doc.line(lineNumber);
+        registerRevealSensitiveRange(
+            context,
+            "multiline-line",
+            line.from,
+            line.to,
+        );
+        if (
+            selectionHasMultilineRangeTouchingLine(
+                context.state,
+                line.from,
+                line.to,
+            )
+        ) {
+            continue;
+        }
         if (lineHasPrimaryListDecoration(context.lineDecos, line.from)) {
             continue;
         }
@@ -1327,6 +1384,21 @@ function applyExtendedTaskFallback(context: BuildContext) {
 
     for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
         const line = context.state.doc.line(lineNumber);
+        registerRevealSensitiveRange(
+            context,
+            "multiline-line",
+            line.from,
+            line.to,
+        );
+        if (
+            selectionHasMultilineRangeTouchingLine(
+                context.state,
+                line.from,
+                line.to,
+            )
+        ) {
+            continue;
+        }
         if (lineHasPrimaryListDecoration(context.lineDecos, line.from)) {
             continue;
         }

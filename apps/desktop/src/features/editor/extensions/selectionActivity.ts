@@ -38,3 +38,26 @@ export function selectionTouchesLine(
 
     return false;
 }
+
+export function selectionHasMultilineRangeTouchingLine(
+    state: EditorState,
+    from: number,
+    to: number,
+): boolean {
+    const lineFrom = state.doc.lineAt(from).number;
+    const lineTo = state.doc.lineAt(to).number;
+
+    for (const range of state.selection.ranges) {
+        if (range.empty) continue;
+
+        const selectionLineFrom = state.doc.lineAt(range.from).number;
+        const selectionLineTo = state.doc.lineAt(range.to).number;
+        if (selectionLineFrom === selectionLineTo) continue;
+
+        if (selectionLineTo >= lineFrom && selectionLineFrom <= lineTo) {
+            return true;
+        }
+    }
+
+    return false;
+}

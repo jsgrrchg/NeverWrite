@@ -171,6 +171,36 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("reveals raw list markdown during multiline selection across bullet items", () => {
+        const doc = "- first\n- second";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.range(3, 11),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 2)).toBe(false);
+        expect(hasHiddenRange(decorations, 8, 10)).toBe(false);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 0 &&
+                    deco.className.split(" ").includes("cm-lp-li-line"),
+            ),
+        ).toBe(false);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 8 &&
+                    deco.className.split(" ").includes("cm-lp-li-line"),
+            ),
+        ).toBe(false);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("keeps deeply overindented markdown bullets in live preview via fallback", () => {
         const doc = "- root\n        - deep child";
         const { plugin, parent, view } = createView(
@@ -228,6 +258,33 @@ describe("createInlineLivePreviewPlugin", () => {
                 deco.className.split(" ").includes("cm-lp-task-line"),
             ),
         ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("rebuilds list preview when a multiline selection enters bullet items", () => {
+        const perfMeasureMock = vi.mocked(perfMeasure);
+        const doc = "- first\n- second";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        perfMeasureMock.mockClear();
+
+        view.dispatch({
+            selection: EditorSelection.range(3, 11),
+        });
+
+        const decorations = collectDecorations(view, plugin);
+        expect(hasHiddenRange(decorations, 0, 2)).toBe(false);
+        expect(hasHiddenRange(decorations, 8, 10)).toBe(false);
+        expect(perfMeasureMock).toHaveBeenCalledWith(
+            "editor.livePreviewInline.build.selectionSet",
+            expect.any(Number),
+            expect.any(Object),
+        );
 
         view.destroy();
         parent.remove();
