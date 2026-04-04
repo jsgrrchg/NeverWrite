@@ -423,6 +423,244 @@ describe("UnifiedBar tab strip drop", () => {
         expect(useEditorStore.getState().activeTabId).toBeNull();
     });
 
+    it("shrinks editor tabs continuously and expands them again when space returns", async () => {
+        const resizeCallbacks: ResizeObserverCallback[] = [];
+        const originalResizeObserver = globalThis.ResizeObserver;
+
+        class MockResizeObserver {
+            constructor(callback: ResizeObserverCallback) {
+                resizeCallbacks.push(callback);
+            }
+
+            observe() {}
+
+            disconnect() {}
+        }
+
+        Object.defineProperty(globalThis, "ResizeObserver", {
+            configurable: true,
+            writable: true,
+            value: MockResizeObserver,
+        });
+
+        try {
+            setEditorTabs([
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+                {
+                    id: "tab-c",
+                    kind: "note",
+                    noteId: "notes/gamma.md",
+                    title: "Gamma",
+                    content: "gamma",
+                },
+            ]);
+
+            const { UnifiedBar } = await import("./UnifiedBar");
+            const { container } = renderComponent(
+                <UnifiedBar windowMode="main" />,
+            );
+            await flushPromises();
+
+            const strip = container.querySelector(
+                '[data-tab-strip="true"]',
+            ) as HTMLElement | null;
+            const firstTab = container.querySelector(
+                '[data-tab-id="tab-a"]',
+            ) as HTMLElement | null;
+
+            expect(strip).not.toBeNull();
+            expect(firstTab).not.toBeNull();
+
+            defineElementMetric(strip!, "clientWidth", 420);
+            defineElementMetric(strip!, "scrollWidth", 420);
+            defineElementMetric(strip!, "scrollLeft", 0);
+
+            await act(async () => {
+                for (const resizeCallback of resizeCallbacks) {
+                    resizeCallback(
+                        [
+                            {
+                                target: strip!,
+                                contentRect: rect({
+                                    left: 0,
+                                    top: 0,
+                                    width: 420,
+                                    height: 30,
+                                }),
+                            } as ResizeObserverEntry,
+                        ],
+                        {} as ResizeObserver,
+                    );
+                }
+                await Promise.resolve();
+            });
+
+            expect(strip).toHaveAttribute("data-tab-density", "compact");
+            expect(strip).not.toHaveAttribute("data-tab-overflowing");
+            expect(parseFloat(firstTab!.style.width)).toBeGreaterThan(128);
+            expect(parseFloat(firstTab!.style.width)).toBeLessThan(160);
+
+            defineElementMetric(strip!, "clientWidth", 560);
+            defineElementMetric(strip!, "scrollWidth", 560);
+
+            await act(async () => {
+                for (const resizeCallback of resizeCallbacks) {
+                    resizeCallback(
+                        [
+                            {
+                                target: strip!,
+                                contentRect: rect({
+                                    left: 0,
+                                    top: 0,
+                                    width: 560,
+                                    height: 30,
+                                }),
+                            } as ResizeObserverEntry,
+                        ],
+                        {} as ResizeObserver,
+                    );
+                }
+                await Promise.resolve();
+            });
+
+            expect(strip).toHaveAttribute("data-tab-density", "comfortable");
+            expect(parseFloat(firstTab!.style.width)).toBe(160);
+        } finally {
+            Object.defineProperty(globalThis, "ResizeObserver", {
+                configurable: true,
+                writable: true,
+                value: originalResizeObserver,
+            });
+        }
+    });
+
+    it("keeps the strip scrollable once tabs hit the overflow density", async () => {
+        const resizeCallbacks: ResizeObserverCallback[] = [];
+        const originalResizeObserver = globalThis.ResizeObserver;
+
+        class MockResizeObserver {
+            constructor(callback: ResizeObserverCallback) {
+                resizeCallbacks.push(callback);
+            }
+
+            observe() {}
+
+            disconnect() {}
+        }
+
+        Object.defineProperty(globalThis, "ResizeObserver", {
+            configurable: true,
+            writable: true,
+            value: MockResizeObserver,
+        });
+
+        try {
+            setEditorTabs([
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+                {
+                    id: "tab-c",
+                    kind: "note",
+                    noteId: "notes/gamma.md",
+                    title: "Gamma",
+                    content: "gamma",
+                },
+                {
+                    id: "tab-d",
+                    kind: "note",
+                    noteId: "notes/delta.md",
+                    title: "Delta",
+                    content: "delta",
+                },
+                {
+                    id: "tab-e",
+                    kind: "note",
+                    noteId: "notes/epsilon.md",
+                    title: "Epsilon",
+                    content: "epsilon",
+                },
+            ]);
+
+            const { UnifiedBar } = await import("./UnifiedBar");
+            const { container } = renderComponent(
+                <UnifiedBar windowMode="main" />,
+            );
+            await flushPromises();
+
+            const strip = container.querySelector(
+                '[data-tab-strip="true"]',
+            ) as HTMLElement | null;
+            const firstTab = container.querySelector(
+                '[data-tab-id="tab-a"]',
+            ) as HTMLElement | null;
+
+            expect(strip).not.toBeNull();
+            expect(firstTab).not.toBeNull();
+
+            defineElementMetric(strip!, "clientWidth", 360);
+            defineElementMetric(strip!, "scrollWidth", 520);
+            defineElementMetric(strip!, "scrollLeft", 0);
+
+            await act(async () => {
+                for (const resizeCallback of resizeCallbacks) {
+                    resizeCallback(
+                        [
+                            {
+                                target: strip!,
+                                contentRect: rect({
+                                    left: 0,
+                                    top: 0,
+                                    width: 360,
+                                    height: 30,
+                                }),
+                            } as ResizeObserverEntry,
+                        ],
+                        {} as ResizeObserver,
+                    );
+                }
+                await Promise.resolve();
+            });
+
+            expect(strip).toHaveAttribute("data-tab-density", "overflow");
+            expect(strip).toHaveAttribute("data-tab-overflowing", "true");
+            expect(parseFloat(firstTab!.style.width)).toBe(96);
+            expect(
+                container.querySelector('[data-tab-strip-fade="trailing"]'),
+            ).not.toBeNull();
+        } finally {
+            Object.defineProperty(globalThis, "ResizeObserver", {
+                configurable: true,
+                writable: true,
+                value: originalResizeObserver,
+            });
+        }
+    });
+
     it("keeps the trailing drag spacer compact on macOS note windows", async () => {
         Object.defineProperty(window.navigator, "userAgent", {
             configurable: true,

@@ -60,6 +60,7 @@ import {
     buildTabFileDragDetail,
     isPointOverAiComposerDropZone,
 } from "./tabDragAttachments";
+import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
@@ -67,6 +68,7 @@ import { getDesktopPlatform } from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 
 const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
+const TAB_STRIP_FADE_WIDTH = 18;
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -437,6 +439,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         null,
     );
     const [externalFileDropActive, setExternalFileDropActive] = useState(false);
+    const [tabStripOverflowState, setTabStripOverflowState] = useState({
+        hasOverflow: false,
+        showLeadingFade: false,
+        showTrailingFade: false,
+    });
     const dragPreviewNodeRef = useRef<HTMLDivElement | null>(null);
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
@@ -743,6 +750,82 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             setDragPreviewTabId(null);
         },
     });
+    const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");
+    const tabLayout = useResponsiveEditorTabLayout({
+        stripRef: tabStripRef,
+        tabCount: visualTabs.length,
+        freeze: draggingTabId !== null,
+    });
+
+    const syncTabStripOverflowState = useCallback(() => {
+        const strip = tabStripRef.current;
+        if (!strip) {
+            setTabStripOverflowState((current) =>
+                current.hasOverflow ||
+                current.showLeadingFade ||
+                current.showTrailingFade
+                    ? {
+                          hasOverflow: false,
+                          showLeadingFade: false,
+                          showTrailingFade: false,
+                      }
+                    : current,
+            );
+            return;
+        }
+
+        const maxScrollLeft = Math.max(
+            0,
+            strip.scrollWidth - strip.clientWidth,
+        );
+        const next = {
+            hasOverflow: maxScrollLeft > 1,
+            showLeadingFade: strip.scrollLeft > 1,
+            showTrailingFade: strip.scrollLeft < maxScrollLeft - 1,
+        };
+
+        setTabStripOverflowState((current) =>
+            current.hasOverflow === next.hasOverflow &&
+            current.showLeadingFade === next.showLeadingFade &&
+            current.showTrailingFade === next.showTrailingFade
+                ? current
+                : next,
+        );
+    }, [tabStripRef]);
+
+    useLayoutEffect(() => {
+        const strip = tabStripRef.current;
+        if (!strip) {
+            syncTabStripOverflowState();
+            return;
+        }
+
+        const handleScroll = () => {
+            syncTabStripOverflowState();
+        };
+
+        syncTabStripOverflowState();
+        const frame = window.requestAnimationFrame(syncTabStripOverflowState);
+        let resizeObserver: ResizeObserver | null = null;
+
+        strip.addEventListener("scroll", handleScroll, { passive: true });
+
+        if (typeof ResizeObserver !== "undefined") {
+            resizeObserver = new ResizeObserver(() => {
+                syncTabStripOverflowState();
+            });
+            resizeObserver.observe(strip);
+        }
+
+        window.addEventListener("resize", syncTabStripOverflowState);
+
+        return () => {
+            window.cancelAnimationFrame(frame);
+            strip.removeEventListener("scroll", handleScroll);
+            resizeObserver?.disconnect();
+            window.removeEventListener("resize", syncTabStripOverflowState);
+        };
+    }, [syncTabStripOverflowState, tabLayout.density, tabOrderKey]);
 
     const handleTabClick = useCallback(
         (tabId: string) => {
@@ -945,7 +1028,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         }
     }, []);
 
-    const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");
     const draggedPreviewTab =
         draggingTabId && dragPreviewTabId === draggingTabId
             ? (tabs.find((tab) => tab.id === draggingTabId) ?? null)
@@ -1412,14 +1494,19 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             ref={tabDropZoneRef}
                             className="no-drag flex min-w-0 flex-1 overflow-hidden items-center"
                         >
-                            <div className="no-drag flex min-w-0 flex-1 overflow-hidden">
+                            <div className="no-drag relative flex min-w-0 flex-1 overflow-hidden">
                                 <div
                                     ref={tabStripRef}
                                     data-tab-strip="true"
+                                    data-tab-density={tabLayout.density}
+                                    data-tab-overflowing={
+                                        tabStripOverflowState.hasOverflow ||
+                                        undefined
+                                    }
                                     className="no-drag flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
                                     style={{
-                                        gap: 4,
-                                        padding: "0 4px",
+                                        gap: tabLayout.stripGap,
+                                        padding: `0 ${tabLayout.stripPaddingX}px`,
                                         borderRadius: 12,
                                         background: detachPreviewActive
                                             ? "color-mix(in srgb, var(--accent) 8%, transparent)"
@@ -1550,7 +1637,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                             event.pointerId,
                                                         )
                                                     }
-                                                    className="group no-drag flex items-center gap-2 px-3 cursor-pointer ub-tab"
+                                                    className="group no-drag flex items-center cursor-pointer ub-tab"
                                                     data-active={
                                                         isActive || undefined
                                                     }
@@ -1558,10 +1645,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         isDragging || undefined
                                                     }
                                                     style={{
-                                                        width: 160,
+                                                        width: tabLayout.tabWidth,
+                                                        minWidth:
+                                                            tabLayout.tabWidth,
                                                         height: 30,
                                                         borderRadius: 9,
                                                         flexShrink: 0,
+                                                        gap: tabLayout.tabGap,
+                                                        padding: `0 ${tabLayout.tabPaddingX}px`,
                                                         backgroundColor:
                                                             isActive
                                                                 ? "var(--bg-primary)"
@@ -1595,7 +1686,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                     }}
                                                 >
                                                     {renderTabLeadingIcon(tab)}
-                                                    <span className="flex-1 truncate text-[12.5px] font-medium">
+                                                    <span
+                                                        className="flex-1 truncate font-medium"
+                                                        style={{
+                                                            fontSize:
+                                                                tabLayout.titleFontSize,
+                                                        }}
+                                                    >
                                                         {fileTreeShowExtensions &&
                                                         isNoteTab(tab)
                                                             ? `${
@@ -1619,15 +1716,23 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                                 tab.id,
                                                             );
                                                         }}
-                                                        className={`no-drag shrink-0 rounded w-4 h-4 flex items-center justify-center transition-all ${
+                                                        className={`no-drag shrink-0 rounded flex items-center justify-center transition-all ${
                                                             isActive
                                                                 ? "opacity-60 hover:opacity-100 hover:bg-gray-500/18 active:bg-gray-500/28"
                                                                 : "opacity-0 group-hover:opacity-55 hover:opacity-100! hover:bg-gray-500/18 active:bg-gray-500/28"
                                                         }`}
+                                                        style={{
+                                                            width: tabLayout.closeButtonSize,
+                                                            height: tabLayout.closeButtonSize,
+                                                        }}
                                                     >
                                                         <svg
-                                                            width="10"
-                                                            height="10"
+                                                            width={
+                                                                tabLayout.closeIconSize
+                                                            }
+                                                            height={
+                                                                tabLayout.closeIconSize
+                                                            }
                                                             viewBox="0 0 16 16"
                                                             fill="none"
                                                             stroke="currentColor"
@@ -1697,6 +1802,38 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     className="min-w-2 flex-1"
                                 />
                             </div>
+                            {tabStripOverflowState.showLeadingFade && (
+                                <div
+                                    data-tab-strip-fade="leading"
+                                    aria-hidden="true"
+                                    style={{
+                                        position: "absolute",
+                                        left: 0,
+                                        top: 0,
+                                        bottom: 0,
+                                        width: TAB_STRIP_FADE_WIDTH,
+                                        pointerEvents: "none",
+                                        background:
+                                            "linear-gradient(90deg, color-mix(in srgb, var(--bg-tertiary) 96%, transparent), transparent)",
+                                    }}
+                                />
+                            )}
+                            {tabStripOverflowState.showTrailingFade && (
+                                <div
+                                    data-tab-strip-fade="trailing"
+                                    aria-hidden="true"
+                                    style={{
+                                        position: "absolute",
+                                        right: 0,
+                                        top: 0,
+                                        bottom: 0,
+                                        width: TAB_STRIP_FADE_WIDTH,
+                                        pointerEvents: "none",
+                                        background:
+                                            "linear-gradient(270deg, color-mix(in srgb, var(--bg-tertiary) 96%, transparent), transparent)",
+                                    }}
+                                />
+                            )}
                         </div>
                         {showFloatingTabPreview && draggedPreviewTab
                             ? createPortal(
@@ -1707,12 +1844,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                           position: "fixed",
                                           left: 0,
                                           top: 0,
-                                          width: 160,
+                                          width: tabLayout.tabWidth,
+                                          minWidth: tabLayout.tabWidth,
                                           height: 30,
                                           display: "flex",
                                           alignItems: "center",
-                                          gap: 8,
-                                          padding: "0 12px",
+                                          gap: tabLayout.tabGap,
+                                          padding: `0 ${tabLayout.tabPaddingX}px`,
                                           borderRadius: 9,
                                           border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
                                           background:
@@ -1733,7 +1871,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                               overflow: "hidden",
                                               textOverflow: "ellipsis",
                                               whiteSpace: "nowrap",
-                                              fontSize: 12.5,
+                                              fontSize: tabLayout.titleFontSize,
                                               fontWeight: 600,
                                           }}
                                       >
