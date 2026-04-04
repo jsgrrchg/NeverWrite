@@ -53,8 +53,34 @@ describe("isPointerInsideTaskToggleZone", () => {
             toJSON: () => ({}),
         });
 
-        expect(isPointerInsideTaskToggleZone(taskLine, 112, 41)).toBe(false);
+        expect(isPointerInsideTaskToggleZone(taskLine, 112, 42)).toBe(false);
         expect(isPointerInsideTaskToggleZone(taskLine, 99, 28)).toBe(false);
+    });
+
+    it("respects configured hit slop so the checkbox stays easy to toggle", () => {
+        const taskLine = document.createElement("div");
+        taskLine.className = "cm-lp-task-line";
+        taskLine.style.paddingLeft = "28px";
+        taskLine.style.paddingTop = "0px";
+        taskLine.style.fontSize = "16px";
+        taskLine.style.lineHeight = "24px";
+        taskLine.style.setProperty("--cm-lp-task-hit-slop", "4px");
+        taskLine.dataset.lpTaskFrom = "0";
+
+        vi.spyOn(taskLine, "getBoundingClientRect").mockReturnValue({
+            x: 100,
+            y: 20,
+            width: 300,
+            height: 24,
+            top: 20,
+            right: 400,
+            bottom: 44,
+            left: 100,
+            toJSON: () => ({}),
+        });
+
+        expect(isPointerInsideTaskToggleZone(taskLine, 119, 28)).toBe(true);
+        expect(isPointerInsideTaskToggleZone(taskLine, 122, 28)).toBe(false);
     });
 });
 

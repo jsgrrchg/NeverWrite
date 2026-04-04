@@ -14,11 +14,14 @@ import {
     createInlineLivePreviewPlugin,
     createLeadingContentCollapseField,
 } from "./livePreviewInline";
+import {
+    LIVE_PREVIEW_LIST_MARKER_GAP_EM,
+    LIVE_PREVIEW_TASK_CHECKBOX_SIZE_EM,
+    LIVE_PREVIEW_TASK_HIT_SLOP_PX,
+    LIVE_PREVIEW_TASK_MARKER_WIDTH_EM,
+} from "./livePreviewListMetrics";
 import { livePreviewTheme } from "./livePreviewTheme";
 
-const TASK_TOGGLE_MARKER_WIDTH_EM = 1.2;
-const TASK_TOGGLE_SIZE_EM = 0.92;
-const TASK_TOGGLE_GAP_EM = 0.65;
 const TASK_TOGGLE_HOVER_CLASS = "cm-lp-task-toggle-hover";
 
 const POINTER_INTERACTIVE_PREVIEW_SELECTOR = [
@@ -37,6 +40,27 @@ const KEYBOARD_INTERACTIVE_PREVIEW_SELECTOR = [
 
 function cycleTaskMarker(marker: string): string {
     return marker === "x" || marker === "X" ? " " : "x";
+}
+
+function parseComputedLength(
+    value: string | undefined,
+    fontSize: number,
+    fallback: number,
+) {
+    if (!value) return fallback;
+
+    const trimmed = value.trim();
+    if (trimmed.endsWith("em")) {
+        const em = Number.parseFloat(trimmed.slice(0, -2));
+        return Number.isFinite(em) ? em * fontSize : fallback;
+    }
+    if (trimmed.endsWith("px")) {
+        const px = Number.parseFloat(trimmed.slice(0, -2));
+        return Number.isFinite(px) ? px : fallback;
+    }
+
+    const raw = Number.parseFloat(trimmed);
+    return Number.isFinite(raw) ? raw : fallback;
 }
 
 function getTaskToggleMetrics(taskLine: HTMLElement) {
@@ -61,9 +85,26 @@ function getTaskToggleMetrics(taskLine: HTMLElement) {
         return null;
     }
 
-    const checkboxSize = fontSize * TASK_TOGGLE_SIZE_EM;
-    const markerWidth = fontSize * TASK_TOGGLE_MARKER_WIDTH_EM;
-    const markerGap = fontSize * TASK_TOGGLE_GAP_EM;
+    const checkboxSize = parseComputedLength(
+        style?.getPropertyValue("--cm-lp-task-checkbox-size"),
+        fontSize,
+        fontSize * LIVE_PREVIEW_TASK_CHECKBOX_SIZE_EM,
+    );
+    const markerWidth = parseComputedLength(
+        style?.getPropertyValue("--cm-lp-marker-width"),
+        fontSize,
+        fontSize * LIVE_PREVIEW_TASK_MARKER_WIDTH_EM,
+    );
+    const markerGap = parseComputedLength(
+        style?.getPropertyValue("--cm-lp-marker-gap"),
+        fontSize,
+        fontSize * LIVE_PREVIEW_LIST_MARKER_GAP_EM,
+    );
+    const hitSlop = parseComputedLength(
+        style?.getPropertyValue("--cm-lp-task-hit-slop"),
+        fontSize,
+        LIVE_PREVIEW_TASK_HIT_SLOP_PX,
+    );
     const checkboxLeft =
         rect.left +
         Math.max(
@@ -74,10 +115,10 @@ function getTaskToggleMetrics(taskLine: HTMLElement) {
         rect.top + paddingTop + Math.max(0, (lineHeight - checkboxSize) / 2);
 
     return {
-        left: checkboxLeft,
-        right: checkboxLeft + checkboxSize,
-        top: checkboxTop,
-        bottom: checkboxTop + checkboxSize,
+        left: checkboxLeft - hitSlop,
+        right: checkboxLeft + checkboxSize + hitSlop,
+        top: checkboxTop - hitSlop,
+        bottom: checkboxTop + checkboxSize + hitSlop,
     };
 }
 

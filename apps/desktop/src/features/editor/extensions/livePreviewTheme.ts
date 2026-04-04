@@ -1,16 +1,19 @@
 import { EditorView } from "@codemirror/view";
 
-const DEFAULT_LIST_MARKER_WIDTH = "1.45em";
-const DEFAULT_TASK_MARKER_WIDTH = "1.2em";
-const LIST_MARKER_GAP = "0.65em";
-const DENSE_LIST_PADDING_Y = "0.05em";
-const NARRATIVE_LIST_PADDING_Y = "0.12em";
-const LEVEL_2_NESTING_OFFSET = "0.16em";
-const LEVEL_3_NESTING_OFFSET = "0.34em";
-const TASK_CHECKBOX_SIZE = "0.92em";
-const TASK_CHECKBOX_TOP = `calc(var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y}) + ((var(--text-input-line-height) * 1em - ${TASK_CHECKBOX_SIZE}) / 2))`;
-const TASK_CHECKBOX_TICK_OFFSET = "0.26em";
-const TASK_CHECKBOX_PARTIAL_OFFSET = "0.40em";
+import {
+    LIVE_PREVIEW_LIST_CONTINUATION_PADDING_Y,
+    LIVE_PREVIEW_LIST_MARKER_GAP,
+    LIVE_PREVIEW_LIST_MARKER_TOP,
+    LIVE_PREVIEW_LIST_PADDING_Y,
+    LIVE_PREVIEW_TASK_CHECKBOX_RADIUS,
+    LIVE_PREVIEW_TASK_CHECKBOX_PARTIAL_OFFSET,
+    LIVE_PREVIEW_TASK_CHECKBOX_SIZE,
+    LIVE_PREVIEW_TASK_CHECKBOX_TICK_OFFSET,
+    LIVE_PREVIEW_TASK_CHECKBOX_TOP,
+    LIVE_PREVIEW_TASK_HIT_SLOP,
+    LIVE_PREVIEW_TASK_MARKER_WIDTH,
+    LIVE_PREVIEW_UNORDERED_MARKER_WIDTH,
+} from "./livePreviewListMetrics";
 
 export const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-hidden": {
@@ -98,7 +101,7 @@ export const livePreviewTheme = EditorView.baseTheme({
         textUnderlineOffset: "3px",
         cursor: "pointer",
     },
-    ".cm-lp-link:focus-visible, .cm-lp-footnote-ref:focus-visible, .cm-inline-image-link:focus-visible, .cm-youtube-link:focus-visible, .cm-note-embed:focus-visible, .cm-lp-table-link:focus-visible, .cm-lp-task-line:focus-visible":
+    ".cm-lp-link:focus-visible, .cm-lp-footnote-ref:focus-visible, .cm-inline-image-link:focus-visible, .cm-youtube-link:focus-visible, .cm-note-embed:focus-visible, .cm-lp-table-link:focus-visible":
         {
             outline: "2px solid color-mix(in srgb, var(--accent) 55%, white)",
             outlineOffset: "2px",
@@ -195,94 +198,75 @@ export const livePreviewTheme = EditorView.baseTheme({
     },
     ".cm-lp-li-line, .cm-lp-task-line": {
         position: "relative",
-        "--cm-lp-marker-gap": LIST_MARKER_GAP,
+        "--cm-lp-marker-gap": LIVE_PREVIEW_LIST_MARKER_GAP,
         "--cm-lp-nesting-offset": "0em",
-        paddingLeft: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + var(--cm-lp-marker-width, ${DEFAULT_LIST_MARKER_WIDTH}) + var(--cm-lp-marker-gap)) !important`,
+        paddingLeft: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + var(--cm-lp-marker-width, ${LIVE_PREVIEW_UNORDERED_MARKER_WIDTH}) + var(--cm-lp-marker-gap)) !important`,
         lineHeight: "inherit",
-        paddingTop: `var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y})`,
-        paddingBottom: `var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y})`,
+        paddingTop: `var(--cm-lp-list-padding-y, ${LIVE_PREVIEW_LIST_PADDING_Y})`,
+        paddingBottom: `var(--cm-lp-list-padding-y, ${LIVE_PREVIEW_LIST_PADDING_Y})`,
     },
     ".cm-lp-task-line": {
         cursor: "text",
+        "--cm-lp-task-checkbox-size": LIVE_PREVIEW_TASK_CHECKBOX_SIZE,
+        "--cm-lp-task-hit-slop": LIVE_PREVIEW_TASK_HIT_SLOP,
+        color: "var(--text-primary)",
+        transition: "color 120ms ease",
+    },
+    ".cm-lp-task-line:focus-visible": {
+        outline: "none",
     },
     ".cm-lp-list-continuation": {
-        paddingLeft: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset, 0em) + var(--cm-lp-marker-width, ${DEFAULT_LIST_MARKER_WIDTH}) + var(--cm-lp-marker-gap, ${LIST_MARKER_GAP})) !important`,
+        paddingLeft: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset, 0em) + var(--cm-lp-marker-width, ${LIVE_PREVIEW_UNORDERED_MARKER_WIDTH}) + var(--cm-lp-marker-gap, ${LIVE_PREVIEW_LIST_MARKER_GAP})) !important`,
         lineHeight: "inherit",
-        paddingTop: `calc(var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y}) * 0.7)`,
-        paddingBottom: `calc(var(--cm-lp-list-padding-y, ${DENSE_LIST_PADDING_Y}) * 0.7)`,
-    },
-    ".cm-lp-list-dense": {
-        "--cm-lp-list-padding-y": DENSE_LIST_PADDING_Y,
-    },
-    ".cm-lp-list-narrative": {
-        "--cm-lp-list-padding-y": NARRATIVE_LIST_PADDING_Y,
-    },
-    ".cm-lp-list-level-1": {
-        "--cm-lp-nesting-offset": "0em",
-    },
-    ".cm-lp-list-level-2": {
-        "--cm-lp-nesting-offset": LEVEL_2_NESTING_OFFSET,
-    },
-    ".cm-lp-list-level-3": {
-        "--cm-lp-nesting-offset": LEVEL_3_NESTING_OFFSET,
+        paddingTop: `var(--cm-lp-list-continuation-padding-y, ${LIVE_PREVIEW_LIST_CONTINUATION_PADDING_Y})`,
+        paddingBottom: `var(--cm-lp-list-continuation-padding-y, ${LIVE_PREVIEW_LIST_CONTINUATION_PADDING_Y})`,
     },
     ".cm-lp-li-line::before": {
         position: "absolute",
         left: "calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset))",
-        top: "0.02em",
-        content: '"•"',
+        top: LIVE_PREVIEW_LIST_MARKER_TOP,
+        content: "attr(data-lp-marker)",
         color: "var(--text-secondary)",
-        width: `var(--cm-lp-marker-width, ${DEFAULT_LIST_MARKER_WIDTH})`,
+        width: `var(--cm-lp-marker-width, ${LIVE_PREVIEW_UNORDERED_MARKER_WIDTH})`,
+        fontSize: "1em",
         textAlign: "right",
         pointerEvents: "none",
-        lineHeight: "inherit",
+        lineHeight: "1",
+        display: "inline-block",
+        transform: "scale(var(--cm-lp-marker-scale, 1))",
+        transformOrigin: "right center",
+        opacity: "var(--cm-lp-marker-opacity, 0.88)",
     },
     ".cm-lp-li-unordered::before": {
-        content: '"•"',
-        fontSize: "0.95em",
-    },
-    ".cm-lp-li-unordered.cm-lp-list-level-2::before": {
-        content: '"◦"',
-        fontSize: "0.92em",
-        opacity: 0.88,
-    },
-    ".cm-lp-li-unordered.cm-lp-list-level-3::before": {
-        content: '"▪"',
-        fontSize: "0.72em",
-        opacity: 0.74,
+        fontWeight: "500",
     },
     ".cm-lp-li-ordered::before": {
         content: "attr(data-lp-marker)",
         fontVariantNumeric: "tabular-nums",
         fontWeight: "600",
     },
-    ".cm-lp-li-ordered.cm-lp-list-level-2::before": {
-        opacity: 0.88,
-    },
-    ".cm-lp-li-ordered.cm-lp-list-level-3::before": {
-        opacity: 0.76,
-    },
     ".cm-lp-task-line::before": {
         position: "absolute",
         content: '""',
-        width: TASK_CHECKBOX_SIZE,
-        height: TASK_CHECKBOX_SIZE,
-        left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${DEFAULT_TASK_MARKER_WIDTH}) - ${TASK_CHECKBOX_SIZE}) / 2))`,
-        top: TASK_CHECKBOX_TOP,
-        borderRadius: "0.22em",
-        border: "1.5px solid color-mix(in srgb, var(--text-secondary) 40%, var(--border))",
+        width: LIVE_PREVIEW_TASK_CHECKBOX_SIZE,
+        height: LIVE_PREVIEW_TASK_CHECKBOX_SIZE,
+        left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${LIVE_PREVIEW_TASK_MARKER_WIDTH}) - ${LIVE_PREVIEW_TASK_CHECKBOX_SIZE}) / 2))`,
+        top: LIVE_PREVIEW_TASK_CHECKBOX_TOP,
+        borderRadius: LIVE_PREVIEW_TASK_CHECKBOX_RADIUS,
+        border: "1.5px solid color-mix(in srgb, var(--text-secondary) 34%, var(--border))",
         background:
-            "color-mix(in srgb, var(--bg-primary) 96%, var(--bg-secondary))",
+            "color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary))",
         boxSizing: "border-box",
         pointerEvents: "none",
+        opacity: "var(--cm-lp-marker-opacity, 1)",
         transition:
-            "border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease",
+            "border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease",
     },
     ".cm-lp-task-line::after": {
         content: '""',
         position: "absolute",
-        left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${DEFAULT_TASK_MARKER_WIDTH}) - ${TASK_CHECKBOX_SIZE}) / 2) + 0.29em)`,
-        top: `calc(${TASK_CHECKBOX_TOP} + ${TASK_CHECKBOX_TICK_OFFSET})`,
+        left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${LIVE_PREVIEW_TASK_MARKER_WIDTH}) - ${LIVE_PREVIEW_TASK_CHECKBOX_SIZE}) / 2) + 0.29em)`,
+        top: `calc(${LIVE_PREVIEW_TASK_CHECKBOX_TOP} + ${LIVE_PREVIEW_TASK_CHECKBOX_TICK_OFFSET})`,
         width: "0.31em",
         height: "0.17em",
         borderLeft: "2px solid transparent",
@@ -292,6 +276,11 @@ export const livePreviewTheme = EditorView.baseTheme({
         opacity: 0,
         transition: "opacity 120ms ease, border-color 120ms ease",
     },
+    ".cm-lp-task-line:focus-visible::before": {
+        borderColor: "color-mix(in srgb, var(--accent) 52%, var(--border))",
+        boxShadow:
+            "0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent)",
+    },
     ".cm-lp-task-line.cm-lp-task-toggle-hover": {
         cursor: "pointer",
     },
@@ -299,38 +288,49 @@ export const livePreviewTheme = EditorView.baseTheme({
         borderColor: "color-mix(in srgb, var(--accent) 42%, var(--border))",
         boxShadow:
             "0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent)",
+        transform: "scale(1.03)",
     },
-    ".cm-lp-task-line.cm-lp-list-level-2::before": {
-        opacity: 0.9,
+    '.cm-lp-task-line[data-lp-task-state="open"]::before': {
+        background:
+            "color-mix(in srgb, var(--bg-primary) 90%, var(--bg-secondary))",
     },
-    ".cm-lp-task-line.cm-lp-list-level-3::before": {
-        opacity: 0.78,
+    '.cm-lp-task-checked, .cm-lp-task-line[data-lp-task-state="done"]': {
+        color: "color-mix(in srgb, var(--text-secondary) 88%, var(--text-primary))",
     },
-    ".cm-lp-task-checked": {
-        color: "var(--text-secondary)",
+    '.cm-lp-task-checked::before, .cm-lp-task-line[data-lp-task-state="done"]::before':
+        {
+            borderColor: "color-mix(in srgb, var(--accent) 52%, var(--border))",
+            background:
+                "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))",
+        },
+    '.cm-lp-task-checked::after, .cm-lp-task-line[data-lp-task-state="done"]::after':
+        {
+            borderLeftColor: "var(--accent)",
+            borderBottomColor: "var(--accent)",
+            opacity: 1,
+        },
+    '.cm-lp-task-partial, .cm-lp-task-line[data-lp-task-state="partial"]': {
+        color: "color-mix(in srgb, var(--text-secondary) 82%, var(--text-primary))",
     },
-    ".cm-lp-task-checked::before": {
-        borderColor: "color-mix(in srgb, var(--accent) 55%, var(--border))",
-        background: "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))",
-    },
-    ".cm-lp-task-checked::after": {
-        borderLeftColor: "var(--accent)",
-        borderBottomColor: "var(--accent)",
-        opacity: 1,
-    },
-    ".cm-lp-task-partial::before": {
-        borderColor: "color-mix(in srgb, var(--accent) 48%, var(--border))",
-        background: "color-mix(in srgb, var(--accent) 10%, var(--bg-primary))",
-    },
-    ".cm-lp-task-partial::after": {
-        left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${DEFAULT_TASK_MARKER_WIDTH}) - ${TASK_CHECKBOX_SIZE}) / 2) + 0.19em)`,
-        top: `calc(${TASK_CHECKBOX_TOP} + ${TASK_CHECKBOX_PARTIAL_OFFSET})`,
-        width: "0.46em",
-        height: "0",
-        borderLeft: "none",
-        borderBottom: "2px solid var(--accent)",
-        transform: "none",
-        opacity: 1,
+    '.cm-lp-task-partial::before, .cm-lp-task-line[data-lp-task-state="partial"]::before':
+        {
+            borderColor: "color-mix(in srgb, var(--accent) 44%, var(--border))",
+            background:
+                "color-mix(in srgb, var(--accent) 9%, var(--bg-primary))",
+        },
+    '.cm-lp-task-partial::after, .cm-lp-task-line[data-lp-task-state="partial"]::after':
+        {
+            left: `calc(var(--cm-lp-indent, 0ch) + var(--cm-lp-nesting-offset) + ((var(--cm-lp-marker-width, ${LIVE_PREVIEW_TASK_MARKER_WIDTH}) - ${LIVE_PREVIEW_TASK_CHECKBOX_SIZE}) / 2) + 0.19em)`,
+            top: `calc(${LIVE_PREVIEW_TASK_CHECKBOX_TOP} + ${LIVE_PREVIEW_TASK_CHECKBOX_PARTIAL_OFFSET})`,
+            width: "0.46em",
+            height: "0",
+            borderLeft: "none",
+            borderBottom: "2px solid var(--accent)",
+            transform: "none",
+            opacity: 1,
+        },
+    ".cm-lp-task-line::selection, .cm-lp-task-line *::selection": {
+        backgroundColor: "var(--selection-bg)",
     },
     ".cm-lp-footnote-ref": {
         fontSize: "0.72em",

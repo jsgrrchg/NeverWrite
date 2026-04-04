@@ -263,6 +263,29 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("applies deeper nesting geometry to nested task items", () => {
+        const doc = "- [ ] parent\n    - [ ] child";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        const nestedTaskLine = decorations.find(
+            (deco) =>
+                deco.from === 13 &&
+                deco.className.split(" ").includes("cm-lp-task-line"),
+        );
+
+        expect(nestedTaskLine?.style).toContain(
+            "--cm-lp-nesting-offset: 0.24em",
+        );
+        expect(nestedTaskLine?.style).toContain("--cm-lp-marker-opacity: 0.9");
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("rebuilds list preview when a multiline selection enters bullet items", () => {
         const perfMeasureMock = vi.mocked(perfMeasure);
         const doc = "- first\n- second";
@@ -334,6 +357,28 @@ describe("createInlineLivePreviewPlugin", () => {
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-task-line"),
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("preserves partial task semantics in live preview", () => {
+        const doc = "- [~] task";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        const taskLine = findDecorationByClass(decorations, "cm-lp-task-line");
+
+        expect(taskLine?.attributes["data-lp-task-state"]).toBe("partial");
+        expect(taskLine?.attributes["aria-checked"]).toBe("mixed");
+        expect(
+            decorations.some((deco) =>
+                deco.className.split(" ").includes("cm-lp-task-partial"),
             ),
         ).toBe(true);
 

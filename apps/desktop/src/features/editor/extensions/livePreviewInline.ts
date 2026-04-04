@@ -47,6 +47,16 @@ import {
     perfMeasure,
     perfNow,
 } from "../../../app/utils/perfInstrumentation";
+import {
+    createLivePreviewListLinePresentation,
+    getLooseListLevel,
+    LIVE_PREVIEW_ORDERED_MARKER_MIN_WIDTH_CH,
+    LIVE_PREVIEW_ORDERED_MARKER_PADDING_CH,
+    LIVE_PREVIEW_TASK_MARKER_WIDTH,
+    LIVE_PREVIEW_UNORDERED_MARKER_WIDTH,
+    type LivePreviewListKind,
+    type LivePreviewListLinePresentation,
+} from "./livePreviewListMetrics";
 
 const headingMarks: Record<number, Decoration> = {
     1: Decoration.mark({ class: "cm-lp-h1" }),
@@ -76,15 +86,11 @@ const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
 const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.*)$/;
 const CALLOUT_RE = /^\s*>\s+\[!([a-zA-Z0-9-]+)\]([+-])?(?:\s+(.*))?$/;
 const EXTENDED_TASK_RE = /^(\s*(?:[-+*]|\d+[.)])\s+)\[( |x|X|~|\/)\](\s+.*)?$/;
-const UNORDERED_LIST_MARKER_WIDTH = "1.45em";
-const TASK_LIST_MARKER_WIDTH = "1.2em";
-const NARRATIVE_LIST_ITEM_THRESHOLD = 72;
 
 // Characters that can affect markdown structure.  When an edit only involves
 // characters NOT in this set we can skip the full decoration rebuild and simply
 // map existing decorations through the position changes.
 const MARKDOWN_SIGNIFICANT = /(?:[!#$()*+./:<=>\\\]^_`{|}~\n\r-]|\[)/;
-const MAX_STYLED_LIST_LEVEL = 3;
 
 type LivePreviewNode = {
     name: string;
@@ -116,8 +122,7 @@ type RegexRule = (
 ) => void;
 
 type ListItemPresentation = {
-    densityClass: string;
-    levelClass: string;
+    lineAttrs?: Record<string, string>;
     lineStyles: Record<string, string>;
     markerLineNumber: number;
 };
@@ -163,7 +168,7 @@ function getOrderedListReservedMarkerWidth(
     const cachedWidth = cache.get(cacheKey);
     if (cachedWidth) return cachedWidth;
 
-    let maxWidth = 2.2;
+    let maxWidth = LIVE_PREVIEW_ORDERED_MARKER_MIN_WIDTH_CH;
     const cursor = listNode.cursor();
 
     if (cursor.firstChild()) {
@@ -181,7 +186,8 @@ function getOrderedListReservedMarkerWidth(
                 const normalizedMarker = marker.trim();
                 maxWidth = Math.max(
                     maxWidth,
-                    measureIndent(normalizedMarker) + 0.35,
+                    measureIndent(normalizedMarker) +
+                        LIVE_PREVIEW_ORDERED_MARKER_PADDING_CH,
                 );
                 break;
             } while (itemCursor.nextSibling());
@@ -191,12 +197,6 @@ function getOrderedListReservedMarkerWidth(
     const width = `${maxWidth}ch`;
     cache.set(cacheKey, width);
     return width;
-}
-
-function getListDensityClass(content: string): string {
-    return content.trim().length >= NARRATIVE_LIST_ITEM_THRESHOLD
-        ? "cm-lp-list-narrative"
-        : "cm-lp-list-dense";
 }
 
 function getListLevel(node: SyntaxNode): number {
@@ -213,12 +213,26 @@ function getListLevel(node: SyntaxNode): number {
     return Math.max(level, 1);
 }
 
-function getListLevelClass(level: number): string {
-    return `cm-lp-list-level-${Math.min(level, MAX_STYLED_LIST_LEVEL)}`;
-}
-
-function getLooseListLevel(indentWidth: number): number {
-    return Math.min(Math.floor(indentWidth / 4) + 1, MAX_STYLED_LIST_LEVEL);
+function buildListLinePresentation({
+    indentWidth,
+    level,
+    kind,
+    markerWidth,
+    markerText,
+}: {
+    indentWidth: number;
+    level: number;
+    kind: LivePreviewListKind;
+    markerWidth: string;
+    markerText?: string | null;
+}): LivePreviewListLinePresentation {
+    return createLivePreviewListLinePresentation({
+        indentWidth,
+        level,
+        kind,
+        markerWidth,
+        markerText,
+    });
 }
 
 function isListLikeLine(text: string): boolean {
@@ -313,35 +327,41 @@ function getListItemPresentation(
 
     const markerLine = state.doc.lineAt(markerNode.from);
     const orderedList = findAncestor(listItem, "OrderedList");
-    const densityClass = getListDensityClass(
-        state.doc.sliceString(markerNode.to, listItem.to),
-    );
-    const levelClass = getListLevelClass(getListLevel(listItem));
-    const lineStyles = taskMarkerNode
-        ? {
-              "--cm-lp-indent": `${measureLineLeadingIndent(markerLine.text)}ch`,
-              "--cm-lp-marker-width": TASK_LIST_MARKER_WIDTH,
-          }
-        : {
-              "--cm-lp-indent": `${measureIndent(
+    const listLevel = getListLevel(listItem);
+    const presentation = taskMarkerNode
+        ? buildListLinePresentation({
+              indentWidth: measureLineLeadingIndent(markerLine.text),
+              level: listLevel,
+              kind: "task",
+              markerWidth: LIVE_PREVIEW_TASK_MARKER_WIDTH,
+          })
+        : buildListLinePresentation({
+              indentWidth: measureIndent(
                   state.doc.sliceString(
                       markerLine.from,
                       listMarkNode?.from ?? markerLine.from,
                   ),
-              )}ch`,
-              "--cm-lp-marker-width": orderedList
+              ),
+              level: listLevel,
+              kind: orderedList ? "ordered" : "unordered",
+              markerWidth: orderedList
                   ? getOrderedListReservedMarkerWidth(
                         orderedList,
                         state,
                         orderedListMarkerWidths,
                     )
-                  : UNORDERED_LIST_MARKER_WIDTH,
-          };
+                  : LIVE_PREVIEW_UNORDERED_MARKER_WIDTH,
+              markerText: orderedList
+                  ? state.doc.sliceString(
+                        listMarkNode?.from ?? markerNode.from,
+                        listMarkNode?.to ?? markerNode.to,
+                    )
+                  : undefined,
+          });
 
     return {
-        densityClass,
-        levelClass,
-        lineStyles,
+        lineAttrs: presentation.attrs,
+        lineStyles: presentation.styles,
         markerLineNumber: markerLine.number,
     };
 }
@@ -400,16 +420,6 @@ function applyListContinuationLines(
             "cm-lp-list-continuation",
             undefined,
             presentation.lineStyles,
-        );
-        addLineDecoration(
-            context.lineDecos,
-            line.from,
-            presentation.densityClass,
-        );
-        addLineDecoration(
-            context.lineDecos,
-            line.from,
-            presentation.levelClass,
         );
     }
 }
@@ -766,46 +776,36 @@ const listMarkRule: NodeRule = (node, context) => {
     const orderedList = findAncestor(node.node, "OrderedList");
     const ordered = orderedList !== null;
     const markerText = context.state.doc.sliceString(node.from, node.to);
-    const indentWidth = measureIndent(
-        context.state.doc.sliceString(line.from, node.from),
-    );
-    const densityClass = getListDensityClass(
-        context.state.doc.sliceString(hideTo, line.to),
-    );
-    const levelClass = getListLevelClass(getListLevel(node.node));
-    const lineStyles = {
-        "--cm-lp-indent": `${indentWidth}ch`,
-        "--cm-lp-marker-width": ordered
+    const presentation = buildListLinePresentation({
+        indentWidth: measureIndent(
+            context.state.doc.sliceString(line.from, node.from),
+        ),
+        level: getListLevel(node.node),
+        kind: ordered ? "ordered" : "unordered",
+        markerWidth: ordered
             ? getOrderedListReservedMarkerWidth(
                   orderedList,
                   context.state,
                   context.orderedListMarkerWidths,
               )
-            : UNORDERED_LIST_MARKER_WIDTH,
-    };
+            : LIVE_PREVIEW_UNORDERED_MARKER_WIDTH,
+        markerText: ordered ? markerText : undefined,
+    });
 
     addLineDecoration(
         context.lineDecos,
         line.from,
         ordered ? "cm-lp-li-ordered" : "cm-lp-li-unordered",
-        {
-            ...(ordered
-                ? {
-                      "data-lp-marker": markerText,
-                  }
-                : {}),
-        },
-        lineStyles,
+        presentation.attrs,
+        presentation.styles,
     );
     addLineDecoration(
         context.lineDecos,
         line.from,
         "cm-lp-li-line",
         undefined,
-        lineStyles,
+        presentation.styles,
     );
-    addLineDecoration(context.lineDecos, line.from, densityClass);
-    addLineDecoration(context.lineDecos, line.from, levelClass);
 };
 
 const blockquoteRule: NodeRule = (node, context) => {
@@ -912,16 +912,17 @@ const taskMarkerRule: NodeRule = (node, context) => {
     const prefixEnd = extendPastFollowingWhitespace(context.state, node.to);
     const text = context.state.doc.sliceString(node.from, node.to);
     const checked = text.includes("x") || text.includes("X");
-    const indentWidth = measureLineLeadingIndent(line.text);
     const activeEmptyItem = isActiveEmptyListLine(
         context.state,
         line.from,
         line.to,
     );
-    const densityClass = getListDensityClass(
-        context.state.doc.sliceString(prefixEnd, line.to),
-    );
-    const levelClass = getListLevelClass(getListLevel(node.node));
+    const presentation = buildListLinePresentation({
+        indentWidth: measureLineLeadingIndent(line.text),
+        level: getListLevel(node.node),
+        kind: "task",
+        markerWidth: LIVE_PREVIEW_TASK_MARKER_WIDTH,
+    });
 
     hideRange(context, node.from, activeEmptyItem ? node.to : prefixEnd);
     addLineDecoration(
@@ -937,13 +938,8 @@ const taskMarkerRule: NodeRule = (node, context) => {
             role: "checkbox",
             "aria-checked": checked ? "true" : "false",
         },
-        {
-            "--cm-lp-indent": `${indentWidth}ch`,
-            "--cm-lp-marker-width": TASK_LIST_MARKER_WIDTH,
-        },
+        presentation.styles,
     );
-    addLineDecoration(context.lineDecos, line.from, densityClass);
-    addLineDecoration(context.lineDecos, line.from, levelClass);
 
     if (checked) {
         addLineDecoration(context.lineDecos, line.from, "cm-lp-task-checked");
@@ -1145,6 +1141,19 @@ function applyLooseListFallback(context: BuildContext) {
 
         const markerFrom = line.from + indent.length;
         const hideTo = markerFrom + marker.length + spacing.length;
+        const presentation = buildListLinePresentation({
+            indentWidth,
+            level: getLooseListLevel(indentWidth),
+            kind: "unordered",
+            markerWidth: LIVE_PREVIEW_UNORDERED_MARKER_WIDTH,
+            markerText:
+                marker === "\u2022" ||
+                marker === "\u25e6" ||
+                marker === "\u25aa" ||
+                marker === "\u2023"
+                    ? marker
+                    : undefined,
+        });
 
         hideRange(context, line.from, hideTo);
 
@@ -1152,31 +1161,15 @@ function applyLooseListFallback(context: BuildContext) {
             context.lineDecos,
             line.from,
             "cm-lp-li-unordered",
-            undefined,
-            {
-                "--cm-lp-indent": `${indentWidth}ch`,
-                "--cm-lp-marker-width": UNORDERED_LIST_MARKER_WIDTH,
-            },
+            presentation.attrs,
+            presentation.styles,
         );
         addLineDecoration(
             context.lineDecos,
             line.from,
             "cm-lp-li-line",
             undefined,
-            {
-                "--cm-lp-indent": `${indentWidth}ch`,
-                "--cm-lp-marker-width": UNORDERED_LIST_MARKER_WIDTH,
-            },
-        );
-        addLineDecoration(
-            context.lineDecos,
-            line.from,
-            getListDensityClass(line.text.slice(match[0].length)),
-        );
-        addLineDecoration(
-            context.lineDecos,
-            line.from,
-            getListLevelClass(getLooseListLevel(indentWidth)),
+            presentation.styles,
         );
     }
 }
@@ -1399,7 +1392,8 @@ function applyExtendedTaskFallback(context: BuildContext) {
         ) {
             continue;
         }
-        if (lineHasPrimaryListDecoration(context.lineDecos, line.from)) {
+        const lineEntry = context.lineDecos.get(line.from);
+        if (lineEntry?.classes.has("cm-lp-task-line")) {
             continue;
         }
 
@@ -1414,6 +1408,12 @@ function applyExtendedTaskFallback(context: BuildContext) {
         const markerEnd = markerStart + 3;
         const indentWidth = measureLineLeadingIndent(line.text);
         const taskState = "partial";
+        const presentation = buildListLinePresentation({
+            indentWidth,
+            level: getLooseListLevel(indentWidth),
+            kind: "task",
+            markerWidth: LIVE_PREVIEW_TASK_MARKER_WIDTH,
+        });
 
         hideRange(context, line.from, Math.min(line.to, markerEnd + 1));
 
@@ -1429,10 +1429,7 @@ function applyExtendedTaskFallback(context: BuildContext) {
                 role: "checkbox",
                 "aria-checked": "mixed",
             },
-            {
-                "--cm-lp-indent": `${indentWidth}ch`,
-                "--cm-lp-marker-width": TASK_LIST_MARKER_WIDTH,
-            },
+            presentation.styles,
         );
         addLineDecoration(context.lineDecos, line.from, "cm-lp-task-partial");
     }
