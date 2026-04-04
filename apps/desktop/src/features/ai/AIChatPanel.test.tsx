@@ -1276,7 +1276,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         }));
 
         invokeMock.mockResolvedValue({
-            title: "Chat exportado - First conversation",
+            title: "Exported chat - First conversation",
             path: "exports/chat-export.md",
         });
 
@@ -1329,7 +1329,7 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         await waitFor(() => {
             expect(createNote).toHaveBeenCalledWith(
-                "Chat exportado - First conversation",
+                "Exported chat - First conversation",
             );
             expect(invokeMock).toHaveBeenCalledWith(
                 "save_note",
@@ -1337,7 +1337,7 @@ describe("AIChatPanel tabs lifecycle", () => {
                     noteId: "exports/chat-export.md",
                     vaultPath: "/vault",
                     content: expect.stringContaining(
-                        "# Chat exportado: First conversation",
+                        "# Exported chat: First conversation",
                     ),
                 }),
             );

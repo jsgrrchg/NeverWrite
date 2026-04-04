@@ -25,7 +25,7 @@ function sanitizeNoteNameSegment(value: string) {
         .trim()
         .replace(/[. ]+$/g, "");
 
-    return sanitized || "Chat exportado";
+    return sanitized || "Exported chat";
 }
 
 function formatIsoTimestamp(timestamp: number) {
@@ -35,13 +35,13 @@ function formatIsoTimestamp(timestamp: number) {
 function getMessageRoleLabel(message: AIChatMessage) {
     switch (message.role) {
         case "user":
-            return "Usuario";
+            return "User";
         case "assistant":
-            return "Asistente";
+            return "Assistant";
         case "system":
-            return "Sistema";
+            return "System";
         default:
-            return "Mensaje";
+            return "Message";
     }
 }
 
@@ -50,17 +50,17 @@ function getMessageKindLabel(message: AIChatMessage) {
         case "text":
             return null;
         case "thinking":
-            return "Pensamiento";
+            return "Thinking";
         case "tool":
-            return "Herramienta";
+            return "Tool";
         case "plan":
             return "Plan";
         case "status":
-            return "Estado";
+            return "Status";
         case "permission":
-            return "Permiso";
+            return "Permission";
         case "user_input_request":
-            return "Solicitud de datos";
+            return "Input request";
         case "error":
             return "Error";
         default:
@@ -79,7 +79,7 @@ function formatMessageHeading(message: AIChatMessage) {
 function formatMessageContent(message: AIChatMessage) {
     const content = message.content.trim();
     if (!content) {
-        return "_Sin contenido_";
+        return "_No content_";
     }
 
     return content;
@@ -90,12 +90,12 @@ function formatAttachmentLine(
 ) {
     const typeLabel =
         sessionAttachment.type === "folder"
-            ? "Carpeta"
+            ? "Folder"
             : sessionAttachment.type === "file"
-              ? "Archivo"
+              ? "File"
               : sessionAttachment.type === "selection"
-                ? "Selección"
-                : "Nota";
+                ? "Selection"
+                : "Note";
 
     const detail = sessionAttachment.path ?? sessionAttachment.noteId ?? "";
     return detail
@@ -108,7 +108,7 @@ export function buildChatExportNoteName(
     existingNoteIds: string[],
 ) {
     const baseTitle = sanitizeNoteNameSegment(getSessionTitle(session));
-    const baseName = `Chat exportado - ${baseTitle}`;
+    const baseName = `Exported chat - ${baseTitle}`;
     const existing = new Set(existingNoteIds);
 
     let candidate = baseName;
@@ -130,26 +130,26 @@ export function buildChatExportMarkdown(
     const title = getSessionTitle(session);
     const runtimeName = getSessionRuntimeName(session, runtimes);
     const lines: string[] = [
-        `# Chat exportado: ${title}`,
+        `# Exported chat: ${title}`,
         "",
-        `- Fecha de exportación: ${exportedAt.toISOString()}`,
+        `- Exported at: ${exportedAt.toISOString()}`,
         `- Runtime: ${runtimeName}`,
         `- Session ID: \`${session.sessionId}\``,
         `- History ID: \`${session.historySessionId}\``,
-        `- Estado: \`${session.status}\``,
+        `- Status: \`${session.status}\``,
     ];
 
     if (session.attachments.length > 0) {
-        lines.push("", "## Contexto adjunto", "");
+        lines.push("", "## Attached context", "");
         session.attachments.forEach((attachment) => {
             lines.push(formatAttachmentLine(attachment));
         });
     }
 
-    lines.push("", "## Conversación", "");
+    lines.push("", "## Conversation", "");
 
     if (messages.length === 0) {
-        lines.push("_Sin mensajes_");
+        lines.push("_No messages_");
         return `${lines.join("\n")}\n`;
     }
 

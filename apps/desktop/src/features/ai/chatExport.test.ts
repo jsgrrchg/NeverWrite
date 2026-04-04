@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AIChatSession, AIRuntimeOption } from "./types";
-import {
-    buildChatExportMarkdown,
-    buildChatExportNoteName,
-} from "./chatExport";
+import { buildChatExportMarkdown, buildChatExportNoteName } from "./chatExport";
 
 function createSession(
     sessionId: string,
@@ -20,24 +17,22 @@ function createSession(
         models: overrides.models ?? [],
         modes: overrides.modes ?? [],
         configOptions: overrides.configOptions ?? [],
-        messages:
-            overrides.messages ??
-            [
-                {
-                    id: `${sessionId}-user`,
-                    role: "user",
-                    kind: "text",
-                    content: title,
-                    timestamp: Date.UTC(2026, 2, 10, 15, 0, 0),
-                },
-                {
-                    id: `${sessionId}-assistant`,
-                    role: "assistant",
-                    kind: "text",
-                    content: "Respuesta",
-                    timestamp: Date.UTC(2026, 2, 10, 15, 1, 0),
-                },
-            ],
+        messages: overrides.messages ?? [
+            {
+                id: `${sessionId}-user`,
+                role: "user",
+                kind: "text",
+                content: title,
+                timestamp: Date.UTC(2026, 2, 10, 15, 0, 0),
+            },
+            {
+                id: `${sessionId}-assistant`,
+                role: "assistant",
+                kind: "text",
+                content: "Respuesta",
+                timestamp: Date.UTC(2026, 2, 10, 15, 1, 0),
+            },
+        ],
         attachments: overrides.attachments ?? [],
         isPersistedSession: overrides.isPersistedSession,
         isResumingSession: overrides.isResumingSession,
@@ -60,11 +55,11 @@ describe("chatExport", () => {
         const session = createSession("session-a", "Plan / test");
 
         const noteName = buildChatExportNoteName(session, [
-            "Chat exportado - Plan test.md",
+            "Exported chat - Plan test.md",
             "Otra nota.md",
         ]);
 
-        expect(noteName).toBe("Chat exportado - Plan test 2");
+        expect(noteName).toBe("Exported chat - Plan test 2");
     });
 
     it("renders a compact markdown transcript for the chat", () => {
@@ -86,13 +81,13 @@ describe("chatExport", () => {
             new Date(Date.UTC(2026, 2, 10, 15, 5, 0)),
         );
 
-        expect(markdown).toContain("# Chat exportado: Plan de trabajo");
+        expect(markdown).toContain("# Exported chat: Plan de trabajo");
         expect(markdown).toContain("- Runtime: Codex ACP");
-        expect(markdown).toContain("## Contexto adjunto");
-        expect(markdown).toContain("- Nota: Spec (/vault/docs/spec.md)");
-        expect(markdown).toContain("## Conversación");
-        expect(markdown).toContain("### Usuario");
-        expect(markdown).toContain("### Asistente");
+        expect(markdown).toContain("## Attached context");
+        expect(markdown).toContain("- Note: Spec (/vault/docs/spec.md)");
+        expect(markdown).toContain("## Conversation");
+        expect(markdown).toContain("### User");
+        expect(markdown).toContain("### Assistant");
         expect(markdown).toContain("Respuesta");
     });
 });
