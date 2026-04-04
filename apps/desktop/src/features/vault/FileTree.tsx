@@ -345,6 +345,10 @@ function getNoteDisplayName(note: NoteDto, showExtensions: boolean) {
     return note.path.split("/").pop() ?? `${note.title}.md`;
 }
 
+function getNoteRenameValue(note: NoteDto, showExtensions: boolean) {
+    return getNoteDisplayName(note, showExtensions);
+}
+
 // --- Icons ---
 
 function ChevronIcon({ open, size = 13 }: { open: boolean; size?: number }) {
@@ -1217,7 +1221,7 @@ const FlatTreeRowView = memo(
                     <NoteIcon size={metrics.smallIcon} />
                     <input
                         ref={renameInputRef}
-                        defaultValue={note.title}
+                        defaultValue={getNoteRenameValue(note, showExtensions)}
                         onKeyDown={(e) => {
                             if (e.key === "Enter") {
                                 const value = e.currentTarget.value.trim();

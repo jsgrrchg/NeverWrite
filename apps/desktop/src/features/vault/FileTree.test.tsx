@@ -1,4 +1,10 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+    act,
+    fireEvent,
+    screen,
+    waitFor,
+    within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -67,6 +73,24 @@ function buildFolderEntry(path: string) {
         created_at: 1,
         size: 0,
         mime_type: null,
+    };
+}
+
+function buildFileEntry(path: string, mimeType = "text/plain") {
+    const fileName = path.split("/").pop() ?? path;
+    const dotIndex = fileName.lastIndexOf(".");
+    return {
+        id: path,
+        path: `/vault/${path}`,
+        relative_path: path,
+        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
+        file_name: fileName,
+        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
+        kind: "file" as const,
+        modified_at: 1,
+        created_at: 1,
+        size: 16,
+        mime_type: mimeType,
     };
 }
 
@@ -465,8 +489,11 @@ describe("FileTree", () => {
             .fn()
             .mockImplementation(async (_noteId: string, newPath: string) => ({
                 id: newPath,
-                path: `/vault/${newPath}.md`,
-                title: newPath.split("/").pop() ?? newPath,
+                path: `/vault/${newPath.endsWith(".md") ? newPath : `${newPath}.md`}`,
+                title: (newPath.split("/").pop() ?? newPath).replace(
+                    /\.md$/i,
+                    "",
+                ),
             }));
 
         useVaultStore.setState({ renameNote });
@@ -504,6 +531,82 @@ describe("FileTree", () => {
                 "plans/Beta",
             );
         });
+    });
+
+    it("shows the visible .md extension in the note rename input when extensions are enabled", async () => {
+        const user = userEvent.setup();
+        const renameNote = vi
+            .fn()
+            .mockImplementation(async (_noteId: string, newPath: string) => ({
+                id: newPath,
+                path: `/vault/${newPath}.md`,
+                title: newPath.split("/").pop() ?? newPath,
+            }));
+
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({ fileTreeShowExtensions: true });
+        });
+        useVaultStore.setState({ renameNote });
+        setVaultNotes([
+            {
+                id: "plans/alpha",
+                path: "/vault/plans/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "plans");
+
+            fireEvent.contextMenu(getNoteRow("alpha.md"));
+            await user.click(await screen.findByText("Rename"));
+
+            const input = screen.getByDisplayValue("alpha.md");
+            fireEvent.change(input, { target: { value: "beta.md" } });
+            fireEvent.blur(input);
+
+            await waitFor(() => {
+                expect(renameNote).toHaveBeenCalledWith(
+                    "plans/alpha",
+                    "plans/beta.md",
+                );
+            });
+        } finally {
+            act(() => {
+                useSettingsStore.getState().reset();
+            });
+        }
+    });
+
+    it("shows the full file name in the file rename input when extensions are enabled", async () => {
+        const user = userEvent.setup();
+
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeShowExtensions: true,
+            });
+        });
+        setVaultEntries([buildFileEntry("src/main.ts", "text/typescript")]);
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "src");
+
+            fireEvent.contextMenu(getFileRow("main.ts"));
+            await user.click(await screen.findByText("Rename"));
+
+            expect(screen.getByDisplayValue("main.ts")).toBeInTheDocument();
+        } finally {
+            act(() => {
+                useSettingsStore.getState().reset();
+            });
+        }
     });
 
     it("moves all selected notes from the context menu with a plural label", async () => {
