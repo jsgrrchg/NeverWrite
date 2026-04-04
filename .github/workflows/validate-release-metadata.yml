@@ -1,0 +1,70 @@
+name: Validate Release Metadata
+
+on:
+    pull_request:
+        paths:
+            - CHANGELOG.md
+            - apps/desktop/package.json
+            - apps/desktop/src-tauri/Cargo.toml
+            - apps/desktop/src-tauri/tauri.conf.json
+            - scripts/extract-changelog-release-notes.mjs
+            - scripts/appcast-lib.mjs
+            - scripts/appcast.test.mjs
+            - scripts/build-appcast-manifest.mjs
+            - scripts/build-appcast-from-target-metadata.mjs
+            - scripts/build-platform-validation-pack.mjs
+            - scripts/build-release-body.mjs
+            - scripts/platform-validation-lib.mjs
+            - scripts/platform-validation.test.mjs
+            - scripts/serve-static-directory.mjs
+            - scripts/release-metadata-lib.mjs
+            - scripts/release-assets-lib.mjs
+            - scripts/release-assets.test.mjs
+            - scripts/release-metadata.test.mjs
+            - scripts/stage-tauri-release-assets.mjs
+            - scripts/validate-appcast-manifest.mjs
+            - scripts/validate-release-metadata.mjs
+            - release/appcast/README.md
+            - .github/workflows/release-desktop.yml
+            - .github/workflows/validate-release-metadata.yml
+    push:
+        branches:
+            - main
+        tags:
+            - v*
+
+jobs:
+    validate:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Run release metadata tests
+              run: node --test scripts/release-metadata.test.mjs
+
+            - name: Run appcast tests
+              run: node --test scripts/appcast.test.mjs
+
+            - name: Run platform validation tests
+              run: node --test scripts/platform-validation.test.mjs
+
+            - name: Run release asset tests
+              run: node --test scripts/release-assets.test.mjs
+
+            - name: Validate desktop version sources
+              run: node scripts/validate-release-metadata.mjs
+
+            - name: Validate tag alignment
+              if: startsWith(github.ref, 'refs/tags/v')
+              run: node scripts/validate-release-metadata.mjs --tag "${GITHUB_REF_NAME}"
+
+            - name: Extract release notes for tag
+              if: startsWith(github.ref, 'refs/tags/v')
+              run: node scripts/extract-changelog-release-notes.mjs "${GITHUB_REF_NAME}" > release-notes.md

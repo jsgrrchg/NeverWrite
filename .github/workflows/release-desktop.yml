@@ -1,0 +1,278 @@
+name: Release Desktop
+
+on:
+    push:
+        tags:
+            - "v*"
+
+concurrency:
+    group: release-desktop-${{ github.ref }}
+    cancel-in-progress: false
+
+permissions:
+    contents: write
+
+jobs:
+    prepare:
+        name: Prepare Release
+        runs-on: ubuntu-latest
+        outputs:
+            version: ${{ steps.meta.outputs.version }}
+            tag: ${{ steps.meta.outputs.tag }}
+            channel: ${{ steps.meta.outputs.channel }}
+            repo_slug: ${{ steps.meta.outputs.repo_slug }}
+            pages_base_url: ${{ steps.meta.outputs.pages_base_url }}
+            pub_date: ${{ steps.meta.outputs.pub_date }}
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Validate release metadata
+              run: node scripts/validate-release-metadata.mjs --tag "${GITHUB_REF_NAME}"
+
+            - name: Validate updater signing secrets
+              shell: bash
+              env:
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+              run: |
+                  if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+                    echo "TAURI_SIGNING_PRIVATE_KEY is required for signed updater artifacts." >&2
+                    exit 1
+                  fi
+                  if [[ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
+                    echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required for signed updater artifacts." >&2
+                    exit 1
+                  fi
+
+            - name: Extract release notes
+              run: node scripts/extract-changelog-release-notes.mjs "${GITHUB_REF_NAME}" > release-notes.md
+
+            - name: Build release body
+              run: node scripts/build-release-body.mjs --version "${GITHUB_REF_NAME}" --notes-file release-notes.md --output release-body.md
+
+            - name: Compute release metadata
+              id: meta
+              run: |
+                  VERSION="${GITHUB_REF_NAME#v}"
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+                  echo "channel=stable" >> "$GITHUB_OUTPUT"
+                  echo "repo_slug=${GITHUB_REPOSITORY}" >> "$GITHUB_OUTPUT"
+                  echo "pages_base_url=https://${GITHUB_REPOSITORY_OWNER}.github.io/${{ github.event.repository.name }}" >> "$GITHUB_OUTPUT"
+                  echo "pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+            - name: Create or update GitHub release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  VERSION="${{ steps.meta.outputs.version }}"
+                  TAG="${{ steps.meta.outputs.tag }}"
+                  TITLE="VaultAI v${VERSION}"
+                  if gh release view "$TAG" >/dev/null 2>&1; then
+                    gh release edit "$TAG" --title "$TITLE" --notes-file release-body.md
+                  else
+                    gh release create "$TAG" --title "$TITLE" --notes-file release-body.md --verify-tag
+                  fi
+
+    build-target:
+        name: Build ${{ matrix.target }}
+        needs: prepare
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: macos-latest
+                      target: aarch64-apple-darwin
+                      node_dist: darwin-arm64
+                    - runner: macos-latest
+                      target: x86_64-apple-darwin
+                      node_dist: darwin-x64
+                    - runner: windows-latest
+                      target: aarch64-pc-windows-msvc
+                      node_dist: win-arm64
+                    - runner: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      node_dist: win-x64
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Setup Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+
+            - name: Install desktop dependencies
+              working-directory: apps/desktop
+              run: npm ci
+
+            - name: Build target-specific Codex sidecar
+              run: cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }}
+
+            - name: Download embedded Node runtime
+              shell: bash
+              run: |
+                  NODE_VERSION="$(node -p "process.version.replace(/^v/, '')")"
+                  DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
+                  DEST="$RUNNER_TEMP/node-dist"
+                  mkdir -p "$DEST"
+
+                  if [[ "${{ runner.os }}" == "Windows" ]]; then
+                    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
+                    powershell -NoProfile -Command "Expand-Archive -Path '$env:RUNNER_TEMP/node.zip' -DestinationPath '$env:RUNNER_TEMP/node-dist'"
+                    echo "VAULTAI_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
+                  else
+                    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.tar.gz" -o "$RUNNER_TEMP/node.tar.gz"
+                    tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$DEST"
+                    echo "VAULTAI_EMBEDDED_NODE_BIN=$DEST/${DIST}/bin/node" >> "$GITHUB_ENV"
+                  fi
+
+            - name: Export build environment
+              shell: bash
+              run: |
+                  if [[ "${{ runner.os }}" == "Windows" ]]; then
+                    CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp.exe"
+                  else
+                    CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
+                  fi
+                  echo "VAULTAI_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+
+            - name: Build desktop release
+              working-directory: apps/desktop
+              env:
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+                  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+                  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+                  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+                  APPLE_ID: ${{ secrets.APPLE_ID }}
+                  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+                  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+              run: npm run tauri -- build --target ${{ matrix.target }}
+
+            - name: Stage release assets and target metadata
+              shell: bash
+              run: |
+                  mkdir -p "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/target-metadata"
+                  node scripts/stage-tauri-release-assets.mjs \
+                    --manifest-dir apps/desktop/src-tauri \
+                    --bundle-root apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle \
+                    --target ${{ matrix.target }} \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --tag "${{ needs.prepare.outputs.tag }}" \
+                    --repo "${{ needs.prepare.outputs.repo_slug }}" \
+                    --output-dir "$RUNNER_TEMP/release-assets" \
+                    --metadata-out "$RUNNER_TEMP/target-metadata/${{ matrix.target }}.json"
+
+            - name: Upload release assets
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: gh release upload "${{ needs.prepare.outputs.tag }}" "$RUNNER_TEMP/release-assets"/* --clobber
+
+            - name: Upload target metadata artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-target-metadata-${{ matrix.target }}
+                  path: ${{ runner.temp }}/target-metadata/${{ matrix.target }}.json
+                  if-no-files-found: error
+
+    publish-appcast:
+        name: Publish Appcast
+        needs:
+            - prepare
+            - build-target
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Download target metadata
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-target-metadata-*
+                  path: .artifacts/release-targets
+                  merge-multiple: true
+
+            - name: Build stable appcast manifest
+              run: |
+                  node scripts/build-appcast-from-target-metadata.mjs \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --channel "${{ needs.prepare.outputs.channel }}" \
+                    --pub-date "${{ needs.prepare.outputs.pub_date }}" \
+                    --metadata-dir .artifacts/release-targets \
+                    --output dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json
+
+            - name: Validate generated appcast
+              run: node scripts/validate-appcast-manifest.mjs dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json
+
+            - name: Build platform validation pack
+              run: |
+                  node scripts/build-platform-validation-pack.mjs \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --tag "${{ needs.prepare.outputs.tag }}" \
+                    --channel "${{ needs.prepare.outputs.channel }}" \
+                    --appcast dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json \
+                    --metadata-dir .artifacts/release-targets \
+                    --pages-base-url "${{ needs.prepare.outputs.pages_base_url }}" \
+                    --output-dir dist/platform-validation/${{ needs.prepare.outputs.tag }}
+
+            - name: Upload platform validation pack
+              uses: actions/upload-artifact@v4
+              with:
+                  name: platform-validation-pack-${{ needs.prepare.outputs.tag }}
+                  path: dist/platform-validation/${{ needs.prepare.outputs.tag }}
+                  if-no-files-found: error
+
+            - name: Publish appcast to gh-pages
+              shell: bash
+              run: |
+                  PAGES_DIR="$RUNNER_TEMP/gh-pages"
+                  git fetch origin gh-pages || true
+
+                  if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+                    git worktree add "$PAGES_DIR" refs/remotes/origin/gh-pages
+                  else
+                    git worktree add -B gh-pages "$PAGES_DIR" HEAD
+                    (
+                      cd "$PAGES_DIR"
+                      git rm -rf . >/dev/null 2>&1 || true
+                      find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+                    )
+                  fi
+
+                  mkdir -p "$PAGES_DIR/${{ needs.prepare.outputs.channel }}"
+                  cp "dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json" "$PAGES_DIR/${{ needs.prepare.outputs.channel }}/latest.json"
+                  touch "$PAGES_DIR/.nojekyll"
+
+                  (
+                    cd "$PAGES_DIR"
+                    git config user.name "github-actions[bot]"
+                    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                    git add "${{ needs.prepare.outputs.channel }}/latest.json" .nojekyll
+                    if git diff --cached --quiet; then
+                      echo "No appcast changes to publish."
+                    else
+                      git commit -m "Publish appcast for ${{ needs.prepare.outputs.tag }}"
+                      git push origin HEAD:gh-pages
+                    fi
+                  )
+
+            - name: Print published appcast URL
+              run: echo "${{ needs.prepare.outputs.pages_base_url }}/${{ needs.prepare.outputs.channel }}/latest.json"
