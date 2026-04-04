@@ -3638,6 +3638,65 @@ describe("chatStore", () => {
         ).toEqual([currentAttachment]);
     });
 
+    it("clears queue editing and deferred state even when no visible queue entry remains", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const editingItem = createQueuedMessage("queued-edit", "Editing");
+
+        useChatStore.setState((state) => ({
+            queuedMessageEditBySessionId: {
+                ...state.queuedMessageEditBySessionId,
+                [activeSessionId]: {
+                    item: editingItem,
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: null,
+                    previousComposerParts: createTextParts("Draft"),
+                    previousAttachments: [],
+                },
+            },
+            activeQueuedMessageBySessionId: {
+                ...state.activeQueuedMessageBySessionId,
+                [activeSessionId]: {
+                    item: editingItem,
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: null,
+                },
+            },
+            pausedQueueBySessionId: {
+                ...state.pausedQueueBySessionId,
+                [activeSessionId]: {
+                    reinstateAfterNextManualSend: [
+                        {
+                            item: editingItem,
+                            originalIndex: 0,
+                            previousItemId: null,
+                            nextItemId: null,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().clearSessionQueue(activeSessionId);
+
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId],
+        ).toBeUndefined();
+    });
+
     it("keeps an edited message ahead of later items when canceling after the queue changes", async () => {
         await useChatStore.getState().initialize();
 
@@ -3766,6 +3825,82 @@ describe("chatStore", () => {
         ).toBeUndefined();
     });
 
+    it("requeues an edited message only once when stale queue state already contains the same item", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const previousDraft = createTextParts("Side draft");
+        const previousAttachment: AIChatAttachment = {
+            id: "side-file",
+            type: "file",
+            noteId: null,
+            label: "Side.txt",
+            path: null,
+            filePath: "/tmp/side.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+        const staleEditedItem = createQueuedMessage("queued-2", "Second stale");
+
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [activeSessionId]: createTextParts("Second updated"),
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: staleEditedItem.attachments.map(
+                        (attachment) => ({ ...attachment }),
+                    ),
+                },
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "First"),
+                    staleEditedItem,
+                    createQueuedMessage("queued-3", "Third"),
+                ],
+            },
+            queuedMessageEditBySessionId: {
+                ...state.queuedMessageEditBySessionId,
+                [activeSessionId]: {
+                    item: staleEditedItem,
+                    originalIndex: 1,
+                    previousItemId: "queued-1",
+                    nextItemId: "queued-3",
+                    previousComposerParts: previousDraft,
+                    previousAttachments: [previousAttachment],
+                },
+            },
+        }));
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1", "queued-2", "queued-3"]);
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.filter((item) => item.id === "queued-2"),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[1]?.content,
+        ).toBe("Second updated");
+    });
+
     it("sends an edited queued message immediately without keeping it in the queue when the session is idle", async () => {
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_send_message") {
@@ -3876,6 +4011,78 @@ describe("chatStore", () => {
                     activeSessionId
                 ]?.messages.some((message) => message.role === "user" && message.content === "Second updated"),
         ).toBe(true);
+    });
+
+    it("drops stale queued copies of an edited message when sending it immediately", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                expect(
+                    typeof args === "object" &&
+                        args !== null &&
+                        "content" in args &&
+                        args.content,
+                ).toBe("Second updated");
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const staleEditedItem = createQueuedMessage("queued-2", "Second stale");
+
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [activeSessionId]: createTextParts("Second updated"),
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "First"),
+                    staleEditedItem,
+                    createQueuedMessage("queued-3", "Third"),
+                ],
+            },
+            queuedMessageEditBySessionId: {
+                ...state.queuedMessageEditBySessionId,
+                [activeSessionId]: {
+                    item: staleEditedItem,
+                    originalIndex: 1,
+                    previousItemId: "queued-1",
+                    nextItemId: "queued-3",
+                    previousComposerParts: createTextParts("Side draft"),
+                    previousAttachments: [],
+                },
+            },
+        }));
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1", "queued-3"]);
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.find((item) => item.id === "queued-2"),
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
     });
 
     it("does not force the session back to idle after a quiet tool event", async () => {

@@ -2127,7 +2127,7 @@ function insertQueuedMessageAtIndex(
     index: number,
     item: QueuedChatMessage,
 ) {
-    const nextQueue = queue.slice();
+    const nextQueue = queue.filter((queuedItem) => queuedItem.id !== item.id);
     const safeIndex = Math.max(0, Math.min(index, nextQueue.length));
     nextQueue.splice(safeIndex, 0, item);
     return nextQueue;
@@ -2179,22 +2179,26 @@ function finalizeQueuedMessageEditState(
         return null;
     }
 
+    const sanitizedQueue = (
+        state.queuedMessagesBySessionId[sessionId] ?? []
+    ).filter((queuedItem) => queuedItem.id !== editState.item.id);
+
     const nextQueuedMessageEditBySessionId = {
         ...state.queuedMessageEditBySessionId,
     };
     delete nextQueuedMessageEditBySessionId[sessionId];
 
-    const nextQueuedMessagesBySessionId = restoredItem
-        ? cleanupQueuedMessagesBySessionId(
-              state.queuedMessagesBySessionId,
-              sessionId,
-              restoreQueuedMessagePosition(
-                  state.queuedMessagesBySessionId[sessionId] ?? [],
+    const nextQueuedMessagesBySessionId = cleanupQueuedMessagesBySessionId(
+        state.queuedMessagesBySessionId,
+        sessionId,
+        restoredItem
+            ? restoreQueuedMessagePosition(
+                  sanitizedQueue,
                   editState,
                   restoredItem,
-              ),
-          )
-        : state.queuedMessagesBySessionId;
+              )
+            : sanitizedQueue,
+    );
 
     return {
         nextSession: {
@@ -6439,7 +6443,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 queuedMessagesBySessionId: {
                     ...state.queuedMessagesBySessionId,
                     [sessionId]: [
-                        ...(state.queuedMessagesBySessionId[sessionId] ?? []),
+                        ...(
+                            state.queuedMessagesBySessionId[sessionId] ?? []
+                        ).filter((queuedItem) => queuedItem.id !== item.id),
                         item,
                     ],
                 },
@@ -6496,7 +6502,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         clearSessionQueue: (sessionId) => {
             _queueDrainLocks.delete(sessionId);
             set((state) => {
-                if (!(sessionId in state.queuedMessagesBySessionId)) {
+                const hasQueuedState =
+                    sessionId in state.queuedMessagesBySessionId ||
+                    sessionId in state.queuedMessageEditBySessionId ||
+                    sessionId in state.activeQueuedMessageBySessionId ||
+                    sessionId in state.pausedQueueBySessionId;
+                if (!hasQueuedState) {
                     return state;
                 }
 
