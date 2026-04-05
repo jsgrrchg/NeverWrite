@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { useSettingsStore } from "../../app/store/settingsStore";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+    disposeSettingsStoreRuntime,
+    initializeSettingsStore,
+    useSettingsStore,
+} from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     isInlineReviewEnabledForCurrentVault,
@@ -8,6 +12,25 @@ import {
 } from "./editorReviewGate";
 
 describe("editorReviewGate", () => {
+    beforeEach(() => {
+        disposeSettingsStoreRuntime();
+        initializeSettingsStore();
+        useVaultStore.setState((state) => ({
+            ...state,
+            vaultPath: null,
+            isLoading: false,
+            vaultOpenState: {
+                ...state.vaultOpenState,
+                path: null,
+                stage: "idle",
+            },
+        }));
+    });
+
+    afterEach(() => {
+        disposeSettingsStoreRuntime();
+    });
+
     it("defaults inline review to enabled for the current vault", () => {
         expect(isInlineReviewEnabledForCurrentVault()).toBe(true);
         expect(shouldEnableInlineReviewMergeView("source")).toBe(true);

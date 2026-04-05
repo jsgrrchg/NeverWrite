@@ -354,31 +354,34 @@ describe("editorStore session persistence", () => {
         const warnSpy = vi
             .spyOn(console, "warn")
             .mockImplementation(() => undefined);
+        try {
+            useEditorStore.setState({
+                tabs: [
+                    makeTab({
+                        id: "tab-1",
+                        noteId: "notes/quota",
+                        title: "Quota",
+                        content: "content",
+                    }),
+                ],
+                activeTabId: "tab-1",
+            });
 
-        useEditorStore.setState({
-            tabs: [
-                makeTab({
-                    id: "tab-1",
-                    noteId: "notes/quota",
-                    title: "Quota",
-                    content: "content",
-                }),
-            ],
-            activeTabId: "tab-1",
-        });
+            await new Promise((resolve) => setTimeout(resolve, 600));
 
-        await new Promise((resolve) => setTimeout(resolve, 600));
-
-        expect(setItemMock).toHaveBeenCalled();
-        expect(warnSpy).toHaveBeenCalledWith(
-            "Failed to persist safe storage item:",
-            "vaultai.session.tabs:/vaults/quota-2026",
-            quotaError,
-        );
-        Object.defineProperty(window.localStorage, "setItem", {
-            configurable: true,
-            value: originalSetItem,
-        });
+            expect(setItemMock).toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(
+                "[safe-storage] Failed to persist safe storage item",
+                {
+                    key: "vaultai.session.tabs:/vaults/quota-2026",
+                },
+            );
+        } finally {
+            Object.defineProperty(window.localStorage, "setItem", {
+                configurable: true,
+                value: originalSetItem,
+            });
+        }
     });
 
     it("falls back to the legacy global session key when needed", () => {

@@ -489,6 +489,13 @@ function loadSettings(vaultPath: string | null): Settings {
     }
 }
 
+export function readSettingsForVault(vaultPath: string | null): Settings {
+    if (!settingsRuntimeInitialized || _currentVaultPath === vaultPath) {
+        return pickSettings(useSettingsStore.getState());
+    }
+    return loadSettings(vaultPath);
+}
+
 function getEffectiveVaultPath(
     state: ReturnType<typeof useVaultStore.getState>,
 ) {

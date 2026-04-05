@@ -57,6 +57,9 @@ function canUseLocalStorage(storage: Storage): boolean {
 
 let backend: StorageBackend | null = null;
 
+// Prefer persistent localStorage when it is readable and writable.
+// If the environment blocks it, fall back to an in-memory backend so callers
+// can keep using the same API without throwing.
 function resolveBackend(): StorageBackend {
     if (backend) {
         return backend;
@@ -127,6 +130,8 @@ export function safeStorageSetItem(key: string, value: string) {
     if (safeStorageTrySetItem(key, value)) {
         return true;
     }
+    // This API is intentionally best-effort: callers get a boolean result and a
+    // deduplicated warning instead of a thrown write failure.
     logWarn(
         "safe-storage",
         "Failed to persist safe storage item",

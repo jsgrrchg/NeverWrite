@@ -1899,12 +1899,6 @@ function UpdatesSettings() {
         };
     }, []);
 
-    useEffect(() => {
-        if (!sensitiveState.requiresConfirmation) {
-            setConfirmInstall(false);
-        }
-    }, [sensitiveState.requiresConfirmation]);
-
     const effectiveError = error ?? status?.message ?? null;
     const updaterStateLabel = loading
         ? "Loading"
@@ -1920,6 +1914,8 @@ function UpdatesSettings() {
             ? "Never"
             : formatUpdateDate(new Date(lastCheckedAt).toISOString());
     const anyBusy = loading || checking || installing;
+    const showConfirmInstall =
+        confirmInstall && sensitiveState.requiresConfirmation;
 
     return (
         <div>
@@ -2021,7 +2017,7 @@ function UpdatesSettings() {
                         onClick={() => {
                             if (
                                 sensitiveState.requiresConfirmation &&
-                                !confirmInstall
+                                !showConfirmInstall
                             ) {
                                 setConfirmInstall(true);
                                 return;
@@ -2062,9 +2058,7 @@ function UpdatesSettings() {
                 </div>
             ) : null}
 
-            {status?.update &&
-            confirmInstall &&
-            sensitiveState.requiresConfirmation ? (
+            {status?.update && showConfirmInstall ? (
                 <div
                     style={{
                         marginTop: 12,
