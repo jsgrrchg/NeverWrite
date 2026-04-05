@@ -35,7 +35,9 @@ describe("clip markdown", () => {
 
         expect(markdown).toContain("---\ntitle: Custom title");
         expect(markdown).toContain("\ntags:\n  - research\n  - web\n");
-        expect(markdown).toContain("\nsource: https://example.com/articles/demo\n");
+        expect(markdown).toContain(
+            "\nsource: https://example.com/articles/demo\n",
+        );
         expect(markdown).toContain("\n# Custom title\n");
         expect(markdown.match(/^# Custom title$/gm)).toHaveLength(1);
         expect(markdown).toContain("> **Notes:** Keep for later.");
@@ -61,5 +63,26 @@ describe("clip markdown", () => {
         expect(markdown).toContain("# Example article");
         expect(markdown).toContain("Quoted markdown");
         expect(markdown).not.toContain("Demo body");
+    });
+
+    it("adds a standalone YouTube link after the title so live preview can render the widget", () => {
+        const markdown = buildClipMarkdown({
+            clipData: {
+                ...clipData,
+                metadata: {
+                    ...clipData.metadata,
+                    title: "Video clip",
+                    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    domain: "youtube.com",
+                },
+            },
+            title: "",
+            tags: [],
+            contentMode: "full-page",
+        });
+
+        expect(markdown).toContain(
+            "\n# Video clip\n\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nDemo body",
+        );
     });
 });

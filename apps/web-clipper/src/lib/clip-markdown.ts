@@ -44,6 +44,22 @@ function buildClipBody(
     }
 }
 
+function isYouTubeSourceUrl(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+        return (
+            host === "youtu.be" ||
+            host === "youtube.com" ||
+            host === "m.youtube.com" ||
+            host === "music.youtube.com" ||
+            host === "youtube-nocookie.com"
+        );
+    } catch {
+        return false;
+    }
+}
+
 export function buildClipMarkdown(input: {
     clipData: ClipData;
     title: string;
@@ -88,6 +104,10 @@ export function buildClipMarkdown(input: {
     }
 
     lines.push("---", "", `# ${resolvedTitle}`);
+
+    if (isYouTubeSourceUrl(input.clipData.metadata.url)) {
+        lines.push("", input.clipData.metadata.url);
+    }
 
     if (notes) {
         lines.push("", `> **Notes:** ${notes}`);
