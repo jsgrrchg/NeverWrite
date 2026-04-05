@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
+    aiGetEnvironmentDiagnostics,
     aiGetSetupStatus,
     aiListRuntimes,
     aiStartAuth,
@@ -9,6 +10,7 @@ import {
 import { AIAuthTerminalModal } from "../ai/components/AIAuthTerminalModal";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
 import type {
+    AIEnvironmentDiagnostics,
     AIRuntimeDescriptor,
     AIRuntimeSetupStatus,
     AISecretPatch,
@@ -154,6 +156,170 @@ function setSecretPatch(value: string): AISecretPatch {
         action: "set",
         value,
     };
+}
+
+const diagnosticCodeStyle: React.CSSProperties = {
+    margin: 0,
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    backgroundColor: "var(--bg-primary)",
+    color: "var(--text-primary)",
+    fontSize: 11,
+    lineHeight: 1.5,
+    fontFamily:
+        '"Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-all",
+};
+
+function formatCommand(program?: string, args: string[] = []) {
+    if (!program) return "Not resolved";
+    return [program, ...args].join(" ");
+}
+
+function DiagnosticsPathBlock({
+    label,
+    entries,
+    helper,
+}: {
+    label: string;
+    entries: string[];
+    helper: string;
+}) {
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div
+                style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                }}
+            >
+                {label}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                {helper}
+            </div>
+            <pre style={diagnosticCodeStyle}>
+                {entries.length > 0 ? entries.join("\n") : "No entries"}
+            </pre>
+        </div>
+    );
+}
+
+function DiagnosticsRuntimeCard({
+    runtime,
+}: {
+    runtime: AIEnvironmentDiagnostics["runtimes"][number];
+}) {
+    const setupStatus = runtime.setupStatus;
+    return (
+        <div
+            style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                padding: 12,
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                backgroundColor: "var(--bg-primary)",
+            }}
+        >
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                }}
+            >
+                <div
+                    style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "var(--text-primary)",
+                    }}
+                >
+                    {runtime.runtimeName}
+                </div>
+                <div
+                    style={{
+                        padding: "3px 8px",
+                        borderRadius: 999,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        backgroundColor: setupStatus?.binaryReady
+                            ? "color-mix(in srgb, #34d399 15%, var(--bg-secondary))"
+                            : "color-mix(in srgb, #ef4444 15%, var(--bg-secondary))",
+                        color: setupStatus?.binaryReady ? "#34d399" : "#ef4444",
+                    }}
+                >
+                    {setupStatus?.binaryReady
+                        ? "Binary ready"
+                        : "Binary missing"}
+                </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                Launch command
+            </div>
+            <pre style={diagnosticCodeStyle}>
+                {formatCommand(runtime.launchProgram, runtime.launchArgs)}
+            </pre>
+
+            {runtime.resolutionDisplay && (
+                <>
+                    <div
+                        style={{ fontSize: 11, color: "var(--text-secondary)" }}
+                    >
+                        Resolution source
+                    </div>
+                    <pre style={diagnosticCodeStyle}>
+                        {runtime.resolutionDisplay}
+                    </pre>
+                </>
+            )}
+
+            {setupStatus?.binaryPath && (
+                <>
+                    <div
+                        style={{ fontSize: 11, color: "var(--text-secondary)" }}
+                    >
+                        Setup binary path
+                    </div>
+                    <pre style={diagnosticCodeStyle}>
+                        {setupStatus.binaryPath}
+                    </pre>
+                </>
+            )}
+
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                Source: {setupStatus?.binarySource ?? "unknown"}
+                {setupStatus?.authMethod
+                    ? `  •  Auth: ${setupStatus.authMethod}`
+                    : ""}
+            </div>
+
+            {runtime.setupError && (
+                <div
+                    style={{
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        fontSize: 11,
+                        border: "1px solid #7f1d1d",
+                        backgroundColor:
+                            "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                        color: "#fecaca",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    {runtime.setupError}
+                </div>
+            )}
+        </div>
+    );
 }
 
 function setOptionalSecretPatch(value?: string): AISecretPatch {
@@ -505,6 +671,13 @@ export function AIProvidersSettings() {
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [savingId, setSavingId] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [showDiagnostics, setShowDiagnostics] = useState(false);
+    const [diagnostics, setDiagnostics] =
+        useState<AIEnvironmentDiagnostics | null>(null);
+    const [diagnosticsError, setDiagnosticsError] = useState<string | null>(
+        null,
+    );
+    const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
     const [authTerminalRequest, setAuthTerminalRequest] = useState<{
         runtimeId: string;
         runtimeName: string;
@@ -530,6 +703,21 @@ export function AIProvidersSettings() {
                     "Failed to check setup status.",
                 ),
             }));
+        }
+    }, []);
+
+    const loadDiagnostics = useCallback(async () => {
+        setDiagnosticsLoading(true);
+        try {
+            const next = await aiGetEnvironmentDiagnostics();
+            setDiagnostics(next);
+            setDiagnosticsError(null);
+        } catch (error) {
+            setDiagnosticsError(
+                getErrorMessage(error, "Failed to load diagnostics."),
+            );
+        } finally {
+            setDiagnosticsLoading(false);
         }
     }, []);
 
@@ -756,6 +944,16 @@ export function AIProvidersSettings() {
         ];
     });
 
+    const handleToggleDiagnostics = useCallback(() => {
+        setShowDiagnostics((prev) => {
+            const next = !prev;
+            if (next && !diagnostics && !diagnosticsLoading) {
+                void loadDiagnostics();
+            }
+            return next;
+        });
+    }, [diagnostics, diagnosticsLoading, loadDiagnostics]);
+
     /* ── Render ── */
 
     return (
@@ -941,6 +1139,250 @@ export function AIProvidersSettings() {
                             </Fragment>
                         );
                     })
+                )}
+            </div>
+
+            <div
+                style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "var(--text-secondary)",
+                    paddingTop: 20,
+                    paddingBottom: 6,
+                }}
+            >
+                Diagnostics
+            </div>
+
+            <div
+                style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    backgroundColor: "var(--bg-secondary)",
+                }}
+            >
+                <div
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        padding: "12px 14px",
+                    }}
+                >
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                        <div
+                            style={{
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            AI runtime environment
+                        </div>
+                        <div
+                            style={{
+                                fontSize: 12,
+                                color: "var(--text-secondary)",
+                                marginTop: 2,
+                            }}
+                        >
+                            Inspect the PATH inherited by VaultAI, the PATH
+                            injected into runtimes, and which binaries are
+                            actually resolvable.
+                        </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                void loadDiagnostics();
+                            }}
+                            disabled={diagnosticsLoading}
+                            style={{
+                                padding: "6px 10px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                color: "var(--text-secondary)",
+                                border: "1px solid var(--border)",
+                                backgroundColor: "transparent",
+                                cursor: diagnosticsLoading
+                                    ? "not-allowed"
+                                    : "pointer",
+                                opacity: diagnosticsLoading ? 0.5 : 1,
+                            }}
+                        >
+                            {diagnosticsLoading ? "Refreshing…" : "Refresh"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleToggleDiagnostics}
+                            style={{
+                                padding: "6px 10px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                                border: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-primary)",
+                                cursor: "pointer",
+                            }}
+                        >
+                            {showDiagnostics ? "Hide" : "Show"}
+                        </button>
+                    </div>
+                </div>
+
+                {showDiagnostics && (
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 14,
+                            padding: "0 14px 14px",
+                        }}
+                    >
+                        {diagnosticsError && (
+                            <div
+                                style={{
+                                    padding: "10px 12px",
+                                    borderRadius: 8,
+                                    fontSize: 12,
+                                    border: "1px solid #7f1d1d",
+                                    backgroundColor:
+                                        "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                                    color: "#fecaca",
+                                }}
+                            >
+                                {diagnosticsError}
+                            </div>
+                        )}
+
+                        {diagnostics && (
+                            <>
+                                <DiagnosticsPathBlock
+                                    label="Process PATH"
+                                    helper="This is the PATH inherited by the VaultAI desktop process itself."
+                                    entries={diagnostics.inheritedEntries}
+                                />
+                                <DiagnosticsPathBlock
+                                    label="Injected Runtime PATH"
+                                    helper="This is the normalized PATH that VaultAI now injects into Codex, Claude and Gemini child processes."
+                                    entries={diagnostics.preferredEntries}
+                                />
+
+                                <div
+                                    style={{
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: 8,
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            fontSize: 11,
+                                            fontWeight: 600,
+                                            color: "var(--text-primary)",
+                                        }}
+                                    >
+                                        Tool resolution
+                                    </div>
+                                    <div
+                                        style={{
+                                            display: "grid",
+                                            gap: 8,
+                                            gridTemplateColumns:
+                                                "repeat(auto-fit, minmax(180px, 1fr))",
+                                        }}
+                                    >
+                                        {diagnostics.executables.map((item) => (
+                                            <div
+                                                key={item.name}
+                                                style={{
+                                                    display: "flex",
+                                                    flexDirection: "column",
+                                                    gap: 6,
+                                                    padding: 12,
+                                                    borderRadius: 8,
+                                                    border: "1px solid var(--border)",
+                                                    backgroundColor:
+                                                        "var(--bg-primary)",
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        fontSize: 11,
+                                                        fontWeight: 600,
+                                                        color: "var(--text-primary)",
+                                                    }}
+                                                >
+                                                    {item.name}
+                                                </div>
+                                                <pre
+                                                    style={diagnosticCodeStyle}
+                                                >
+                                                    {item.path ?? "Not found"}
+                                                </pre>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div
+                                    style={{
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: 8,
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            fontSize: 11,
+                                            fontWeight: 600,
+                                            color: "var(--text-primary)",
+                                        }}
+                                    >
+                                        Runtime launch resolution
+                                    </div>
+                                    <div
+                                        style={{
+                                            display: "grid",
+                                            gap: 8,
+                                            gridTemplateColumns:
+                                                "repeat(auto-fit, minmax(260px, 1fr))",
+                                        }}
+                                    >
+                                        {diagnostics.runtimes.map((runtime) => (
+                                            <DiagnosticsRuntimeCard
+                                                key={runtime.runtimeId}
+                                                runtime={runtime}
+                                            />
+                                        ))}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {diagnosticsLoading &&
+                            !diagnostics &&
+                            !diagnosticsError && (
+                                <div
+                                    style={{
+                                        padding: "10px 12px",
+                                        borderRadius: 8,
+                                        fontSize: 12,
+                                        color: "var(--text-secondary)",
+                                        backgroundColor: "var(--bg-primary)",
+                                        border: "1px solid var(--border)",
+                                    }}
+                                >
+                                    Loading diagnostics…
+                                </div>
+                            )}
+                    </div>
                 )}
             </div>
 

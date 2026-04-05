@@ -23,6 +23,10 @@ pub fn preferred_path_value() -> Option<OsString> {
     env::join_paths(entries).ok()
 }
 
+pub fn inherited_path_value() -> Option<OsString> {
+    env::var_os("PATH")
+}
+
 fn append_platform_tool_dirs(entries: &mut Vec<PathBuf>) {
     if let Some(home) = home_dir() {
         entries.push(home.join(".cargo/bin"));

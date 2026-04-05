@@ -1,6 +1,8 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
-    env, fs, io,
+    collections::{BTreeSet, HashSet, VecDeque},
+    env,
+    ffi::OsString,
+    fs, io,
     io::Read,
     path::{Path, PathBuf},
     process::Command,
@@ -12,6 +14,11 @@ const EMBEDDED_CLAUDE_DIR: &str = "claude-agent-acp";
 const EMBEDDED_NODE_DIR: &str = "node";
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=PATH");
+    println!("cargo:rerun-if-env-changed=HOME");
+    println!("cargo:rerun-if-env-changed=USERPROFILE");
+    println!("cargo:rerun-if-env-changed=PATHEXT");
+
     stage_runtime(RuntimeStageSpec {
         label: "codex",
         env_bundle_key: "VAULTAI_CODEX_ACP_BUNDLE_BIN",
@@ -690,8 +697,7 @@ fn find_program(program: &str) -> Option<PathBuf> {
         return candidate.exists().then_some(candidate);
     }
 
-    let paths = env::var_os("PATH")?;
-    for directory in env::split_paths(&paths) {
+    for directory in preferred_path_entries() {
         for candidate in executable_candidates(&directory, program) {
             if candidate.exists() && candidate.is_file() {
                 return Some(candidate);
@@ -700,6 +706,83 @@ fn find_program(program: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+fn preferred_path_entries() -> Vec<PathBuf> {
+    let mut entries = env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    if let Some(home) = home_dir() {
+        entries.push(home.join(".cargo/bin"));
+        entries.push(home.join(".local/bin"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // GUI-launched builds often miss Homebrew paths, so stage/runtime discovery
+        // must add the common tool directories explicitly.
+        entries.extend(
+            [
+                "/opt/homebrew/bin",
+                "/opt/homebrew/sbin",
+                "/usr/local/bin",
+                "/usr/local/sbin",
+                "/opt/local/bin",
+                "/opt/local/sbin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+            .into_iter()
+            .map(PathBuf::from),
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        entries.extend(
+            [
+                "/usr/local/bin",
+                "/usr/local/sbin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+            .into_iter()
+            .map(PathBuf::from),
+        );
+    }
+
+    dedupe_paths(entries)
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::<OsString>::new();
+    let mut deduped = Vec::new();
+
+    for path in paths {
+        let key = path.as_os_str().to_os_string();
+        if seen.insert(key) {
+            deduped.push(path);
+        }
+    }
+
+    deduped
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        env::var_os("HOME").map(PathBuf::from)
+    }
 }
 
 fn cargo_target_os() -> String {

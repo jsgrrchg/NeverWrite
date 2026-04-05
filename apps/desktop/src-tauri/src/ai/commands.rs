@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Mutex};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use vault_ai_ai::{
     AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession,
@@ -10,10 +10,14 @@ use vault_ai_ai::{
 use crate::AppState;
 
 use super::{
-    claude::ClaudeSetupInput,
-    codex::CodexSetupInput,
+    claude::{ClaudeRuntime, ClaudeSetupInput},
+    codex::{CodexRuntime, CodexSetupInput},
     emit::{emit_session_created, emit_session_error, emit_session_updated},
-    gemini::GeminiSetupInput,
+    env::{
+        find_program_on_preferred_path, inherited_path_value, preferred_path_entries,
+        preferred_path_value,
+    },
+    gemini::{GeminiRuntime, GeminiSetupInput},
     manager::{AiAttachmentInput, AiManager},
     persistence::{
         self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
@@ -96,6 +100,33 @@ pub struct AiCreateSessionInput {
     pub additional_roots: Option<Vec<String>>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AiResolvedExecutable {
+    pub name: String,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimeDiagnostic {
+    pub runtime_id: String,
+    pub runtime_name: String,
+    pub setup_status: Option<AiRuntimeSetupStatus>,
+    pub setup_error: Option<String>,
+    pub launch_program: Option<String>,
+    pub launch_args: Vec<String>,
+    pub resolution_display: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiEnvironmentDiagnostics {
+    pub inherited_path: Option<String>,
+    pub inherited_entries: Vec<String>,
+    pub preferred_path: Option<String>,
+    pub preferred_entries: Vec<String>,
+    pub executables: Vec<AiResolvedExecutable>,
+    pub runtimes: Vec<AiRuntimeDiagnostic>,
+}
+
 #[tauri::command]
 pub async fn ai_get_setup_status(
     runtime_id: Option<String>,
@@ -107,6 +138,109 @@ pub async fn ai_get_setup_status(
         .lock()
         .map_err(|error| format!("Error de estado interno: {error}"))?;
     state.runtime_setup_status(&app, &runtime_id)
+}
+
+#[tauri::command]
+pub async fn ai_get_environment_diagnostics(
+    app: AppHandle,
+) -> Result<AiEnvironmentDiagnostics, String> {
+    let inherited_path = inherited_path_value().map(|value| value.to_string_lossy().into_owned());
+    let inherited_entries = inherited_path
+        .as_deref()
+        .map(|raw| {
+            std::env::split_paths(raw)
+                .map(|path| path.display().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let preferred_path = preferred_path_value().map(|value| value.to_string_lossy().into_owned());
+    let preferred_entries = preferred_path_entries()
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect();
+
+    let executables = [
+        "rg",
+        "node",
+        "npm",
+        "cargo",
+        "codex-acp",
+        "claude-agent-acp",
+        "gemini",
+    ]
+    .into_iter()
+    .map(|name| AiResolvedExecutable {
+        name: name.to_string(),
+        path: find_program_on_preferred_path(name).map(|path| path.display().to_string()),
+    })
+    .collect();
+
+    let codex_runtime = CodexRuntime;
+    let codex_setup = codex_runtime.setup_status(&app);
+    let codex_spec = codex_runtime.process_spec(&app, None);
+
+    let claude_runtime = ClaudeRuntime;
+    let claude_setup = claude_runtime.setup_status(&app);
+    let claude_spec = claude_runtime.process_spec(&app, None);
+    let claude_resolved = claude_runtime.resolved_binary(&app);
+
+    let gemini_runtime = GeminiRuntime;
+    let gemini_setup = gemini_runtime.setup_status(&app);
+    let gemini_spec = gemini_runtime.process_spec(&app, None);
+    let gemini_resolved = gemini_runtime.resolved_binary(&app);
+
+    let runtimes = vec![
+        AiRuntimeDiagnostic {
+            runtime_id: CODEX_RUNTIME_ID.to_string(),
+            runtime_name: "Codex".to_string(),
+            setup_status: codex_setup.clone().ok(),
+            setup_error: codex_setup.as_ref().err().cloned(),
+            launch_program: codex_spec
+                .as_ref()
+                .ok()
+                .map(|spec| spec.binary_path.display().to_string()),
+            launch_args: Vec::new(),
+            resolution_display: codex_setup
+                .as_ref()
+                .ok()
+                .and_then(|status| status.binary_path.clone()),
+        },
+        AiRuntimeDiagnostic {
+            runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+            runtime_name: "Claude".to_string(),
+            setup_status: claude_setup.clone().ok(),
+            setup_error: claude_setup.as_ref().err().cloned(),
+            launch_program: claude_spec.as_ref().ok().map(|spec| spec.program.clone()),
+            launch_args: claude_spec
+                .as_ref()
+                .ok()
+                .map(|spec| spec.args.clone())
+                .unwrap_or_default(),
+            resolution_display: claude_resolved.ok().and_then(|resolved| resolved.display),
+        },
+        AiRuntimeDiagnostic {
+            runtime_id: GEMINI_RUNTIME_ID.to_string(),
+            runtime_name: "Gemini".to_string(),
+            setup_status: gemini_setup.clone().ok(),
+            setup_error: gemini_setup.as_ref().err().cloned(),
+            launch_program: gemini_spec.as_ref().ok().map(|spec| spec.program.clone()),
+            launch_args: gemini_spec
+                .as_ref()
+                .ok()
+                .map(|spec| spec.args.clone())
+                .unwrap_or_default(),
+            resolution_display: gemini_resolved.ok().and_then(|resolved| resolved.display),
+        },
+    ];
+
+    Ok(AiEnvironmentDiagnostics {
+        inherited_path,
+        inherited_entries,
+        preferred_path,
+        preferred_entries,
+        executables,
+        runtimes,
+    })
 }
 
 #[tauri::command]

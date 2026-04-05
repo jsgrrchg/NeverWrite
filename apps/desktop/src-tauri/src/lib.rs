@@ -6201,6 +6201,7 @@ pub fn run() {
             spellcheck::spellcheck_check_grammar,
             ai::commands::ai_list_runtimes,
             ai::commands::ai_get_setup_status,
+            ai::commands::ai_get_environment_diagnostics,
             ai::commands::ai_update_setup,
             ai::commands::ai_start_auth,
             ai::auth_terminal::ai_start_auth_terminal_session,
@@ -6259,12 +6260,17 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
-    fn setup_note_path_test_vault() -> (PathBuf, Vault) {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-note-path-test-{}-{}",
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}-{}",
             std::process::id(),
-            now_ms()
-        ));
+            now_ms(),
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn setup_note_path_test_vault() -> (PathBuf, Vault) {
+        let dir = unique_test_dir("vault-ai-note-path-test");
         fs::create_dir_all(dir.join("folder")).unwrap();
         fs::write(dir.join("folder/note.md"), b"# Note").unwrap();
         let vault = Vault::open(dir.clone()).unwrap();
@@ -6360,18 +6366,8 @@ mod tests {
 
     #[cfg(unix)]
     fn setup_symlink_boundary_test_vault() -> (PathBuf, PathBuf, Vault) {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-symlink-boundary-test-{}-{}-{}",
-            std::process::id(),
-            now_ms(),
-            uuid::Uuid::new_v4()
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "vault-ai-symlink-boundary-outside-{}-{}-{}",
-            std::process::id(),
-            now_ms(),
-            uuid::Uuid::new_v4()
-        ));
+        let dir = unique_test_dir("vault-ai-symlink-boundary-test");
+        let outside = unique_test_dir("vault-ai-symlink-boundary-outside");
         fs::create_dir_all(&dir).unwrap();
         fs::create_dir_all(outside.join("external")).unwrap();
         fs::write(dir.join("file.txt"), b"note").unwrap();
@@ -6382,11 +6378,7 @@ mod tests {
 
     #[test]
     fn cleanup_obsolete_snapshot_removes_older_versions() {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-snapshot-test-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir = unique_test_dir("vault-ai-snapshot-test");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("snapshot.json"), b"{}").unwrap();
 
@@ -6431,11 +6423,7 @@ mod tests {
 
     #[test]
     fn resolve_vault_scoped_path_accepts_absolute_existing_markdown_paths_inside_vault() {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-absolute-markdown-test-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir = unique_test_dir("vault-ai-absolute-markdown-test");
         let file_path = dir.join(".PERSONAL").join("pruebas.md");
         fs::create_dir_all(file_path.parent().unwrap()).unwrap();
         fs::write(&file_path, "# test").unwrap();
@@ -6455,11 +6443,7 @@ mod tests {
 
     #[test]
     fn resolve_vault_scoped_path_accepts_absolute_code_file_targets_inside_vault() {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-absolute-code-test-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir = unique_test_dir("vault-ai-absolute-code-test");
         fs::create_dir_all(dir.join("src")).unwrap();
         let file_path = dir.join("src").join("watcher.rs");
 
@@ -6478,11 +6462,7 @@ mod tests {
 
     #[test]
     fn cleanup_obsolete_snapshot_keeps_current_version() {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-snapshot-test-{}-{}-keep",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir = unique_test_dir("vault-ai-snapshot-test-keep");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("snapshot.json"), b"{}").unwrap();
 
@@ -6556,11 +6536,7 @@ mod tests {
 
     #[test]
     fn ensure_parent_folders_in_cache_adds_missing_ancestors() {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-entry-cache-test-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir = unique_test_dir("vault-ai-entry-cache-test");
         let nested_dir = dir.join("projects/2026");
         fs::create_dir_all(&nested_dir).unwrap();
         fs::write(nested_dir.join("plan.md"), b"# Plan").unwrap();
@@ -6644,11 +6620,7 @@ mod tests {
 
     #[test]
     fn build_web_clipper_relative_note_path_keeps_spaces_in_filename() {
-        let dir = std::env::temp_dir().join(format!(
-            "vault-ai-web-clipper-path-test-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir = unique_test_dir("vault-ai-web-clipper-path-test");
         fs::create_dir_all(&dir).unwrap();
 
         let vault = Vault::open(dir.clone()).unwrap();
@@ -6666,8 +6638,8 @@ mod tests {
         let uri = concat!(
             "vaultai://clip?requestId=req-1&createdAt=2026-04-01T23%3A00%3A48.124Z",
             "&source=web-clipper",
-            "&vault=%27%2FUsers%2Fjose%2FDocuments%2Fobsidian+volt%2FGEO+2026%27",
-            "&vaultPathHint=%27%2FUsers%2Fjose%2FDocuments%2Fobsidian+volt%2FGEO+2026%27",
+            "&vault=%27%2Fvaults%2FGeo+2026%27",
+            "&vaultPathHint=%27%2Fvaults%2FGeo+2026%27",
             "&vaultNameHint=Geo+2026",
             "&folder=Clippings",
             "&title=Market+Update",
@@ -6678,10 +6650,7 @@ mod tests {
 
         let request = parse_web_clipper_deep_link(uri).unwrap();
 
-        assert_eq!(
-            request.vault_path_hint.as_deref(),
-            Some("/vaults/Geo 2026")
-        );
+        assert_eq!(request.vault_path_hint.as_deref(), Some("/vaults/Geo 2026"));
         assert_eq!(request.vault_name_hint.as_deref(), Some("Geo 2026"));
         assert_eq!(request.folder, "Clippings");
         assert_eq!(request.mode, WebClipperDeepLinkMode::Clipboard);
@@ -6714,10 +6683,8 @@ mod tests {
         let mut dirs = Vec::new();
 
         for path in paths {
-            let dir = std::env::temp_dir().join(format!(
-                "vault-ai-web-clipper-state-test-{}-{}-{}",
-                std::process::id(),
-                now_ms(),
+            let dir = unique_test_dir(&format!(
+                "vault-ai-web-clipper-state-test-{}",
                 dirs.len()
             ));
             fs::create_dir_all(&dir).unwrap();

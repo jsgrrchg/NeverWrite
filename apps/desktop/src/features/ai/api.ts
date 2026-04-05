@@ -15,6 +15,7 @@ import type {
     AIMessageCompletedPayload,
     AIMessageDeltaPayload,
     AIMessageStartedPayload,
+    AIEnvironmentDiagnostics,
     AIPermissionRequestPayload,
     AIPlanUpdatePayload,
     AIStatusEventPayload,
@@ -212,6 +213,45 @@ function normalizeRuntimeSetupStatus(
     };
 }
 
+function normalizeEnvironmentDiagnostics(diagnostics: {
+    inherited_path?: string | null;
+    inherited_entries: string[];
+    preferred_path?: string | null;
+    preferred_entries: string[];
+    executables: { name: string; path?: string | null }[];
+    runtimes: {
+        runtime_id: string;
+        runtime_name: string;
+        setup_status?: AIBackendRuntimeSetupStatusPayload | null;
+        setup_error?: string | null;
+        launch_program?: string | null;
+        launch_args: string[];
+        resolution_display?: string | null;
+    }[];
+}): AIEnvironmentDiagnostics {
+    return {
+        inheritedPath: diagnostics.inherited_path ?? undefined,
+        inheritedEntries: diagnostics.inherited_entries,
+        preferredPath: diagnostics.preferred_path ?? undefined,
+        preferredEntries: diagnostics.preferred_entries,
+        executables: diagnostics.executables.map((item) => ({
+            name: item.name,
+            path: item.path ?? undefined,
+        })),
+        runtimes: diagnostics.runtimes.map((runtime) => ({
+            runtimeId: runtime.runtime_id,
+            runtimeName: runtime.runtime_name,
+            setupStatus: runtime.setup_status
+                ? normalizeRuntimeSetupStatus(runtime.setup_status)
+                : undefined,
+            setupError: runtime.setup_error ?? undefined,
+            launchProgram: runtime.launch_program ?? undefined,
+            launchArgs: runtime.launch_args,
+            resolutionDisplay: runtime.resolution_display ?? undefined,
+        })),
+    };
+}
+
 export async function aiListRuntimes() {
     try {
         const descriptors =
@@ -247,6 +287,26 @@ export async function aiGetSetupStatus(runtimeId: string) {
         },
     );
     return normalizeRuntimeSetupStatus(status);
+}
+
+export async function aiGetEnvironmentDiagnostics() {
+    const diagnostics = await invoke<{
+        inherited_path?: string | null;
+        inherited_entries: string[];
+        preferred_path?: string | null;
+        preferred_entries: string[];
+        executables: { name: string; path?: string | null }[];
+        runtimes: {
+            runtime_id: string;
+            runtime_name: string;
+            setup_status?: AIBackendRuntimeSetupStatusPayload | null;
+            setup_error?: string | null;
+            launch_program?: string | null;
+            launch_args: string[];
+            resolution_display?: string | null;
+        }[];
+    }>("ai_get_environment_diagnostics");
+    return normalizeEnvironmentDiagnostics(diagnostics);
 }
 
 export async function aiUpdateSetup(input: {

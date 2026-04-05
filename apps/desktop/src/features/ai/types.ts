@@ -70,6 +70,30 @@ export interface AIRuntimeSetupStatus {
     message?: string;
 }
 
+export interface AIResolvedExecutable {
+    name: string;
+    path?: string;
+}
+
+export interface AIRuntimeDiagnostic {
+    runtimeId: string;
+    runtimeName: string;
+    setupStatus?: AIRuntimeSetupStatus;
+    setupError?: string;
+    launchProgram?: string;
+    launchArgs: string[];
+    resolutionDisplay?: string;
+}
+
+export interface AIEnvironmentDiagnostics {
+    inheritedPath?: string;
+    inheritedEntries: string[];
+    preferredPath?: string;
+    preferredEntries: string[];
+    executables: AIResolvedExecutable[];
+    runtimes: AIRuntimeDiagnostic[];
+}
+
 export interface AIAuthMethod {
     id: string;
     name: string;
