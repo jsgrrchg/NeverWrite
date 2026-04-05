@@ -1,0 +1,180 @@
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it } from "vitest";
+import { isMapTab, useEditorStore } from "../../app/store/editorStore";
+import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    flushPromises,
+    mockInvoke,
+    renderComponent,
+    setEditorTabs,
+} from "../../test/test-utils";
+import { MapsPanel } from "./MapsPanel";
+
+function buildMapListEntry(relativePath: string, title: string) {
+    return {
+        id: relativePath.replace(/\.excalidraw$/i, ""),
+        title,
+        relative_path: relativePath,
+    };
+}
+
+function buildMovedMapEntry(relativePath: string, title: string) {
+    const fileName = relativePath.split("/").pop() ?? relativePath;
+    return {
+        id: relativePath,
+        path: `/vault/${relativePath}`,
+        relative_path: relativePath,
+        title,
+        file_name: fileName,
+        extension: "excalidraw",
+        kind: "file" as const,
+        modified_at: 1,
+        created_at: 1,
+        size: 128,
+        mime_type: "application/json",
+    };
+}
+
+describe("MapsPanel", () => {
+    it("renames a map from the context menu while preserving the map tab linkage", async () => {
+        const user = userEvent.setup();
+        const invokeMock = mockInvoke();
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        setEditorTabs(
+            [
+                {
+                    id: "map-1",
+                    kind: "map",
+                    title: "Map 2026-04-05",
+                    relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
+                    history: [],
+                    historyIndex: -1,
+                },
+            ],
+            "map-1",
+        );
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "list_maps") {
+                return [
+                    buildMapListEntry(
+                        "Excalidraw/Map 2026-04-05.excalidraw",
+                        "Map 2026-04-05",
+                    ),
+                ];
+            }
+            if (command === "move_vault_entry") {
+                return buildMovedMapEntry(
+                    "Excalidraw/Architecture.excalidraw",
+                    "Architecture",
+                );
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        renderComponent(<MapsPanel />);
+        await flushPromises();
+
+        const mapRow = screen.getByText("Map 2026-04-05").closest("button");
+        expect(mapRow).not.toBeNull();
+
+        fireEvent.contextMenu(mapRow!, {
+            clientX: 40,
+            clientY: 40,
+        });
+
+        await user.click(await screen.findByText("Rename"));
+
+        const renameInput = await screen.findByLabelText(
+            "Rename Map 2026-04-05",
+        );
+        await user.clear(renameInput);
+        await user.type(renameInput, "Architecture{Enter}");
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith("move_vault_entry", {
+                vaultPath: "/vault",
+                relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
+                newRelativePath: "Excalidraw/Architecture.excalidraw",
+            });
+        });
+
+        expect(await screen.findByText("Architecture")).toBeInTheDocument();
+        const mapTabs = useEditorStore
+            .getState()
+            .tabs.filter((tab) => isMapTab(tab));
+        expect(mapTabs).toHaveLength(1);
+        expect(mapTabs[0]).toMatchObject({
+            relativePath: "Excalidraw/Architecture.excalidraw",
+            title: "Architecture",
+        });
+    });
+
+    it("deletes a map from the context menu and closes its open tab", async () => {
+        const user = userEvent.setup();
+        const invokeMock = mockInvoke();
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        setEditorTabs(
+            [
+                {
+                    id: "map-1",
+                    kind: "map",
+                    title: "Map 2026-04-05",
+                    relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
+                    history: [],
+                    historyIndex: -1,
+                },
+            ],
+            "map-1",
+        );
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "list_maps") {
+                return [
+                    buildMapListEntry(
+                        "Excalidraw/Map 2026-04-05.excalidraw",
+                        "Map 2026-04-05",
+                    ),
+                ];
+            }
+            if (command === "delete_map") {
+                return undefined;
+            }
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        renderComponent(<MapsPanel />);
+        await flushPromises();
+
+        const mapRow = screen.getByText("Map 2026-04-05").closest("button");
+        expect(mapRow).not.toBeNull();
+
+        fireEvent.contextMenu(mapRow!, {
+            clientX: 50,
+            clientY: 50,
+        });
+
+        await user.click(await screen.findByText("Delete Map"));
+
+        await waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith("delete_map", {
+                vaultPath: "/vault",
+                relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
+            });
+        });
+
+        await waitFor(() => {
+            expect(
+                screen.queryByText("Map 2026-04-05"),
+            ).not.toBeInTheDocument();
+        });
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isMapTab(tab)),
+        ).toBe(false);
+    });
+});
