@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useCallback, useMemo, useState, type MouseEvent } from "react";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -69,6 +69,9 @@ export function HistorySessionCard({
     const isEditing = editingKey === session.sessionId;
     const stableSessionId = getHistorySelectionId(session);
     const fullTitle = getSessionTitleText(session);
+    const startEditing = useCallback(() => {
+        beginInlineRename(session.sessionId, getSessionTitle(session));
+    }, [beginInlineRename, session]);
     const contextMenuEntries = useMemo<ContextMenuEntry[]>(
         () => [
             {
@@ -114,10 +117,6 @@ export function HistorySessionCard({
             stableSessionId,
         ],
     );
-
-    function startEditing() {
-        beginInlineRename(session.sessionId, getSessionTitle(session));
-    }
 
     function commitEdit() {
         if (editingKey !== session.sessionId) return;

@@ -80,20 +80,6 @@ export function AIChatTabs({
         cancelEditing,
         commitEditing,
     } = useInlineRename<string>();
-    const handleWheel = useCallback((e: React.WheelEvent) => {
-        if (e.deltaY !== 0 && tabStripRef.current) {
-            e.preventDefault();
-            tabStripRef.current.scrollLeft += e.deltaY;
-        }
-    }, []);
-    const handleTabPointerDownCapture = useCallback(
-        (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0) return;
-            if ((event.target as HTMLElement).closest("button")) return;
-            onSelectTab(tabId);
-        },
-        [onSelectTab],
-    );
     const {
         draggingTabId,
         projectedDropIndex,
@@ -111,6 +97,23 @@ export function AIChatTabs({
         onActivate: onSelectTab,
         liveReorder: false,
     });
+    const handleWheel = useCallback(
+        (e: React.WheelEvent) => {
+            if (e.deltaY !== 0 && tabStripRef.current) {
+                e.preventDefault();
+                tabStripRef.current.scrollLeft += e.deltaY;
+            }
+        },
+        [tabStripRef],
+    );
+    const handleTabPointerDownCapture = useCallback(
+        (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
+            if (event.button !== 0) return;
+            if ((event.target as HTMLElement).closest("button")) return;
+            onSelectTab(tabId);
+        },
+        [onSelectTab],
+    );
     const handleTabClick = useCallback(
         (tabId: string) => {
             if (editingKey === tabId) return;

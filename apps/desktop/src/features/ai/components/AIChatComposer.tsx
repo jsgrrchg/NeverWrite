@@ -1034,6 +1034,7 @@ export function AIChatComposer({
         [expanded],
     );
     const estimatedComposerMinHeight = useMemo(() => {
+        void pretextRevision;
         if (
             expanded ||
             customHeight != null ||

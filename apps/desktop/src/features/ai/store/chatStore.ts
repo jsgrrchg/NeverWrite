@@ -205,6 +205,9 @@ interface DeferredQueuedMessage {
     nextItemId: string | null;
 }
 
+// Deferred queue entries are temporarily withheld while the session is busy.
+// Paused queues remember which deferred items must be reinstated only after the
+// next user-initiated send, so auto-resume does not reorder intent.
 interface PausedQueueState {
     reinstateAfterNextManualSend: DeferredQueuedMessage[];
 }
@@ -252,7 +255,7 @@ function saveAiPreferences(patch: Partial<AiPreferences>) {
             JSON.stringify({ ...current, ...patch }),
         );
     } catch {
-        // ignore
+        // Preference writes are best-effort and should never break chat flows.
     }
 }
 
@@ -292,7 +295,7 @@ function saveAutoContextPreference(
             String(autoContextEnabled),
         );
     } catch {
-        // ignore
+        // Auto-context persistence is optional; keep the current session usable.
     }
 }
 
@@ -335,7 +338,7 @@ function saveRuntimeCatalogCache(
             }),
         );
     } catch {
-        // ignore
+        // Cache misses are acceptable; the runtime can always refresh again.
     }
 }
 
@@ -852,6 +855,9 @@ function resolveAgentSelectionMutationResult(
         return returnedSession;
     }
 
+    // The mutation response may arrive after a newer optimistic selection has
+    // already updated the live session. In that race, preserve the newer local
+    // choice instead of letting the stale response roll it back.
     return synchronizeSessionConfigSelections({
         ...returnedSession,
         modelId: latestSession.modelId,

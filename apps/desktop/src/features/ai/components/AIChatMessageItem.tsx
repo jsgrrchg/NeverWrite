@@ -307,26 +307,25 @@ function PretextReservedTextMessage({
         };
     }, [children]);
 
-    const estimatedHeight = useMemo(
-        () =>
-            contentWidth > 0
-                ? estimateChatTextMessageHeight({
-                      content,
-                      contentWidth,
-                      role,
-                      chatFontSize,
-                      chatFontFamily,
-                  })
-                : 0,
-        [
-            chatFontFamily,
-            chatFontSize,
-            content,
-            contentWidth,
-            pretextRevision,
-            role,
-        ],
-    );
+    const estimatedHeight = useMemo(() => {
+        void pretextRevision;
+        return contentWidth > 0
+            ? estimateChatTextMessageHeight({
+                  content,
+                  contentWidth,
+                  role,
+                  chatFontSize,
+                  chatFontFamily,
+              })
+            : 0;
+    }, [
+        chatFontFamily,
+        chatFontSize,
+        content,
+        contentWidth,
+        pretextRevision,
+        role,
+    ]);
 
     // Reset settled flag only when content or font environment changes —
     // width-only changes should NOT re-activate the reservation.
@@ -338,17 +337,24 @@ function PretextReservedTextMessage({
         if (reserveSettledRef.current) return;
 
         if (estimatedHeight <= 0) {
-            setReserveActive(false);
-            return;
+            const resetTimeoutId = window.setTimeout(() => {
+                setReserveActive(false);
+            }, 0);
+            return () => {
+                window.clearTimeout(resetTimeoutId);
+            };
         }
 
-        setReserveActive(true);
+        const activateFrameId = window.requestAnimationFrame(() => {
+            setReserveActive(true);
+        });
         const timeoutId = window.setTimeout(() => {
             reserveSettledRef.current = true;
             setReserveActive(false);
         }, PRETEXT_RESERVE_SETTLE_MS);
 
         return () => {
+            window.cancelAnimationFrame(activateFrameId);
             window.clearTimeout(timeoutId);
         };
     }, [content, contentWidth, estimatedHeight, pretextRevision]);
@@ -356,7 +362,12 @@ function PretextReservedTextMessage({
     useEffect(() => {
         if (reserveActive && contentHeight >= estimatedHeight - 1) {
             reserveSettledRef.current = true;
-            setReserveActive(false);
+            const settleTimeoutId = window.setTimeout(() => {
+                setReserveActive(false);
+            }, 0);
+            return () => {
+                window.clearTimeout(settleTimeoutId);
+            };
         }
     }, [contentHeight, estimatedHeight, reserveActive]);
 

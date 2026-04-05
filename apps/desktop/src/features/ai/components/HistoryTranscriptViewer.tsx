@@ -187,7 +187,10 @@ export function HistoryTranscriptViewer({
     const effectiveFontFamily = chatFontFamily ?? storeFontFamily;
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
-    const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+    const [activeMatchState, setActiveMatchState] = useState<{
+        key: string;
+        index: number;
+    }>({ key: "", index: 0 });
     const searchInputRef = useRef<HTMLInputElement>(null);
 
     const matchedMessages = useMemo(() => {
@@ -199,10 +202,16 @@ export function HistoryTranscriptViewer({
             ) ?? []
         );
     }, [searchQuery, session]);
+    const activeMatchKey = `${historySessionId ?? ""}\u0000${searchQuery}`;
+    const effectiveActiveMatchIndex =
+        activeMatchState.key === activeMatchKey ? activeMatchState.index : 0;
     const activeMatch =
         matchedMessages.length > 0
             ? matchedMessages[
-                  Math.min(activeMatchIndex, matchedMessages.length - 1)
+                  Math.min(
+                      effectiveActiveMatchIndex,
+                      matchedMessages.length - 1,
+                  )
               ]
             : null;
     const highlightedMessageIds = useMemo(
@@ -220,10 +229,6 @@ export function HistoryTranscriptViewer({
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
     }, [searchOpen]);
-
-    useEffect(() => {
-        setActiveMatchIndex(0);
-    }, [searchQuery, historySessionId]);
 
     if (!session) {
         return (
@@ -302,15 +307,22 @@ export function HistoryTranscriptViewer({
                                     matchedMessages.length > 0
                                 ) {
                                     event.preventDefault();
-                                    setActiveMatchIndex((index) =>
-                                        event.shiftKey
-                                            ? (index -
-                                                  1 +
-                                                  matchedMessages.length) %
-                                              matchedMessages.length
-                                            : (index + 1) %
-                                              matchedMessages.length,
-                                    );
+                                    setActiveMatchState((state) => {
+                                        const index =
+                                            state.key === activeMatchKey
+                                                ? state.index
+                                                : 0;
+                                        return {
+                                            key: activeMatchKey,
+                                            index: event.shiftKey
+                                                ? (index -
+                                                      1 +
+                                                      matchedMessages.length) %
+                                                  matchedMessages.length
+                                                : (index + 1) %
+                                                  matchedMessages.length,
+                                        };
+                                    });
                                 }
                             }}
                             className="min-w-0 flex-1 text-[11px] leading-none outline-none"
@@ -330,20 +342,30 @@ export function HistoryTranscriptViewer({
                     >
                         {searchQuery.trim()
                             ? matchedMessages.length > 0
-                                ? `${activeMatchIndex + 1} of ${matchedMessages.length}`
+                                ? `${effectiveActiveMatchIndex + 1} of ${matchedMessages.length}`
                                 : "0 results"
                             : "Type to search"}
                     </span>
                     <button
                         type="button"
-                        onClick={() =>
-                            setActiveMatchIndex((index) =>
-                                matchedMessages.length > 0
-                                    ? (index - 1 + matchedMessages.length) %
-                                      matchedMessages.length
-                                    : 0,
-                            )
-                        }
+                        onClick={() => {
+                            setActiveMatchState((state) => {
+                                const index =
+                                    state.key === activeMatchKey
+                                        ? state.index
+                                        : 0;
+                                return {
+                                    key: activeMatchKey,
+                                    index:
+                                        matchedMessages.length > 0
+                                            ? (index -
+                                                  1 +
+                                                  matchedMessages.length) %
+                                              matchedMessages.length
+                                            : 0,
+                                };
+                            });
+                        }}
                         disabled={matchedMessages.length === 0}
                         className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
                         style={{
@@ -369,13 +391,22 @@ export function HistoryTranscriptViewer({
                     </button>
                     <button
                         type="button"
-                        onClick={() =>
-                            setActiveMatchIndex((index) =>
-                                matchedMessages.length > 0
-                                    ? (index + 1) % matchedMessages.length
-                                    : 0,
-                            )
-                        }
+                        onClick={() => {
+                            setActiveMatchState((state) => {
+                                const index =
+                                    state.key === activeMatchKey
+                                        ? state.index
+                                        : 0;
+                                return {
+                                    key: activeMatchKey,
+                                    index:
+                                        matchedMessages.length > 0
+                                            ? (index + 1) %
+                                              matchedMessages.length
+                                            : 0,
+                                };
+                            });
+                        }}
                         disabled={matchedMessages.length === 0}
                         className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
                         style={{
