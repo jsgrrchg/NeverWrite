@@ -54,11 +54,18 @@ export function canUseDynamicFunction() {
 
     const protocol = getLocationProtocol();
 
-    // Hardened desktop builds run from a custom app protocol and must not
-    // probe dynamic code support with `new Function()`, because that probe
-    // itself is blocked by CSP. Keep the rule explicit and side-effect free.
-    dynamicFunctionSupport =
-        import.meta.env.DEV || protocol === "http:" || protocol === "https:";
+    if (protocol === "http:" || protocol === "https:") {
+        dynamicFunctionSupport = true;
+        return dynamicFunctionSupport;
+    }
+
+    try {
+        // Desktop builds may run from a custom app protocol, so protocol-based
+        // detection is too strict for features like Excalidraw.
+        dynamicFunctionSupport = Boolean(new Function("return true")());
+    } catch {
+        dynamicFunctionSupport = false;
+    }
 
     return dynamicFunctionSupport;
 }
