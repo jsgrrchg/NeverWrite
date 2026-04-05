@@ -1,5 +1,6 @@
 import {
     ChangeSet,
+    RangeSetBuilder,
     type EditorState,
     Facet,
     type Extension,
@@ -7,12 +8,18 @@ import {
     type StateEffect,
 } from "@codemirror/state";
 import {
+    getChunks,
     getOriginalDoc,
     originalDocChangeEffect,
     unifiedMergeView,
     type Change,
 } from "@codemirror/merge";
-import { EditorView } from "@codemirror/view";
+import {
+    Decoration,
+    EditorView,
+    ViewPlugin,
+    type DecorationSet,
+} from "@codemirror/view";
 import type { ReviewState } from "../../ai/diff/actionLogTypes";
 import type {
     ReviewChunk,
@@ -96,6 +103,90 @@ export interface MergeViewRuntimeConfig {
 
 export const mergeViewCompartment = new Compartment();
 
+const pureInsertionHighlightScope = Decoration.mark({
+    class: "cm-pure-insertion-content",
+});
+
+type MergeChunkLike = {
+    fromA: number;
+    toA: number;
+    fromB: number;
+    toB: number;
+};
+
+function isPureInsertionChunk(chunk: MergeChunkLike) {
+    return chunk.fromA === chunk.toA && chunk.fromB < chunk.toB;
+}
+
+function isPureDeletionChunk(chunk: MergeChunkLike) {
+    return chunk.fromA < chunk.toA && chunk.fromB === chunk.toB;
+}
+
+function buildPureInsertionDecorations(state: EditorState): DecorationSet {
+    const mergeChunks = getChunks(state)?.chunks ?? [];
+    if (mergeChunks.length === 0) {
+        return Decoration.none;
+    }
+
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const chunk of mergeChunks) {
+        if (!isPureInsertionChunk(chunk)) {
+            continue;
+        }
+        builder.add(chunk.fromB, chunk.toB, pureInsertionHighlightScope);
+    }
+
+    return builder.finish();
+}
+
+function syncDeletedChunkSemantics(view: EditorView) {
+    const mergeChunks = getChunks(view.state)?.chunks ?? [];
+    const deletedChunkElements =
+        view.dom.querySelectorAll<HTMLElement>(".cm-deletedChunk");
+
+    deletedChunkElements.forEach((element, index) => {
+        const chunk = mergeChunks[index];
+        element.classList.toggle(
+            "cm-pure-deletion-chunk",
+            chunk != null && isPureDeletionChunk(chunk),
+        );
+    });
+}
+
+const mergeChunkSemanticsPlugin = ViewPlugin.fromClass(
+    class {
+        decorations: DecorationSet;
+        private readonly view: EditorView;
+
+        constructor(view: EditorView) {
+            this.view = view;
+            this.decorations = buildPureInsertionDecorations(view.state);
+            this.scheduleDeletedChunkSync();
+        }
+
+        update(update: { state: EditorState; startState: EditorState }) {
+            const previousChunks = getChunks(update.startState)?.chunks ?? null;
+            const nextChunks = getChunks(update.state)?.chunks ?? null;
+            if (previousChunks !== nextChunks) {
+                this.decorations = buildPureInsertionDecorations(update.state);
+            }
+            this.scheduleDeletedChunkSync();
+        }
+
+        private scheduleDeletedChunkSync() {
+            this.view.requestMeasure({
+                read: () => null,
+                write: () => {
+                    syncDeletedChunkSemantics(this.view);
+                },
+            });
+        }
+    },
+    {
+        decorations: (value) => value.decorations,
+    },
+);
+
 export const mergeSessionIdFacet = defineSingleFacet<string | null>(null);
 export const mergeIdentityKeyFacet = defineSingleFacet<string | null>(null);
 export const mergeTrackedVersionFacet = defineSingleFacet<number | null>(null);
@@ -162,6 +253,7 @@ export function createMergeViewExtension(
 ): Extension[] {
     return [
         mergeViewTheme,
+        mergeChunkSemanticsPlugin,
         ...createMergeViewRuntimeExtension({
             enabled: true,
             trackedVersion: config.trackedVersion,

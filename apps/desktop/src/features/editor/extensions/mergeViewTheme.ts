@@ -26,6 +26,12 @@ export const mergeViewTheme = EditorView.baseTheme({
         borderRadius: "2px",
         boxDecorationBreak: "clone",
     },
+    /* Pure insertions already read as "all-new" via line/chunk context,
+       so suppress the inner marker only for those semantically pure ranges. */
+    "&[data-merge-enabled='true'] .cm-pure-insertion-content .cm-changedText, &[data-merge-enabled='true'] .cm-pure-insertion-content.cm-changedText":
+        {
+            backgroundColor: "transparent",
+        },
 
     /* Deleted text should stay readable without overpowering changed text. */
     /* ── Inline deleted text highlight ─────────────────────── */
@@ -34,9 +40,10 @@ export const mergeViewTheme = EditorView.baseTheme({
             "color-mix(in srgb, var(--diff-remove) 6%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
-        textDecoration: "line-through",
-        textDecorationColor:
-            "color-mix(in srgb, var(--diff-remove) 52%, transparent)",
+    },
+    /* Pure deletion blocks already have their own red container treatment. */
+    "&[data-merge-enabled='true'] .cm-pure-deletion-chunk .cm-deletedText": {
+        backgroundColor: "transparent",
     },
 
     /* ── Deleted chunk block ───────────────────────────────── */
