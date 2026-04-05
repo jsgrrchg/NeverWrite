@@ -49,6 +49,11 @@ const outOfRangeControlWarningKeys = new LruCache<string, true>(
 
 type ReviewInlinePresentationMode = "individual" | "grouped" | "panel-only";
 
+interface ReviewLineDecorationRange {
+    startLine: number;
+    endLine: number;
+}
+
 type ReviewControlEntry =
     | {
           kind: "decision";
@@ -61,6 +66,7 @@ type ReviewControlEntry =
           isOverlapping: boolean;
           startLine: number;
           endLine: number;
+          lineDecorationRanges: ReviewLineDecorationRange[];
           layoutGroupKey: string;
           hunkId?: ReviewHunkId;
           denseSlot: number;
@@ -79,12 +85,69 @@ type ReviewControlEntry =
           isOverlapping: boolean;
           startLine: number;
           endLine: number;
+          lineDecorationRanges: ReviewLineDecorationRange[];
           layoutGroupKey: string;
           denseSlot: number;
           denseColumn: number;
           denseCompact: boolean;
           denseGroupSize: number;
       };
+
+function isPureDeletionHunk(
+    hunk: Pick<ReviewHunk, "currentFrom" | "currentTo">,
+) {
+    return hunk.currentFrom === hunk.currentTo;
+}
+
+function normalizeLineRange(
+    startLine: number,
+    endLine: number,
+): ReviewLineDecorationRange {
+    return {
+        startLine: Math.min(startLine, endLine),
+        endLine: Math.max(startLine, endLine),
+    };
+}
+
+function compactLineDecorationRanges(
+    ranges: ReviewLineDecorationRange[],
+): ReviewLineDecorationRange[] {
+    if (ranges.length === 0) {
+        return [];
+    }
+
+    const sorted = ranges
+        .map((range) => normalizeLineRange(range.startLine, range.endLine))
+        .sort(
+            (left, right) =>
+                left.startLine - right.startLine ||
+                left.endLine - right.endLine,
+        );
+    const compacted: ReviewLineDecorationRange[] = [sorted[0]!];
+
+    for (const range of sorted.slice(1)) {
+        const previous = compacted[compacted.length - 1]!;
+        if (range.startLine <= previous.endLine) {
+            previous.endLine = Math.max(previous.endLine, range.endLine);
+            continue;
+        }
+        compacted.push({ ...range });
+    }
+
+    return compacted;
+}
+
+function buildRenderableLineDecorationRanges(
+    hunks: readonly ReviewHunk[],
+): ReviewLineDecorationRange[] {
+    return compactLineDecorationRanges(
+        hunks
+            .filter((hunk) => !isPureDeletionHunk(hunk))
+            .map((hunk) =>
+                normalizeLineRange(hunk.visualStartLine, hunk.visualEndLine),
+            ),
+    );
+}
 
 function assignDenseSlots(entries: ReviewControlEntry[]): ReviewControlEntry[] {
     const sortedEntries = [...entries].sort(compareControlEntries);
@@ -137,6 +200,7 @@ function formatChangeCountLabel(changeCount: number): string {
 
 function createPanelOnlyEntry(
     chunk: ReviewChunk,
+    lineDecorationRanges: ReviewLineDecorationRange[],
     changeCount: number = chunk.hunkIds.length,
 ): ReviewControlEntry {
     return {
@@ -150,6 +214,7 @@ function createPanelOnlyEntry(
         isOverlapping: chunk.controlMode === "inline-overlap",
         startLine: chunk.startLine,
         endLine: chunk.endLine,
+        lineDecorationRanges,
         layoutGroupKey: `chunk:${chunk.id.key}`,
         denseSlot: 0,
         denseColumn: 0,
@@ -173,6 +238,7 @@ function createIndividualDecisionEntry(
         isOverlapping: hunk.overlapGroupSize > 1,
         startLine: Math.min(hunk.visualStartLine, hunk.visualEndLine),
         endLine: Math.max(hunk.visualStartLine, hunk.visualEndLine),
+        lineDecorationRanges: buildRenderableLineDecorationRanges([hunk]),
         layoutGroupKey: `chunk:${chunk.id.key}`,
         hunkId: hunk.id,
         denseSlot: 0,
@@ -189,6 +255,7 @@ function createGroupedDecisionEntry(options: {
     changeCount: number;
     startLine: number;
     endLine: number;
+    lineDecorationRanges: ReviewLineDecorationRange[];
     isOverlapping: boolean;
     layoutGroupKey: string;
     presentationMode?: Exclude<ReviewInlinePresentationMode, "panel-only">;
@@ -204,6 +271,7 @@ function createGroupedDecisionEntry(options: {
         isOverlapping: options.isOverlapping,
         startLine: options.startLine,
         endLine: options.endLine,
+        lineDecorationRanges: options.lineDecorationRanges,
         layoutGroupKey: options.layoutGroupKey,
         denseSlot: 0,
         denseColumn: 0,
@@ -310,6 +378,9 @@ function buildOverlapGroupEntries(
             changeCount: group.changeCount,
             startLine: group.startLine,
             endLine: group.endLine,
+            lineDecorationRanges: buildRenderableLineDecorationRanges(
+                chunkHunks.filter((hunk) => hunk.overlapGroupId === groupId),
+            ),
             isOverlapping: group.changeCount > 1,
             layoutGroupKey: `overlap:${groupId}`,
         }),
@@ -321,17 +392,26 @@ function buildReviewControlEntries(
     hunks: ReviewHunk[],
     chunks: ReviewChunk[],
 ): ReviewControlEntry[] {
+    const hunkByIdKey = new Map(hunks.map((hunk) => [hunk.id.key, hunk]));
+
     if (!allowDecisionActions) {
         return assignDenseSlots(
-            chunks.map((chunk) => createPanelOnlyEntry(chunk)),
+            chunks.map((chunk) =>
+                createPanelOnlyEntry(
+                    chunk,
+                    buildRenderableLineDecorationRanges(
+                        getChunkHunks(chunk, hunkByIdKey),
+                    ),
+                ),
+            ),
         );
     }
-
-    const hunkByIdKey = new Map(hunks.map((hunk) => [hunk.id.key, hunk]));
     const entries: ReviewControlEntry[] = [];
 
     for (const chunk of chunks) {
         const chunkHunks = getChunkHunks(chunk, hunkByIdKey);
+        const lineDecorationRanges =
+            buildRenderableLineDecorationRanges(chunkHunks);
         const presentationMode = deriveChunkPresentationMode(
             allowDecisionActions,
             chunk,
@@ -339,7 +419,7 @@ function buildReviewControlEntries(
         );
 
         if (presentationMode === "panel-only") {
-            entries.push(createPanelOnlyEntry(chunk));
+            entries.push(createPanelOnlyEntry(chunk, lineDecorationRanges));
             continue;
         }
 
@@ -365,6 +445,7 @@ function buildReviewControlEntries(
                 changeCount: chunk.hunkIds.length,
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,
+                lineDecorationRanges,
                 isOverlapping: false,
                 layoutGroupKey: `chunk:${chunk.id.key}`,
                 presentationMode,
@@ -591,9 +672,9 @@ function getControlWidgetPos(
     return state.doc.line(entry.startLine + 1).from;
 }
 
-function getControlLineNumbers(
+function getControlLineNumbersForRange(
     state: EditorView["state"],
-    entry: ReviewControlEntry,
+    range: ReviewLineDecorationRange,
 ) {
     if (state.doc.lines === 0) {
         return [];
@@ -601,11 +682,11 @@ function getControlLineNumbers(
 
     const startLineNumber = Math.min(
         state.doc.lines,
-        Math.max(1, entry.startLine + 1),
+        Math.max(1, range.startLine + 1),
     );
     const endExclusiveLineNumber = Math.min(
         state.doc.lines + 1,
-        Math.max(startLineNumber + 1, entry.endLine + 1),
+        Math.max(startLineNumber + 1, range.endLine + 1),
     );
     const lineNumbers: number[] = [];
 
@@ -676,28 +757,42 @@ function buildControlLineDecorations(
     );
 
     for (const entry of entries) {
-        if (isControlEntryOutOfRange(state, entry)) {
-            warnControlOutOfRange(entry, state.doc.lines);
+        if (entry.lineDecorationRanges.length === 0) {
             continue;
         }
-        const lineNumbers = getControlLineNumbers(state, entry);
-        lineNumbers.forEach((lineNumber, index) => {
-            const line = state.doc.line(lineNumber);
-            builder.add(
-                line.from,
-                line.from,
-                Decoration.line({
-                    attributes: {
-                        class: `cm-review-chunk-line${index === 0 ? " cm-review-chunk-line-start" : ""}${index === lineNumbers.length - 1 ? " cm-review-chunk-line-end" : ""}`,
-                        "data-review-control-id": entry.controlId,
-                        "data-review-entry-kind": entry.kind,
-                    },
-                }),
-            );
+        entry.lineDecorationRanges.forEach((range) => {
+            if (isControlLineRangeOutOfRange(state, range)) {
+                warnControlOutOfRange(entry, state.doc.lines);
+                return;
+            }
+            const lineNumbers = getControlLineNumbersForRange(state, range);
+            lineNumbers.forEach((lineNumber, index) => {
+                const line = state.doc.line(lineNumber);
+                builder.add(
+                    line.from,
+                    line.from,
+                    Decoration.line({
+                        attributes: {
+                            class: `cm-review-chunk-line${index === 0 ? " cm-review-chunk-line-start" : ""}${index === lineNumbers.length - 1 ? " cm-review-chunk-line-end" : ""}`,
+                            "data-review-control-id": entry.controlId,
+                            "data-review-entry-kind": entry.kind,
+                        },
+                    }),
+                );
+            });
         });
     }
 
     return builder.finish();
+}
+
+function isControlLineRangeOutOfRange(
+    state: EditorView["state"],
+    range: ReviewLineDecorationRange,
+) {
+    return (
+        range.startLine >= state.doc.lines || range.endLine > state.doc.lines
+    );
 }
 
 function isControlEntryOutOfRange(
@@ -776,19 +871,21 @@ const reviewProjectionControlsTheme = EditorView.baseTheme({
         borderRadius: "5px",
     },
 
-    /* ── Chunk line decorations (gutter + background) ──────── */
+    /* Keep chunk context visible, but secondary to inline changed text. */
+    /* ── Chunk line decorations (gutter + faint background) ── */
     ".cm-review-chunk-line": {
         position: "relative",
-        backgroundColor: "color-mix(in srgb, var(--diff-add) 6%, transparent)",
-        boxShadow: "inset 3px 0 0 0 var(--diff-add)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 2%, transparent)",
+        boxShadow:
+            "inset 2px 0 0 0 color-mix(in srgb, var(--diff-add) 58%, transparent)",
     },
     ".cm-review-chunk-line-start": {
         borderTop:
-            "1px solid color-mix(in srgb, var(--diff-add) 18%, transparent)",
+            "1px solid color-mix(in srgb, var(--diff-add) 10%, transparent)",
     },
     ".cm-review-chunk-line-end": {
         borderBottom:
-            "1px solid color-mix(in srgb, var(--diff-add) 18%, transparent)",
+            "1px solid color-mix(in srgb, var(--diff-add) 10%, transparent)",
     },
 
     /* ── Badge ─────────────────────────────────────────────── */

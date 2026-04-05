@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEditorStore, isMapTab } from "../../app/store/editorStore";
 import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
-import { useVaultStore } from "../../app/store/vaultStore";
+import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 import { getPathBaseName } from "../../app/utils/path";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import { logError } from "../../app/utils/runtimeLog";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "../../components/context-menu/ContextMenu";
 
 interface MapEntryDto {
     id: string;
@@ -18,6 +26,11 @@ interface MapEntry {
     relativePath: string;
 }
 
+type MapsContextPayload = {
+    kind: "map";
+    map: MapEntry;
+};
+
 const DRAG_THRESHOLD = 5;
 
 interface DragState {
@@ -27,8 +40,43 @@ interface DragState {
     active: boolean;
 }
 
+function getMapTitleFromRelativePath(relativePath: string) {
+    const fileName = getPathBaseName(relativePath) || relativePath;
+    return fileName.replace(/\.excalidraw$/i, "") || fileName;
+}
+
+function buildRenamedMapRelativePath(
+    currentRelativePath: string,
+    nextTitle: string,
+) {
+    const normalizedTitle = nextTitle
+        .trim()
+        .replace(/\.excalidraw$/i, "")
+        .trim();
+    if (
+        !normalizedTitle ||
+        normalizedTitle === "." ||
+        normalizedTitle === ".." ||
+        normalizedTitle.includes("/") ||
+        normalizedTitle.includes("\\")
+    ) {
+        return null;
+    }
+
+    const parentPath =
+        currentRelativePath.lastIndexOf("/") >= 0
+            ? currentRelativePath.slice(0, currentRelativePath.lastIndexOf("/"))
+            : "";
+    const fileName = `${normalizedTitle}.excalidraw`;
+    return parentPath ? `${parentPath}/${fileName}` : fileName;
+}
+
 export function MapsPanel() {
     const [maps, setMaps] = useState<MapEntry[]>([]);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<MapsContextPayload> | null>(null);
+    const [renamingMapPath, setRenamingMapPath] = useState<string | null>(null);
+    const [renameValue, setRenameValue] = useState("");
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const openMap = useEditorStore((s) => s.openMap);
     const activeMapRelativePath = useEditorStore((s) => {
@@ -37,6 +85,7 @@ export function MapsPanel() {
     });
 
     const dragStateRef = useRef<DragState | null>(null);
+    const renameInputRef = useRef<HTMLInputElement>(null);
 
     const resetDrag = useCallback(() => {
         if (dragStateRef.current?.active) {
@@ -169,6 +218,15 @@ export function MapsPanel() {
         };
     }, [vaultPath]);
 
+    useEffect(() => {
+        if (!renamingMapPath) return;
+
+        requestAnimationFrame(() => {
+            renameInputRef.current?.focus();
+            renameInputRef.current?.select();
+        });
+    }, [renamingMapPath]);
+
     const handleNewMap = async () => {
         if (!vaultPath) return;
         const name = `Map ${new Date().toLocaleDateString("en-CA")}`;
@@ -187,6 +245,11 @@ export function MapsPanel() {
 
     const handleDeleteMap = async (map: MapEntry) => {
         if (!vaultPath) return;
+        setContextMenu(null);
+        if (renamingMapPath === map.relativePath) {
+            setRenamingMapPath(null);
+            setRenameValue("");
+        }
         await invoke("delete_map", {
             vaultPath,
             relativePath: map.relativePath,
@@ -201,6 +264,133 @@ export function MapsPanel() {
         );
         if (openTab) closeTab(openTab.id, { reason: "delete" });
     };
+
+    const handleMapContextMenu = useCallback(
+        (event: React.MouseEvent, map: MapEntry) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                payload: { kind: "map", map },
+            });
+        },
+        [],
+    );
+
+    const handleRenameStart = useCallback((map: MapEntry) => {
+        setContextMenu(null);
+        setRenamingMapPath(map.relativePath);
+        setRenameValue(map.title);
+    }, []);
+
+    const handleRenameCancel = useCallback(() => {
+        setRenamingMapPath(null);
+        setRenameValue("");
+    }, []);
+
+    const handleRenameConfirm = useCallback(
+        async (map: MapEntry) => {
+            const nextRelativePath = buildRenamedMapRelativePath(
+                map.relativePath,
+                renameValue,
+            );
+            if (!nextRelativePath) {
+                handleRenameCancel();
+                return;
+            }
+            if (nextRelativePath === map.relativePath) {
+                handleRenameCancel();
+                return;
+            }
+
+            try {
+                const updated = await vaultInvoke<VaultEntryDto>(
+                    "move_vault_entry",
+                    {
+                        relativePath: map.relativePath,
+                        newRelativePath: nextRelativePath,
+                    },
+                );
+                const nextTitle = getMapTitleFromRelativePath(
+                    updated.relative_path,
+                );
+
+                setMaps((prev) =>
+                    prev.map((entry) =>
+                        entry.relativePath === map.relativePath
+                            ? {
+                                  id: updated.id,
+                                  title: nextTitle,
+                                  relativePath: updated.relative_path,
+                              }
+                            : entry,
+                    ),
+                );
+
+                useEditorStore.setState((state) => ({
+                    tabs: state.tabs.map((tab) =>
+                        isMapTab(tab) && tab.relativePath === map.relativePath
+                            ? {
+                                  ...tab,
+                                  relativePath: updated.relative_path,
+                                  title: nextTitle,
+                              }
+                            : tab,
+                    ),
+                }));
+            } catch (error) {
+                logError("maps-panel", "Failed to rename map", error);
+            } finally {
+                handleRenameCancel();
+            }
+        },
+        [handleRenameCancel, renameValue],
+    );
+
+    const contextMenuEntries = useMemo<ContextMenuEntry[]>(() => {
+        if (!contextMenu) return [];
+
+        const { map } = contextMenu.payload;
+        return [
+            {
+                label: "Open",
+                action: () => openMap(map.relativePath, map.title),
+            },
+            { type: "separator" },
+            {
+                label: "Rename",
+                action: () => handleRenameStart(map),
+            },
+            {
+                label: "Open Externally",
+                action: () =>
+                    void openPath(
+                        resolveVaultAbsolutePath(map.relativePath, vaultPath),
+                    ),
+                disabled: !vaultPath,
+            },
+            {
+                label: "Reveal in Finder",
+                action: () =>
+                    void revealItemInDir(
+                        resolveVaultAbsolutePath(map.relativePath, vaultPath),
+                    ),
+                disabled: !vaultPath,
+            },
+            {
+                label: "Copy Path",
+                action: () =>
+                    void navigator.clipboard.writeText(map.relativePath),
+            },
+            { type: "separator" },
+            {
+                label: "Delete Map",
+                action: () => void handleDeleteMap(map),
+                danger: true,
+            },
+        ];
+    }, [contextMenu, handleDeleteMap, handleRenameStart, openMap, vaultPath]);
 
     return (
         <div className="flex flex-col h-full">
@@ -241,6 +431,9 @@ export function MapsPanel() {
                         <div
                             key={map.relativePath}
                             className="group flex items-center hover:bg-(--bg-tertiary)"
+                            onContextMenu={(event) =>
+                                handleMapContextMenu(event, map)
+                            }
                             style={
                                 activeMapRelativePath === map.relativePath
                                     ? {
@@ -250,17 +443,46 @@ export function MapsPanel() {
                                     : undefined
                             }
                         >
-                            <button
-                                onClick={() =>
-                                    openMap(map.relativePath, map.title)
-                                }
-                                onMouseDown={(e) => handleItemMouseDown(map, e)}
-                                className="flex-1 text-left px-3 py-1.5 text-sm text-(--text-primary) truncate"
-                            >
-                                {map.title}
-                            </button>
+                            {renamingMapPath === map.relativePath ? (
+                                <div className="flex-1 px-2 py-1">
+                                    <input
+                                        ref={renameInputRef}
+                                        value={renameValue}
+                                        onChange={(event) =>
+                                            setRenameValue(
+                                                event.currentTarget.value,
+                                            )
+                                        }
+                                        onBlur={handleRenameCancel}
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter") {
+                                                event.preventDefault();
+                                                void handleRenameConfirm(map);
+                                            } else if (event.key === "Escape") {
+                                                event.preventDefault();
+                                                handleRenameCancel();
+                                            }
+                                        }}
+                                        className="w-full px-2 py-1 text-sm rounded border border-(--border) bg-(--bg-primary) text-(--text-primary) outline-none focus:border-(--accent)"
+                                        aria-label={`Rename ${map.title}`}
+                                    />
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() =>
+                                        openMap(map.relativePath, map.title)
+                                    }
+                                    onMouseDown={(e) =>
+                                        handleItemMouseDown(map, e)
+                                    }
+                                    className="flex-1 min-w-0 text-left px-3 py-1.5 text-sm text-(--text-primary) truncate"
+                                >
+                                    {map.title}
+                                </button>
+                            )}
                             <button
                                 onClick={() => void handleDeleteMap(map)}
+                                disabled={renamingMapPath === map.relativePath}
                                 className="hidden group-hover:flex items-center justify-center shrink-0 mr-2 w-5 h-5 rounded text-(--text-secondary) hover:text-(--text-primary) hover:bg-(--bg-primary)"
                                 title="Delete map"
                             >
@@ -280,6 +502,14 @@ export function MapsPanel() {
                     ))
                 )}
             </div>
+
+            {contextMenu ? (
+                <ContextMenu
+                    menu={contextMenu}
+                    entries={contextMenuEntries}
+                    onClose={() => setContextMenu(null)}
+                />
+            ) : null}
         </div>
     );
 }
