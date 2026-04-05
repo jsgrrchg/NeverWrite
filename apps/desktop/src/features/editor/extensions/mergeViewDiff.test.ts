@@ -267,6 +267,51 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
+    it("keeps pure deletion anchors interactive without tinting the surviving line", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "keep\nstay\n",
+            original: "keep\nremove me\nstay\n",
+            reviewHunks: [
+                makeReviewHunk({
+                    oldStartLine: 1,
+                    oldEndLine: 2,
+                    newStartLine: 1,
+                    newEndLine: 1,
+                    visualStartLine: 1,
+                    visualEndLine: 1,
+                    baseFrom: 5,
+                    baseTo: 15,
+                    currentFrom: 5,
+                    currentTo: 5,
+                    memberSpans: [
+                        {
+                            spanIndex: 0,
+                            baseFrom: 5,
+                            baseTo: 15,
+                            currentFrom: 5,
+                            currentTo: 5,
+                        },
+                    ],
+                }),
+            ],
+            reviewChunks: [
+                makeReviewChunk({
+                    startLine: 1,
+                    endLine: 1,
+                }),
+            ],
+        });
+
+        expect(
+            view.dom.querySelector(".cm-review-chunk-controls"),
+        ).not.toBeNull();
+        expect(view.dom.querySelectorAll(".cm-review-chunk-line")).toHaveLength(
+            0,
+        );
+
+        destroy();
+    });
+
     it("renders inline overlap actions for ambiguous chunks", () => {
         const calls: MergeDecisionPayload[] = [];
         const { view, destroy } = mountMergeView({
@@ -419,7 +464,9 @@ describe("mergeViewDiff", () => {
         );
         expect(controls).toHaveLength(2);
         expect(
-            controls.filter((control) => control.dataset.reviewOverlap === "true"),
+            controls.filter(
+                (control) => control.dataset.reviewOverlap === "true",
+            ),
         ).toHaveLength(1);
         expect(
             controls.find(

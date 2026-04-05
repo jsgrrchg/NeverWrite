@@ -1,38 +1,42 @@
 import { EditorView } from "@codemirror/view";
 
 export const mergeViewTheme = EditorView.baseTheme({
-    /* ── Inserted / changed lines (green gutter + tint) ────── */
+    /* Keep the line-level signal subtle so the exact changed text remains primary. */
+    /* ── Inserted / changed lines (green gutter + faint tint) ─ */
     "&[data-merge-enabled='true'] .cm-changedLine, &[data-merge-enabled='true'] .cm-insertedLine":
         {
             backgroundColor:
-                "color-mix(in srgb, var(--diff-add) 10%, transparent)",
-            boxShadow: "inset 1.5px 0 0 0 var(--diff-add)",
+                "color-mix(in srgb, var(--diff-add) 3%, transparent)",
+            boxShadow:
+                "inset 1px 0 0 0 color-mix(in srgb, var(--diff-add) 72%, transparent)",
             transition: "background-color 160ms ease, box-shadow 160ms ease",
         },
 
-    /* ── Inline changed lines (green gutter + tint, same as inserts) */
+    /* ── Inline changed lines (even fainter than whole-line inserts) ─ */
     "&[data-merge-enabled='true'] .cm-inlineChangedLine": {
-        backgroundColor: "color-mix(in srgb, var(--diff-add) 8%, transparent)",
-        boxShadow: "inset 1.5px 0 0 0 var(--diff-add)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 2%, transparent)",
+        boxShadow:
+            "inset 1px 0 0 0 color-mix(in srgb, var(--diff-add) 56%, transparent)",
     },
 
-    /* ── Inline changed text highlight ─────────────────────── */
+    /* ── Inline changed text highlight (primary signal) ───── */
     "&[data-merge-enabled='true'] .cm-changedText": {
         background: "none",
-        backgroundColor: "color-mix(in srgb, var(--diff-add) 10%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 18%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
     },
 
+    /* Deleted text should stay readable without overpowering changed text. */
     /* ── Inline deleted text highlight ─────────────────────── */
     "&[data-merge-enabled='true'] .cm-deletedText": {
         backgroundColor:
-            "color-mix(in srgb, var(--diff-remove) 16%, transparent)",
+            "color-mix(in srgb, var(--diff-remove) 6%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
         textDecoration: "line-through",
         textDecorationColor:
-            "color-mix(in srgb, var(--diff-remove) 40%, transparent)",
+            "color-mix(in srgb, var(--diff-remove) 52%, transparent)",
     },
 
     /* ── Deleted chunk block ───────────────────────────────── */
@@ -50,6 +54,20 @@ export const mergeViewTheme = EditorView.baseTheme({
             "1px solid color-mix(in srgb, var(--diff-remove) 12%, transparent)",
         transition:
             "background-color 160ms ease, border-color 160ms ease, opacity 160ms ease",
+    },
+    /* Pure insertions still get an empty deleted-chunk placeholder from the
+       merge widget. Hide that shell so it doesn't read as a real deletion. */
+    "&[data-merge-enabled='true'] .cm-deletedChunk:empty": {
+        backgroundColor: "transparent",
+        borderLeft: "none",
+        borderTop: "none",
+        borderBottom: "none",
+        padding: "0",
+        margin: "0",
+        borderRadius: "0",
+        minHeight: "0",
+        height: "0",
+        overflow: "hidden",
     },
 
     /* ── Deleted line text ─────────────────────────────────── */
