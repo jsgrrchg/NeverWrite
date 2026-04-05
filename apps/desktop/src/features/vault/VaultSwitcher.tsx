@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
     useVaultStore,
@@ -31,17 +31,21 @@ export function VaultSwitcher() {
     });
 
     const vaultName = vaultPath ? getPathBaseName(vaultPath) : "No vault";
+    const closeSwitcher = useCallback(() => {
+        setIsOpen(false);
+        setRecentSearch("");
+    }, []);
 
     // Close on click outside or Escape
     useEffect(() => {
         if (!isOpen) return;
         const handleDown = (e: MouseEvent) => {
             if (ref.current && !ref.current.contains(e.target as Node)) {
-                setIsOpen(false);
+                closeSwitcher();
             }
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setIsOpen(false);
+            if (e.key === "Escape") closeSwitcher();
         };
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);
@@ -49,22 +53,16 @@ export function VaultSwitcher() {
             document.removeEventListener("mousedown", handleDown);
             document.removeEventListener("keydown", handleKey);
         };
-    }, [isOpen]);
-
-    useEffect(() => {
-        if (!isOpen) {
-            setRecentSearch("");
-        }
-    }, [isOpen]);
+    }, [closeSwitcher, isOpen]);
 
     const handleSelectVault = (path: string) => {
-        setIsOpen(false);
+        closeSwitcher();
         if (path === vaultPath) return;
         void openVaultWindow(path);
     };
 
     const handleOpenVault = async () => {
-        setIsOpen(false);
+        closeSwitcher();
         const selected = await open({ directory: true, title: "Select vault" });
         if (!selected || selected === vaultPath) return;
         void openVaultWindow(selected);
@@ -240,7 +238,14 @@ export function VaultSwitcher() {
 
             {/* Trigger button */}
             <button
-                onClick={() => setIsOpen((v) => !v)}
+                onClick={() =>
+                    setIsOpen((open) => {
+                        if (open) {
+                            setRecentSearch("");
+                        }
+                        return !open;
+                    })
+                }
                 onContextMenu={(event) => {
                     event.preventDefault();
                     setContextMenu({

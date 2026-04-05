@@ -1,5 +1,5 @@
 import { type LanguageSupport } from "@codemirror/language";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     loadCodeLanguageSupport,
     loadMarkdownCodeLanguageSupport,
@@ -8,22 +8,25 @@ import {
 function useLoadedLanguageSupport(
     loader: (() => Promise<LanguageSupport | null>) | null,
 ) {
-    const [languageSupport, setLanguageSupport] =
-        useState<LanguageSupport | null>(null);
-    const prevLoaderRef = useRef(loader);
-
-    // Reset during render when loader changes (avoids setState inside effects)
-    if (prevLoaderRef.current !== loader) {
-        prevLoaderRef.current = loader;
-        setLanguageSupport(null);
-    }
+    const [{ resolvedLoader, languageSupport }, setResolvedSupport] = useState<{
+        resolvedLoader: (() => Promise<LanguageSupport | null>) | null;
+        languageSupport: LanguageSupport | null;
+    }>({
+        resolvedLoader: null,
+        languageSupport: null,
+    });
 
     useEffect(() => {
         if (!loader) return;
 
         let cancelled = false;
         void loader().then((support) => {
-            if (!cancelled) setLanguageSupport(support);
+            if (!cancelled) {
+                setResolvedSupport({
+                    resolvedLoader: loader,
+                    languageSupport: support,
+                });
+            }
         });
 
         return () => {
@@ -31,8 +34,8 @@ function useLoadedLanguageSupport(
         };
     }, [loader]);
 
-    // When loader is null, return null directly without needing setState
-    return loader ? languageSupport : null;
+    // Drop stale async results when the loader identity changes between renders.
+    return loader && resolvedLoader === loader ? languageSupport : null;
 }
 
 export function useCodeLanguageSupport(

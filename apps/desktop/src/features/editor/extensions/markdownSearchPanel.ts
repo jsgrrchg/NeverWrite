@@ -80,7 +80,7 @@ function countMatches(
 /* ── panel factory ────────────────────────────────────────────── */
 
 export function createMarkdownSearchPanel(view: EditorView): Panel {
-    let options: SearchPanelOptions = {
+    const options: SearchPanelOptions = {
         caseSensitive: false,
         regexp: false,
         wholeWord: false,

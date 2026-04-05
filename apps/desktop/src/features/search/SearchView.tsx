@@ -58,7 +58,11 @@ const OPERATORS = [
     { label: "content:", desc: "note body" },
     { label: "line:", desc: "same line" },
     { label: "section:", desc: "heading section" },
-    { label: "[status:]", desc: "property filter (e.g. [status:active])", insert: "[status:]" },
+    {
+        label: "[status:]",
+        desc: "property filter (e.g. [status:active])",
+        insert: "[status:]",
+    },
 ] as const;
 
 export function SearchView() {
@@ -249,7 +253,6 @@ export function SearchView() {
             style={{ backgroundColor: "var(--bg-primary)" }}
         >
             <div className="w-full max-w-2xl mx-auto px-6 py-6">
-                {/* Header */}
                 <div className="mb-4">
                     <h1
                         className="text-lg font-semibold"
@@ -259,7 +262,6 @@ export function SearchView() {
                     </h1>
                 </div>
 
-                {/* Search input */}
                 <div
                     className="flex items-center gap-3 px-3 rounded-lg"
                     style={{
@@ -321,12 +323,18 @@ export function SearchView() {
                         title="Toggle query builder"
                         className="shrink-0 p-0.5 rounded transition-colors"
                         style={{
-                            color: showBuilder ? "var(--accent)" : "var(--text-secondary)",
+                            color: showBuilder
+                                ? "var(--accent)"
+                                : "var(--text-secondary)",
                             opacity: showBuilder ? 1 : 0.5,
                         }}
-                        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.opacity = "1")
+                        }
                         onMouseLeave={(e) =>
-                            (e.currentTarget.style.opacity = showBuilder ? "1" : "0.5")
+                            (e.currentTarget.style.opacity = showBuilder
+                                ? "1"
+                                : "0.5")
                         }
                     >
                         <svg
@@ -344,7 +352,6 @@ export function SearchView() {
                     </button>
                 </div>
 
-                {/* Explain banner */}
                 {parsed.explanation && query.trim() && (
                     <div
                         className="mt-2 px-3 py-1.5 rounded text-[11px] flex items-center gap-1.5"
@@ -369,7 +376,6 @@ export function SearchView() {
                     </div>
                 )}
 
-                {/* Query Builder panel */}
                 {showBuilder && (
                     <div className="mt-3">
                         <QueryBuilder
@@ -379,12 +385,15 @@ export function SearchView() {
                     </div>
                 )}
 
-                {/* Operator chips */}
                 <div className="flex flex-wrap gap-1.5 mt-3">
                     {OPERATORS.map((op) => (
                         <button
                             key={op.label}
-                            onClick={() => handleInsertOperator("insert" in op ? op.insert : op.label)}
+                            onClick={() =>
+                                handleInsertOperator(
+                                    "insert" in op ? op.insert : op.label,
+                                )
+                            }
                             className="px-2 py-0.5 rounded text-[11px] transition-colors"
                             style={{
                                 backgroundColor: "var(--bg-secondary)",
@@ -408,8 +417,8 @@ export function SearchView() {
                         className="px-1 py-0.5 text-[10px]"
                         style={{ color: "var(--text-secondary)", opacity: 0.6 }}
                     >
-                        OR &middot; -exclude &middot;
-                        &quot;exact phrase&quot; &middot; /regex/
+                        OR &middot; -exclude &middot; &quot;exact phrase&quot;
+                        &middot; /regex/
                     </span>
                 </div>
 
@@ -425,7 +434,9 @@ export function SearchView() {
                         </span>
                         <div className="flex items-center gap-2">
                             <Dropdown
-                                value={`${sortBy}:${sortAsc ? "asc" : "desc"}` as SortOption}
+                                value={
+                                    `${sortBy}:${sortAsc ? "asc" : "desc"}` as SortOption
+                                }
                                 options={SORT_OPTIONS}
                                 onChange={(v) => {
                                     const [s, o] = v.split(":");
@@ -558,7 +569,6 @@ export function SearchView() {
                     </div>
                 )}
 
-                {/* Results */}
                 {results.length > 0 && (
                     <div className="flex flex-col gap-1">
                         {results.map((r) => (
@@ -585,9 +595,7 @@ export function SearchView() {
                                     }
                                 >
                                     <button
-                                        onClick={() =>
-                                            void handleOpen(r)
-                                        }
+                                        onClick={() => void handleOpen(r)}
                                         onAuxClick={(event) => {
                                             if (event.button !== 1) return;
                                             event.preventDefault();
@@ -611,7 +619,16 @@ export function SearchView() {
                                                 >
                                                     <path d="M4 1h6l4 4v9a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1z" />
                                                     <path d="M10 1v4h4" />
-                                                    <text x="4.5" y="12.5" fontSize="5" fill="var(--accent)" stroke="none" fontWeight="bold">PDF</text>
+                                                    <text
+                                                        x="4.5"
+                                                        y="12.5"
+                                                        fontSize="5"
+                                                        fill="var(--accent)"
+                                                        stroke="none"
+                                                        fontWeight="bold"
+                                                    >
+                                                        PDF
+                                                    </text>
                                                 </svg>
                                             )}
                                             {r.kind === "file" && (
@@ -639,8 +656,9 @@ export function SearchView() {
                                                 {showExtensions &&
                                                 (r.kind === "pdf" ||
                                                     r.kind === "file")
-                                                    ? (r.path.split("/").pop() ??
-                                                        r.title)
+                                                    ? (r.path
+                                                          .split("/")
+                                                          .pop() ?? r.title)
                                                     : r.title}
                                             </span>
                                             {r.modified_at > 0 && (
@@ -664,8 +682,9 @@ export function SearchView() {
                                             >
                                                 {r.kind === "pdf" ||
                                                 r.kind === "file"
-                                                    ? (r.path.split("/vault/").pop() ??
-                                                        r.path)
+                                                    ? (r.path
+                                                          .split("/vault/")
+                                                          .pop() ?? r.path)
                                                     : r.id}
                                             </span>
                                             {r.tags.length > 0 && (
@@ -756,7 +775,10 @@ export function SearchView() {
                                                         textAlign: "right",
                                                     }}
                                                 >
-                                                    {m.page ? `P${m.page}:` : ""}L{m.line_number}
+                                                    {m.page
+                                                        ? `P${m.page}:`
+                                                        : ""}
+                                                    L{m.line_number}
                                                 </span>
                                                 <span
                                                     className="text-[11px] break-all"

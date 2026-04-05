@@ -236,6 +236,10 @@ function deriveChunkPresentationMode(
     chunk: ReviewChunk,
     chunkHunks: ReviewHunk[],
 ): ReviewInlinePresentationMode {
+    // This is product logic, not just layout selection:
+    // - panel-only when inline decisions would be misleading or impossible
+    // - grouped when multiple hunks should resolve as one visible unit
+    // - individual when a single exact inline action remains understandable
     if (
         !allowDecisionActions ||
         !chunk.canResolveInlineExactly ||

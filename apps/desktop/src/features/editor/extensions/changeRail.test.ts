@@ -82,7 +82,7 @@ afterEach(() => {
 
 describe("changeRail", () => {
     it("derives marker geometry from rendered block positions instead of doc line ratios", () => {
-        let contentHeight = 200;
+        const contentHeight = 200;
         vi.spyOn(
             EditorView.prototype,
             "contentHeight",

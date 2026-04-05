@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { parseQuery } from "../search/queryParser";
@@ -19,7 +19,11 @@ export function useGraphGroups(): Map<string, string> {
     const groups = useGraphSettingsStore((s) => s.groups);
     const resolverRevision = useVaultStore((s) => s.resolverRevision);
     const [colorMap, setColorMap] = useState<Map<string, string>>(new Map());
-    const prevKeyRef = useRef("");
+    const emptyColorMap = useMemo(() => new Map<string, string>(), []);
+    const activeGroups = useMemo(
+        () => groups.filter((group) => group.query.trim()),
+        [groups],
+    );
 
     // Serialize groups to a stable key to avoid unnecessary re-evaluations
     const groupsKey = groups
@@ -27,10 +31,12 @@ export function useGraphGroups(): Map<string, string> {
         .join("|");
 
     useEffect(() => {
-        const activeGroups = groups.filter((g) => g.query.trim());
         if (activeGroups.length === 0) {
-            setColorMap(new Map());
-            prevKeyRef.current = groupsKey;
+            queueMicrotask(() => {
+                setColorMap((current) =>
+                    current.size === 0 ? current : new Map(),
+                );
+            });
             return;
         }
 
@@ -65,7 +71,6 @@ export function useGraphGroups(): Map<string, string> {
                 );
 
                 setColorMap(map);
-                prevKeyRef.current = groupsKey;
                 graphPerfMeasure("graph.groups.resolve.duration", startMs, {
                     groupCount: activeGroups.length,
                     matchedNodeCount: map.size,
@@ -89,9 +94,9 @@ export function useGraphGroups(): Map<string, string> {
         return () => {
             cancelled = true;
         };
-    }, [groupsKey, resolverRevision, groups]);
+    }, [activeGroups, groupsKey, resolverRevision]);
 
-    return colorMap;
+    return activeGroups.length === 0 ? emptyColorMap : colorMap;
 }
 
 async function resolveGroup(group: GraphGroup): Promise<string[]> {

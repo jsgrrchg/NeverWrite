@@ -59,16 +59,6 @@ export function usePreparedGraphSnapshot({
         [layoutKey],
     );
 
-    // Derived state: reset when inputs are missing (avoids synchronous setState in effect)
-    if (
-        (!graphSnapshot || !layoutKey) &&
-        (prepared !== null || isPreparing || error !== null)
-    ) {
-        setPrepared(null);
-        setIsPreparing(false);
-        setError(null);
-    }
-
     useEffect(() => {
         const requestMeta = requestMetaRef.current;
         const worker = new Worker(
@@ -162,8 +152,10 @@ export function usePreparedGraphSnapshot({
             restoredFromCache: cachedPositions != null,
         });
 
-        setIsPreparing(true);
-        setError(null);
+        queueMicrotask(() => {
+            setIsPreparing(true);
+            setError(null);
+        });
 
         worker.postMessage({
             requestId,
@@ -182,8 +174,8 @@ export function usePreparedGraphSnapshot({
     ]);
 
     return {
-        prepared,
-        isPreparing,
-        error,
+        prepared: graphSnapshot && layoutKey ? prepared : null,
+        isPreparing: graphSnapshot && layoutKey ? isPreparing : false,
+        error: graphSnapshot && layoutKey ? error : null,
     };
 }

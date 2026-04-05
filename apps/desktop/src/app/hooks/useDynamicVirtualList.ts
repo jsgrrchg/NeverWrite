@@ -114,11 +114,13 @@ export function useDynamicVirtualList<T>({
     );
 
     useEffect(() => {
-        setMeasuredSizes((current) => {
-            if (Object.keys(current).length === 0) {
-                return current;
-            }
-            return {};
+        queueMicrotask(() => {
+            setMeasuredSizes((current) => {
+                if (Object.keys(current).length === 0) {
+                    return current;
+                }
+                return {};
+            });
         });
     }, [measurementVersion]);
 

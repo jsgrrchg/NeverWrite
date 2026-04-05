@@ -215,7 +215,6 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            {/* Search input */}
             <div className="px-3 pt-3 pb-2 flex items-center gap-1.5">
                 <div
                     className="flex-1 flex items-center gap-2 px-2 rounded-md"
@@ -313,7 +312,6 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                 </button>
             </div>
 
-            {/* Results */}
             <div
                 ref={resultsRef}
                 className="flex-1 overflow-y-auto overflow-x-hidden px-1"
