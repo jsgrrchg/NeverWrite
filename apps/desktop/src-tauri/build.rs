@@ -41,27 +41,50 @@ struct RuntimeStageSpec<'a> {
 fn stage_runtime(spec: RuntimeStageSpec<'_>) {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR missing"));
+    let workspace_root = manifest_dir.join("../../..");
     let binaries_dir = manifest_dir.join("binaries");
     let destination = binaries_dir.join(spec.binary_name);
 
     println!("cargo:rerun-if-env-changed={}", spec.env_bundle_key);
     println!("cargo:rerun-if-env-changed={}", spec.env_runtime_key);
+    println!("cargo:rerun-if-env-changed=CARGO");
 
-    let candidates = candidate_paths(&manifest_dir, &spec);
+    let vendor_dir = manifest_dir.join(spec.vendor_dir);
+    let candidates = candidate_paths(&manifest_dir, &workspace_root, &spec);
     for candidate in &candidates {
         println!("cargo:rerun-if-changed={}", candidate.display());
     }
+    println!(
+        "cargo:rerun-if-changed={}",
+        vendor_dir.join("Cargo.toml").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        vendor_dir.join("Cargo.lock").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        vendor_dir.join("src").display()
+    );
 
-    let Some(source) = candidates.into_iter().find(|path| path.exists()) else {
-        println!(
-            "cargo:warning=No prebuilt {} runtime found. Expected one of: {}",
-            spec.label,
-            format_candidates(&candidate_paths(&manifest_dir, &spec))
-        );
+    let source = resolve_runtime_source(
+        &manifest_dir,
+        &workspace_root,
+        &destination,
+        &spec,
+        &candidates,
+    );
+
+    if let Some(source) = source {
+        stage_from_source(&spec, &binaries_dir, &source, &destination);
         return;
-    };
+    }
 
-    stage_from_source(&spec, &binaries_dir, &source, &destination);
+    println!(
+        "cargo:warning=No usable {} runtime found. Expected one of: {}",
+        spec.label,
+        format_candidates(&candidate_paths(&manifest_dir, &workspace_root, &spec))
+    );
 }
 
 fn stage_embedded_claude_runtime() {
@@ -590,7 +613,128 @@ fn stage_from_source(
     );
 }
 
-fn candidate_paths(manifest_dir: &Path, spec: &RuntimeStageSpec<'_>) -> Vec<PathBuf> {
+fn resolve_runtime_source(
+    manifest_dir: &Path,
+    workspace_root: &Path,
+    destination: &Path,
+    spec: &RuntimeStageSpec<'_>,
+    candidates: &[PathBuf],
+) -> Option<PathBuf> {
+    for key in [spec.env_bundle_key, spec.env_runtime_key] {
+        if let Ok(path) = env::var(key) {
+            let source = PathBuf::from(path);
+            if source.exists() {
+                return Some(source);
+            }
+        }
+    }
+
+    if spec.label == "codex" {
+        match build_vendor_runtime(manifest_dir, spec) {
+            Ok(Some(source)) => return Some(source),
+            Ok(None) => {}
+            Err(error) => {
+                if destination.exists() {
+                    println!(
+                        "cargo:warning=Failed to rebuild {} runtime ({}). Reusing staged binary at {}.",
+                        spec.label,
+                        error,
+                        destination.display()
+                    );
+                    return Some(destination.to_path_buf());
+                }
+
+                panic!(
+                    "failed to rebuild {} runtime and no staged fallback exists: {}",
+                    spec.label, error
+                );
+            }
+        }
+    }
+
+    if let Some(source) = candidates.iter().find(|path| path.exists()) {
+        return Some(source.clone());
+    }
+
+    if destination.exists() {
+        println!(
+            "cargo:warning=Reusing staged {} runtime at {} because no fresher source was found. Checked: {}",
+            spec.label,
+            destination.display(),
+            format_candidates(&candidate_paths(manifest_dir, workspace_root, spec))
+        );
+        return Some(destination.to_path_buf());
+    }
+
+    None
+}
+
+fn build_vendor_runtime(
+    manifest_dir: &Path,
+    spec: &RuntimeStageSpec<'_>,
+) -> Result<Option<PathBuf>, String> {
+    let vendor_dir = manifest_dir.join(spec.vendor_dir);
+    let manifest_path = vendor_dir.join("Cargo.toml");
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let cargo_bin = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut command = Command::new(cargo_bin);
+    command
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--bin")
+        .arg(binary_stem(spec.binary_name))
+        .current_dir(&vendor_dir);
+
+    if cargo_profile() == "release" {
+        command.arg("--release");
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to launch cargo build: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("cargo exited with status {}", output.status)
+        };
+        return Err(detail);
+    }
+
+    let built_path = vendor_dir
+        .join("target")
+        .join(cargo_profile())
+        .join(spec.binary_name);
+    if built_path.exists() {
+        println!(
+            "cargo:warning=Built {} runtime from source at {}",
+            spec.label,
+            built_path.display()
+        );
+        return Ok(Some(built_path));
+    }
+
+    Err(format!(
+        "cargo build succeeded but {} was not produced at {}",
+        spec.binary_name,
+        built_path.display()
+    ))
+}
+
+fn candidate_paths(
+    manifest_dir: &Path,
+    workspace_root: &Path,
+    spec: &RuntimeStageSpec<'_>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(path) = env::var(spec.env_bundle_key) {
@@ -604,11 +748,31 @@ fn candidate_paths(manifest_dir: &Path, spec: &RuntimeStageSpec<'_>) -> Vec<Path
     let vendor_dir = manifest_dir.join(spec.vendor_dir);
     candidates.push(vendor_dir.join("target/release").join(spec.binary_name));
     candidates.push(vendor_dir.join("target/debug").join(spec.binary_name));
+    candidates.push(
+        workspace_root
+            .join("target/release/binaries")
+            .join(spec.binary_name),
+    );
+    candidates.push(
+        workspace_root
+            .join("target/debug/binaries")
+            .join(spec.binary_name),
+    );
+    candidates.push(workspace_root.join("target/release").join(spec.binary_name));
+    candidates.push(workspace_root.join("target/debug").join(spec.binary_name));
     if let Some(path) = find_program(spec.binary_name) {
         candidates.push(path);
     }
 
     candidates
+}
+
+fn binary_stem(binary_name: &str) -> &str {
+    binary_name.strip_suffix(".exe").unwrap_or(binary_name)
+}
+
+fn cargo_profile() -> String {
+    env::var("PROFILE").unwrap_or_else(|_| "debug".to_string())
 }
 
 fn runtime_binary_name(base: &'static str) -> &'static str {

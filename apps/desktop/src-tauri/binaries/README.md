@@ -20,9 +20,12 @@ Build-time staging priority for Codex:
 
 1. `VAULTAI_CODEX_ACP_BUNDLE_BIN`
 2. `VAULTAI_CODEX_ACP_BIN`
-3. `vendor/codex-acp/target/release/`
-4. `vendor/codex-acp/target/debug/`
-5. `PATH`
+3. Rebuild `vendor/codex-acp` from source for the active Cargo profile
+4. `vendor/codex-acp/target/release/`
+5. `vendor/codex-acp/target/debug/`
+6. workspace `target/{release,debug}/binaries/`
+7. workspace `target/{release,debug}/`
+8. `PATH`
 
 Build-time staging priority for Claude:
 
@@ -33,5 +36,7 @@ Build-time staging priority for Claude:
 5. `PATH`
 
 If one of those binaries exists, `src-tauri/build.rs` copies it here automatically
-before Tauri bundles the app. If no source is found but a file is already present in
-`src-tauri/binaries/`, that staged binary is kept as-is.
+before Tauri bundles the app. Codex now tries to rebuild from `vendor/codex-acp`
+before falling back to older artifacts. If no fresh source is found but a file is
+already present in `src-tauri/binaries/`, that staged binary is reused with a warning
+that it may be stale.

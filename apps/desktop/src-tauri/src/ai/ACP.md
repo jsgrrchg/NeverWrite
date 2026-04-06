@@ -98,7 +98,7 @@ On Windows, command lookup is `PATHEXT`-aware.
 
 ### What is staged today
 
-- **Codex:** a prebuilt `codex-acp` binary is staged into `src-tauri/binaries/`
+- **Codex:** `build.rs` first tries to rebuild `vendor/codex-acp`, then stages the resulting `codex-acp` binary into `src-tauri/binaries/`
 - **Claude:** an embedded Node runtime plus the vendored Claude ACP runtime are staged into `src-tauri/embedded/`
 - **Gemini:** not staged or bundled today
 
