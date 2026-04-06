@@ -235,9 +235,19 @@ Versions are kept in sync across:
 
 Use `scripts/bump-version.sh` to update all locations at once.
 
+## Release automation
+
+Desktop releases are maintainer-driven and run manually from GitHub Actions.
+
+Before triggering [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml):
+
+- Create and push the release tag first, for example `v0.2.0`
+- Ensure the required signing secrets are configured in the GitHub repository settings
+- If you want signed macOS artifacts, also configure the Apple signing and notarization secrets documented in [`release/appcast/README.md`](release/appcast/README.md)
+
 ## Reporting issues
 
-- Search [existing issues](https://github.com/anthropics/VaultAI/issues) before opening a new one
+- Search [existing issues](https://github.com/jsgrrchg/VaultAI/issues) before opening a new one
 - Include steps to reproduce, expected behavior, and actual behavior
 - For crashes, include the OS version and any relevant logs
 

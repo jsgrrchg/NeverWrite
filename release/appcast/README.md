@@ -147,11 +147,17 @@ The multi-target release workflow lives at:
 High-level flow:
 
 1. Validate release metadata and extract notes from `CHANGELOG.md`
-2. Create or update the GitHub release for the pushed `vX.Y.Z` tag
+2. Create or update the GitHub release for the manually selected `vX.Y.Z` tag
 3. Build four desktop targets
 4. Upload manual assets plus updater archives/signatures to `GitHub Releases`
 5. Merge target metadata into `stable/latest.json`
 6. Commit the generated appcast to the `gh-pages` branch
+
+Maintainer control:
+
+- The workflow is triggered manually from GitHub Actions with `workflow_dispatch`.
+- The requested tag must already exist in the repository before the workflow runs.
+- This keeps public release automation visible without allowing every pushed tag to publish automatically.
 
 Required repository secrets:
 
@@ -170,6 +176,7 @@ Optional macOS signing/notarization secrets:
 Operational note:
 
 - GitHub Pages must be configured to publish from the `gh-pages` branch root for the workflow output to be publicly reachable.
+- A public repository can keep this workflow enabled safely; missing secrets will fail the release job, but do not expose secret values.
 
 ## Security Guardrails
 
