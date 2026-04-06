@@ -30,6 +30,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
+        expect(useSettingsStore.getState().fileTreeScale).toBe(114);
     });
 
     it("persists developerModeEnabled per vault", () => {

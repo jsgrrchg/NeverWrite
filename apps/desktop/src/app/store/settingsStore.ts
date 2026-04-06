@@ -153,7 +153,7 @@ const defaults: Settings = {
     spellcheckSecondaryLanguage: null,
     grammarCheckEnabled: false,
     grammarCheckServerUrl: "",
-    fileTreeScale: 100,
+    fileTreeScale: 114,
     tabOpenBehavior: "history",
     developerModeEnabled: false,
     developerTerminalEnabled: true,
