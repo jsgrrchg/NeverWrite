@@ -3156,12 +3156,15 @@ describe("chatStore", () => {
         ).toBe(true);
         expect(
             useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
-        ).toMatchObject([
-            {
-                content: "Send after this turn",
-                status: "sending",
-            },
-        ]);
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item,
+        ).toMatchObject({
+            content: "Send after this turn",
+            status: "sending",
+        });
         expect(
             useChatStore
                 .getState()
@@ -3360,7 +3363,7 @@ describe("chatStore", () => {
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => item.id),
-        ).toEqual(["queued-1", "queued-2"]);
+        ).toEqual(["queued-2"]);
         expect(
             useChatStore.getState().activeQueuedMessageBySessionId[
                 activeSessionId
@@ -3397,7 +3400,15 @@ describe("chatStore", () => {
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => item.id),
-        ).toEqual(["queued-1", "queued-2"]);
+        ).toEqual(["queued-2"]);
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item,
+        ).toMatchObject({
+            id: "queued-1",
+            status: "sending",
+        });
         expect(
             useChatStore.getState().pausedQueueBySessionId[activeSessionId],
         ).toBeUndefined();
@@ -3519,7 +3530,77 @@ describe("chatStore", () => {
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => item.id),
-        ).toEqual(["queued-1"]);
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item,
+        ).toMatchObject({
+            id: "queued-1",
+            status: "sending",
+        });
+    });
+
+    it("drops buffered assistant deltas from a stopped turn before the next turn starts", async () => {
+        vi.useFakeTimers();
+        try {
+            invokeMock.mockImplementation(async (command) => {
+                if (command === "ai_list_runtimes") return runtimePayload;
+                if (command === "ai_create_session") return sessionPayload;
+                if (command === "ai_list_sessions") return [];
+                if (command === "ai_get_setup_status") return readySetupStatus;
+                if (command === "ai_update_setup") return readySetupStatus;
+                if (command === "ai_start_auth") return readySetupStatus;
+                if (command === "ai_load_session") return sessionPayload;
+                if (command === "ai_set_model") return sessionPayload;
+                if (command === "ai_set_mode") return sessionPayload;
+                if (command === "ai_set_config_option") return sessionPayload;
+                if (command === "ai_cancel_turn") {
+                    return {
+                        ...sessionPayload,
+                        status: "idle",
+                    };
+                }
+                if (command === "ai_load_session_histories") return [];
+                return sessionPayload;
+            });
+
+            await useChatStore.getState().initialize();
+
+            const activeSessionId = getActiveSessionId();
+            useChatStore.setState((state) => ({
+                sessionsById: {
+                    ...state.sessionsById,
+                    [activeSessionId]: {
+                        ...state.sessionsById[activeSessionId]!,
+                        status: "streaming",
+                    },
+                },
+            }));
+
+            useChatStore.getState().applyMessageDelta({
+                session_id: activeSessionId,
+                message_id: "assistant-stale",
+                delta: "Old cancelled response",
+            });
+
+            await useChatStore.getState().stopStreaming(activeSessionId);
+
+            useChatStore.getState().applyThinkingStarted({
+                session_id: activeSessionId,
+                message_id: "thinking-next",
+            });
+
+            expect(
+                useChatStore
+                    .getState()
+                    .sessionsById[
+                        activeSessionId
+                    ]?.messages.some((message) => message.role === "assistant" && message.content.includes("Old cancelled response")),
+            ).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it("retries a failed queued message without duplicating the user turn", async () => {
@@ -3609,16 +3690,60 @@ describe("chatStore", () => {
         ).toHaveLength(1);
         expect(
             useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
-        ).toMatchObject([
-            {
-                content: "Retry me once",
-                status: "sending",
-            },
-        ]);
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item,
+        ).toMatchObject({
+            content: "Retry me once",
+            status: "sending",
+        });
         expect(sendAttempts).toBe(2);
     });
 
-    it("prioritizes a queued message when sending it now", async () => {
+    it("interrupts the current turn and sends the queued message immediately when sending it now", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
@@ -3649,12 +3774,310 @@ describe("chatStore", () => {
             .sendQueuedMessageNow(activeSessionId, "queued-2");
 
         expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_cancel_turn",
+            ),
+        ).toHaveLength(1);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Second",
+            ),
+        ).toHaveLength(1);
+        expect(
             useChatStore
                 .getState()
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => item.id),
-        ).toEqual(["queued-2", "queued-1"]);
+        ).toEqual(["queued-1"]);
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+    });
+
+    it("requeues the interrupted queued turn and still sends the selected queued message immediately", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_cancel_turn") {
+                return {
+                    ...sessionPayload,
+                    status: "idle",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+            activeQueuedMessageBySessionId: {
+                ...state.activeQueuedMessageBySessionId,
+                [activeSessionId]: {
+                    item: createQueuedMessage("queued-1", "First", {
+                        status: "sending",
+                    }),
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: "queued-2",
+                },
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-2", "Second"),
+                    createQueuedMessage("queued-3", "Third"),
+                ],
+            },
+        }));
+
+        await useChatStore
+            .getState()
+            .sendQueuedMessageNow(activeSessionId, "queued-3");
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_cancel_turn",
+            ),
+        ).toHaveLength(1);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Third",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1", "queued-2"]);
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+    });
+
+    it("dispatches the prioritized queued message immediately when sending it now from idle", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "First"),
+                    createQueuedMessage("queued-2", "Second"),
+                ],
+            },
+        }));
+
+        await useChatStore
+            .getState()
+            .sendQueuedMessageNow(activeSessionId, "queued-2");
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Second",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1"]);
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-priority",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "First",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item,
+        ).toMatchObject({
+            id: "queued-1",
+            status: "sending",
+        });
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toBeUndefined();
+    });
+
+    it("removes a queued message from the visible list once it has been sent", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "Only queued"),
+                ],
+            },
+        }));
+
+        await useChatStore.getState().tryDrainQueue(activeSessionId);
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item,
+        ).toMatchObject({
+            id: "queued-1",
+            status: "sending",
+        });
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-final",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
     });
 
     it("heals stale sending queue entries when the session is already idle", async () => {
@@ -3717,17 +4140,17 @@ describe("chatStore", () => {
             .sendQueuedMessageNow(activeSessionId, "queued-next");
 
         expect(
-            useChatStore.getState().activeQueuedMessageBySessionId[
-                activeSessionId
-            ]?.item.id,
-        ).toBe("queued-next");
-        expect(
             useChatStore
                 .getState()
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => `${item.id}:${item.status}`),
-        ).toEqual(["queued-next:sending"]);
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ],
+        ).toBeUndefined();
         expect(
             invokeMock.mock.calls.filter(
                 ([command, payload]) =>
@@ -4311,6 +4734,53 @@ describe("chatStore", () => {
             expect(
                 useChatStore.getState().sessionsById[activeSessionId]?.status,
             ).toBe("streaming");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("flushes assistant deltas without waiting for a later lifecycle event", async () => {
+        vi.useFakeTimers();
+        try {
+            await useChatStore.getState().initialize();
+
+            const activeSessionId = getActiveSessionId();
+            useChatStore.setState((state) => ({
+                sessionsById: {
+                    ...state.sessionsById,
+                    [activeSessionId]: {
+                        ...state.sessionsById[activeSessionId]!,
+                        status: "idle",
+                    },
+                },
+            }));
+
+            useChatStore.getState().applyMessageDelta({
+                session_id: activeSessionId,
+                message_id: "assistant-live",
+                delta: "Streaming now",
+            });
+
+            expect(
+                useChatStore
+                    .getState()
+                    .sessionsById[
+                        activeSessionId
+                    ]?.messages.some((message) => message.id === "assistant-live" && message.content.includes("Streaming now")),
+            ).toBe(false);
+
+            vi.runAllTimers();
+
+            expect(
+                useChatStore.getState().sessionsById[activeSessionId]?.status,
+            ).toBe("streaming");
+            expect(
+                useChatStore
+                    .getState()
+                    .sessionsById[
+                        activeSessionId
+                    ]?.messages.some((message) => message.id === "assistant-live" && message.content.includes("Streaming now")),
+            ).toBe(true);
         } finally {
             vi.useRealTimers();
         }

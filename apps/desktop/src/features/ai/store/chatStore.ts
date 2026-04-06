@@ -2362,36 +2362,6 @@ async function replaceEmptySessionForAdditionalRoots(
     return migratedSession.sessionId;
 }
 
-function prioritizeQueuedMessage(
-    queue: QueuedChatMessage[],
-    messageId: string,
-) {
-    const currentIndex = queue.findIndex((item) => item.id === messageId);
-    if (currentIndex <= 0) {
-        return queue;
-    }
-
-    const item = queue[currentIndex];
-    if (!item || item.status === "sending") {
-        return queue;
-    }
-
-    const nextQueue = queue.filter((queuedItem) => queuedItem.id !== messageId);
-    const insertionIndex = nextQueue.findIndex(
-        (queuedItem) => queuedItem.status !== "sending",
-    );
-    if (insertionIndex === -1) {
-        nextQueue.push(item);
-        return nextQueue;
-    }
-
-    nextQueue.splice(insertionIndex, 0, {
-        ...item,
-        status: "queued",
-    });
-    return nextQueue;
-}
-
 function isSessionBusy(session: AIChatSession) {
     return (
         session.status === "streaming" ||
@@ -2486,6 +2456,15 @@ function cleanupPausedQueueBySessionId(
     const nextPausedQueueBySessionId = { ...pausedQueueBySessionId };
     delete nextPausedQueueBySessionId[sessionId];
     return nextPausedQueueBySessionId;
+}
+
+function restoreDeferredQueuedMessage(
+    queue: QueuedChatMessage[],
+    deferredMessage: DeferredQueuedMessage,
+) {
+    return restoreQueuedMessagePosition(queue, deferredMessage, {
+        ...deferredMessage.item,
+    });
 }
 
 // Idle sessions cannot legitimately keep queue entries marked as "sending".
@@ -3998,17 +3977,17 @@ function planUpdateKeepsSessionStreaming(payload: AIPlanUpdatePayload) {
 interface DeltaBuffer {
     messageDelta: Map<string, { message_id: string; text: string }>;
     thinkingDelta: Map<string, Map<string, string>>;
-    rafId: number | null;
+    flushTimeoutId: number | null;
 }
 
 const _deltaBuffer: DeltaBuffer = {
     messageDelta: new Map(),
     thinkingDelta: new Map(),
-    rafId: null,
+    flushTimeoutId: null,
 };
 
 function flushDeltas() {
-    _deltaBuffer.rafId = null;
+    _deltaBuffer.flushTimeoutId = null;
     const { messageDelta, thinkingDelta } = _deltaBuffer;
 
     if (messageDelta.size === 0 && thinkingDelta.size === 0) return;
@@ -4108,8 +4087,8 @@ function flushDeltas() {
 }
 
 function scheduleDeltaFlush() {
-    if (_deltaBuffer.rafId === null) {
-        _deltaBuffer.rafId = requestAnimationFrame(flushDeltas);
+    if (_deltaBuffer.flushTimeoutId === null) {
+        _deltaBuffer.flushTimeoutId = window.setTimeout(flushDeltas, 0);
     }
 }
 
@@ -4143,11 +4122,25 @@ function bufferThinkingDelta(
 }
 
 function flushDeltasSync() {
-    if (_deltaBuffer.rafId !== null) {
-        cancelAnimationFrame(_deltaBuffer.rafId);
-        _deltaBuffer.rafId = null;
+    if (_deltaBuffer.flushTimeoutId !== null) {
+        window.clearTimeout(_deltaBuffer.flushTimeoutId);
+        _deltaBuffer.flushTimeoutId = null;
     }
     flushDeltas();
+}
+
+function clearBufferedDeltasForSession(sessionId: string) {
+    _deltaBuffer.messageDelta.delete(sessionId);
+    _deltaBuffer.thinkingDelta.delete(sessionId);
+
+    if (
+        _deltaBuffer.flushTimeoutId !== null &&
+        _deltaBuffer.messageDelta.size === 0 &&
+        _deltaBuffer.thinkingDelta.size === 0
+    ) {
+        window.clearTimeout(_deltaBuffer.flushTimeoutId);
+        _deltaBuffer.flushTimeoutId = null;
+    }
 }
 
 async function persistSession(session: AIChatSession) {
@@ -4420,6 +4413,107 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
     }
 
+    function activateQueuedMessage(
+        sessionId: string,
+        messageId: string,
+    ): DeferredQueuedMessage | null {
+        let nextDeferredMessage: DeferredQueuedMessage | null = null;
+
+        set((state) => {
+            const queue = state.queuedMessagesBySessionId[sessionId] ?? [];
+            const queuedStateItem = queue.find((item) => item.id === messageId);
+            if (!queuedStateItem) {
+                return state;
+            }
+
+            nextDeferredMessage = {
+                ...createDeferredQueuedMessage(queue, queuedStateItem),
+                item: {
+                    ...queuedStateItem,
+                    status: "sending",
+                },
+            };
+
+            return {
+                queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                    state.queuedMessagesBySessionId,
+                    sessionId,
+                    queue.filter((item) => item.id !== messageId),
+                ),
+                activeQueuedMessageBySessionId: {
+                    ...state.activeQueuedMessageBySessionId,
+                    [sessionId]: nextDeferredMessage,
+                },
+            };
+        });
+
+        return nextDeferredMessage;
+    }
+
+    function takeQueuedMessage(
+        sessionId: string,
+        messageId: string,
+    ): QueuedChatMessage | null {
+        let nextQueuedItem: QueuedChatMessage | null = null;
+
+        set((state) => {
+            const queue = state.queuedMessagesBySessionId[sessionId] ?? [];
+            const queuedStateItem = queue.find((item) => item.id === messageId);
+            if (!queuedStateItem) {
+                return state;
+            }
+
+            nextQueuedItem = {
+                ...queuedStateItem,
+                status: "queued",
+            };
+
+            return {
+                queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                    state.queuedMessagesBySessionId,
+                    sessionId,
+                    queue.filter((item) => item.id !== messageId),
+                ),
+            };
+        });
+
+        return nextQueuedItem;
+    }
+
+    function restoreActiveQueuedMessage(
+        sessionId: string,
+        updater: (item: QueuedChatMessage) => QueuedChatMessage,
+    ) {
+        set((state) => {
+            const deferredMessage =
+                state.activeQueuedMessageBySessionId[sessionId];
+            if (!deferredMessage) {
+                return state;
+            }
+
+            const currentQueue =
+                state.queuedMessagesBySessionId[sessionId] ?? [];
+            const restoredQueue = restoreDeferredQueuedMessage(currentQueue, {
+                ...deferredMessage,
+                item: updater(deferredMessage.item),
+            });
+
+            return {
+                queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+                    state.queuedMessagesBySessionId,
+                    sessionId,
+                    restoredQueue,
+                ),
+                activeQueuedMessageBySessionId:
+                    cleanupDeferredQueuedMessagesBySessionId(
+                        state.activeQueuedMessageBySessionId,
+                        sessionId,
+                        null,
+                    ),
+            };
+        });
+    }
+
     function pauseQueueForCancellation(
         sessionId: string,
         deferredMessage: DeferredQueuedMessage | null,
@@ -4595,7 +4689,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         let activeSessionId = sessionId;
         let currentItem = queuedItem;
         let session = get().sessionsById[activeSessionId];
-        let activeQueuedMessage: DeferredQueuedMessage | null = null;
         if (!session || session.isResumingSession) {
             return;
         }
@@ -4619,43 +4712,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         if (source === "queue") {
-            const queue =
-                get().queuedMessagesBySessionId[activeSessionId] ?? [];
-            const queuedStateItem = queue.find(
-                (item) => item.id === currentItem.id,
+            const activatedQueuedMessage = activateQueuedMessage(
+                activeSessionId,
+                currentItem.id,
             );
-            if (!queuedStateItem) {
+            if (!activatedQueuedMessage) {
                 return;
             }
 
-            currentItem = queuedStateItem;
-            activeQueuedMessage = createDeferredQueuedMessage(
-                queue,
-                queuedStateItem,
-            );
-            patchQueuedMessage(activeSessionId, currentItem.id, {
-                status: "sending",
-            });
-            setActiveQueuedMessage(activeSessionId, {
-                ...activeQueuedMessage,
-                item: {
-                    ...activeQueuedMessage.item,
-                    status: "sending",
-                },
-            });
-            currentItem = get().queuedMessagesBySessionId[
-                activeSessionId
-            ]?.find((item) => item.id === currentItem.id) ?? {
-                ...currentItem,
-                status: "sending",
-            };
+            currentItem = activatedQueuedMessage.item;
         }
 
         if (!session || isSessionBusy(session)) {
             if (source === "queue") {
-                patchQueuedMessage(activeSessionId, currentItem.id, {
+                restoreActiveQueuedMessage(activeSessionId, (item) => ({
+                    ...item,
                     status: "queued",
-                });
+                }));
             }
             return;
         }
@@ -4687,9 +4760,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 source === "queue" &&
                 currentItem.optimisticMessageId !== userMessageId
             ) {
-                patchQueuedMessage(activeSessionId, currentItem.id, {
-                    optimisticMessageId: userMessageId,
-                });
                 updateActiveQueuedMessage(
                     activeSessionId,
                     (deferredMessage) => ({
@@ -4773,10 +4843,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 "Failed to send the message.",
             );
             if (source === "queue") {
-                patchQueuedMessage(activeSessionId, currentItem.id, {
+                restoreActiveQueuedMessage(activeSessionId, (item) => ({
+                    ...item,
                     status: "failed",
-                });
-                setActiveQueuedMessage(activeSessionId, null);
+                }));
             }
             get().applySessionError({
                 session_id: activeSessionId,
@@ -5559,39 +5629,50 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ? {
                           runtimeConnectionByRuntimeId,
                           sessionsById: nextSessionsById,
-                          queuedMessagesBySessionId: affectedSessionIds.reduce(
-                              (nextQueuedMessagesBySessionId, sessionId) => {
+                          ...affectedSessionIds.reduce(
+                              (nextState, sessionId) => {
                                   const activeQueuedMessage =
                                       state.activeQueuedMessageBySessionId[
                                           sessionId
                                       ];
-                                  return activeQueuedMessage
-                                      ? updateQueuedMessage(
-                                            nextQueuedMessagesBySessionId,
-                                            sessionId,
-                                            activeQueuedMessage.item.id,
-                                            (item) => ({
-                                                ...item,
-                                                status: "failed",
-                                            }),
-                                        )
-                                      : nextQueuedMessagesBySessionId;
+                                  if (!activeQueuedMessage) {
+                                      return nextState;
+                                  }
+
+                                  return {
+                                      queuedMessagesBySessionId:
+                                          cleanupQueuedMessagesBySessionId(
+                                              nextState.queuedMessagesBySessionId,
+                                              sessionId,
+                                              restoreDeferredQueuedMessage(
+                                                  nextState
+                                                      .queuedMessagesBySessionId[
+                                                      sessionId
+                                                  ] ?? [],
+                                                  {
+                                                      ...activeQueuedMessage,
+                                                      item: {
+                                                          ...activeQueuedMessage.item,
+                                                          status: "failed",
+                                                      },
+                                                  },
+                                              ),
+                                          ),
+                                      activeQueuedMessageBySessionId:
+                                          cleanupDeferredQueuedMessagesBySessionId(
+                                              nextState.activeQueuedMessageBySessionId,
+                                              sessionId,
+                                              null,
+                                          ),
+                                  };
                               },
-                              state.queuedMessagesBySessionId,
+                              {
+                                  queuedMessagesBySessionId:
+                                      state.queuedMessagesBySessionId,
+                                  activeQueuedMessageBySessionId:
+                                      state.activeQueuedMessageBySessionId,
+                              },
                           ),
-                          activeQueuedMessageBySessionId:
-                              affectedSessionIds.reduce(
-                                  (
-                                      nextActiveQueuedMessageBySessionId,
-                                      sessionId,
-                                  ) =>
-                                      cleanupDeferredQueuedMessagesBySessionId(
-                                          nextActiveQueuedMessageBySessionId,
-                                          sessionId,
-                                          null,
-                                      ),
-                                  state.activeQueuedMessageBySessionId,
-                              ),
                       }
                     : { runtimeConnectionByRuntimeId };
             });
@@ -5684,14 +5765,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         session_id,
                     ),
                     queuedMessagesBySessionId: activeQueuedMessage
-                        ? updateQueuedMessage(
+                        ? cleanupQueuedMessagesBySessionId(
                               state.queuedMessagesBySessionId,
                               session_id,
-                              activeQueuedMessage.item.id,
-                              (item) => ({
-                                  ...item,
-                                  status: "failed",
-                              }),
+                              restoreDeferredQueuedMessage(
+                                  state.queuedMessagesBySessionId[session_id] ??
+                                      [],
+                                  {
+                                      ...activeQueuedMessage,
+                                      item: {
+                                          ...activeQueuedMessage.item,
+                                          status: "failed",
+                                      },
+                                  },
+                              ),
                           )
                         : state.queuedMessagesBySessionId,
                     activeQueuedMessageBySessionId:
@@ -6889,58 +6976,50 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            let shouldDrain = false;
-            set((state) => {
-                const queue = state.queuedMessagesBySessionId[sessionId];
-                const session = state.sessionsById[sessionId];
-                if (!queue || !session) {
-                    return state;
+            const currentSession = get().sessionsById[sessionId];
+            const queuedItem = get().queuedMessagesBySessionId[sessionId]?.find(
+                (item) => item.id === messageId,
+            );
+            if (
+                !currentSession ||
+                !queuedItem ||
+                queuedItem.status === "sending"
+            ) {
+                return;
+            }
+
+            if (_queueDrainLocks.has(sessionId)) {
+                return;
+            }
+
+            _queueDrainLocks.add(sessionId);
+            try {
+                if (isSessionBusy(currentSession)) {
+                    await get().stopStreaming(sessionId);
+                    await stabilizeQueueSession(sessionId);
                 }
 
-                const currentItem = queue.find((item) => item.id === messageId);
-                if (!currentItem || currentItem.status === "sending") {
-                    return state;
-                }
-
-                const nextQueue = prioritizeQueuedMessage(queue, messageId);
-
+                const nextSession = get().sessionsById[sessionId];
                 if (
-                    session.status === "idle" &&
-                    nextQueue[0]?.id === messageId &&
-                    !_queueDrainLocks.has(sessionId)
+                    !nextSession ||
+                    nextSession.isResumingSession ||
+                    isSessionBusy(nextSession)
                 ) {
-                    _queueDrainLocks.add(sessionId);
-                    shouldDrain = true;
+                    return;
                 }
 
-                return nextQueue === queue
-                    ? {
-                          queuedMessagesBySessionId: updateQueuedMessage(
-                              state.queuedMessagesBySessionId,
-                              sessionId,
-                              messageId,
-                              (item) => ({ ...item, status: "queued" }),
-                          ),
-                      }
-                    : {
-                          queuedMessagesBySessionId: {
-                              ...state.queuedMessagesBySessionId,
-                              [sessionId]: nextQueue,
-                          },
-                      };
-            });
-
-            if (shouldDrain) {
-                try {
-                    const nextItem = get().queuedMessagesBySessionId[
-                        sessionId
-                    ]?.find((item) => item.status === "queued");
-                    if (nextItem) {
-                        await dispatchMessage(sessionId, nextItem, "queue");
-                    }
-                } finally {
-                    _queueDrainLocks.delete(sessionId);
+                if (get().pausedQueueBySessionId[sessionId]) {
+                    releasePausedQueueForManualSend(sessionId);
                 }
+
+                const sendNowItem = takeQueuedMessage(sessionId, messageId);
+                if (!sendNowItem) {
+                    return;
+                }
+
+                await dispatchMessage(sessionId, sendNowItem, "immediate");
+            } finally {
+                _queueDrainLocks.delete(sessionId);
             }
         },
 
@@ -6989,6 +7068,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let stopPromise: Promise<void> | null = null;
             stopPromise = (async () => {
                 clearStaleStreamingCheck(resolvedSessionId);
+                clearBufferedDeltasForSession(resolvedSessionId);
                 const activeQueuedMessage =
                     get().activeQueuedMessageBySessionId[resolvedSessionId] ??
                     null;
@@ -6999,12 +7079,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 if (shouldPauseQueue) {
                     if (activeQueuedMessage) {
-                        patchQueuedMessage(
+                        restoreActiveQueuedMessage(
                             resolvedSessionId,
-                            activeQueuedMessage.item.id,
-                            {
+                            (item) => ({
+                                ...item,
                                 status: "queued",
-                            },
+                            }),
                         );
                     }
                     pauseQueueForCancellation(resolvedSessionId, null);
