@@ -2488,6 +2488,93 @@ function cleanupPausedQueueBySessionId(
     return nextPausedQueueBySessionId;
 }
 
+// Idle sessions cannot legitimately keep queue entries marked as "sending".
+// When that happens, the completion cleanup was missed, so heal the queue
+// eagerly to avoid stale UI and blocked follow-up dispatches.
+function reconcileIdleQueuedState(
+    state: Pick<
+        ChatStore,
+        "queuedMessagesBySessionId" | "activeQueuedMessageBySessionId"
+    >,
+    sessionId: string,
+) {
+    const queue = state.queuedMessagesBySessionId[sessionId] ?? [];
+    const activeQueuedMessage =
+        state.activeQueuedMessageBySessionId[sessionId] ?? null;
+
+    const sendingIds = new Set<string>();
+    for (const item of queue) {
+        if (item.status === "sending") {
+            sendingIds.add(item.id);
+        }
+    }
+
+    const activeQueuedMessageIsSending =
+        activeQueuedMessage?.item.status === "sending" ||
+        (activeQueuedMessage != null &&
+            queue.some(
+                (item) =>
+                    item.id === activeQueuedMessage.item.id &&
+                    item.status === "sending",
+            ));
+
+    if (activeQueuedMessageIsSending && activeQueuedMessage) {
+        sendingIds.add(activeQueuedMessage.item.id);
+    }
+
+    if (sendingIds.size === 0 && !activeQueuedMessageIsSending) {
+        return null;
+    }
+
+    return {
+        queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+            state.queuedMessagesBySessionId,
+            sessionId,
+            queue.filter((item) => !sendingIds.has(item.id)),
+        ),
+        activeQueuedMessageBySessionId: activeQueuedMessageIsSending
+            ? cleanupDeferredQueuedMessagesBySessionId(
+                  state.activeQueuedMessageBySessionId,
+                  sessionId,
+                  null,
+              )
+            : state.activeQueuedMessageBySessionId,
+    };
+}
+
+function healIdleQueuedState(sessionId: string) {
+    let healed = false;
+    useChatStore.setState((state) => {
+        const session = state.sessionsById[sessionId];
+        if (!session || session.status !== "idle") {
+            return state;
+        }
+
+        const reconciledQueueState = reconcileIdleQueuedState(state, sessionId);
+        if (!reconciledQueueState) {
+            return state;
+        }
+
+        healed = true;
+        return reconciledQueueState;
+    });
+    return healed;
+}
+
+async function waitForPendingStop(sessionId: string) {
+    const pendingStop = _pendingStopBySessionId.get(sessionId);
+    if (!pendingStop) {
+        return;
+    }
+
+    await pendingStop.catch(() => {});
+}
+
+async function stabilizeQueueSession(sessionId: string) {
+    await waitForPendingStop(sessionId);
+    healIdleQueuedState(sessionId);
+}
+
 function updatePermissionMessageState(
     session: AIChatSession,
     requestId: string,
@@ -3814,6 +3901,7 @@ function hasPersistableSessionContent(session: AIChatSession) {
 }
 
 const _queueDrainLocks = new Set<string>();
+const _pendingStopBySessionId = new Map<string, Promise<void>>();
 const _pendingSessionPersistence = new Map<string, AIChatSession>();
 let _sessionPersistenceFlushScheduled = false;
 let _sessionPersistenceEpoch = 0;
@@ -5359,9 +5447,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                           scopedSession,
                       ]);
                 const nextSession = mergeSession(existing, scopedSession);
+                const reconciledQueueState =
+                    existing &&
+                    nextSession.status === "idle" &&
+                    !nextSession.isResumingSession
+                        ? reconcileIdleQueuedState(
+                              state,
+                              scopedSession.sessionId,
+                          )
+                        : null;
                 shouldDrainQueue =
                     nextSession.status === "idle" &&
-                    existing?.status !== "idle" &&
+                    (existing?.status !== "idle" ||
+                        Boolean(reconciledQueueState)) &&
                     !nextSession.isResumingSession;
 
                 return {
@@ -5393,6 +5491,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                               [scopedSession.sessionId]:
                                   createEmptyComposerParts(),
                           },
+                    ...(reconciledQueueState ?? {}),
                 };
             });
 
@@ -6641,6 +6740,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sendMessage: async (sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
+            await stabilizeQueueSession(resolvedSessionId);
             const { sessionsById, composerPartsBySessionId } = get();
             const session = sessionsById[resolvedSessionId];
             if (!session || session.isResumingSession) {
@@ -6743,6 +6843,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         retryQueuedMessage: async (sessionId, messageId) => {
+            await stabilizeQueueSession(sessionId);
             if (get().queuedMessageEditBySessionId[sessionId]) {
                 return;
             }
@@ -6783,6 +6884,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         sendQueuedMessageNow: async (sessionId, messageId) => {
+            await stabilizeQueueSession(sessionId);
             if (get().queuedMessageEditBySessionId[sessionId]) {
                 return;
             }
@@ -6843,6 +6945,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         tryDrainQueue: async (sessionId) => {
+            await stabilizeQueueSession(sessionId);
             const session = get().sessionsById[sessionId];
             if (
                 !session ||
@@ -6876,60 +6979,82 @@ export const useChatStore = create<ChatStore>((set, get) => {
         stopStreaming: async (sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
-            clearStaleStreamingCheck(resolvedSessionId);
-            const activeQueuedMessage =
-                get().activeQueuedMessageBySessionId[resolvedSessionId] ?? null;
-            const shouldPauseQueue =
-                activeQueuedMessage != null ||
-                (get().queuedMessagesBySessionId[resolvedSessionId]?.length ??
-                    0) > 0;
-
-            if (shouldPauseQueue) {
-                if (activeQueuedMessage) {
-                    patchQueuedMessage(
-                        resolvedSessionId,
-                        activeQueuedMessage.item.id,
-                        {
-                            status: "queued",
-                        },
-                    );
-                }
-                pauseQueueForCancellation(resolvedSessionId, null);
-            } else {
-                setActiveQueuedMessage(resolvedSessionId, null);
+            const existingPendingStop =
+                _pendingStopBySessionId.get(resolvedSessionId);
+            if (existingPendingStop) {
+                await existingPendingStop;
+                return;
             }
 
-            try {
-                const session = await aiCancelTurn(resolvedSessionId);
-                get().upsertSession(session);
-            } catch (error) {
-                get().applySessionError({
-                    session_id: resolvedSessionId,
-                    message: getAiErrorMessage(
-                        error,
-                        "Failed to stop the current turn.",
-                    ),
-                });
-            }
+            let stopPromise: Promise<void> | null = null;
+            stopPromise = (async () => {
+                clearStaleStreamingCheck(resolvedSessionId);
+                const activeQueuedMessage =
+                    get().activeQueuedMessageBySessionId[resolvedSessionId] ??
+                    null;
+                const shouldPauseQueue =
+                    activeQueuedMessage != null ||
+                    (get().queuedMessagesBySessionId[resolvedSessionId]
+                        ?.length ?? 0) > 0;
 
-            // Explicitly transition to idle — same as applyMessageCompleted.
-            const stoppedAt = Date.now();
-            set((state) => {
-                const sess = state.sessionsById[resolvedSessionId];
-                if (!sess || sess.status === "idle") return state;
-                return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [resolvedSessionId]: stampElapsedOnTurnStartedSession(
+                if (shouldPauseQueue) {
+                    if (activeQueuedMessage) {
+                        patchQueuedMessage(
+                            resolvedSessionId,
+                            activeQueuedMessage.item.id,
                             {
-                                ...markAllMessagesComplete(sess),
-                                status: "idle",
+                                status: "queued",
                             },
-                            stoppedAt,
+                        );
+                    }
+                    pauseQueueForCancellation(resolvedSessionId, null);
+                } else {
+                    setActiveQueuedMessage(resolvedSessionId, null);
+                }
+
+                try {
+                    const session = await aiCancelTurn(resolvedSessionId);
+                    get().upsertSession(session);
+                } catch (error) {
+                    get().applySessionError({
+                        session_id: resolvedSessionId,
+                        message: getAiErrorMessage(
+                            error,
+                            "Failed to stop the current turn.",
                         ),
-                    },
-                };
+                    });
+                }
+
+                // Explicitly transition to idle — same as applyMessageCompleted.
+                const stoppedAt = Date.now();
+                set((state) => {
+                    const sess = state.sessionsById[resolvedSessionId];
+                    if (!sess || sess.status === "idle") return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]:
+                                stampElapsedOnTurnStartedSession(
+                                    {
+                                        ...markAllMessagesComplete(sess),
+                                        status: "idle",
+                                    },
+                                    stoppedAt,
+                                ),
+                        },
+                    };
+                });
+            })().finally(() => {
+                if (
+                    _pendingStopBySessionId.get(resolvedSessionId) ===
+                    stopPromise
+                ) {
+                    _pendingStopBySessionId.delete(resolvedSessionId);
+                }
             });
+
+            _pendingStopBySessionId.set(resolvedSessionId, stopPromise);
+            await stopPromise;
         },
 
         respondPermission: async (requestId, optionId) => {
@@ -7821,6 +7946,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
             clearStaleStreamingCheck(sessionId);
+            _pendingStopBySessionId.delete(sessionId);
             if (
                 targetSession &&
                 targetSession.runtimeState === "live" &&
@@ -7897,6 +8023,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deleteAllSessions: async () => {
             const vaultPath = useVaultStore.getState().vaultPath;
             const snapshotSessions = Object.values(get().sessionsById);
+            _pendingStopBySessionId.clear();
             await Promise.all(
                 snapshotSessions.map(async (session) => {
                     clearStaleStreamingCheck(session.sessionId);
@@ -8425,6 +8552,7 @@ export function resetChatStore() {
     _persistedHistoryCacheBySessionId.clear();
     const prefs = getNormalizedAiPreferences();
     _queueDrainLocks.clear();
+    _pendingStopBySessionId.clear();
     _pendingSessionPersistence.clear();
     _sessionPersistenceFlushScheduled = false;
     _sessionPersistenceEpoch += 1;
@@ -8472,4 +8600,5 @@ export function disposeChatStoreRuntime() {
     aiPrefsSyncTimer = null;
     autoContextSyncTimer = null;
     chatRuntimeInitialized = false;
+    _pendingStopBySessionId.clear();
 }

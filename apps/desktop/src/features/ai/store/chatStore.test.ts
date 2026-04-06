@@ -3420,6 +3420,108 @@ describe("chatStore", () => {
         ).toHaveLength(2);
     });
 
+    it("waits for an in-flight stop before sending the next manual message", async () => {
+        const cancelTurn = createDeferred<typeof sessionPayload>();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                    session_id:
+                        typeof args === "object" &&
+                        args !== null &&
+                        "sessionId" in args &&
+                        typeof args.sessionId === "string"
+                            ? args.sessionId
+                            : sessionPayload.session_id,
+                };
+            }
+            if (command === "ai_cancel_turn") {
+                return await cancelTurn.promise;
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-1", "Queued after cancel"),
+                ],
+            },
+        }));
+
+        const stopPromise = useChatStore
+            .getState()
+            .stopStreaming(activeSessionId);
+        await Promise.resolve();
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Manual redirect"));
+        const sendPromise = useChatStore
+            .getState()
+            .sendMessage(activeSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toHaveLength(0);
+
+        cancelTurn.resolve({
+            ...sessionPayload,
+            session_id: activeSessionId,
+            status: "idle",
+        });
+
+        await stopPromise;
+        await sendPromise;
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Manual redirect",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().pausedQueueBySessionId[activeSessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => item.id),
+        ).toEqual(["queued-1"]);
+    });
+
     it("retries a failed queued message without duplicating the user turn", async () => {
         let sendAttempts = 0;
         invokeMock.mockImplementation(async (command) => {
@@ -3553,6 +3655,89 @@ describe("chatStore", () => {
                     activeSessionId
                 ]?.map((item) => item.id),
         ).toEqual(["queued-2", "queued-1"]);
+    });
+
+    it("heals stale sending queue entries when the session is already idle", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_create_session") return sessionPayload;
+            if (command === "ai_list_sessions") return [];
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_update_setup") return readySetupStatus;
+            if (command === "ai_start_auth") return readySetupStatus;
+            if (command === "ai_load_session") return sessionPayload;
+            if (command === "ai_set_model") return sessionPayload;
+            if (command === "ai_set_mode") return sessionPayload;
+            if (command === "ai_set_config_option") return sessionPayload;
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+            if (command === "ai_load_session_histories") return [];
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
+                },
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [activeSessionId]: [
+                    createQueuedMessage("queued-stale", "Already sent", {
+                        status: "sending",
+                    }),
+                    createQueuedMessage("queued-next", "Send this now"),
+                ],
+            },
+            activeQueuedMessageBySessionId: {
+                ...state.activeQueuedMessageBySessionId,
+                [activeSessionId]: {
+                    item: createQueuedMessage("queued-stale", "Already sent", {
+                        status: "sending",
+                    }),
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: "queued-next",
+                },
+            },
+        }));
+
+        await useChatStore
+            .getState()
+            .sendQueuedMessageNow(activeSessionId, "queued-next");
+
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                activeSessionId
+            ]?.item.id,
+        ).toBe("queued-next");
+        expect(
+            useChatStore
+                .getState()
+                .queuedMessagesBySessionId[
+                    activeSessionId
+                ]?.map((item) => `${item.id}:${item.status}`),
+        ).toEqual(["queued-next:sending"]);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command, payload]) =>
+                    command === "ai_send_message" &&
+                    typeof payload === "object" &&
+                    payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Send this now",
+            ),
+        ).toHaveLength(1);
     });
 
     it("moves a queued message into the composer and restores the previous draft on cancel", async () => {
