@@ -10,6 +10,9 @@ use std::{
     thread,
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use agent_client_protocol::{
     Agent, AuthenticateRequest, Client, ClientCapabilities, ClientSideConnection,
     CloseSessionRequest, ContentBlock, ContentChunk, FileSystemCapabilities, Implementation,
@@ -55,6 +58,8 @@ const VAULTAI_DIFF_PREVIOUS_PATH_KEY: &str = "vaultaiPreviousPath";
 const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 enum RuntimeCommand {
     CreateSession {
@@ -2017,6 +2022,7 @@ fn prepare_runtime_command(command: &mut Command, cwd: Option<&Path>) -> Result<
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env_remove("CODEX_HOME");
+    configure_windows_background_process(command);
     if let Some(path) = preferred_path_value() {
         command.env("PATH", path);
     }
@@ -2027,6 +2033,13 @@ fn prepare_runtime_command(command: &mut Command, cwd: Option<&Path>) -> Result<
     }
 
     Ok(())
+}
+
+fn configure_windows_background_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 #[cfg(test)]

@@ -2863,6 +2863,7 @@ export function SettingsPanel({
             <WindowChrome
                 showLeadingInset={standalone}
                 showWindowControls={standalone}
+                windowControlScope={standalone ? "webview" : "window"}
                 onBackgroundMouseDown={(e) => {
                     if (
                         standalone &&
@@ -2915,35 +2916,38 @@ export function SettingsPanel({
                 >
                     Settings
                 </span>
-                <button
-                    onClick={handleClose}
-                    title="Close settings (Esc)"
-                    style={{
-                        width: 24,
-                        height: 24,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        borderRadius: 5,
-                        border: "none",
-                        background: "transparent",
-                        cursor: "pointer",
-                        fontSize: 16,
-                        color: "var(--text-secondary)",
-                        opacity: 0.6,
+                {!standalone && (
+                    <button
+                        onClick={handleClose}
+                        title="Close settings (Esc)"
+                        style={{
+                            width: 24,
+                            height: 24,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            borderRadius: 5,
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            fontSize: 16,
+                            color: "var(--text-secondary)",
+                            opacity: 0.6,
                     }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.opacity = "1";
-                        e.currentTarget.style.backgroundColor =
-                            "var(--bg-tertiary)";
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.opacity = "1";
+                            e.currentTarget.style.backgroundColor =
+                                "var(--bg-tertiary)";
                     }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.opacity = "0.6";
-                        e.currentTarget.style.backgroundColor = "transparent";
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.opacity = "0.6";
+                            e.currentTarget.style.backgroundColor =
+                                "transparent";
                     }}
-                >
+                    >
                     ✕
-                </button>
+                    </button>
+                )}
             </WindowChrome>
 
             {/* Body */}

@@ -37,6 +37,7 @@ const finalArgs =
 const child = spawn(tauriBin, finalArgs, {
     cwd: appRoot,
     stdio: "inherit",
+    shell: process.platform === "win32",
 });
 
 child.on("exit", (code, signal) => {

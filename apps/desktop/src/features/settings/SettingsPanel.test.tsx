@@ -1,4 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
+import { listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -189,6 +190,25 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Ctrl+O")).toBeInTheDocument();
         expect(screen.getByText("Open Settings")).toBeInTheDocument();
         expect(screen.getByText("Ctrl+,")).toBeInTheDocument();
+    });
+
+    it("hides the inline close button in standalone Windows settings", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        vi.mocked(listen).mockResolvedValue(vi.fn());
+
+        renderComponent(
+            <SettingsPanel onClose={() => {}} standalone />,
+        );
+
+        expect(screen.getByLabelText("Minimize window")).toBeInTheDocument();
+        expect(screen.getByLabelText("Maximize window")).toBeInTheDocument();
+        expect(screen.getByLabelText("Close window")).toBeInTheDocument();
+        expect(
+            screen.queryByTitle("Close settings (Esc)"),
+        ).not.toBeInTheDocument();
     });
 
     it("renders AI send hints with the platform primary modifier", async () => {

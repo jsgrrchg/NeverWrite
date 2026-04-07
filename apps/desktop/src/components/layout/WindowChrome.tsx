@@ -6,36 +6,40 @@ import {
     useState,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getWindowChromeLayout } from "../../app/utils/platform";
 
-const WINDOWS_CONTROLS_WIDTH = 138;
+const WINDOWS_CONTROL_BUTTON_WIDTH = 38;
+const WINDOWS_CONTROLS_WIDTH = WINDOWS_CONTROL_BUTTON_WIDTH * 3;
 
-function getAppWindow() {
-    return getCurrentWindow();
+type WindowControlScope = "window" | "webview";
+
+function getAppWindow(scope: WindowControlScope) {
+    return scope === "webview" ? getCurrentWebviewWindow() : getCurrentWindow();
 }
 
-function getWindowsControlButtonStyle(
-    variant: "default" | "close",
-): CSSProperties {
+function getWindowsControlButtonStyle(): CSSProperties {
     return {
-        width: 46,
-        height: 30,
+        width: WINDOWS_CONTROL_BUTTON_WIDTH,
+        height: "100%",
         border: "none",
         borderRadius: 0,
         background: "transparent",
-        color:
-            variant === "close"
-                ? "var(--text-primary)"
-                : "var(--text-secondary)",
+        color: "color-mix(in srgb, var(--text-primary) 78%, transparent)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
         flexShrink: 0,
+        padding: 0,
     };
 }
 
-function WindowControls() {
+function WindowControls({
+    scope,
+}: {
+    scope: WindowControlScope;
+}) {
     const [isMaximized, setIsMaximized] = useState(false);
 
     useEffect(() => {
@@ -43,7 +47,7 @@ function WindowControls() {
         let unlisten: (() => void) | null = null;
 
         const syncMaximized = async () => {
-            const appWindow = getAppWindow();
+            const appWindow = getAppWindow(scope);
             if (typeof appWindow.isMaximized !== "function") return;
             try {
                 const maximized = await appWindow.isMaximized();
@@ -57,7 +61,7 @@ function WindowControls() {
 
         void syncMaximized();
 
-        const appWindow = getAppWindow();
+        const appWindow = getAppWindow(scope);
         if (typeof appWindow.onResized === "function") {
             const resizeListener = appWindow.onResized(() => {
                 void syncMaximized();
@@ -86,14 +90,14 @@ function WindowControls() {
             disposed = true;
             unlisten?.();
         };
-    }, []);
+    }, [scope]);
 
     const stopMouseDown: MouseEventHandler<HTMLButtonElement> = (event) => {
         event.stopPropagation();
     };
 
     const handleMinimize = () => {
-        const appWindow = getAppWindow();
+        const appWindow = getAppWindow(scope);
         if (typeof appWindow.minimize !== "function") return;
         void Promise.resolve(appWindow.minimize()).catch(() => {
             // Ignore unavailable minimize support.
@@ -101,7 +105,7 @@ function WindowControls() {
     };
 
     const handleToggleMaximize = () => {
-        const appWindow = getAppWindow();
+        const appWindow = getAppWindow(scope);
         if (typeof appWindow.toggleMaximize !== "function") return;
         void Promise.resolve(appWindow.toggleMaximize())
             .then(async () => {
@@ -115,7 +119,7 @@ function WindowControls() {
     };
 
     const handleClose = () => {
-        const appWindow = getAppWindow();
+        const appWindow = getAppWindow(scope);
         if (typeof appWindow.close !== "function") return;
         void Promise.resolve(appWindow.close()).catch(() => {
             // Ignore unavailable close support.
@@ -125,13 +129,14 @@ function WindowControls() {
     return (
         <div
             data-window-controls="windows"
+            className="windows-caption-controls no-drag"
             style={{
                 width: WINDOWS_CONTROLS_WIDTH,
                 height: "100%",
                 display: "flex",
                 alignItems: "stretch",
                 justifyContent: "flex-end",
-                marginLeft: 8,
+                marginLeft: 4,
                 flexShrink: 0,
             }}
         >
@@ -139,15 +144,22 @@ function WindowControls() {
                 type="button"
                 aria-label="Minimize window"
                 data-window-control="minimize"
+                className="windows-caption-button"
                 onMouseDown={stopMouseDown}
                 onClick={handleMinimize}
-                style={getWindowsControlButtonStyle("default")}
+                style={getWindowsControlButtonStyle()}
             >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    aria-hidden="true"
+                >
                     <path
-                        d="M1.5 5h7"
+                        d="M2 5.5h6"
                         stroke="currentColor"
-                        strokeWidth="1.2"
+                        strokeWidth="1"
                         strokeLinecap="round"
                     />
                 </svg>
@@ -156,23 +168,30 @@ function WindowControls() {
                 type="button"
                 aria-label={isMaximized ? "Restore window" : "Maximize window"}
                 data-window-control="maximize"
+                className="windows-caption-button"
                 onMouseDown={stopMouseDown}
                 onClick={handleToggleMaximize}
-                style={getWindowsControlButtonStyle("default")}
+                style={getWindowsControlButtonStyle()}
             >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    aria-hidden="true"
+                >
                     {isMaximized ? (
                         <>
                             <rect
                                 x="2.2"
-                                y="3.2"
-                                width="4.6"
-                                height="4.6"
+                                y="3"
+                                width="4.8"
+                                height="4.8"
                                 stroke="currentColor"
                                 strokeWidth="1"
                             />
                             <path
-                                d="M3.2 3.2V2.2h4.6v4.6H6.8"
+                                d="M3 3V2.2h4.8V7H7"
                                 stroke="currentColor"
                                 strokeWidth="1"
                                 fill="none"
@@ -182,8 +201,8 @@ function WindowControls() {
                         <rect
                             x="2.2"
                             y="2.2"
-                            width="5.6"
-                            height="5.6"
+                            width="5.4"
+                            height="5.4"
                             stroke="currentColor"
                             strokeWidth="1"
                         />
@@ -194,15 +213,22 @@ function WindowControls() {
                 type="button"
                 aria-label="Close window"
                 data-window-control="close"
+                className="windows-caption-button windows-caption-button-close"
                 onMouseDown={stopMouseDown}
                 onClick={handleClose}
-                style={getWindowsControlButtonStyle("close")}
+                style={getWindowsControlButtonStyle()}
             >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    aria-hidden="true"
+                >
                     <path
-                        d="M2 2l6 6M8 2L2 8"
+                        d="M2.3 2.3l5.4 5.4M7.7 2.3 2.3 7.7"
                         stroke="currentColor"
-                        strokeWidth="1.2"
+                        strokeWidth="1"
                         strokeLinecap="round"
                     />
                 </svg>
@@ -215,6 +241,7 @@ interface WindowChromeProps {
     children: ReactNode;
     showLeadingInset?: boolean;
     showWindowControls?: boolean;
+    windowControlScope?: WindowControlScope;
     onBackgroundMouseDown?: MouseEventHandler<HTMLDivElement>;
     onBackgroundDoubleClick?: MouseEventHandler<HTMLDivElement>;
     onLeadingInsetMouseDown?: MouseEventHandler<HTMLDivElement>;
@@ -227,6 +254,7 @@ export function WindowChrome({
     children,
     showLeadingInset = false,
     showWindowControls = false,
+    windowControlScope = "window",
     onBackgroundMouseDown,
     onBackgroundDoubleClick,
     onLeadingInsetMouseDown,
@@ -271,7 +299,9 @@ export function WindowChrome({
                     />
                 )}
                 {children}
-                {shouldRenderWindowControls && <WindowControls />}
+                {shouldRenderWindowControls && (
+                    <WindowControls scope={windowControlScope} />
+                )}
             </div>
         </div>
     );

@@ -11,6 +11,9 @@ use std::{
     thread,
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use agent_client_protocol::{
     Agent, Client, ClientCapabilities, ClientSideConnection, ContentBlock, ContentChunk,
     FileSystemCapabilities, ForkSessionRequest, Implementation, InitializeRequest,
@@ -54,6 +57,8 @@ const VAULTAI_DIFF_PREVIOUS_PATH_KEY: &str = "vaultaiPreviousPath";
 const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 enum RuntimeCommand {
     CreateSession {
@@ -1475,6 +1480,7 @@ impl RuntimeActor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        configure_windows_background_process(&mut command);
         if let Some(path) = preferred_path_value() {
             command.env("PATH", path);
         }
@@ -1966,6 +1972,13 @@ impl RuntimeActor {
             .map(|value| RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value)))
             .unwrap_or(RequestPermissionOutcome::Cancelled);
         self.permissions.resolve(&request_id, outcome)
+    }
+}
+
+fn configure_windows_background_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     }
 }
 

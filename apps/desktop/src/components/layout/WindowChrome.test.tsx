@@ -35,12 +35,30 @@ beforeEach(() => {
             };
         }
     ).__mockCurrentWindow;
+    const mockWebviewWindow = (
+        globalThis as typeof globalThis & {
+            __mockCurrentWebviewWindow: {
+                minimize: { mockClear: () => void };
+                toggleMaximize: { mockClear: () => void };
+                isMaximized: {
+                    mockReset: () => void;
+                    mockResolvedValue: (value: boolean) => void;
+                };
+                close: { mockClear: () => void };
+            };
+        }
+    ).__mockCurrentWebviewWindow;
 
     mockWindow.minimize.mockClear();
     mockWindow.toggleMaximize.mockClear();
     mockWindow.isMaximized.mockReset();
     mockWindow.isMaximized.mockResolvedValue(false);
     mockWindow.close.mockClear();
+    mockWebviewWindow.minimize.mockClear();
+    mockWebviewWindow.toggleMaximize.mockClear();
+    mockWebviewWindow.isMaximized.mockReset();
+    mockWebviewWindow.isMaximized.mockResolvedValue(false);
+    mockWebviewWindow.close.mockClear();
 });
 
 describe("WindowChrome", () => {
@@ -129,5 +147,39 @@ describe("WindowChrome", () => {
         expect(mockWindow.minimize.mock.calls).toHaveLength(1);
         expect(mockWindow.toggleMaximize.mock.calls).toHaveLength(1);
         expect(mockWindow.close.mock.calls).toHaveLength(1);
+    });
+
+    it("can target the current webview window for Windows controls", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+
+        const mockWebviewWindow = (
+            globalThis as typeof globalThis & {
+                __mockCurrentWebviewWindow: {
+                    minimize: { mock: { calls: unknown[][] } };
+                    toggleMaximize: { mock: { calls: unknown[][] } };
+                    close: { mock: { calls: unknown[][] } };
+                };
+            }
+        ).__mockCurrentWebviewWindow;
+
+        renderComponent(
+            <WindowChrome
+                showWindowControls
+                windowControlScope="webview"
+            >
+                <div data-testid="chrome-child">Body</div>
+            </WindowChrome>,
+        );
+
+        fireEvent.click(screen.getByLabelText("Minimize window"));
+        fireEvent.click(screen.getByLabelText("Maximize window"));
+        fireEvent.click(screen.getByLabelText("Close window"));
+
+        expect(mockWebviewWindow.minimize.mock.calls).toHaveLength(1);
+        expect(mockWebviewWindow.toggleMaximize.mock.calls).toHaveLength(1);
+        expect(mockWebviewWindow.close.mock.calls).toHaveLength(1);
     });
 });

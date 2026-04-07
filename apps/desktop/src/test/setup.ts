@@ -239,8 +239,33 @@ const mockCurrentWindow = {
     label: "main",
 };
 
+const mockCurrentWebviewWindow = {
+    listen: vi.fn(),
+    once: vi.fn(),
+    onCloseRequested: vi.fn(),
+    onMoved: vi.fn().mockResolvedValue(vi.fn()),
+    onResized: vi.fn().mockResolvedValue(vi.fn()),
+    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+    setFocus: vi.fn(),
+    startDragging: vi.fn(),
+    minimize: vi.fn().mockResolvedValue(undefined),
+    maximize: vi.fn().mockResolvedValue(undefined),
+    unmaximize: vi.fn().mockResolvedValue(undefined),
+    toggleMaximize: vi.fn().mockResolvedValue(undefined),
+    isMaximized: vi.fn().mockResolvedValue(false),
+    emitTo: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined),
+    label: "main",
+};
+
 Object.defineProperty(globalThis, "__mockCurrentWindow", {
     value: mockCurrentWindow,
+    writable: true,
+    configurable: true,
+});
+
+Object.defineProperty(globalThis, "__mockCurrentWebviewWindow", {
+    value: mockCurrentWebviewWindow,
     writable: true,
     configurable: true,
 });
@@ -275,7 +300,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
         isVisible = vi.fn().mockResolvedValue(true);
     },
     getAllWebviewWindows: vi.fn().mockResolvedValue([]),
-    getCurrentWebviewWindow: vi.fn(() => ({ label: "main" })),
+    getCurrentWebviewWindow: vi.fn(() => mockCurrentWebviewWindow),
 }));
 
 vi.mock("@tauri-apps/api/dpi", () => ({
