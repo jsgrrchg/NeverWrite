@@ -65,10 +65,6 @@ export function parseFolderHintsInput(value: string): string[] {
     );
 }
 
-export function serializeFolderHintsInput(values: string[]): string {
-    return values.join("\n");
-}
-
 export function recordClipperUsage(
     settings: ClipperSettings,
     payload: {

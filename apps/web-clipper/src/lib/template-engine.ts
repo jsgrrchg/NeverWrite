@@ -15,28 +15,6 @@ export interface ResolvedClipTemplate {
     body: string;
 }
 
-const TEMPLATE_VARIABLES = [
-    "title",
-    "url",
-    "domain",
-    "content",
-    "description",
-    "author",
-    "published",
-    "image",
-    "favicon",
-    "language",
-    "tags",
-    "folder",
-    "date",
-    "time",
-    "datetime",
-] as const;
-
-export function listTemplateVariables(): string[] {
-    return [...TEMPLATE_VARIABLES];
-}
-
 function scoreTemplateMatch(
     template: ClipperTemplate,
     vaultId: string,

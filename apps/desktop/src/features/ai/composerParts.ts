@@ -186,50 +186,6 @@ export function appendMentionParts(
     return normalizeComposerParts(next);
 }
 
-export function appendFileMentionParts(
-    parts: AIComposerPart[],
-    files: Array<{
-        label: string;
-        path: string;
-        relativePath: string;
-        mimeType: string | null;
-    }>,
-): AIComposerPart[] {
-    const next = [...parts];
-
-    const last = next.at(-1);
-    if (!last || last.type !== "text") {
-        next.push({
-            id: crypto.randomUUID(),
-            type: "text",
-            text: "",
-        });
-    }
-
-    const currentLast = next.at(-1);
-    if (currentLast?.type === "text" && currentLast.text.length > 0) {
-        currentLast.text += currentLast.text.endsWith(" ") ? "" : " ";
-    }
-
-    files.forEach((file, index) => {
-        next.push({
-            id: crypto.randomUUID(),
-            type: "file_mention",
-            label: file.label,
-            path: file.path,
-            relativePath: file.relativePath,
-            mimeType: file.mimeType,
-        });
-        next.push({
-            id: crypto.randomUUID(),
-            type: "text",
-            text: index === files.length - 1 ? " " : " ",
-        });
-    });
-
-    return normalizeComposerParts(next);
-}
-
 export function appendSelectionMentionPart(
     parts: AIComposerPart[],
     selection: {
