@@ -9,7 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getWindowChromeLayout } from "../../app/utils/platform";
 
-const WINDOWS_CONTROL_BUTTON_WIDTH = 38;
+const WINDOWS_CONTROL_BUTTON_WIDTH = 32;
 const WINDOWS_CONTROLS_WIDTH = WINDOWS_CONTROL_BUTTON_WIDTH * 3;
 
 type WindowControlScope = "window" | "webview";
@@ -35,11 +35,7 @@ function getWindowsControlButtonStyle(): CSSProperties {
     };
 }
 
-function WindowControls({
-    scope,
-}: {
-    scope: WindowControlScope;
-}) {
+function WindowControls({ scope }: { scope: WindowControlScope }) {
     const [isMaximized, setIsMaximized] = useState(false);
 
     useEffect(() => {

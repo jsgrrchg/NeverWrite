@@ -2899,7 +2899,7 @@ export function SettingsPanel({
                 }}
                 barStyle={{
                     alignItems: "center",
-                    justifyContent: "space-between",
+                    position: "relative",
                     padding: "0 20px",
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
@@ -2909,9 +2909,14 @@ export function SettingsPanel({
             >
                 <span
                     style={{
+                        position: "absolute",
+                        left: "50%",
+                        transform: "translateX(-50%)",
                         fontSize: 13,
                         fontWeight: 600,
                         color: "var(--text-primary)",
+                        pointerEvents: "none",
+                        whiteSpace: "nowrap",
                     }}
                 >
                     Settings
@@ -2933,19 +2938,20 @@ export function SettingsPanel({
                             fontSize: 16,
                             color: "var(--text-secondary)",
                             opacity: 0.6,
-                    }}
+                            marginLeft: "auto",
+                        }}
                         onMouseEnter={(e) => {
                             e.currentTarget.style.opacity = "1";
                             e.currentTarget.style.backgroundColor =
                                 "var(--bg-tertiary)";
-                    }}
+                        }}
                         onMouseLeave={(e) => {
                             e.currentTarget.style.opacity = "0.6";
                             e.currentTarget.style.backgroundColor =
                                 "transparent";
-                    }}
+                        }}
                     >
-                    ✕
+                        ✕
                     </button>
                 )}
             </WindowChrome>

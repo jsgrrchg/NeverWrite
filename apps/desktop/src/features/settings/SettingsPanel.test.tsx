@@ -199,9 +199,7 @@ describe("SettingsPanel", () => {
         );
         vi.mocked(listen).mockResolvedValue(vi.fn());
 
-        renderComponent(
-            <SettingsPanel onClose={() => {}} standalone />,
-        );
+        renderComponent(<SettingsPanel onClose={() => {}} standalone />);
 
         expect(screen.getByLabelText("Minimize window")).toBeInTheDocument();
         expect(screen.getByLabelText("Maximize window")).toBeInTheDocument();
@@ -209,6 +207,16 @@ describe("SettingsPanel", () => {
         expect(
             screen.queryByTitle("Close settings (Esc)"),
         ).not.toBeInTheDocument();
+    });
+
+    it("keeps the settings window title centered in the shared chrome", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        expect(screen.getByText("Settings")).toHaveStyle({
+            position: "absolute",
+            left: "50%",
+            transform: "translateX(-50%)",
+        });
     });
 
     it("renders AI send hints with the platform primary modifier", async () => {
