@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { SettingsPanel } from "./SettingsPanel";
@@ -98,6 +98,39 @@ vi.mock("../ai/api", () => aiApiMocks);
 const originalUserAgent = navigator.userAgent;
 const originalPlatform = navigator.platform;
 
+function getMockCurrentWindow() {
+    return (
+        globalThis as typeof globalThis & {
+            __mockCurrentWindow: {
+                startDragging: { mockClear: () => void };
+                toggleMaximize: { mockClear: () => void };
+                close: { mockClear: () => void };
+            };
+        }
+    ).__mockCurrentWindow;
+}
+
+function getMockCurrentWebviewWindow() {
+    return (
+        globalThis as typeof globalThis & {
+            __mockCurrentWebviewWindow: {
+                startDragging: {
+                    mockClear: () => void;
+                    mock: { calls: unknown[][] };
+                };
+                toggleMaximize: {
+                    mockClear: () => void;
+                    mock: { calls: unknown[][] };
+                };
+                close: {
+                    mockClear: () => void;
+                    mock: { calls: unknown[][] };
+                };
+            };
+        }
+    ).__mockCurrentWebviewWindow;
+}
+
 function setNavigatorIdentity(userAgent: string, platform: string) {
     Object.defineProperty(window.navigator, "userAgent", {
         configurable: true,
@@ -108,6 +141,15 @@ function setNavigatorIdentity(userAgent: string, platform: string) {
         value: platform,
     });
 }
+
+beforeEach(() => {
+    getMockCurrentWindow().startDragging.mockClear();
+    getMockCurrentWindow().toggleMaximize.mockClear();
+    getMockCurrentWindow().close.mockClear();
+    getMockCurrentWebviewWindow().startDragging.mockClear();
+    getMockCurrentWebviewWindow().toggleMaximize.mockClear();
+    getMockCurrentWebviewWindow().close.mockClear();
+});
 
 afterEach(() => {
     setNavigatorIdentity(originalUserAgent, originalPlatform);
@@ -207,6 +249,36 @@ describe("SettingsPanel", () => {
         expect(
             screen.queryByTitle("Close settings (Esc)"),
         ).not.toBeInTheDocument();
+    });
+
+    it("routes standalone Windows chrome actions through the current webview window", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        vi.mocked(listen).mockResolvedValue(vi.fn());
+
+        const mockWindow = getMockCurrentWindow();
+        const mockWebviewWindow = getMockCurrentWebviewWindow();
+
+        renderComponent(<SettingsPanel onClose={() => {}} standalone />);
+
+        const chromeRoot = screen
+            .getByText("Settings")
+            .closest("[data-window-platform]");
+
+        expect(chromeRoot).not.toBeNull();
+
+        fireEvent.mouseDown(chromeRoot!, { button: 0 });
+        fireEvent.doubleClick(chromeRoot!);
+        fireEvent.click(screen.getByLabelText("Close window"));
+
+        expect(mockWebviewWindow.startDragging.mock.calls).toHaveLength(1);
+        expect(mockWebviewWindow.toggleMaximize.mock.calls).toHaveLength(1);
+        expect(mockWebviewWindow.close.mock.calls).toHaveLength(1);
+        expect(mockWindow.startDragging).not.toHaveBeenCalled();
+        expect(mockWindow.toggleMaximize).not.toHaveBeenCalled();
+        expect(mockWindow.close).not.toHaveBeenCalled();
     });
 
     it("keeps the settings window title centered in the shared chrome", () => {

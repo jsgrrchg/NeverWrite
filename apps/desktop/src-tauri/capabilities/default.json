@@ -16,7 +16,14 @@
             "http://127.0.0.1:32150"
         ]
     },
-    "windows": ["main", "note-*", "settings-*", "vault-*", "ghost-*"],
+    "windows": [
+        "main",
+        "note-*",
+        "settings",
+        "settings-*",
+        "vault-*",
+        "ghost-*"
+    ],
     "permissions": [
         "core:default",
         "dialog:allow-confirm",

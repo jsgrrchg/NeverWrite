@@ -1,7 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -2791,12 +2790,15 @@ export function SettingsPanel({
             : isCategory(sectionFromUrl)
               ? sectionFromUrl
               : "general";
+    const desktopPlatform = getDesktopPlatform();
+    const standaloneWindow = standalone ? getCurrentWebviewWindow() : null;
+    const isStandaloneWindows = standalone && desktopPlatform === "windows";
     const [active, setActive] = useState<Category>(resolvedInitialCategory);
     const [search, setSearch] = useState("");
     const activeInfo = CATEGORIES.find((c) => c.id === active)!;
 
     const handleClose = standalone
-        ? () => void getCurrentWebviewWindow().close()
+        ? () => void standaloneWindow?.close()
         : onClose;
 
     useEffect(() => {
@@ -2871,36 +2873,37 @@ export function SettingsPanel({
                         !(e.target as HTMLElement).closest("button")
                     ) {
                         e.preventDefault();
-                        void getCurrentWindow().startDragging();
+                        void standaloneWindow?.startDragging();
                     }
                 }}
                 onBackgroundDoubleClick={(e) => {
                     if (
                         !standalone ||
-                        getDesktopPlatform() !== "windows" ||
+                        desktopPlatform !== "windows" ||
                         (e.target as HTMLElement).closest("button")
                     ) {
                         return;
                     }
 
                     if (
-                        typeof getCurrentWindow().toggleMaximize !== "function"
+                        typeof standaloneWindow?.toggleMaximize !== "function"
                     ) {
                         return;
                     }
 
-                    void getCurrentWindow().toggleMaximize();
+                    void standaloneWindow.toggleMaximize();
                 }}
                 onLeadingInsetMouseDown={(e) => {
                     if (standalone && e.button === 0) {
                         e.preventDefault();
-                        void getCurrentWindow().startDragging();
+                        void standaloneWindow?.startDragging();
                     }
                 }}
                 barStyle={{
                     alignItems: "center",
                     position: "relative",
                     padding: "0 20px",
+                    paddingRight: isStandaloneWindows ? 6 : 20,
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
                     backgroundColor: "var(--bg-secondary)",
