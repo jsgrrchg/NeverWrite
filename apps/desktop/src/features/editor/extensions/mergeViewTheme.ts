@@ -6,7 +6,7 @@ export const mergeViewTheme = EditorView.baseTheme({
     "&[data-merge-enabled='true'] .cm-changedLine, &[data-merge-enabled='true'] .cm-insertedLine":
         {
             backgroundColor:
-                "color-mix(in srgb, var(--diff-add) 3%, transparent)",
+                "color-mix(in srgb, var(--diff-add) 5%, transparent)",
             boxShadow:
                 "inset 1px 0 0 0 color-mix(in srgb, var(--diff-add) 72%, transparent)",
             transition: "background-color 160ms ease, box-shadow 160ms ease",
@@ -14,7 +14,7 @@ export const mergeViewTheme = EditorView.baseTheme({
 
     /* ── Inline changed lines (even fainter than whole-line inserts) ─ */
     "&[data-merge-enabled='true'] .cm-inlineChangedLine": {
-        backgroundColor: "color-mix(in srgb, var(--diff-add) 2%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 5%, transparent)",
         boxShadow:
             "inset 1px 0 0 0 color-mix(in srgb, var(--diff-add) 56%, transparent)",
     },
@@ -22,7 +22,7 @@ export const mergeViewTheme = EditorView.baseTheme({
     /* ── Inline changed text highlight (primary signal) ───── */
     "&[data-merge-enabled='true'] .cm-changedText": {
         background: "none",
-        backgroundColor: "color-mix(in srgb, var(--diff-add) 18%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--diff-add) 14%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
     },
@@ -37,9 +37,13 @@ export const mergeViewTheme = EditorView.baseTheme({
     /* ── Inline deleted text highlight ─────────────────────── */
     "&[data-merge-enabled='true'] .cm-deletedText": {
         backgroundColor:
-            "color-mix(in srgb, var(--diff-remove) 6%, transparent)",
+            "color-mix(in srgb, var(--diff-remove) 14%, transparent)",
         borderRadius: "2px",
         boxDecorationBreak: "clone",
+        textDecoration: "none",
+    },
+    "&[data-merge-enabled='true'] .cm-deletedLine del": {
+        textDecoration: "none",
     },
     /* Pure deletion blocks already have their own red container treatment. */
     "&[data-merge-enabled='true'] .cm-pure-deletion-chunk .cm-deletedText": {
@@ -50,7 +54,7 @@ export const mergeViewTheme = EditorView.baseTheme({
     "&[data-merge-enabled='true'] .cm-deletedChunk": {
         position: "relative",
         backgroundColor:
-            "color-mix(in srgb, var(--diff-remove) 7%, transparent)",
+            "color-mix(in srgb, var(--diff-remove) 5%, transparent)",
         borderLeft: "1.5px solid var(--diff-remove)",
         padding: "6px 8px 6px 12px",
         margin: "1px 0",

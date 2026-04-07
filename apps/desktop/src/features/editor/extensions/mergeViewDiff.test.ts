@@ -312,6 +312,24 @@ describe("mergeViewDiff", () => {
         destroy();
     });
 
+    it("renders inline review deletions without line-through decoration", () => {
+        const { view, destroy } = mountMergeView({
+            doc: "alpha changed\n",
+            original: "alpha beta\n",
+        });
+
+        const deletedText = view.dom.querySelector(
+            "del.cm-deletedText",
+        ) as HTMLElement | null;
+
+        expect(deletedText).not.toBeNull();
+        expect(
+            window.getComputedStyle(deletedText as HTMLElement).textDecoration,
+        ).not.toContain("line-through");
+
+        destroy();
+    });
+
     it("renders inline overlap actions for ambiguous chunks", () => {
         const calls: MergeDecisionPayload[] = [];
         const { view, destroy } = mountMergeView({
