@@ -1144,7 +1144,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
     });
 
-    it("keeps the active queued turn visible alongside the remaining queued items", async () => {
+    it("hides the active queued turn from the queue panel", async () => {
         const session = createSession(
             "session-a",
             "Queued conversation",
@@ -1214,19 +1214,17 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         renderComponent(<AIChatPanel />);
 
-        expect(screen.getByText("2 Queued Messages")).toBeTruthy();
-        expect(screen.getAllByText("First queued item").length).toBeGreaterThan(
-            0,
-        );
+        expect(screen.getByText("1 Queued Message")).toBeTruthy();
+        expect(screen.queryByText("First queued item")).toBeNull();
         expect(
             screen.getAllByText("Second queued item").length,
         ).toBeGreaterThan(0);
         expect(
             screen.getAllByRole("button", { name: "Send Now" }),
-        ).toHaveLength(2);
+        ).toHaveLength(1);
         expect(
-            screen.getByRole("button", { name: "Delete First queued item" }),
-        ).toBeDisabled();
+            screen.getByRole("button", { name: "Delete Second queued item" }),
+        ).not.toBeDisabled();
     });
 
     it("queues a new message from the composer while the agent is streaming", async () => {

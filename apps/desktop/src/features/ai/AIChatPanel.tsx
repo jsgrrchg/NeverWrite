@@ -67,70 +67,6 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
     message: null,
 };
 const UNCHANGED_SECRET_PATCH: AISecretPatch = { action: "unchanged" };
-type VisibleActiveQueuedMessage = {
-    item: QueuedChatMessage;
-    originalIndex: number;
-    previousItemId: string | null;
-    nextItemId: string | null;
-};
-
-function insertQueuedMessageAtIndex(
-    queue: QueuedChatMessage[],
-    index: number,
-    item: QueuedChatMessage,
-) {
-    const nextQueue = queue.filter((queuedItem) => queuedItem.id !== item.id);
-    const safeIndex = Math.max(0, Math.min(index, nextQueue.length));
-    nextQueue.splice(safeIndex, 0, item);
-    return nextQueue;
-}
-
-function restoreVisibleQueuedMessagePosition(
-    queue: QueuedChatMessage[],
-    anchor: Pick<
-        VisibleActiveQueuedMessage,
-        "originalIndex" | "previousItemId" | "nextItemId"
-    >,
-    item: QueuedChatMessage,
-) {
-    if (anchor.nextItemId) {
-        const nextIndex = queue.findIndex(
-            (queuedItem) => queuedItem.id === anchor.nextItemId,
-        );
-        if (nextIndex >= 0) {
-            return insertQueuedMessageAtIndex(queue, nextIndex, item);
-        }
-    }
-
-    if (anchor.previousItemId) {
-        const previousIndex = queue.findIndex(
-            (queuedItem) => queuedItem.id === anchor.previousItemId,
-        );
-        if (previousIndex >= 0) {
-            return insertQueuedMessageAtIndex(queue, previousIndex + 1, item);
-        }
-    }
-
-    return insertQueuedMessageAtIndex(queue, anchor.originalIndex, item);
-}
-
-function getVisibleQueuedMessages(
-    queue: QueuedChatMessage[],
-    activeQueuedMessage: VisibleActiveQueuedMessage | null,
-) {
-    if (!activeQueuedMessage) {
-        return queue;
-    }
-
-    return restoreVisibleQueuedMessagePosition(
-        queue.filter((item) => item.id !== activeQueuedMessage.item.id),
-        activeQueuedMessage,
-        {
-            ...activeQueuedMessage.item,
-            status: "sending",
-        },
-    );
-}
 
 function getAgentCatalog(
     session: Pick<AIChatSession, "models" | "modes" | "configOptions"> | null,
@@ -353,7 +289,6 @@ export function AIChatPanel() {
         currentSession,
         composerParts,
         queuedMessages,
-        activeQueuedMessage,
         queuedMessageEdit,
     } = useChatStore(
         useShallow((state) => {
@@ -375,18 +310,11 @@ export function AIChatPanel() {
                     ? (state.queuedMessagesBySessionId[sessionId] ??
                       EMPTY_QUEUED_MESSAGES)
                     : EMPTY_QUEUED_MESSAGES,
-                activeQueuedMessage: sessionId
-                    ? (state.activeQueuedMessageBySessionId[sessionId] ?? null)
-                    : null,
                 queuedMessageEdit: sessionId
                     ? (state.queuedMessageEditBySessionId[sessionId] ?? null)
                     : null,
             };
         }),
-    );
-    const visibleQueuedMessages = useMemo(
-        () => getVisibleQueuedMessages(queuedMessages, activeQueuedMessage),
-        [activeQueuedMessage, queuedMessages],
     );
     const composerSessionId = currentSession?.sessionId ?? null;
     const fileOptions = useMemo(
@@ -956,7 +884,7 @@ export function AIChatPanel() {
                 }
             >
                 <QueuedMessagesPanel
-                    items={visibleQueuedMessages}
+                    items={queuedMessages}
                     editingItem={queuedMessageEdit?.item ?? null}
                     onCancel={(messageId) => {
                         if (!composerSessionId) return;
