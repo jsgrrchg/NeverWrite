@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 
-use vault_ai_types::NoteId;
+use neverwrite_types::NoteId;
 
 use crate::VaultIndex;
 

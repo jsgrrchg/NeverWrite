@@ -135,14 +135,14 @@ import {
 } from "../../../app/utils/safeStorage";
 import { logDebug, logError, logWarn } from "../../../app/utils/runtimeLog";
 
-const AI_PREFS_KEY = "vaultai.ai.preferences";
-const AI_RUNTIME_CACHE_KEY = "vaultai.ai.runtime-catalog";
+const AI_PREFS_KEY = "neverwrite.ai.preferences";
+const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
 let _persistedHistoryCacheVaultPath: string | null = null;
 let _persistedHistoryCacheBySessionId = new Map<
     string,
     PersistedSessionHistory
 >();
-const AI_AUTO_CONTEXT_KEY_PREFIX = "vaultai.ai.auto-context:";
+const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
 const TRANSCRIPT_PAGE_SIZE = 60;
 

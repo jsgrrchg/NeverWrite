@@ -2,8 +2,8 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use tempfile::TempDir;
-use vault_ai_vault::pdf;
-use vault_ai_vault::Vault;
+use neverwrite_vault::pdf;
+use neverwrite_vault::Vault;
 
 fn setup_vault() -> (TempDir, Vault) {
     let dir = TempDir::new().unwrap();
@@ -462,8 +462,8 @@ fn discover_pdf_files_ignores_internal_dirs() {
 
     fs::create_dir_all(dir.path().join(".obsidian")).unwrap();
     fs::write(dir.path().join(".obsidian/plugin.pdf"), b"%PDF").unwrap();
-    fs::create_dir_all(dir.path().join(".vaultai-cache")).unwrap();
-    fs::write(dir.path().join(".vaultai-cache/cached.pdf"), b"%PDF").unwrap();
+    fs::create_dir_all(dir.path().join(".neverwrite-cache")).unwrap();
+    fs::write(dir.path().join(".neverwrite-cache/cached.pdf"), b"%PDF").unwrap();
 
     let pdfs = vault.discover_pdf_files().unwrap();
     assert_eq!(pdfs.len(), 2);
@@ -668,7 +668,7 @@ fn pdf_cache_works_on_second_extraction() {
         assert_eq!(doc1.page_count, doc2.page_count);
 
         // Cache file should exist
-        let cache_dir = dir.path().join(".vaultai-cache").join("pdf");
+        let cache_dir = dir.path().join(".neverwrite-cache").join("pdf");
         assert!(cache_dir.exists());
         let cache_files: Vec<_> = fs::read_dir(&cache_dir)
             .unwrap()

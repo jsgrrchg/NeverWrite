@@ -5,11 +5,11 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use tauri::{http, Manager, Runtime};
-use vault_ai_vault::ScopedPathIntent;
+use neverwrite_vault::ScopedPathIntent;
 
+pub use crate::technical_branding::FILE_PREVIEW_SCHEME;
+use crate::technical_branding::{PRODUCT_CACHE_DIR_NAME, PRODUCT_STATE_DIR_NAME};
 use crate::AppState;
-
-pub const FILE_PREVIEW_SCHEME: &str = "vaultai-file";
 
 pub fn handle_request<R: Runtime>(
     context: tauri::UriSchemeContext<'_, R>,
@@ -96,11 +96,9 @@ fn read_authorized_vault_preview_file(
 }
 
 fn path_is_hidden_preview_path(vault_root: &Path, path: &Path) -> bool {
-    const HIDDEN_DIR_NAMES: &[&str] = &[
+    const STATIC_HIDDEN_DIR_NAMES: &[&str] = &[
         ".obsidian",
         ".git",
-        ".vaultai",
-        ".vaultai-cache",
         ".trash",
         "target",
         "node_modules",
@@ -116,7 +114,9 @@ fn path_is_hidden_preview_path(vault_root: &Path, path: &Path) -> bool {
     relative_path.components().any(|component| match component {
         std::path::Component::Normal(name) => {
             let value = name.to_string_lossy();
-            HIDDEN_DIR_NAMES.contains(&value.as_ref())
+            STATIC_HIDDEN_DIR_NAMES.contains(&value.as_ref())
+                || value == PRODUCT_STATE_DIR_NAME
+                || value == PRODUCT_CACHE_DIR_NAME
         }
         _ => false,
     })
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
-    use vault_ai_vault::Vault;
+    use neverwrite_vault::Vault;
 
     #[test]
     fn parse_preview_request_decodes_vault_and_relative_path() {
@@ -228,11 +228,11 @@ mod tests {
     #[test]
     fn read_authorized_vault_preview_file_rejects_symlink_escape() {
         let dir = std::env::temp_dir().join(format!(
-            "vault-ai-preview-gateway-test-{}",
+            "neverwrite-preview-gateway-test-{}",
             uuid::Uuid::new_v4()
         ));
         let outside = std::env::temp_dir().join(format!(
-            "vault-ai-preview-gateway-outside-{}",
+            "neverwrite-preview-gateway-outside-{}",
             uuid::Uuid::new_v4()
         ));
 
@@ -279,12 +279,16 @@ mod tests {
     #[test]
     fn read_authorized_vault_preview_file_rejects_hidden_internal_paths() {
         let dir = std::env::temp_dir().join(format!(
-            "vault-ai-preview-gateway-hidden-{}",
+            "neverwrite-preview-gateway-hidden-{}",
             uuid::Uuid::new_v4()
         ));
 
-        fs::create_dir_all(dir.join(".vaultai")).unwrap();
-        fs::write(dir.join(".vaultai/secret.txt"), b"secret").unwrap();
+        fs::create_dir_all(dir.join(PRODUCT_STATE_DIR_NAME)).unwrap();
+        fs::write(
+            dir.join(PRODUCT_STATE_DIR_NAME).join("secret.txt"),
+            b"secret",
+        )
+        .unwrap();
 
         let vault = Vault::open(dir.clone()).unwrap();
         let mut state = AppState::new();
@@ -312,7 +316,7 @@ mod tests {
         let result = read_authorized_vault_preview_file(
             &Mutex::new(state),
             &dir.to_string_lossy(),
-            ".vaultai/secret.txt",
+            &format!("{PRODUCT_STATE_DIR_NAME}/secret.txt"),
         );
 
         assert!(result.is_err());

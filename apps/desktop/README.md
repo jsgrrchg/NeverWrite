@@ -95,9 +95,9 @@ NeverWrite currently integrates three ACP runtimes:
 
 Development overrides:
 
-- `VAULTAI_CODEX_ACP_BIN`
-- `VAULTAI_CLAUDE_ACP_BIN`
-- `VAULTAI_GEMINI_ACP_BIN`
+- `NEVERWRITE_CODEX_ACP_BIN`
+- `NEVERWRITE_CLAUDE_ACP_BIN`
+- `NEVERWRITE_GEMINI_ACP_BIN`
 
 Release-time binary staging is documented in
 [`src-tauri/binaries/README.md`](./src-tauri/binaries/README.md).
@@ -115,7 +115,7 @@ the exact extension origins explicitly:
 
 ```bash
 cd apps/desktop
-VAULTAI_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
+NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
 ```
 
 Wildcards are intentionally unsupported.

@@ -487,7 +487,7 @@ describe("AIReviewView", () => {
 
         expect(diffContent).toHaveStyle({ fontSize: "0.76em" });
         expect(
-            JSON.parse(localStorage.getItem("vaultai.ai.preferences") ?? "{}"),
+            JSON.parse(localStorage.getItem("neverwrite.ai.preferences") ?? "{}"),
         ).toMatchObject({
             editDiffZoom: 0.76,
         });

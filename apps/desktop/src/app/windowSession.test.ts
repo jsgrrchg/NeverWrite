@@ -103,7 +103,7 @@ describe("windowSession", () => {
 
     it("restores the primary vault into the main window and reopens the rest", async () => {
         localStorage.setItem(
-            "vaultai:window-session-snapshot",
+            "neverwrite:window-session-snapshot",
             JSON.stringify(["main", "vault-2", "note-1"]),
         );
         writeWindowSessionEntry("main", {

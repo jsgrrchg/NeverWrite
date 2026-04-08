@@ -16,14 +16,14 @@ import {
 describe("DeveloperPanel", () => {
     it("renders the first terminal tab in the header", async () => {
         useVaultStore.setState({
-            vaultPath: "/home/user/projects/VaultAI",
+            vaultPath: "/home/user/projects/NeverWrite",
         });
         mockInvoke().mockResolvedValue({
             sessionId: "devterm-1",
             program: "/bin/zsh",
             status: "running",
             displayName: "zsh",
-            cwd: "/home/user/projects/VaultAI",
+            cwd: "/home/user/projects/NeverWrite",
             cols: 40,
             rows: 8,
             exitCode: null,
@@ -219,7 +219,7 @@ describe("DeveloperPanel", () => {
     it("restores persisted terminal scrollback on remount", async () => {
         useVaultStore.setState({ vaultPath: "/vault" });
         localStorage.setItem(
-            "vaultai.devtools.terminal.tabs:/vault",
+            "neverwrite.devtools.terminal.tabs:/vault",
             JSON.stringify({
                 version: 2,
                 tabs: [

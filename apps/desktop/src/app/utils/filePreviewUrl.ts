@@ -1,6 +1,5 @@
 import { toVaultRelativePath } from "./vaultPaths";
-
-const FILE_PREVIEW_SCHEME = "vaultai-file://localhost";
+import { FILE_PREVIEW_SCHEME } from "./technicalBranding";
 
 function encodeBase64Url(value: string) {
     const bytes = new TextEncoder().encode(value);

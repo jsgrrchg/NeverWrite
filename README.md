@@ -205,9 +205,9 @@ Current packaging status:
 
 Useful runtime overrides during development:
 
-- `VAULTAI_CODEX_ACP_BIN`
-- `VAULTAI_CLAUDE_ACP_BIN`
-- `VAULTAI_GEMINI_ACP_BIN`
+- `NEVERWRITE_CODEX_ACP_BIN`
+- `NEVERWRITE_CLAUDE_ACP_BIN`
+- `NEVERWRITE_GEMINI_ACP_BIN`
 
 For release builds, `apps/desktop/src-tauri/binaries/README.md` documents how bundled runtime staging works.
 
@@ -219,7 +219,7 @@ When developing against an unpacked extension build, the desktop app blocks arbi
 
 ```bash
 cd apps/desktop
-VAULTAI_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
+NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
 ```
 
 Use exact origins only. Wildcards are intentionally unsupported.

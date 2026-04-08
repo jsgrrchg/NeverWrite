@@ -69,8 +69,8 @@ cargo test
 ### 1. Fork and clone
 
 ```bash
-git clone https://github.com/<your-username>/VaultAI.git
-cd VaultAI
+git clone <your-fork-url>
+cd <your-clone-directory>
 ```
 
 ### 2. Create a branch
@@ -187,7 +187,7 @@ pnpm test:run         # Run once
 
 ```bash
 cargo test                        # All workspace tests
-cargo test -p vault-ai-vault      # Single crate
+cargo test -p neverwrite-vault      # Single crate
 ```
 
 ## Architecture notes
@@ -218,10 +218,10 @@ cargo test -p vault-ai-vault      # Single crate
 For development, these optional variables can override default runtime paths:
 | Variable | Purpose |
 |----------|---------|
-| `VAULTAI_CODEX_ACP_BIN` | Override Codex ACP runtime binary |
-| `VAULTAI_CLAUDE_ACP_BIN` | Override Claude ACP runtime binary |
-| `VAULTAI_GEMINI_ACP_BIN` | Override Gemini ACP runtime binary |
-| `VAULTAI_WEB_CLIPPER_DEV_ORIGINS` | Allow unpacked extension origins |
+| `NEVERWRITE_CODEX_ACP_BIN` | Override Codex ACP runtime binary |
+| `NEVERWRITE_CLAUDE_ACP_BIN` | Override Claude ACP runtime binary |
+| `NEVERWRITE_GEMINI_ACP_BIN` | Override Gemini ACP runtime binary |
+| `NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS` | Allow unpacked extension origins |
 
 ## Versioning
 
@@ -247,7 +247,7 @@ Before triggering [`.github/workflows/release-desktop.yml`](.github/workflows/re
 
 ## Reporting issues
 
-- Search [existing issues](https://github.com/jsgrrchg/VaultAI/issues) before opening a new one
+- Search the existing issue tracker before opening a new one
 - Include steps to reproduce, expected behavior, and actual behavior
 - For crashes, include the OS version and any relevant logs
 

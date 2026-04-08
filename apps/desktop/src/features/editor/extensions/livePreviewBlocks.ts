@@ -326,7 +326,7 @@ function ensureDragStyle() {
     dragStyleInjected = true;
     const style = document.createElement("style");
     style.textContent =
-        "body.vaultai-embed-dragging,body.vaultai-embed-dragging *{cursor:grabbing!important;user-select:none!important}";
+        "body.neverwrite-embed-dragging,body.neverwrite-embed-dragging *{cursor:grabbing!important;user-select:none!important}";
     document.head.appendChild(style);
 }
 
@@ -378,7 +378,7 @@ function setupEmbedDrag(element: HTMLElement, resolvedPath: string) {
             if (!started) {
                 started = true;
                 ensureDragStyle();
-                document.body.classList.add("vaultai-embed-dragging");
+                document.body.classList.add("neverwrite-embed-dragging");
                 element.style.opacity = "0.35";
                 ghost = createDragGhost(fileName, ev.clientX, ev.clientY);
                 emitFileTreeNoteDrag({
@@ -407,7 +407,7 @@ function setupEmbedDrag(element: HTMLElement, resolvedPath: string) {
             document.removeEventListener("mouseup", onUp);
             if (started) {
                 element.style.opacity = "";
-                document.body.classList.remove("vaultai-embed-dragging");
+                document.body.classList.remove("neverwrite-embed-dragging");
                 ghost?.remove();
                 emitFileTreeNoteDrag({
                     phase: "end",

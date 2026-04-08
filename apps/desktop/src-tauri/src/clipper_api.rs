@@ -2,23 +2,23 @@ use std::{collections::BTreeSet, env, fs, path::PathBuf, thread};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
 use crate::{
-    branding::APP_BRAND_NAME, web_clipper_list_folders, web_clipper_list_tags,
-    web_clipper_ready_vaults, web_clipper_save_note,
+    branding::APP_BRAND_NAME,
+    technical_branding::{
+        app_data_dir, WEB_CLIPPER_ALLOW_HEADERS, WEB_CLIPPER_DEV_ORIGINS_ENV_VARS,
+        WEB_CLIPPER_EXTENSION_ID_HEADER, WEB_CLIPPER_FIREFOX_EXTENSION_ID,
+        WEB_CLIPPER_TOKEN_HEADER,
+    },
+    web_clipper_list_folders, web_clipper_list_tags, web_clipper_ready_vaults,
+    web_clipper_save_note,
 };
 
 const WEB_CLIPPER_API_PORT: u16 = 32145;
 const CHROME_EXTENSION_ID: &str = "pogmjgibofkooljfgaandhoinmenfhao";
-const FIREFOX_EXTENSION_ID: &str = "web-clipper@vaultai.app";
-const WEB_CLIPPER_DEV_ORIGINS_ENV: &str = "VAULTAI_WEB_CLIPPER_DEV_ORIGINS";
-const WEB_CLIPPER_ALLOW_HEADERS: &str =
-    "content-type,x-vaultai-clipper-token,x-vaultai-extension-id";
-const WEB_CLIPPER_TOKEN_HEADER: &str = "X-VaultAI-Clipper-Token";
-const WEB_CLIPPER_EXTENSION_ID_HEADER: &str = "X-VaultAI-Extension-Id";
 const WEB_CLIPPER_AUTH_FILE: &str = "web_clipper_auth.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,18 +150,19 @@ fn is_firefox_extension_origin(origin: &str) -> bool {
 
 fn allowed_browser_origins() -> BTreeSet<String> {
     allowed_browser_origins_with_dev_origins(
-        env::var(WEB_CLIPPER_DEV_ORIGINS_ENV)
-            .ok()
+        WEB_CLIPPER_DEV_ORIGINS_ENV_VARS
+            .iter()
+            .find_map(|key| env::var(key).ok())
             .map(|raw| parse_dev_origins(&raw))
             .unwrap_or_default(),
     )
 }
 
 fn allowed_browser_origins_with_dev_origins(dev_origins: Vec<String>) -> BTreeSet<String> {
-    let mut origins = BTreeSet::from([
-        format!("chrome-extension://{CHROME_EXTENSION_ID}"),
-        format!("moz-extension://{FIREFOX_EXTENSION_ID}"),
-    ]);
+    let mut origins = BTreeSet::from([format!("chrome-extension://{CHROME_EXTENSION_ID}")]);
+    origins.insert(format!(
+        "moz-extension://{WEB_CLIPPER_FIREFOX_EXTENSION_ID}"
+    ));
     origins.extend(dev_origins);
     origins
 }
@@ -200,7 +201,7 @@ fn resolve_extension_identity_with_allowed_origins(
         });
     }
 
-    if extension_id == FIREFOX_EXTENSION_ID && is_firefox_extension_origin(&origin) {
+    if extension_id == WEB_CLIPPER_FIREFOX_EXTENSION_ID && is_firefox_extension_origin(&origin) {
         return Ok(AuthorizedClipper {
             origin,
             identity: ExtensionIdentity::OfficialFirefox,
@@ -230,10 +231,7 @@ fn resolve_extension_identity(
 }
 
 fn web_clipper_auth_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error: tauri::Error| error.to_string())?;
+    let app_data_dir = app_data_dir(app)?;
     Ok(app_data_dir.join(WEB_CLIPPER_AUTH_FILE))
 }
 
@@ -614,7 +612,7 @@ mod tests {
     use super::{
         allowed_browser_origins_with_dev_origins, parse_dev_origins, resolve_extension_identity,
         resolve_extension_identity_with_allowed_origins, AuthorizedClipper, ExtensionIdentity,
-        CHROME_EXTENSION_ID, FIREFOX_EXTENSION_ID,
+        CHROME_EXTENSION_ID, WEB_CLIPPER_FIREFOX_EXTENSION_ID,
     };
 
     #[test]
@@ -632,7 +630,7 @@ mod tests {
         assert_eq!(
             resolve_extension_identity(
                 Some("moz-extension://random-firefox-origin"),
-                Some(FIREFOX_EXTENSION_ID),
+                Some(WEB_CLIPPER_FIREFOX_EXTENSION_ID),
             ),
             Ok(AuthorizedClipper {
                 origin: "moz-extension://random-firefox-origin".to_string(),
@@ -704,7 +702,7 @@ mod tests {
         .is_err());
         assert!(resolve_extension_identity_with_allowed_origins(
             None,
-            Some(FIREFOX_EXTENSION_ID),
+            Some(WEB_CLIPPER_FIREFOX_EXTENSION_ID),
             &allowed_origins,
         )
         .is_err());

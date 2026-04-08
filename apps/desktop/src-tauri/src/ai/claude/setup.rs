@@ -8,8 +8,8 @@ use std::{
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
-use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CLAUDE_RUNTIME_ID};
+use tauri::AppHandle;
+use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CLAUDE_RUNTIME_ID};
 
 use crate::ai::env::find_program_on_preferred_path;
 #[cfg(test)]
@@ -18,6 +18,7 @@ use crate::ai::secret_store::{
     clear_secret, get_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
 };
 use crate::branding::APP_BRAND_NAME;
+use crate::technical_branding::{app_data_dir, CLAUDE_ACP_BIN_ENV_VARS};
 
 const SETUP_FILE_NAME: &str = "claude-setup.json";
 const ANTHROPIC_CUSTOM_HEADERS_SECRET: &str = "anthropic_custom_headers";
@@ -288,7 +289,7 @@ pub fn resolve_binary_command(
     bundled_vendor_path: PathBuf,
     vendor_path: PathBuf,
 ) -> ResolvedBinary {
-    if let Ok(raw) = env::var("VAULTAI_CLAUDE_ACP_BIN") {
+    if let Some(raw) = read_env_override(&CLAUDE_ACP_BIN_ENV_VARS) {
         let resolved = resolve_command_candidate(raw.trim(), AiRuntimeBinarySource::Env);
         if resolved.display.is_some() {
             return resolved;
@@ -666,11 +667,15 @@ fn home_dir_fallback() -> Option<PathBuf> {
 }
 
 fn setup_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let base = app_data_dir(app)?;
     Ok(base.join("ai").join(SETUP_FILE_NAME))
+}
+
+fn read_env_override(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
@@ -852,7 +857,7 @@ mod tests {
 
     fn temp_setup_path(name: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!(
-            "vaultai-claude-setup-tests-{}-{}",
+            "neverwrite-claude-setup-tests-{}-{}",
             std::process::id(),
             name
         ));
@@ -1054,10 +1059,11 @@ mod tests {
             custom_binary_path: Some("/missing/claude-agent-acp".to_string()),
             ..ClaudeSetupConfig::default()
         };
-        let bundled_path = std::env::temp_dir().join("vaultai-claude-test-bundled");
-        let bundled_node_path = std::env::temp_dir().join("vaultai-claude-test-bundled-node");
-        let bundled_vendor_path = std::env::temp_dir().join("vaultai-claude-test-bundled-vendor");
-        let vendor_path = std::env::temp_dir().join("vaultai-claude-test-vendor");
+        let bundled_path = std::env::temp_dir().join("neverwrite-claude-test-bundled");
+        let bundled_node_path = std::env::temp_dir().join("neverwrite-claude-test-bundled-node");
+        let bundled_vendor_path =
+            std::env::temp_dir().join("neverwrite-claude-test-bundled-vendor");
+        let vendor_path = std::env::temp_dir().join("neverwrite-claude-test-vendor");
         fs::write(&bundled_path, "binary").expect("write bundled stub");
 
         let resolved = resolve_binary_command(
@@ -1083,7 +1089,7 @@ mod tests {
 
         let _guard = ENV_LOCK.lock().unwrap();
         let temp_dir = env::temp_dir().join(format!(
-            "vaultai-claude-find-program-{}",
+            "neverwrite-claude-find-program-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1173,7 +1179,7 @@ fn build_windows_login_script(
 
 fn temp_login_script_path(extension: &str) -> PathBuf {
     let suffix = format!(
-        "vaultai-claude-login-{}-{}.{}",
+        "neverwrite-claude-login-{}-{}.{}",
         std::process::id(),
         current_time_millis(),
         extension

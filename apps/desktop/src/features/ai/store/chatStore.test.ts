@@ -41,8 +41,8 @@ import { subscribeEditorReviewSync } from "../../editor/editorReviewSync";
 import { useChatRowUiStore } from "./chatRowUiStore";
 
 const invokeMock = vi.mocked(invoke);
-const AI_PREFS_KEY = "vaultai.ai.preferences";
-const AI_AUTO_CONTEXT_KEY_PREFIX = "vaultai.ai.auto-context:";
+const AI_PREFS_KEY = "neverwrite.ai.preferences";
+const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 
 function getAutoContextKey(vaultPath: string | null) {
     return `${AI_AUTO_CONTEXT_KEY_PREFIX}${vaultPath ?? "__global__"}`;
@@ -197,7 +197,7 @@ const sessionPayload = {
 const readySetupStatus = {
     runtime_id: "codex-acp",
     binary_ready: true,
-    binary_path: "/Applications/VaultAI/codex-acp",
+    binary_path: "/Applications/NeverWrite/codex-acp",
     binary_source: "bundled" as const,
     auth_ready: true,
     auth_method: "openai-api-key",
@@ -517,7 +517,7 @@ describe("chatStore", () => {
         resetChatTabsStore();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
-            .__VAULTAI_FORCE_RUST_LINE_DIFFS__;
+            .__NEVERWRITE_FORCE_RUST_LINE_DIFFS__;
         useVaultStore.setState({ vaultPath: null, notes: [] });
         useEditorStore.setState({
             tabs: [],
@@ -5464,7 +5464,7 @@ describe("chatStore", () => {
     it("starts a new work cycle without waiting for deprecated tracked-file precomputation", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
 
         invokeMock.mockImplementation(async (command) => {
@@ -5551,7 +5551,7 @@ describe("chatStore", () => {
     it("keeps accumulated hunks when Rust refinement reprocesses the same file in one cycle", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
         mockRustTrackedFilePatches((inputs) =>
             inputs.map((input) =>
@@ -5607,7 +5607,7 @@ describe("chatStore", () => {
     it("keeps accumulated hunks across cycles when Rust refinement revisits the same file", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
         mockRustTrackedFilePatches(
             (inputs) =>
@@ -5669,7 +5669,7 @@ describe("chatStore", () => {
     it("keeps earlier hunks after a user edit and a later Rust-refined agent edit", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
         mockRustTrackedFilePatches(
             (inputs) =>
@@ -5760,7 +5760,7 @@ describe("chatStore", () => {
     it("keeps accumulated hunks when a Rust-refined permission diff updates an already tracked file", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
         mockRustTrackedFilePatches((inputs) =>
             inputs.map((input) =>
@@ -5818,7 +5818,7 @@ describe("chatStore", () => {
     it("does not let a late Rust refinement collapse earlier hunks on an accumulated file", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
 
         const firstRefinement = createDeferred<MockTrackedFilePatch[]>();
@@ -6109,7 +6109,7 @@ describe("chatStore", () => {
     it("applies user edits immediately without deferred Rust replay", async () => {
         (
             globalThis as Record<string, unknown>
-        ).__VAULTAI_FORCE_RUST_LINE_DIFFS__ = true;
+        ).__NEVERWRITE_FORCE_RUST_LINE_DIFFS__ = true;
         await useChatStore.getState().initialize();
 
         invokeMock.mockImplementation(async (command) => {
@@ -7589,7 +7589,7 @@ describe("chatStore", () => {
 
         useChatStore.getState().applyStatusEvent({
             session_id: activeSessionId,
-            event_id: "vaultai:status:item:plan-1",
+            event_id: "neverwrite:status:item:plan-1",
             kind: "item_activity",
             status: "in_progress",
             title: "Updating plan",
@@ -7599,7 +7599,7 @@ describe("chatStore", () => {
 
         useChatStore.getState().applyStatusEvent({
             session_id: activeSessionId,
-            event_id: "vaultai:status:item:plan-1",
+            event_id: "neverwrite:status:item:plan-1",
             kind: "item_activity",
             status: "completed",
             title: "Updating plan",
@@ -7614,7 +7614,7 @@ describe("chatStore", () => {
 
         expect(statusMessages).toHaveLength(1);
         expect(statusMessages[0]).toMatchObject({
-            id: "status:vaultai:status:item:plan-1",
+            id: "status:neverwrite:status:item:plan-1",
             role: "system",
             kind: "status",
             title: "Updating plan",
@@ -8177,7 +8177,7 @@ describe("chatStore", () => {
         const claudeSetupStatus = {
             ...readySetupStatus,
             runtime_id: "claude-acp",
-            binary_path: "/Applications/VaultAI/claude-agent-acp",
+            binary_path: "/Applications/NeverWrite/claude-agent-acp",
         };
         const claudeSessionPayload = {
             session_id: "claude-session-1",
@@ -8225,7 +8225,7 @@ describe("chatStore", () => {
                     sessionId: "claude-session-2",
                     attachments: [
                         expect.objectContaining({
-                            filePath: "/home/user/projects/VaultAI/README.md",
+                            filePath: "/home/user/projects/NeverWrite/README.md",
                         }),
                     ],
                 });
@@ -8248,7 +8248,7 @@ describe("chatStore", () => {
         useChatStore
             .getState()
             .attachFile(
-                "/home/user/projects/VaultAI/README.md",
+                "/home/user/projects/NeverWrite/README.md",
                 "README.md",
                 "text/markdown",
             );
@@ -8276,7 +8276,7 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
             input: {
                 runtime_id: "claude-acp",
-                additional_roots: ["/home/user/projects/VaultAI"],
+                additional_roots: ["/home/user/projects/NeverWrite"],
             },
             vaultPath: "/vault",
         });
@@ -8311,7 +8311,7 @@ describe("chatStore", () => {
         const claudeSetupStatus = {
             ...readySetupStatus,
             runtime_id: "claude-acp",
-            binary_path: "/Applications/VaultAI/claude-agent-acp",
+            binary_path: "/Applications/NeverWrite/claude-agent-acp",
         };
         const claudeSessionPayload = {
             session_id: "claude-session-1",
@@ -10514,7 +10514,7 @@ describe("chatStore", () => {
             currentSelection: {
                 noteId: null,
                 path: "/vault/src/config.toml",
-                text: 'name = "VaultAI"',
+                text: 'name = "NeverWrite"',
                 from: 0,
                 to: 16,
                 startLine: 1,
@@ -10535,8 +10535,8 @@ describe("chatStore", () => {
             type: "selection_mention",
             noteId: null,
             path: "/vault/src/config.toml",
-            label: '(1)  name = "VaultAI"',
-            selectedText: 'name = "VaultAI"',
+            label: '(1)  name = "NeverWrite"',
+            selectedText: 'name = "NeverWrite"',
             startLine: 1,
             endLine: 1,
         });

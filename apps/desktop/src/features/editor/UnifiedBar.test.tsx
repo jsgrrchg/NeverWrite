@@ -51,7 +51,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 }));
 
 vi.mock("../../app/detachedWindows", () => ({
-    ATTACH_EXTERNAL_TAB_EVENT: "vaultai:attach-external-tab",
+    ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
     createDetachedWindowPayload: vi.fn(),
     createGhostWindow: vi.fn(),
     destroyGhostWindow: vi.fn(),

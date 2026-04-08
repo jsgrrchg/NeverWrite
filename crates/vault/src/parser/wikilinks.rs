@@ -1,6 +1,6 @@
 use regex::Regex;
 use std::sync::LazyLock;
-use vault_ai_types::{TextRange, WikiLink};
+use neverwrite_types::{TextRange, WikiLink};
 
 static WIKILINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\[\]]+?)(?:\|([^\[\]]+?))?\]\]").unwrap());

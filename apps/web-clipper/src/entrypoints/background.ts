@@ -1,7 +1,7 @@
 import { APP_BRAND_NAME, WEB_CLIPPER_SIDE_PANEL_TITLE } from "../lib/branding";
 
-const CONTEXT_MENU_ID = "vaultai-save-to-vault";
-const CONTEXT_MENU_SIDE_PANEL_ID = "vaultai-open-side-panel";
+const CONTEXT_MENU_ID = "neverwrite-save-to-vault";
+const CONTEXT_MENU_SIDE_PANEL_ID = "neverwrite-open-side-panel";
 
 async function initializeContextMenu() {
     await browser.contextMenus.removeAll();

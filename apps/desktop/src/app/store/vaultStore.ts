@@ -128,8 +128,8 @@ function didStructureMetadataChange(
     );
 }
 
-const LAST_VAULT_KEY = "vaultai:lastVaultPath";
-const RECENT_VAULTS_KEY = "vaultai:recentVaults";
+const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
+const RECENT_VAULTS_KEY = "neverwrite:recentVaults";
 const MAX_RECENT_VAULTS = 100;
 const OPEN_STATE_POLL_MS = 120;
 
@@ -232,11 +232,11 @@ export async function removeVaultFromList(path: string) {
     }
 
     // Clear all per-vault localStorage data
-    safeStorageRemoveItem(`vaultai.session.tabs:${path}`);
-    safeStorageRemoveItem(`vaultai:theme:${path}`);
-    safeStorageRemoveItem(`vaultai:settings:${path}`);
-    safeStorageRemoveItem(`vaultai.chat.tabs:${path}`);
-    safeStorageRemoveItem(`vaultai:bookmarks:${path}`);
+    safeStorageRemoveItem(`neverwrite.session.tabs:${path}`);
+    safeStorageRemoveItem(`neverwrite:theme:${path}`);
+    safeStorageRemoveItem(`neverwrite:settings:${path}`);
+    safeStorageRemoveItem(`neverwrite.chat.tabs:${path}`);
+    safeStorageRemoveItem(`neverwrite:bookmarks:${path}`);
 
     // Delete vault index snapshot from disk
     try {

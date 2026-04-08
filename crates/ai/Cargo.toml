@@ -1,11 +1,11 @@
 [package]
-name = "vault-ai-ai"
+name = "neverwrite-ai"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-vault-ai-types = { path = "../types" }
-vault-ai-vault = { path = "../vault" }
-vault-ai-index = { path = "../index" }
-vault-ai-diff = { path = "../diff" }
+neverwrite-types = { path = "../types" }
+neverwrite-vault = { path = "../vault" }
+neverwrite-index = { path = "../index" }
+neverwrite-diff = { path = "../diff" }

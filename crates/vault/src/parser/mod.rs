@@ -3,7 +3,7 @@ pub mod headings;
 pub mod tags;
 pub mod wikilinks;
 
-use vault_ai_types::NoteDocument;
+use neverwrite_types::NoteDocument;
 
 pub use frontmatter::extract_frontmatter;
 pub use tags::extract_tags;
@@ -18,8 +18,8 @@ pub fn parse_note(id: &str, path: &std::path::Path, raw_markdown: &str) -> NoteD
     let title = derive_title(path, raw_markdown, frontmatter.as_ref());
 
     NoteDocument {
-        id: vault_ai_types::NoteId(id.to_string()),
-        path: vault_ai_types::NotePath(path.to_path_buf()),
+        id: neverwrite_types::NoteId(id.to_string()),
+        path: neverwrite_types::NotePath(path.to_path_buf()),
         title,
         raw_markdown: raw_markdown.to_string(),
         links,

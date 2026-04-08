@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use tauri::AppHandle;
-use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, GEMINI_RUNTIME_ID};
+use neverwrite_ai::{AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, GEMINI_RUNTIME_ID};
 
 use super::setup::{load_setup_config, resolve_binary_command, setup_status};
 

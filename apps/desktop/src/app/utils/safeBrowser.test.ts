@@ -22,7 +22,7 @@ describe("safeBrowser dynamic runtime detection", () => {
             throw new EvalError("blocked by CSP");
         });
         vi.stubGlobal("window", {
-            location: { protocol: "vaultai:" },
+            location: { protocol: "neverwrite:" },
         });
         vi.stubGlobal("Function", blockedFunction);
 

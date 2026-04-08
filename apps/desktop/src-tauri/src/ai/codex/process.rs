@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
-use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
+use neverwrite_ai::{AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
 
 use super::setup::{load_setup_config, resolve_binary_path, setup_status};
 

@@ -2,11 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+    CANONICAL_RELEASE_PAGES_BASE_URL,
+    CANONICAL_RELEASE_REPO_SLUG,
+    buildUpdaterReleaseAssetName,
     buildChannelAppcastUrl,
     buildGitHubPagesBaseUrl,
     buildPublicReleaseAssetName,
     createStaticAppcastManifest,
     describeUpdaterArtifactKind,
+    getCanonicalAppBundleName,
+    getBundledUpdaterArtifactName,
     getAppcastPublishPath,
     getSignatureAssetName,
     normalizePlatformEntries,
@@ -14,8 +19,8 @@ import {
 
 test("buildGitHubPagesBaseUrl returns the project pages base URL", () => {
     assert.equal(
-        buildGitHubPagesBaseUrl("vaultai/vaultai"),
-        "https://vaultai.github.io/vaultai",
+        buildGitHubPagesBaseUrl(CANONICAL_RELEASE_REPO_SLUG),
+        CANONICAL_RELEASE_PAGES_BASE_URL,
     );
 });
 
@@ -26,8 +31,11 @@ test("getAppcastPublishPath returns channel/latest.json", () => {
 
 test("buildChannelAppcastUrl joins the public base url and channel path", () => {
     assert.equal(
-        buildChannelAppcastUrl("https://vaultai.github.io/vaultai/", "stable"),
-        "https://vaultai.github.io/vaultai/stable/latest.json",
+        buildChannelAppcastUrl(
+            `${CANONICAL_RELEASE_PAGES_BASE_URL}/`,
+            "stable",
+        ),
+        `${CANONICAL_RELEASE_PAGES_BASE_URL}/stable/latest.json`,
     );
 });
 
@@ -54,6 +62,26 @@ test("describeUpdaterArtifactKind documents updater archive families", () => {
     assert.equal(
         getSignatureAssetName("NeverWrite.app.tar.gz"),
         "NeverWrite.app.tar.gz.sig",
+    );
+});
+
+test("canonical bundle and updater artifact names are fixed for v1 release automation", () => {
+    assert.equal(getCanonicalAppBundleName(), "NeverWrite.app");
+    assert.equal(
+        getBundledUpdaterArtifactName("aarch64-apple-darwin"),
+        "NeverWrite.app.tar.gz",
+    );
+    assert.equal(
+        getBundledUpdaterArtifactName("x86_64-pc-windows-msvc"),
+        "NeverWrite-setup.nsis.zip",
+    );
+    assert.equal(
+        buildUpdaterReleaseAssetName("0.2.0", "aarch64-apple-darwin"),
+        "NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz",
+    );
+    assert.equal(
+        buildUpdaterReleaseAssetName("0.2.0", "x86_64-pc-windows-msvc"),
+        "NeverWrite_0.2.0_Windows_x64.nsis.zip",
     );
 });
 

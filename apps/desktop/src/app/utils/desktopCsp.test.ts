@@ -26,11 +26,11 @@ describe("desktop CSP allowlist", () => {
         expect(csp).toContain("default-src 'self'");
         expect(csp).toContain("script-src 'self' 'unsafe-eval'");
         expect(csp).toContain(
-            "connect-src 'self' ipc: http://ipc.localhost asset: vaultai-file:",
+            "connect-src 'self' ipc: http://ipc.localhost asset: neverwrite-file:",
         );
         expect(csp).toContain("https://www.youtube.com");
         expect(csp).toContain(
-            "img-src 'self' asset: data: vaultai-file:",
+            "img-src 'self' asset: data: neverwrite-file:",
         );
         expect(csp).toContain("https: http:");
         expect(csp).toContain("worker-src 'self' blob:");

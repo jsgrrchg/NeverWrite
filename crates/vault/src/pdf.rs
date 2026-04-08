@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use vault_ai_types::{NoteId, NotePath, PdfDocument};
+use neverwrite_types::{NoteId, NotePath, PdfDocument};
 
 use crate::error::VaultError;
 
@@ -34,7 +34,7 @@ fn cache_key(relative_path: &str, modified_at: u64, size: u64) -> String {
 }
 
 fn cache_dir(vault_root: &Path) -> PathBuf {
-    vault_root.join(".vaultai-cache").join("pdf")
+    vault_root.join(".neverwrite-cache").join("pdf")
 }
 
 fn load_from_cache(

@@ -1,4 +1,8 @@
-const DEBUG_SCOPE_STORAGE_KEY = "vaultai:debug-log-scopes";
+import {
+    DEBUG_SCOPE_STORAGE_KEY,
+    RUNTIME_LOG_WINDOW_API,
+} from "./technicalBranding";
+
 const DEBUG_SCOPE_ALL = "*";
 const logOnceKeys = new Set<string>();
 
@@ -191,8 +195,11 @@ function installRuntimeLogApi() {
         return;
     }
 
-    if (!window.__vaultAiLogs) {
-        window.__vaultAiLogs = createRuntimeLogApi();
+    const existing = window[RUNTIME_LOG_WINDOW_API];
+
+    if (!existing) {
+        const api = createRuntimeLogApi();
+        window[RUNTIME_LOG_WINDOW_API] = api;
     }
 }
 
@@ -206,12 +213,13 @@ export function resetRuntimeLogStateForTests() {
         } catch {
             // ignore test cleanup failures
         }
-        window.__vaultAiLogs = createRuntimeLogApi();
+        const api = createRuntimeLogApi();
+        window[RUNTIME_LOG_WINDOW_API] = api;
     }
 }
 
 declare global {
     interface Window {
-        __vaultAiLogs?: RuntimeLogApi;
+        __neverwriteLogs?: RuntimeLogApi;
     }
 }

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use tauri::AppHandle;
-use vault_ai_ai::{AiRuntimeSessionSummary, AiSession, AiSessionStatus, CLAUDE_RUNTIME_ID};
+use neverwrite_ai::{AiRuntimeSessionSummary, AiSession, AiSessionStatus, CLAUDE_RUNTIME_ID};
 
 use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
 
@@ -27,7 +27,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         CLAUDE_RUNTIME_ID
     }
 
-    fn descriptor(&self) -> vault_ai_ai::AiRuntimeDescriptor {
+    fn descriptor(&self) -> neverwrite_ai::AiRuntimeDescriptor {
         self.runtime.descriptor()
     }
 
@@ -43,7 +43,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         }
     }
 
-    fn setup_status(&self, app: &AppHandle) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
+    fn setup_status(&self, app: &AppHandle) -> Result<neverwrite_ai::AiRuntimeSetupStatus, String> {
         self.runtime.setup_status(app)
     }
 
@@ -51,7 +51,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         &mut self,
         app: &AppHandle,
         input: AiRuntimeSetupInput,
-    ) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
+    ) -> Result<neverwrite_ai::AiRuntimeSetupStatus, String> {
         let input: ClaudeSetupInput = input.into_claude()?;
         let _ = save_setup_config(app, input)?;
         self.runtime.setup_status(app)
@@ -62,7 +62,7 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
         app: &AppHandle,
         method_id: &str,
         vault_root: Option<PathBuf>,
-    ) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
+    ) -> Result<neverwrite_ai::AiRuntimeSetupStatus, String> {
         match method_id {
             "gateway" => {
                 let _ = mark_authenticated_method(app, "gateway")?;

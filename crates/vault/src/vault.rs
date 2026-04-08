@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use vault_ai_types::{NoteDocument, VaultEntryDto};
+use neverwrite_types::{NoteDocument, VaultEntryDto};
 use walkdir::WalkDir;
 
 use crate::error::VaultError;
@@ -9,8 +9,8 @@ use crate::parser;
 const IGNORED_DIR_NAMES: &[&str] = &[
     ".obsidian",
     ".git",
-    ".vaultai",
-    ".vaultai-cache",
+    ".neverwrite",
+    ".neverwrite-cache",
     ".trash",
     "target",
     "node_modules",

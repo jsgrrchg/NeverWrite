@@ -27,7 +27,7 @@ use tokio::{io::AsyncReadExt, process::Command, runtime::Builder, sync::oneshot,
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use tokio::sync::mpsc as tokio_mpsc;
-use vault_ai_ai::{
+use neverwrite_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
     AiRuntimeSessionSummary, AiSession, CLAUDE_RUNTIME_ID,
 };
@@ -43,16 +43,14 @@ use crate::ai::emit::{
 };
 use crate::ai::env::preferred_path_value;
 use crate::branding::APP_BRAND_NAME;
+use crate::technical_branding::{
+    meta_get, meta_get_str, ACP_DIFF_HUNKS_KEY, ACP_DIFF_PREVIOUS_PATH_KEY, ACP_IMPLEMENTATION_ID,
+    ACP_PLAN_DETAIL_KEY, ACP_PLAN_TITLE_KEY, ACP_STATUS_EMPHASIS_KEY, ACP_STATUS_EVENT_TYPE_KEY,
+    ACP_STATUS_KIND_KEY,
+};
 
 use super::{process::ClaudeProcessSpec, setup::apply_auth_env};
 
-const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
-const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
-const VAULTAI_STATUS_EMPHASIS_KEY: &str = "vaultaiStatusEmphasis";
-const VAULTAI_PLAN_TITLE_KEY: &str = "vaultaiPlanTitle";
-const VAULTAI_PLAN_DETAIL_KEY: &str = "vaultaiPlanDetail";
-const VAULTAI_DIFF_PREVIOUS_PATH_KEY: &str = "vaultaiPreviousPath";
-const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 
@@ -1593,7 +1591,8 @@ impl RuntimeActor {
                     )])),
             )
             .client_info(
-                Implementation::new("vaultai", env!("CARGO_PKG_VERSION")).title(APP_BRAND_NAME),
+                Implementation::new(ACP_IMPLEMENTATION_ID, env!("CARGO_PKG_VERSION"))
+                    .title(APP_BRAND_NAME),
             );
 
         connection
@@ -2304,18 +2303,16 @@ fn map_tool_call(
 
 fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEventPayload> {
     let meta = tool_call.meta.as_ref()?;
-    let event_type = meta.get(VAULTAI_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    let event_type = meta_get_str(meta, ACP_STATUS_EVENT_TYPE_KEY)?;
     if event_type != "status" {
         return None;
     }
 
-    let kind = meta
-        .get(VAULTAI_STATUS_KIND_KEY)
+    let kind = meta_get(meta, ACP_STATUS_KIND_KEY)
         .and_then(|value| value.as_str())
         .unwrap_or("status")
         .to_string();
-    let emphasis = meta
-        .get(VAULTAI_STATUS_EMPHASIS_KEY)
+    let emphasis = meta_get(meta, ACP_STATUS_EMPHASIS_KEY)
         .and_then(|value| value.as_str())
         .unwrap_or("neutral")
         .to_string();
@@ -2341,13 +2338,13 @@ fn map_plan_update(session_id: &str, plan: agent_client_protocol::Plan) -> AiPla
     let title = plan
         .meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_PLAN_TITLE_KEY))
+        .and_then(|meta| meta_get(meta, ACP_PLAN_TITLE_KEY))
         .and_then(|value| value.as_str())
         .map(ToString::to_string);
     let detail = plan
         .meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_PLAN_DETAIL_KEY))
+        .and_then(|meta| meta_get(meta, ACP_PLAN_DETAIL_KEY))
         .and_then(|value| value.as_str())
         .map(ToString::to_string);
 
@@ -2668,7 +2665,7 @@ fn reconstruct_edit_diff_payload(
 fn diff_previous_path(diff: &agent_client_protocol::Diff, cwd: Option<&Path>) -> Option<String> {
     diff.meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_DIFF_PREVIOUS_PATH_KEY))
+        .and_then(|meta| meta_get(meta, ACP_DIFF_PREVIOUS_PATH_KEY))
         .and_then(|value| value.as_str())
         .map(|path| to_display_path(&resolve_tool_path(path, cwd), cwd))
 }
@@ -2676,7 +2673,7 @@ fn diff_previous_path(diff: &agent_client_protocol::Diff, cwd: Option<&Path>) ->
 fn diff_hunks(diff: &agent_client_protocol::Diff) -> Option<Vec<AiFileDiffHunkPayload>> {
     diff.meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_DIFF_HUNKS_KEY))
+        .and_then(|meta| meta_get(meta, ACP_DIFF_HUNKS_KEY))
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .filter(|hunks: &Vec<AiFileDiffHunkPayload>| !hunks.is_empty())
@@ -2802,7 +2799,7 @@ mod tests {
             runtime_id: CLAUDE_RUNTIME_ID.to_string(),
             model_id: "claude-3-5-sonnet".to_string(),
             mode_id: "default".to_string(),
-            status: vault_ai_ai::AiSessionStatus::Idle,
+            status: neverwrite_ai::AiSessionStatus::Idle,
             efforts_by_model: HashMap::new(),
             models: Vec::new(),
             modes: Vec::new(),
@@ -2994,7 +2991,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("vaultai-claude-client-{suffix}"))
+        std::env::temp_dir().join(format!("neverwrite-claude-client-{suffix}"))
     }
 
     #[test]
@@ -3093,7 +3090,7 @@ mod tests {
                 Diff::new("/tmp/new.rs", "updated")
                     .old_text("original")
                     .meta(Meta::from_iter([(
-                        VAULTAI_DIFF_PREVIOUS_PATH_KEY.to_string(),
+                        ACP_DIFF_PREVIOUS_PATH_KEY.to_string(),
                         serde_json::json!("/tmp/old.rs"),
                     )])),
             )]);
@@ -3120,7 +3117,7 @@ mod tests {
                 Diff::new("/tmp/watcher.rs", "new line")
                     .old_text("old line")
                     .meta(Meta::from_iter([(
-                        VAULTAI_DIFF_HUNKS_KEY.to_string(),
+                        ACP_DIFF_HUNKS_KEY.to_string(),
                         serde_json::json!([
                             {
                                 "old_start": 12,
@@ -3265,7 +3262,7 @@ mod tests {
     #[test]
     fn edit_tool_diffs_cached_from_content_survive_completion() {
         let tool_state = ToolState::default();
-        let file_path = "/tmp/vaultai-test-edit-cache.rs";
+        let file_path = "/tmp/neverwrite-test-edit-cache.rs";
 
         // Initial ToolCall arrives with Diff content + Edit raw_input (status=in_progress)
         let initial = ToolCall::new(ToolCallId::from("tool-edit"), "Edit file")

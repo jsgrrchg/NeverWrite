@@ -1952,7 +1952,7 @@ function UpdatesSettings() {
                 label="Status"
                 description={
                     !status?.enabled && !status?.endpoint
-                        ? "Set VAULTAI_UPDATER_BASE_URL to enable."
+                        ? "Set NEVERWRITE_UPDATER_BASE_URL to enable."
                         : undefined
                 }
                 control={

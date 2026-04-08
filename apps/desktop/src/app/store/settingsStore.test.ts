@@ -49,7 +49,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(
             JSON.parse(
-                localStorage.getItem("vaultai:settings:/vaults/devtools") ?? "",
+                localStorage.getItem("neverwrite:settings:/vaults/devtools") ?? "",
             ),
         ).toMatchObject({
             state: {
@@ -75,7 +75,7 @@ describe("settingsStore developer mode", () => {
             "en-US",
         );
         expect(
-            JSON.parse(localStorage.getItem("vaultai:settings") ?? ""),
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? ""),
         ).toMatchObject({
             state: {
                 spellcheckPrimaryLanguage: "fr-FR",
@@ -124,7 +124,7 @@ describe("settingsStore developer mode", () => {
 
     it("migrates legacy global spellcheck settings into existing vault settings", () => {
         localStorage.setItem(
-            "vaultai:settings",
+            "neverwrite:settings",
             JSON.stringify({
                 state: {
                     spellcheckPrimaryLanguage: "es-CL",
@@ -133,7 +133,7 @@ describe("settingsStore developer mode", () => {
             }),
         );
         localStorage.setItem(
-            "vaultai:settings:/vaults/migrated",
+            "neverwrite:settings:/vaults/migrated",
             JSON.stringify({
                 state: {
                     developerModeEnabled: true,
@@ -152,7 +152,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
         expect(
             JSON.parse(
-                localStorage.getItem("vaultai:settings:/vaults/migrated") ?? "",
+                localStorage.getItem("neverwrite:settings:/vaults/migrated") ?? "",
             ),
         ).toMatchObject({
             state: {

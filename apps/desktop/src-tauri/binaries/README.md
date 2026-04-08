@@ -1,6 +1,6 @@
 Place precompiled ACP runtime binaries in this directory for release builds.
 
-VaultAI only bundles these two ACP runtimes:
+NeverWrite only bundles these two ACP runtimes:
 
 - Codex
 - Claude
@@ -18,8 +18,8 @@ Tauri bundles everything under `src-tauri/binaries/` as application resources.
 
 Build-time staging priority for Codex:
 
-1. `VAULTAI_CODEX_ACP_BUNDLE_BIN`
-2. `VAULTAI_CODEX_ACP_BIN`
+1. `NEVERWRITE_CODEX_ACP_BUNDLE_BIN`
+2. `NEVERWRITE_CODEX_ACP_BIN`
 3. Rebuild `vendor/codex-acp` from source for the active Cargo profile
 4. `vendor/codex-acp/target/release/`
 5. `vendor/codex-acp/target/debug/`
@@ -29,8 +29,8 @@ Build-time staging priority for Codex:
 
 Build-time staging priority for Claude:
 
-1. `VAULTAI_CLAUDE_ACP_BUNDLE_BIN`
-2. `VAULTAI_CLAUDE_ACP_BIN`
+1. `NEVERWRITE_CLAUDE_ACP_BUNDLE_BIN`
+2. `NEVERWRITE_CLAUDE_ACP_BIN`
 3. `vendor/Claude-agent-acp-upstream/target/release/`
 4. `vendor/Claude-agent-acp-upstream/target/debug/`
 5. `PATH`

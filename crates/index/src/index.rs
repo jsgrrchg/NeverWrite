@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::thread;
 
-use vault_ai_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata, PdfDocument, PdfMetadata};
+use neverwrite_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata, PdfDocument, PdfMetadata};
 
 const PROGRESS_REPORT_EVERY: usize = 256;
 const MAX_SUGGESTION_PREFIX_CHARS: usize = 64;
@@ -847,7 +847,7 @@ pub struct IndexBuildProgress {
 
 struct PreparedNote {
     id: NoteId,
-    path: vault_ai_types::NotePath,
+    path: neverwrite_types::NotePath,
     title: String,
     filename: String,
     tags: Vec<String>,

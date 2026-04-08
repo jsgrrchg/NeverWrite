@@ -47,7 +47,7 @@ type PerfApi = {
     summary: () => PerfSnapshot;
 };
 
-const STORAGE_KEY = "vaultai:perf-probe";
+const STORAGE_KEY = "neverwrite:perf-probe";
 const MAX_EVENTS = 250;
 const DEFAULT_SNAPSHOT: PerfSnapshot = {
     enabled: false,

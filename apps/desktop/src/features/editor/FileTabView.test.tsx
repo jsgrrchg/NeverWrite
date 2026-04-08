@@ -208,7 +208,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
 
@@ -218,7 +218,7 @@ describe("FileTabView", () => {
         expect(editorElement).not.toBeNull();
         expect(document.querySelector(".cm-lineNumbers")).not.toBeNull();
         expect(editorElement).toHaveAttribute("data-live-preview", "false");
-        expect(screen.getByText('name = "VaultAI"')).toBeInTheDocument();
+        expect(screen.getByText('name = "NeverWrite"')).toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: "Fit" }),
         ).not.toBeInTheDocument();
@@ -229,7 +229,7 @@ describe("FileTabView", () => {
         mockInvoke().mockResolvedValue({
             relative_path: "src/config.toml",
             file_name: "config.toml",
-            content: 'name = "VaultAI"\nversion = "1.0.0"',
+            content: 'name = "NeverWrite"\nversion = "1.0.0"',
         });
 
         act(() => {
@@ -249,7 +249,7 @@ describe("FileTabView", () => {
         expect(mockInvoke()).toHaveBeenCalledWith("save_vault_file", {
             vaultPath: "/vault",
             relativePath: "src/config.toml",
-            content: 'name = "VaultAI"\nversion = "1.0.0"',
+            content: 'name = "NeverWrite"\nversion = "1.0.0"',
             opId: expect.any(String),
         });
     });
@@ -415,7 +415,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
 
@@ -459,7 +459,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
         useSettingsStore.getState().setSetting("editorFontSize", 14);
@@ -502,7 +502,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
 
@@ -550,7 +550,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
 
@@ -567,7 +567,7 @@ describe("FileTabView", () => {
             view!.dispatch({
                 selection: {
                     anchor: 0,
-                    head: 16,
+                    head: 19,
                 },
             });
         });
@@ -583,7 +583,7 @@ describe("FileTabView", () => {
         expect(useEditorStore.getState().currentSelection).toMatchObject({
             noteId: null,
             path: "/vault/src/config.toml",
-            text: 'name = "VaultAI"',
+            text: 'name = "NeverWrite"',
             startLine: 1,
             endLine: 1,
         });
@@ -598,7 +598,7 @@ describe("FileTabView", () => {
             type: "selection_mention",
             noteId: null,
             path: "/vault/src/config.toml",
-            selectedText: 'name = "VaultAI"',
+            selectedText: 'name = "NeverWrite"',
         });
     });
 
@@ -613,7 +613,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
 
@@ -642,7 +642,7 @@ describe("FileTabView", () => {
                 path: "/vault/src/config.toml",
                 mimeType: "application/toml",
                 viewer: "text",
-                content: 'name = "VaultAI"',
+                content: 'name = "NeverWrite"',
             },
         ]);
 
@@ -693,7 +693,7 @@ describe("FileTabView", () => {
                     path: "/vault/src/config.toml",
                     mimeType: "application/toml",
                     viewer: "text",
-                    content: 'name = "VaultAI"',
+                    content: 'name = "NeverWrite"',
                 },
                 {
                     id: "text-tab-2",
@@ -715,7 +715,7 @@ describe("FileTabView", () => {
         expect(firstEditor).not.toBeNull();
         const firstView = EditorView.findFromDOM(firstEditor as HTMLElement);
         expect(firstView).not.toBeNull();
-        expect(firstView!.state.doc.toString()).toBe('name = "VaultAI"');
+        expect(firstView!.state.doc.toString()).toBe('name = "NeverWrite"');
 
         await act(async () => {
             useEditorStore.getState().switchTab("text-tab-2");
@@ -741,7 +741,7 @@ describe("FileTabView", () => {
                     path: "/vault/src/config.toml",
                     mimeType: "application/toml",
                     viewer: "text",
-                    content: 'name = "VaultAI"',
+                    content: 'name = "NeverWrite"',
                 },
                 {
                     id: "text-tab-2",
@@ -759,7 +759,7 @@ describe("FileTabView", () => {
         seedTrackedDiff(
             "/vault/src/config.toml",
             'name = "Old"',
-            'name = "VaultAI"',
+            'name = "NeverWrite"',
         );
 
         renderComponent(<FileTabView />);
@@ -811,7 +811,7 @@ describe("FileTabView", () => {
                     path: "/vault/src/config.toml",
                     mimeType: "application/toml",
                     viewer: "text",
-                    content: 'name = "VaultAI"',
+                    content: 'name = "NeverWrite"',
                 },
             ],
             "text-tab-1",
@@ -820,7 +820,7 @@ describe("FileTabView", () => {
         seedTrackedDiff(
             "/vault/src/config.toml",
             'name = "Old"',
-            'name = "VaultAI"',
+            'name = "NeverWrite"',
         );
 
         await act(async () => {
@@ -845,7 +845,7 @@ describe("FileTabView", () => {
                     path: "/vault/src/config.toml",
                     mimeType: "application/toml",
                     viewer: "text",
-                    content: 'name = "VaultAI"',
+                    content: 'name = "NeverWrite"',
                 },
                 {
                     id: "text-tab-2",
@@ -864,7 +864,7 @@ describe("FileTabView", () => {
         seedTrackedDiff(
             "/vault/src/config.toml",
             'name = "Old"',
-            'name = "VaultAI"',
+            'name = "NeverWrite"',
         );
 
         await act(async () => {
@@ -877,7 +877,7 @@ describe("FileTabView", () => {
         );
         expect(view).not.toBeNull();
         expect(getChunks(view!.state)).toBeNull();
-        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+        expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
 
         await act(async () => {
             useEditorStore.getState().switchTab("text-tab-2");
@@ -901,7 +901,7 @@ describe("FileTabView", () => {
         );
         expect(view).not.toBeNull();
         expect(getChunks(view!.state)).toBeNull();
-        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+        expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
     });
 
     it("clears merge view for text files when inline review is turned off", async () => {
@@ -915,7 +915,7 @@ describe("FileTabView", () => {
                     path: "/vault/src/config.toml",
                     mimeType: "application/toml",
                     viewer: "text",
-                    content: 'name = "VaultAI"',
+                    content: 'name = "NeverWrite"',
                 },
             ],
             "text-tab-1",
@@ -923,7 +923,7 @@ describe("FileTabView", () => {
         seedTrackedDiff(
             "/vault/src/config.toml",
             'name = "Old"',
-            'name = "VaultAI"',
+            'name = "NeverWrite"',
         );
 
         await act(async () => {
@@ -935,7 +935,7 @@ describe("FileTabView", () => {
         );
         expect(view).not.toBeNull();
         expect(getChunks(view!.state)?.chunks.length).toBe(1);
-        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+        expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
 
         await act(async () => {
             useSettingsStore
@@ -949,6 +949,6 @@ describe("FileTabView", () => {
         );
         expect(view).not.toBeNull();
         expect(getChunks(view!.state)).toBeNull();
-        expect(view!.state.doc.toString()).toBe('name = "VaultAI"');
+        expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
     });
 });

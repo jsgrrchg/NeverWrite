@@ -43,9 +43,9 @@ interface SettingsStore extends Settings {
     reset: () => void;
 }
 
-const SETTINGS_KEY_PREFIX = "vaultai:settings:";
-const SETTINGS_KEY_FALLBACK = "vaultai:settings";
-const LAST_VAULT_KEY = "vaultai:lastVaultPath";
+const SETTINGS_KEY_PREFIX = "neverwrite:settings:";
+const SETTINGS_KEY_FALLBACK = "neverwrite:settings";
+const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 
 export type EditorFontFamily =
     | "system"

@@ -10,8 +10,10 @@ CLAUDE.md
 !.env.sample
 .cargo-home/
 .claude/settings.local.json
-.vaultai/
-.vaultai-cache/
+# Local NeverWrite product state lives here, including persisted AI sessions.
+.neverwrite/
+.neverwrite/sessions/
+.neverwrite-cache/
 .PERSONAL
 .trash/
 apps/desktop/src-tauri/binaries/*

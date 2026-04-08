@@ -15,8 +15,8 @@ import {
     reject_all_edits_json,
     reject_exact_spans_json,
     sync_derived_line_patch_json,
-} from "./wasm/vault_ai_diff";
-import wasmUrl from "./wasm/vault_ai_diff_bg.wasm?url";
+} from "./wasm/neverwrite_diff";
+import wasmUrl from "./wasm/neverwrite_diff_bg.wasm?url";
 import type {
     AgentTextSpan,
     HunkWordDiffs,

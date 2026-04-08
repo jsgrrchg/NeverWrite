@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use tauri::AppHandle;
-use vault_ai_ai::{AiRuntimeSetupStatus, AiSession, AiSessionStatus, GEMINI_RUNTIME_ID};
+use neverwrite_ai::{AiRuntimeSetupStatus, AiSession, AiSessionStatus, GEMINI_RUNTIME_ID};
 
 use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
 
@@ -28,7 +28,7 @@ impl AiRuntimeAdapter for GeminiRuntimeAdapter {
         GEMINI_RUNTIME_ID
     }
 
-    fn descriptor(&self) -> vault_ai_ai::AiRuntimeDescriptor {
+    fn descriptor(&self) -> neverwrite_ai::AiRuntimeDescriptor {
         self.runtime.descriptor()
     }
 

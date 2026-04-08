@@ -14,7 +14,7 @@ use portable_pty::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
-use vault_ai_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID};
+use neverwrite_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID};
 
 use super::claude::{
     save_setup_config as save_claude_setup_config, ClaudeRuntime, ClaudeSetupInput,

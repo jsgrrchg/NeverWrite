@@ -4,7 +4,7 @@ import {
     safeStorageSetItem,
 } from "../../app/utils/safeStorage";
 
-const KEY = "vaultai.search.history";
+const KEY = "neverwrite.search.history";
 const MAX_ENTRIES = 20;
 
 export function getSearchHistory(): string[] {

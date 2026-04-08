@@ -27,7 +27,7 @@ import {
     type TerminalSessionSnapshot,
 } from "./terminalTypes";
 
-const TERMINAL_TABS_STORAGE_KEY_PREFIX = "vaultai.devtools.terminal.tabs:";
+const TERMINAL_TABS_STORAGE_KEY_PREFIX = "neverwrite.devtools.terminal.tabs:";
 const TERMINAL_TABS_PERSIST_VERSION = 2;
 
 interface PersistedTerminalWorkspaceTab {

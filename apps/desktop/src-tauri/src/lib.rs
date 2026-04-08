@@ -6,6 +6,7 @@ mod file_preview_gateway;
 mod frontend_server;
 mod maps;
 mod spellcheck;
+mod technical_branding;
 
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -17,6 +18,16 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use neverwrite_index::{IndexBuildPhase, VaultIndex};
+use neverwrite_types::{
+    AdvancedSearchParams, AdvancedSearchResultDto, BacklinkDto, NoteDetailDto, NoteDocument,
+    NoteDto, NoteId, NoteMetadata, ResolvedWikilinkDto, SearchResultDto, VaultEntryDto,
+    VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto, WikilinkSuggestionDto,
+};
+use neverwrite_vault::vault::{is_ignored_dir_name, is_supported_text_path};
+use neverwrite_vault::{
+    start_watcher, DiscoveredNoteFile, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
+};
 use notify::RecommendedWatcher;
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
@@ -35,23 +46,18 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
-use vault_ai_index::{IndexBuildPhase, VaultIndex};
-use vault_ai_types::{
-    AdvancedSearchParams, AdvancedSearchResultDto, BacklinkDto, NoteDetailDto, NoteDocument,
-    NoteDto, NoteId, NoteMetadata, ResolvedWikilinkDto, SearchResultDto, VaultEntryDto,
-    VaultNoteChangeDto, VaultOpenMetricsDto, VaultOpenStateDto, WikilinkSuggestionDto,
-};
-use vault_ai_vault::vault::{is_ignored_dir_name, is_supported_text_path};
-use vault_ai_vault::{
-    start_watcher, DiscoveredNoteFile, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
-};
 
 use crate::branding::APP_BRAND_NAME;
+use crate::technical_branding::{
+    app_data_dir, is_supported_deep_link_scheme, UPDATER_ALLOWED_DOWNLOAD_HOSTS_ENV_VARS,
+    UPDATER_ALLOWED_FEED_HOSTS_ENV_VARS, UPDATER_ALLOW_PROD_ENDPOINTS_IN_NON_PROD_ENV_VARS,
+    UPDATER_BASE_URL_ENV_VARS, UPDATER_CHANNEL_ENV_VARS, UPDATER_ENDPOINT_ENV_VARS,
+    UPDATER_PUBLIC_KEY_ENV_VARS,
+};
 
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
 const MENU_ACTION_EVENT: &str = "menu-action";
 const DOCK_OPEN_VAULT_EVENT: &str = "dock-open-vault";
-const WEB_CLIPPER_DEEP_LINK_SCHEME: &str = "vaultai";
 const WEB_CLIPPER_DEEP_LINK_HOST: &str = "clip";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const OPEN_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -66,18 +72,6 @@ const VAULT_CHANGE_ORIGIN_USER: &str = "user";
 const VAULT_CHANGE_ORIGIN_AGENT: &str = "agent";
 const VAULT_CHANGE_ORIGIN_EXTERNAL: &str = "external";
 const DEFAULT_UPDATER_CHANNEL: &str = "stable";
-const UPDATER_PUBLIC_KEY_ENV_VARS: [&str; 2] =
-    ["VAULTAI_UPDATER_PUBLIC_KEY", "TAURI_UPDATER_PUBLIC_KEY"];
-const UPDATER_ENDPOINT_ENV_VARS: [&str; 1] = ["VAULTAI_UPDATER_ENDPOINT"];
-const UPDATER_BASE_URL_ENV_VARS: [&str; 2] =
-    ["VAULTAI_UPDATER_BASE_URL", "VAULTAI_APPCAST_BASE_URL"];
-const UPDATER_CHANNEL_ENV_VARS: [&str; 1] = ["VAULTAI_UPDATER_CHANNEL"];
-const UPDATER_ALLOWED_FEED_HOSTS_ENV_VARS: [&str; 1] = ["VAULTAI_UPDATER_ALLOWED_FEED_HOSTS"];
-const UPDATER_ALLOWED_DOWNLOAD_HOSTS_ENV_VARS: [&str; 1] =
-    ["VAULTAI_UPDATER_ALLOWED_DOWNLOAD_HOSTS"];
-const UPDATER_ALLOW_PROD_ENDPOINTS_IN_NON_PROD_ENV_VARS: [&str; 1] =
-    ["VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD"];
-
 #[cfg(target_os = "macos")]
 static MACOS_DOCK_MENU_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
@@ -207,7 +201,7 @@ fn validate_production_feed_host(url: &Url, allowed_feed_hosts: &[String]) -> Re
             return Ok(());
         }
         return Err(format!(
-            "Updater endpoint host '{host}' is not in VAULTAI_UPDATER_ALLOWED_FEED_HOSTS."
+            "Updater endpoint host '{host}' is not in NEVERWRITE_UPDATER_ALLOWED_FEED_HOSTS."
         ));
     }
     if host.to_ascii_lowercase().ends_with(".github.io") {
@@ -230,7 +224,7 @@ fn validate_production_download_host(
             return Ok(());
         }
         return Err(format!(
-            "Updater download host '{host}' is not in VAULTAI_UPDATER_ALLOWED_DOWNLOAD_HOSTS."
+            "Updater download host '{host}' is not in NEVERWRITE_UPDATER_ALLOWED_DOWNLOAD_HOSTS."
         ));
     }
     if host.eq_ignore_ascii_case("github.com") {
@@ -275,7 +269,7 @@ fn validate_updater_endpoint_url(
                 Ok(())
             } else {
                 Err(format!(
-                    "Non-production updater endpoint must stay local (loopback or file URL). Refusing public feed: {url}. Set VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true only for explicit one-off validation."
+                    "Non-production updater endpoint must stay local (loopback or file URL). Refusing public feed: {url}. Set NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true only for explicit one-off validation."
                 ))
             }
         }
@@ -315,7 +309,7 @@ fn validate_update_download_url(
                 Ok(())
             } else {
                 Err(format!(
-                    "Non-production updater download URL must stay local (loopback or file URL). Refusing public asset URL: {url}. Set VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true only for explicit one-off validation."
+                    "Non-production updater download URL must stay local (loopback or file URL). Refusing public asset URL: {url}. Set NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true only for explicit one-off validation."
                 ))
             }
         }
@@ -386,14 +380,14 @@ fn build_update_status(
 ) -> AppUpdateStatusDto {
     let message = if updater_config.pubkey.is_none() {
         Some(
-            "Updater public key is not configured. Set VAULTAI_UPDATER_PUBLIC_KEY before checking for updates."
+            "Updater public key is not configured. Set NEVERWRITE_UPDATER_PUBLIC_KEY before checking for updates."
                 .to_string(),
         )
     } else if let Some(error) = updater_config.endpoint_error.as_ref() {
         Some(error.clone())
     } else if updater_config.endpoint.is_none() {
         Some(
-            "Updater endpoint is not configured. Set VAULTAI_UPDATER_ENDPOINT or VAULTAI_UPDATER_BASE_URL."
+            "Updater endpoint is not configured. Set NEVERWRITE_UPDATER_ENDPOINT or NEVERWRITE_UPDATER_BASE_URL."
                 .to_string(),
         )
     } else {
@@ -1268,10 +1262,7 @@ fn ensure_not_cancelled(
 // --- Snapshot helpers ---
 
 fn snapshot_directory(app: &AppHandle, vault_root: &Path) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let base = app_data_dir(app)?;
 
     let mut hasher = DefaultHasher::new();
     vault_root.to_string_lossy().hash(&mut hasher);
@@ -1588,7 +1579,7 @@ fn graph_note_fingerprint_from_index(
         .notes
         .get(note_id)
         .cloned()
-        .unwrap_or(vault_ai_types::IndexedNote {
+        .unwrap_or(neverwrite_types::IndexedNote {
             tags: Vec::new(),
             links: Vec::new(),
         });
@@ -1764,7 +1755,7 @@ fn rebuild_index(instance: &mut VaultInstance) -> Result<(), String> {
         .discover_pdf_files()
         .map_err(|error| error.to_string())?;
     for pdf_file in pdf_files {
-        match vault_ai_vault::pdf::extract_pdf_text(&vault.root, &pdf_file.path, &pdf_file.id) {
+        match neverwrite_vault::pdf::extract_pdf_text(&vault.root, &pdf_file.path, &pdf_file.id) {
             Ok(doc) => {
                 index.register_pdf(
                     &doc,
@@ -1849,7 +1840,7 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 if path_has_extension(path, "pdf") =>
             {
                 let pdf_id = vault.path_to_entry_id(path);
-                match vault_ai_vault::pdf::extract_pdf_text(&vault.root, path, &pdf_id) {
+                match neverwrite_vault::pdf::extract_pdf_text(&vault.root, path, &pdf_id) {
                     Ok(doc) => {
                         let meta = std::fs::metadata(path).ok();
                         let modified_at = meta
@@ -1919,7 +1910,8 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 search_changed = true;
                 if path_has_extension(to, "pdf") {
                     let new_id = vault.path_to_entry_id(to);
-                    if let Ok(doc) = vault_ai_vault::pdf::extract_pdf_text(&vault.root, to, &new_id)
+                    if let Ok(doc) =
+                        neverwrite_vault::pdf::extract_pdf_text(&vault.root, to, &new_id)
                     {
                         let meta = std::fs::metadata(to).ok();
                         let modified_at = meta
@@ -2389,7 +2381,7 @@ fn run_open_vault_job(
         let missing_pdfs: Vec<_> = pdf_files
             .iter()
             .filter(|f| {
-                let id = vault_ai_types::NoteId(f.id.clone());
+                let id = neverwrite_types::NoteId(f.id.clone());
                 match index.pdf_metadata.get(&id) {
                     Some(existing) => {
                         existing.modified_at != f.modified_at || existing.size != f.size
@@ -2412,7 +2404,7 @@ fn run_open_vault_job(
             let mut pdf_failures = 0usize;
             for (i, pdf_file) in missing_pdfs.iter().enumerate() {
                 ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
-                match vault_ai_vault::pdf::extract_pdf_text(
+                match neverwrite_vault::pdf::extract_pdf_text(
                     &vault.root,
                     &pdf_file.path,
                     &pdf_file.id,
@@ -2444,7 +2436,7 @@ fn run_open_vault_job(
         // Remove PDFs that no longer exist on disk
         let current_pdf_ids: std::collections::HashSet<String> =
             pdf_files.iter().map(|f| f.id.clone()).collect();
-        let stale_pdf_ids: Vec<vault_ai_types::NoteId> = index
+        let stale_pdf_ids: Vec<neverwrite_types::NoteId> = index
             .pdf_metadata
             .keys()
             .filter(|id| !current_pdf_ids.contains(&id.0))
@@ -3086,7 +3078,7 @@ fn save_note(
         .map_err(|e| e.to_string())?;
 
     // Build NoteDocument from content we already have — skip re-reading from disk
-    let note = vault_ai_vault::parser::parse_note(&note_id, &path, &content);
+    let note = neverwrite_vault::parser::parse_note(&note_id, &path, &content);
     let dto = note_to_detail(&note);
     let relative_path = vault.path_to_relative_path(&path);
     let revision = advance_note_revision(&mut instance.note_revisions, &note_id, None);
@@ -3776,10 +3768,10 @@ fn ai_restore_text_file(
 #[tauri::command]
 fn compute_tracked_file_patches(
     inputs: Vec<ComputeLineDiffInput>,
-) -> Result<Vec<vault_ai_diff::TrackedFilePatches>, String> {
+) -> Result<Vec<neverwrite_diff::TrackedFilePatches>, String> {
     Ok(inputs
         .into_iter()
-        .map(|input| vault_ai_diff::compute_tracked_file_patch(&input.old_text, &input.new_text))
+        .map(|input| neverwrite_diff::compute_tracked_file_patch(&input.old_text, &input.new_text))
         .collect())
 }
 
@@ -4978,8 +4970,8 @@ fn traffic_light_position_for_version(version: u32) -> (f64, f64) {
     }
 }
 
-pub(crate) const WEB_CLIPPER_CLIP_SAVED_EVENT: &str = "vaultai:web-clipper/clip-saved";
-pub(crate) const WEB_CLIPPER_ROUTE_CLIP_EVENT: &str = "vaultai:web-clipper/route-clip";
+pub(crate) const WEB_CLIPPER_CLIP_SAVED_EVENT: &str = "neverwrite:web-clipper/clip-saved";
+pub(crate) const WEB_CLIPPER_ROUTE_CLIP_EVENT: &str = "neverwrite:web-clipper/route-clip";
 
 #[tauri::command]
 fn register_window_vault_route(
@@ -5030,10 +5022,7 @@ struct RecentVaultEntry {
 }
 
 fn recent_vaults_file_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let app_data_dir = app_data_dir(app)?;
     Ok(app_data_dir.join("recent_vaults.json"))
 }
 
@@ -5797,7 +5786,7 @@ fn infer_web_clipper_vault_hints(
 
 fn parse_web_clipper_deep_link(uri: &str) -> Result<WebClipperDeepLinkRequest, String> {
     let url = Url::parse(uri).map_err(|error| format!("Invalid web clipper deep link: {error}"))?;
-    if url.scheme() != WEB_CLIPPER_DEEP_LINK_SCHEME {
+    if !is_supported_deep_link_scheme(url.scheme()) {
         return Err("Unsupported web clipper deep link scheme.".to_string());
     }
 
@@ -5917,7 +5906,7 @@ fn handle_web_clipper_deep_link(app: &AppHandle, uri: &str) -> Result<(), String
 
 fn handle_web_clipper_deep_link_urls(app: &AppHandle, urls: &[Url]) {
     for url in urls {
-        if url.scheme() != WEB_CLIPPER_DEEP_LINK_SCHEME {
+        if !is_supported_deep_link_scheme(url.scheme()) {
             continue;
         }
 
@@ -6076,11 +6065,11 @@ pub(crate) fn web_clipper_save_note(
 pub fn run() {
     let updater_runtime_config = load_updater_runtime_config();
 
-    let builder = tauri::Builder::default()
-        .register_uri_scheme_protocol(
-            file_preview_gateway::FILE_PREVIEW_SCHEME,
-            file_preview_gateway::handle_request,
-        )
+    let builder = tauri::Builder::default().register_uri_scheme_protocol(
+        file_preview_gateway::FILE_PREVIEW_SCHEME,
+        file_preview_gateway::handle_request,
+    );
+    let builder = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -6104,6 +6093,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            let _ = app_data_dir(&app.handle());
+
             // Create the main window programmatically so we can set the
             // traffic-light position dynamically based on the macOS version.
             #[cfg(target_os = "macos")]
@@ -6279,7 +6270,7 @@ mod tests {
     }
 
     fn setup_note_path_test_vault() -> (PathBuf, Vault) {
-        let dir = unique_test_dir("vault-ai-note-path-test");
+        let dir = unique_test_dir("neverwrite-note-path-test");
         fs::create_dir_all(dir.join("folder")).unwrap();
         fs::write(dir.join("folder/note.md"), b"# Note").unwrap();
         let vault = Vault::open(dir.clone()).unwrap();
@@ -6289,7 +6280,7 @@ mod tests {
     #[test]
     fn updater_endpoint_accepts_github_pages_in_production() {
         let endpoint =
-            Url::parse("https://vaultai.github.io/neverwrite/stable/latest.json").unwrap();
+            Url::parse("https://jsgrrchg.github.io/NeverWrite/stable/latest.json").unwrap();
 
         assert!(validate_updater_endpoint_url(
             &endpoint,
@@ -6303,7 +6294,7 @@ mod tests {
     #[test]
     fn updater_endpoint_rejects_public_feed_in_non_production_by_default() {
         let endpoint =
-            Url::parse("https://vaultai.github.io/neverwrite/stable/latest.json").unwrap();
+            Url::parse("https://jsgrrchg.github.io/NeverWrite/stable/latest.json").unwrap();
 
         let error =
             validate_updater_endpoint_url(&endpoint, UpdaterRuntimeMode::NonProduction, false, &[])
@@ -6378,8 +6369,8 @@ mod tests {
 
     #[cfg(unix)]
     fn setup_symlink_boundary_test_vault() -> (PathBuf, PathBuf, Vault) {
-        let dir = unique_test_dir("vault-ai-symlink-boundary-test");
-        let outside = unique_test_dir("vault-ai-symlink-boundary-outside");
+        let dir = unique_test_dir("neverwrite-symlink-boundary-test");
+        let outside = unique_test_dir("neverwrite-symlink-boundary-outside");
         fs::create_dir_all(&dir).unwrap();
         fs::create_dir_all(outside.join("external")).unwrap();
         fs::write(dir.join("file.txt"), b"note").unwrap();
@@ -6390,7 +6381,7 @@ mod tests {
 
     #[test]
     fn cleanup_obsolete_snapshot_removes_older_versions() {
-        let dir = unique_test_dir("vault-ai-snapshot-test");
+        let dir = unique_test_dir("neverwrite-snapshot-test");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("snapshot.json"), b"{}").unwrap();
 
@@ -6435,7 +6426,7 @@ mod tests {
 
     #[test]
     fn resolve_vault_scoped_path_accepts_absolute_existing_markdown_paths_inside_vault() {
-        let dir = unique_test_dir("vault-ai-absolute-markdown-test");
+        let dir = unique_test_dir("neverwrite-absolute-markdown-test");
         let file_path = dir.join(".PERSONAL").join("pruebas.md");
         fs::create_dir_all(file_path.parent().unwrap()).unwrap();
         fs::write(&file_path, "# test").unwrap();
@@ -6455,7 +6446,7 @@ mod tests {
 
     #[test]
     fn resolve_vault_scoped_path_accepts_absolute_code_file_targets_inside_vault() {
-        let dir = unique_test_dir("vault-ai-absolute-code-test");
+        let dir = unique_test_dir("neverwrite-absolute-code-test");
         fs::create_dir_all(dir.join("src")).unwrap();
         let file_path = dir.join("src").join("watcher.rs");
 
@@ -6474,7 +6465,7 @@ mod tests {
 
     #[test]
     fn cleanup_obsolete_snapshot_keeps_current_version() {
-        let dir = unique_test_dir("vault-ai-snapshot-test-keep");
+        let dir = unique_test_dir("neverwrite-snapshot-test-keep");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("snapshot.json"), b"{}").unwrap();
 
@@ -6548,7 +6539,7 @@ mod tests {
 
     #[test]
     fn ensure_parent_folders_in_cache_adds_missing_ancestors() {
-        let dir = unique_test_dir("vault-ai-entry-cache-test");
+        let dir = unique_test_dir("neverwrite-entry-cache-test");
         let nested_dir = dir.join("projects/2026");
         fs::create_dir_all(&nested_dir).unwrap();
         fs::write(nested_dir.join("plan.md"), b"# Plan").unwrap();
@@ -6632,7 +6623,7 @@ mod tests {
 
     #[test]
     fn build_web_clipper_relative_note_path_keeps_spaces_in_filename() {
-        let dir = unique_test_dir("vault-ai-web-clipper-path-test");
+        let dir = unique_test_dir("neverwrite-web-clipper-path-test");
         fs::create_dir_all(&dir).unwrap();
 
         let vault = Vault::open(dir.clone()).unwrap();
@@ -6648,7 +6639,7 @@ mod tests {
     #[test]
     fn parse_web_clipper_deep_link_normalizes_wrapped_vault_hints() {
         let uri = concat!(
-            "vaultai://clip?requestId=req-1&createdAt=2026-04-01T23%3A00%3A48.124Z",
+            "neverwrite://clip?requestId=req-1&createdAt=2026-04-01T23%3A00%3A48.124Z",
             "&source=web-clipper",
             "&vault=%27%2Fvaults%2FGeo+2026%27",
             "&vaultPathHint=%27%2Fvaults%2FGeo+2026%27",
@@ -6672,7 +6663,7 @@ mod tests {
     #[test]
     fn parse_web_clipper_deep_link_uses_legacy_vault_as_name_hint() {
         let uri = concat!(
-            "vaultai://clip?requestId=req-2",
+            "neverwrite://clip?requestId=req-2",
             "&source=web-clipper",
             "&vault=Geo+2026",
             "&folder=Clippings",
@@ -6695,7 +6686,7 @@ mod tests {
         let mut dirs = Vec::new();
 
         for path in paths {
-            let dir = unique_test_dir(&format!("vault-ai-web-clipper-state-test-{}", dirs.len()));
+            let dir = unique_test_dir(&format!("neverwrite-web-clipper-state-test-{}", dirs.len()));
             fs::create_dir_all(&dir).unwrap();
 
             let mut instance = VaultInstance::new();

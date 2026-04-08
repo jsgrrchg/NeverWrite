@@ -3,8 +3,12 @@ import path from "node:path";
 
 import {
     BUILD_TARGET_TO_APPCAST_KEY,
+    buildUpdaterReleaseAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    getCanonicalAppBundleName,
+    getBundledUpdaterArtifactName,
+    getSignatureAssetName,
     normalizeReleaseVersion,
 } from "./appcast-lib.mjs";
 
@@ -181,6 +185,39 @@ export function validateMacosBundleResources(appBundlePath, buildTarget) {
     }
 }
 
+function validateCanonicalBundleNaming(artifacts, buildTarget) {
+    const expectedUpdaterAssetName = getBundledUpdaterArtifactName(buildTarget);
+    const actualUpdaterAssetName = path.basename(artifacts.updaterAssetPath);
+
+    if (actualUpdaterAssetName !== expectedUpdaterAssetName) {
+        throw new Error(
+            `Unexpected updater asset name for ${buildTarget}: expected ${expectedUpdaterAssetName}, received ${actualUpdaterAssetName}.`,
+        );
+    }
+
+    const expectedUpdaterSignatureName = getSignatureAssetName(
+        expectedUpdaterAssetName,
+    );
+    const actualUpdaterSignatureName = path.basename(
+        artifacts.updaterSignaturePath,
+    );
+    if (actualUpdaterSignatureName !== expectedUpdaterSignatureName) {
+        throw new Error(
+            `Unexpected updater signature asset name for ${buildTarget}: expected ${expectedUpdaterSignatureName}, received ${actualUpdaterSignatureName}.`,
+        );
+    }
+
+    if (artifacts.appBundlePath) {
+        const expectedAppBundleName = getCanonicalAppBundleName();
+        const actualAppBundleName = path.basename(artifacts.appBundlePath);
+        if (actualAppBundleName !== expectedAppBundleName) {
+            throw new Error(
+                `Unexpected app bundle name for ${buildTarget}: expected ${expectedAppBundleName}, received ${actualAppBundleName}.`,
+            );
+        }
+    }
+}
+
 export function buildManualDownloadRows(version) {
     const normalizedVersion = normalizeReleaseVersion(version);
     return PUBLIC_DOWNLOAD_VARIANTS.map((variant) => ({
@@ -247,14 +284,13 @@ export function stageReleaseAssets({
     if (targetPlatformFamily(buildTarget) === "macos") {
         validateMacosBundleResources(artifacts.appBundlePath, buildTarget);
     }
+    validateCanonicalBundleNaming(artifacts, buildTarget);
 
     fs.mkdirSync(outputDir, { recursive: true });
 
     const manualAssetName = buildPublicReleaseAssetName(version, buildTarget);
-    const updaterAssetName = path.basename(artifacts.updaterAssetPath);
-    const updaterSignatureAssetName = path.basename(
-        artifacts.updaterSignaturePath,
-    );
+    const updaterAssetName = buildUpdaterReleaseAssetName(version, buildTarget);
+    const updaterSignatureAssetName = getSignatureAssetName(updaterAssetName);
 
     const stagedManualAssetPath = path.join(outputDir, manualAssetName);
     const stagedUpdaterAssetPath = path.join(outputDir, updaterAssetName);

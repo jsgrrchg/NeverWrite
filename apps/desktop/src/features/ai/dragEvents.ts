@@ -1,6 +1,6 @@
 import type { AIChatNoteSummary } from "./types";
 
-export const FILE_TREE_NOTE_DRAG_EVENT = "vaultai:file-tree-note-drag";
+export const FILE_TREE_NOTE_DRAG_EVENT = "neverwrite:file-tree-note-drag";
 
 // "attach" skips the position check — used by context menu "Add to Chat"
 export type FileTreeNoteDragPhase =

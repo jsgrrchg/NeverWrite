@@ -180,10 +180,10 @@ describe("SettingsPanel", () => {
 
     it("filters recent vaults in a scrollable list", () => {
         localStorage.setItem(
-            "vaultai:recentVaults",
+            "neverwrite:recentVaults",
             JSON.stringify([
                 {
-                    path: "/home/user/projects/VaultAI",
+                    path: "/home/user/projects/NeverWrite",
                     name: "NeverWrite",
                 },
                 {
@@ -434,7 +434,7 @@ describe("SettingsPanel", () => {
                         rawJson: {},
                         target: "darwin-aarch64",
                         downloadUrl:
-                            "https://github.com/example/vaultai/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
                     },
                 };
             }
@@ -467,7 +467,7 @@ describe("SettingsPanel", () => {
             { label: "note-1" },
         ] as Awaited<ReturnType<typeof getAllWebviewWindows>>);
         localStorage.setItem(
-            "vaultai:window-operational-state:main",
+            "neverwrite:window-operational-state:main",
             JSON.stringify({
                 label: "main",
                 windowMode: "main",
@@ -479,7 +479,7 @@ describe("SettingsPanel", () => {
             }),
         );
         localStorage.setItem(
-            "vaultai:window-operational-state:note-1",
+            "neverwrite:window-operational-state:note-1",
             JSON.stringify({
                 label: "note-1",
                 windowMode: "note",
@@ -517,7 +517,7 @@ describe("SettingsPanel", () => {
                         rawJson: {},
                         target: "darwin-aarch64",
                         downloadUrl:
-                            "https://github.com/example/vaultai/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
                     },
                 };
             }

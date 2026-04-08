@@ -47,11 +47,11 @@ describe("themeStore global persistence", () => {
 
     it("keeps the opening vault theme during transient loading state", () => {
         localStorage.setItem(
-            "vaultai:theme",
+            "neverwrite:theme",
             JSON.stringify({ mode: "light", themeName: "rose" }),
         );
         localStorage.setItem(
-            "vaultai:theme:/vaults/work",
+            "neverwrite:theme:/vaults/work",
             JSON.stringify({ mode: "dark", themeName: "nord" }),
         );
 

@@ -7,8 +7,8 @@ import {
 import { TerminalViewport } from "./terminal/TerminalViewport";
 import { useTerminalTabs } from "./terminal/useTerminalTabs";
 
-export const DEVELOPER_PANEL_RESTART_EVENT = "vaultai:developer-panel:restart";
-export const DEVELOPER_PANEL_NEW_TAB_EVENT = "vaultai:developer-panel:new-tab";
+export const DEVELOPER_PANEL_RESTART_EVENT = "neverwrite:developer-panel:restart";
+export const DEVELOPER_PANEL_NEW_TAB_EVENT = "neverwrite:developer-panel:new-tab";
 
 const FALLBACK_TERMINAL_LABEL = "Terminal";
 

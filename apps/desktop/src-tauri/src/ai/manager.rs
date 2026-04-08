@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::Deserialize;
 use tauri::AppHandle;
-use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
+use neverwrite_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
 
 use super::{
     claude::ClaudeRuntimeAdapter,
@@ -522,7 +522,7 @@ mod tests {
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
-    use vault_ai_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus};
+    use neverwrite_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus};
 
     use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities};
 
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn folder_attachments_only_include_relative_path() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "vaultai-folder-attachment-test-{}",
+            "neverwrite-folder-attachment-test-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system time before unix epoch")

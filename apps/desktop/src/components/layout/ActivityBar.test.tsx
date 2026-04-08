@@ -141,7 +141,7 @@ describe("ActivityBar integrated terminal button", () => {
                     rawJson: {},
                     target: "darwin-aarch64",
                     downloadUrl:
-                        "https://github.com/example/vaultai/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                        "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
                 },
             },
             initialized: true,

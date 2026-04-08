@@ -27,8 +27,8 @@ describe("layoutStore bottom panel", () => {
             bottomPanelHeight: 320,
             bottomPanelView: "terminal",
         });
-        expect(localStorage.getItem("vaultai.bottompanel.height")).toBe("320");
-        expect(localStorage.getItem("vaultai.bottompanel.collapsed")).toBe(
+        expect(localStorage.getItem("neverwrite.bottompanel.height")).toBe("320");
+        expect(localStorage.getItem("neverwrite.bottompanel.collapsed")).toBe(
             "false",
         );
     });
@@ -51,7 +51,7 @@ describe("layoutStore bottom panel", () => {
             bottomPanelHeight: MIN_BOTTOM_PANEL_HEIGHT,
             bottomPanelView: "terminal",
         });
-        expect(localStorage.getItem("vaultai.bottompanel.view")).toBe(
+        expect(localStorage.getItem("neverwrite.bottompanel.view")).toBe(
             "terminal",
         );
     });

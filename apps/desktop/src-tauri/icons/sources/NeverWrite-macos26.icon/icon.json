@@ -6,8 +6,8 @@
                 {
                     "blend-mode": "normal",
                     "glass": true,
-                    "image-name": "vaultai-macos26-source.png",
-                    "name": "VaultAI macOS 26 source",
+                    "image-name": "neverwrite-macos26-source.png",
+                    "name": "NeverWrite macOS 26 source",
                     "position": {
                         "scale": 1.35,
                         "translation-in-points": [28, -18]

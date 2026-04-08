@@ -1,6 +1,6 @@
 # Spellcheck Architecture
 
-VaultAI now uses a single app-owned spellcheck system.
+NeverWrite now uses a single app-owned spellcheck system.
 
 ## Overview
 

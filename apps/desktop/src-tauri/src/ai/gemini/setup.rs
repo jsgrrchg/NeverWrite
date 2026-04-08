@@ -5,8 +5,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
-use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, GEMINI_RUNTIME_ID};
+use tauri::AppHandle;
+use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, GEMINI_RUNTIME_ID};
 
 use crate::ai::env::find_program_on_preferred_path;
 #[cfg(test)]
@@ -15,6 +15,7 @@ use crate::ai::secret_store::{
     clear_secret, get_secret, has_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
 };
 use crate::branding::APP_BRAND_NAME;
+use crate::technical_branding::{app_data_dir, GEMINI_ACP_BIN_ENV_VARS};
 
 const SETUP_FILE_NAME: &str = "gemini-setup.json";
 const GEMINI_PROGRAM_NAME: &str = "gemini";
@@ -227,7 +228,7 @@ pub fn setup_status(app: &AppHandle) -> Result<AiRuntimeSetupStatus, String> {
 }
 
 pub fn resolve_binary_command(config: &GeminiSetupConfig) -> ResolvedBinary {
-    if let Ok(raw) = env::var("VAULTAI_GEMINI_ACP_BIN") {
+    if let Some(raw) = read_env_override(&GEMINI_ACP_BIN_ENV_VARS) {
         let resolved = resolve_command_candidate(raw.trim(), AiRuntimeBinarySource::Env);
         if resolved.display.is_some() {
             return resolved;
@@ -404,11 +405,15 @@ fn current_time_millis() -> u64 {
 }
 
 fn setup_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let base = app_data_dir(app)?;
     Ok(base.join("ai").join(SETUP_FILE_NAME))
+}
+
+fn read_env_override(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn write_setup_config_to_path(path: &Path, config: &GeminiSetupConfig) -> Result<(), String> {
@@ -585,7 +590,7 @@ mod tests {
 
     fn temp_setup_path(name: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!(
-            "vaultai-gemini-setup-tests-{}-{}",
+            "neverwrite-gemini-setup-tests-{}-{}",
             std::process::id(),
             name
         ));

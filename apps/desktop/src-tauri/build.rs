@@ -12,6 +12,9 @@ const CLAUDE_VENDOR_DIR: &str = "../../../vendor/Claude-agent-acp-upstream";
 const EMBEDDED_ROOT: &str = "embedded";
 const EMBEDDED_CLAUDE_DIR: &str = "claude-agent-acp";
 const EMBEDDED_NODE_DIR: &str = "node";
+const CODEX_ACP_BUNDLE_BIN_ENV_VARS: [&str; 1] = ["NEVERWRITE_CODEX_ACP_BUNDLE_BIN"];
+const CODEX_ACP_BIN_ENV_VARS: [&str; 1] = ["NEVERWRITE_CODEX_ACP_BIN"];
+const EMBEDDED_NODE_BIN_ENV_VARS: [&str; 1] = ["NEVERWRITE_EMBEDDED_NODE_BIN"];
 
 fn main() {
     println!("cargo:rerun-if-env-changed=PATH");
@@ -21,8 +24,8 @@ fn main() {
 
     stage_runtime(RuntimeStageSpec {
         label: "codex",
-        env_bundle_key: "VAULTAI_CODEX_ACP_BUNDLE_BIN",
-        env_runtime_key: "VAULTAI_CODEX_ACP_BIN",
+        env_bundle_keys: &CODEX_ACP_BUNDLE_BIN_ENV_VARS,
+        env_runtime_keys: &CODEX_ACP_BIN_ENV_VARS,
         vendor_dir: "../../../vendor/codex-acp",
         binary_name: runtime_binary_name("codex-acp"),
     });
@@ -32,8 +35,8 @@ fn main() {
 
 struct RuntimeStageSpec<'a> {
     label: &'a str,
-    env_bundle_key: &'a str,
-    env_runtime_key: &'a str,
+    env_bundle_keys: &'a [&'a str],
+    env_runtime_keys: &'a [&'a str],
     vendor_dir: &'a str,
     binary_name: &'a str,
 }
@@ -45,8 +48,12 @@ fn stage_runtime(spec: RuntimeStageSpec<'_>) {
     let binaries_dir = manifest_dir.join("binaries");
     let destination = binaries_dir.join(spec.binary_name);
 
-    println!("cargo:rerun-if-env-changed={}", spec.env_bundle_key);
-    println!("cargo:rerun-if-env-changed={}", spec.env_runtime_key);
+    for key in spec.env_bundle_keys {
+        println!("cargo:rerun-if-env-changed={key}");
+    }
+    for key in spec.env_runtime_keys {
+        println!("cargo:rerun-if-env-changed={key}");
+    }
     println!("cargo:rerun-if-env-changed=CARGO");
 
     let vendor_dir = manifest_dir.join(spec.vendor_dir);
@@ -98,7 +105,9 @@ fn stage_embedded_claude_runtime() {
         .join("binaries")
         .join(runtime_binary_name("claude-agent-acp"));
 
-    println!("cargo:rerun-if-env-changed=VAULTAI_EMBEDDED_NODE_BIN");
+    for key in EMBEDDED_NODE_BIN_ENV_VARS {
+        println!("cargo:rerun-if-env-changed={key}");
+    }
     println!(
         "cargo:rerun-if-changed={}",
         vendor_root.join("package.json").display()
@@ -235,7 +244,7 @@ fn stage_portable_embedded_node_runtime(destination_root: &Path, source_node: &P
             != Some(true)
     {
         panic!(
-            "Windows bundles require a Windows node.exe. Build on Windows or set VAULTAI_EMBEDDED_NODE_BIN to a Windows Node runtime. Got {}",
+            "Windows bundles require a Windows node.exe. Build on Windows or set NEVERWRITE_EMBEDDED_NODE_BIN to a Windows Node runtime. Got {}",
             source_node.display()
         );
     }
@@ -429,15 +438,14 @@ fn fallback_runtime_dependency_paths(source_root: &Path) -> Vec<PathBuf> {
 }
 
 fn resolve_node_binary() -> PathBuf {
-    if let Ok(value) = env::var("VAULTAI_EMBEDDED_NODE_BIN") {
-        let path = PathBuf::from(value);
-        if path.exists() {
-            return fs::canonicalize(&path).unwrap_or(path);
+    for key in EMBEDDED_NODE_BIN_ENV_VARS {
+        if let Ok(value) = env::var(key) {
+            let path = PathBuf::from(value);
+            if path.exists() {
+                return fs::canonicalize(&path).unwrap_or(path);
+            }
+            panic!("{key} points to a missing file: {}", path.display());
         }
-        panic!(
-            "VAULTAI_EMBEDDED_NODE_BIN points to a missing file: {}",
-            path.display()
-        );
     }
 
     let path = find_program("node").unwrap_or_else(|| panic!("failed to locate node in PATH"));
@@ -620,7 +628,12 @@ fn resolve_runtime_source(
     spec: &RuntimeStageSpec<'_>,
     candidates: &[PathBuf],
 ) -> Option<PathBuf> {
-    for key in [spec.env_bundle_key, spec.env_runtime_key] {
+    for key in spec
+        .env_bundle_keys
+        .iter()
+        .chain(spec.env_runtime_keys.iter())
+        .copied()
+    {
         if let Ok(path) = env::var(key) {
             let source = PathBuf::from(path);
             if source.exists() {
@@ -737,12 +750,16 @@ fn candidate_paths(
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Ok(path) = env::var(spec.env_bundle_key) {
-        candidates.push(PathBuf::from(path));
+    for key in spec.env_bundle_keys {
+        if let Ok(path) = env::var(key) {
+            candidates.push(PathBuf::from(path));
+        }
     }
 
-    if let Ok(path) = env::var(spec.env_runtime_key) {
-        candidates.push(PathBuf::from(path));
+    for key in spec.env_runtime_keys {
+        if let Ok(path) = env::var(key) {
+            candidates.push(PathBuf::from(path));
+        }
     }
 
     let vendor_dir = manifest_dir.join(spec.vendor_dir);

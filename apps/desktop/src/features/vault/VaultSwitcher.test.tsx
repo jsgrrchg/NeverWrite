@@ -30,7 +30,7 @@ describe("VaultSwitcher", () => {
             name: `Vault ${index + 1}`,
         }));
 
-        localStorage.setItem("vaultai:recentVaults", JSON.stringify(recents));
+        localStorage.setItem("neverwrite:recentVaults", JSON.stringify(recents));
 
         renderComponent(<VaultSwitcher />);
 

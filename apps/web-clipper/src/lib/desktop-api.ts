@@ -4,12 +4,14 @@ import {
     saveDesktopClipperToken,
 } from "./storage";
 import { APP_BRAND_NAME } from "./branding";
+import {
+    CLIPPER_EXTENSION_ID_HEADER,
+    CLIPPER_TOKEN_HEADER,
+} from "./technical-branding";
 
 export const DESKTOP_API_PORT = 32145;
 const DESKTOP_API_BASE = `http://127.0.0.1:${DESKTOP_API_PORT}/api/web-clipper`;
 const REQUEST_TIMEOUT_MS = 1200;
-const CLIPPER_TOKEN_HEADER = "x-vaultai-clipper-token";
-const CLIPPER_EXTENSION_ID_HEADER = "x-vaultai-extension-id";
 let pairingPromise: Promise<string> | null = null;
 
 export interface DesktopLookupInput {

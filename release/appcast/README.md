@@ -8,11 +8,11 @@ The appcast is published from the `gh-pages` branch and served through GitHub Pa
 
 Public base URL:
 
-- `https://<owner>.github.io/<repo>`
+- `https://jsgrrchg.github.io/NeverWrite`
 
 Stable channel URL:
 
-- `https://<owner>.github.io/<repo>/stable/latest.json`
+- `https://jsgrrchg.github.io/NeverWrite/stable/latest.json`
 
 Future channels keep the same shape:
 
@@ -46,22 +46,25 @@ This keeps the client decoupled from release asset listing and `releases/latest/
 
 | Build target | Appcast key | Public manual asset | Updater artifact family |
 | --- | --- | --- | --- |
-| `aarch64-apple-darwin` | `darwin-aarch64` | `NeverWrite_<version>_macOS_AppleSilicon.dmg` | macOS updater archive (`.app.tar.gz`) |
-| `x86_64-apple-darwin` | `darwin-x86_64` | `NeverWrite_<version>_macOS_Intel.dmg` | macOS updater archive (`.app.tar.gz`) |
-| `aarch64-pc-windows-msvc` | `windows-aarch64` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | Windows updater archive (`.nsis.zip`) |
-| `x86_64-pc-windows-msvc` | `windows-x86_64` | `NeverWrite_<version>_Windows_x64_Setup.exe` | Windows updater archive (`.nsis.zip`) |
+| `aarch64-apple-darwin` | `darwin-aarch64` | `NeverWrite_<version>_macOS_AppleSilicon.dmg` | `NeverWrite_<version>_macOS_AppleSilicon.app.tar.gz` |
+| `x86_64-apple-darwin` | `darwin-x86_64` | `NeverWrite_<version>_macOS_Intel.dmg` | `NeverWrite_<version>_macOS_Intel.app.tar.gz` |
+| `aarch64-pc-windows-msvc` | `windows-aarch64` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | `NeverWrite_<version>_Windows_ARM64.nsis.zip` |
+| `x86_64-pc-windows-msvc` | `windows-x86_64` | `NeverWrite_<version>_Windows_x64_Setup.exe` | `NeverWrite_<version>_Windows_x64.nsis.zip` |
 
 ## Signed updater artifact convention
 
 - Manual installer assets keep the human-facing names above.
-- Updater archives keep the native Tauri updater archive for that target.
+- Bundled updater archives coming out of Tauri keep the native product names:
+  - `NeverWrite.app.tar.gz`
+  - `NeverWrite-setup.nsis.zip`
+- Release staging renames those updater archives per target before upload so GitHub Releases never receives colliding asset names.
 - The signature asset name is always the updater archive name plus `.sig`.
 - `latest.json` must embed the signature file content, not a signature URL.
 
 Examples:
 
-- `NeverWrite.app.tar.gz` -> `NeverWrite.app.tar.gz.sig`
-- `NeverWrite-setup.nsis.zip` -> `NeverWrite-setup.nsis.zip.sig`
+- `NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz` -> `NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz.sig`
+- `NeverWrite_0.2.0_Windows_x64.nsis.zip` -> `NeverWrite_0.2.0_Windows_x64.nsis.zip.sig`
 
 ## Manual Installation
 
@@ -158,6 +161,9 @@ Maintainer control:
 - The workflow is triggered manually from GitHub Actions with `workflow_dispatch`.
 - The requested tag must already exist in the repository before the workflow runs.
 - This keeps public release automation visible without allowing every pushed tag to publish automatically.
+- Public release metadata is pinned to:
+  - GitHub Releases repo slug: `jsgrrchg/NeverWrite`
+  - GitHub Pages base URL: `https://jsgrrchg.github.io/NeverWrite`
 
 Required repository secrets:
 
@@ -195,13 +201,13 @@ The updater is intentionally strict at runtime:
 
 Optional runtime overrides:
 
-- `VAULTAI_UPDATER_ALLOWED_FEED_HOSTS`
+- `NEVERWRITE_UPDATER_ALLOWED_FEED_HOSTS`
   - comma-separated allowlist to pin the feed host explicitly
-  - example: `vaultai.github.io`
-- `VAULTAI_UPDATER_ALLOWED_DOWNLOAD_HOSTS`
+  - example: `neverwrite.github.io`
+- `NEVERWRITE_UPDATER_ALLOWED_DOWNLOAD_HOSTS`
   - comma-separated allowlist for updater asset URLs
   - example: `github.com`
-- `VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true`
+- `NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true`
   - allows a local/dev build to hit a production-like feed for an explicit one-off validation
   - do not leave this enabled in normal development
 
@@ -218,14 +224,14 @@ Accepted non-production feed shapes:
 Recommended local example:
 
 ```bash
-export VAULTAI_UPDATER_ENDPOINT="http://127.0.0.1:8787/stable/latest.json"
-export VAULTAI_UPDATER_PUBLIC_KEY="<staging-or-local-public-key>"
+export NEVERWRITE_UPDATER_ENDPOINT="http://127.0.0.1:8787/stable/latest.json"
+export NEVERWRITE_UPDATER_PUBLIC_KEY="<staging-or-local-public-key>"
 ```
 
 If a developer needs to validate the real public feed from a non-production build, they must opt in explicitly:
 
 ```bash
-export VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true
+export NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true
 ```
 
 That override is for short-lived manual validation only.
@@ -239,7 +245,7 @@ Use this when the signing key is scheduled for rotation or suspected compromised
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 3. Roll out the matching public key to the app runtime configuration:
-   - `VAULTAI_UPDATER_PUBLIC_KEY` or `TAURI_UPDATER_PUBLIC_KEY`
+   - `NEVERWRITE_UPDATER_PUBLIC_KEY`
 4. Publish a new release signed with the new private key.
 5. Keep the old key out of future releases.
 6. If compromise is suspected, treat all still-unpublished artifacts signed with the old key as invalid.
@@ -303,9 +309,9 @@ node scripts/serve-static-directory.mjs \
 Then point the app to the local validation feed:
 
 ```bash
-export VAULTAI_UPDATER_ENDPOINT="http://127.0.0.1:8787/valid/stable/latest.json"
-export VAULTAI_UPDATER_PUBLIC_KEY="<public-key-for-the-artifacts-under-test>"
-export VAULTAI_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true
+export NEVERWRITE_UPDATER_ENDPOINT="http://127.0.0.1:8787/valid/stable/latest.json"
+export NEVERWRITE_UPDATER_PUBLIC_KEY="<public-key-for-the-artifacts-under-test>"
+export NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD=true
 ```
 
 That override is required for local validation packs because the loopback feed still points to the signed updater assets hosted on GitHub Releases.
@@ -313,7 +319,7 @@ That override is required for local validation packs because the loopback feed s
 To validate the invalid-signature path for a specific target, switch the endpoint to that target fixture. Example for `windows-x86_64`:
 
 ```bash
-export VAULTAI_UPDATER_ENDPOINT="http://127.0.0.1:8787/windows-x86_64/invalid-signature/stable/latest.json"
+export NEVERWRITE_UPDATER_ENDPOINT="http://127.0.0.1:8787/windows-x86_64/invalid-signature/stable/latest.json"
 ```
 
 Expected use:

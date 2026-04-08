@@ -1,4 +1,4 @@
-export const CLIPPER_EXTRACT_MESSAGE = "vaultai:web-clipper/extract";
+export const CLIPPER_EXTRACT_MESSAGE = "neverwrite:web-clipper/extract";
 export const CLIPPER_SOURCE_TAB_QUERY_PARAM = "sourceTabId";
 
 export interface ClipMetadata {

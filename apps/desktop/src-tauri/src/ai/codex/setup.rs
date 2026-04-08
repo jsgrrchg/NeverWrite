@@ -4,8 +4,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
-use vault_ai_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
+use tauri::AppHandle;
+use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
 
 #[cfg(test)]
 use crate::ai::secret_store::TestSecretStore;
@@ -13,6 +13,7 @@ use crate::ai::secret_store::{
     clear_secret, get_secret, has_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
 };
 use crate::branding::APP_BRAND_NAME;
+use crate::technical_branding::{app_data_dir, CODEX_ACP_BIN_ENV_VARS};
 
 const SETUP_FILE_NAME: &str = "setup.json";
 const CODEX_API_KEY_SECRET: &str = "codex_api_key";
@@ -175,7 +176,7 @@ pub fn resolve_binary_path(
     bundled_path: PathBuf,
     vendor_path: PathBuf,
 ) -> ResolvedBinary {
-    if let Ok(path) = std::env::var("VAULTAI_CODEX_ACP_BIN") {
+    if let Some(path) = read_env_override(&CODEX_ACP_BIN_ENV_VARS) {
         let path = PathBuf::from(path);
         return ResolvedBinary {
             path: Some(path),
@@ -367,11 +368,15 @@ fn write_setup_config_to_path(path: &Path, config: &CodexSetupConfig) -> Result<
 }
 
 fn setup_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let base = app_data_dir(app)?;
     Ok(base.join("ai").join(SETUP_FILE_NAME))
+}
+
+fn read_env_override(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| std::env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
@@ -399,7 +404,7 @@ mod tests {
 
     fn temp_setup_path(name: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!(
-            "vaultai-codex-setup-tests-{}-{}",
+            "neverwrite-codex-setup-tests-{}-{}",
             std::process::id(),
             name
         ));

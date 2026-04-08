@@ -17,19 +17,19 @@ function buildManifest() {
         pub_date: "2026-04-04T18:00:00Z",
         platforms: {
             "darwin-aarch64": {
-                url: "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_aarch64.app.tar.gz",
+                url: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz",
                 signature: "sig-darwin-arm64",
             },
             "darwin-x86_64": {
-                url: "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_x64.app.tar.gz",
+                url: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Intel.app.tar.gz",
                 signature: "sig-darwin-x64",
             },
             "windows-aarch64": {
-                url: "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_arm64.nsis.zip",
+                url: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_ARM64.nsis.zip",
                 signature: "sig-win-arm64",
             },
             "windows-x86_64": {
-                url: "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_x64.nsis.zip",
+                url: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_x64.nsis.zip",
                 signature: "sig-win-x64",
             },
         },
@@ -42,41 +42,44 @@ function buildMetadataEntries() {
             buildTarget: "aarch64-apple-darwin",
             appcastKey: "darwin-aarch64",
             manualAssetName: "NeverWrite_0.2.0_macOS_AppleSilicon.dmg",
-            updaterAssetName: "NeverWrite_0.2.0_aarch64.app.tar.gz",
+            updaterAssetName: "NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz",
             updaterSignatureAssetName:
-                "NeverWrite_0.2.0_aarch64.app.tar.gz.sig",
+                "NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz.sig",
             updaterUrl:
-                "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_aarch64.app.tar.gz",
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz",
             updaterSignature: "sig-darwin-arm64",
         },
         {
             buildTarget: "x86_64-apple-darwin",
             appcastKey: "darwin-x86_64",
             manualAssetName: "NeverWrite_0.2.0_macOS_Intel.dmg",
-            updaterAssetName: "NeverWrite_0.2.0_x64.app.tar.gz",
-            updaterSignatureAssetName: "NeverWrite_0.2.0_x64.app.tar.gz.sig",
+            updaterAssetName: "NeverWrite_0.2.0_macOS_Intel.app.tar.gz",
+            updaterSignatureAssetName:
+                "NeverWrite_0.2.0_macOS_Intel.app.tar.gz.sig",
             updaterUrl:
-                "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_x64.app.tar.gz",
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Intel.app.tar.gz",
             updaterSignature: "sig-darwin-x64",
         },
         {
             buildTarget: "aarch64-pc-windows-msvc",
             appcastKey: "windows-aarch64",
             manualAssetName: "NeverWrite_0.2.0_Windows_ARM64_Setup.exe",
-            updaterAssetName: "NeverWrite_0.2.0_arm64.nsis.zip",
-            updaterSignatureAssetName: "NeverWrite_0.2.0_arm64.nsis.zip.sig",
+            updaterAssetName: "NeverWrite_0.2.0_Windows_ARM64.nsis.zip",
+            updaterSignatureAssetName:
+                "NeverWrite_0.2.0_Windows_ARM64.nsis.zip.sig",
             updaterUrl:
-                "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_arm64.nsis.zip",
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_ARM64.nsis.zip",
             updaterSignature: "sig-win-arm64",
         },
         {
             buildTarget: "x86_64-pc-windows-msvc",
             appcastKey: "windows-x86_64",
             manualAssetName: "NeverWrite_0.2.0_Windows_x64_Setup.exe",
-            updaterAssetName: "NeverWrite_0.2.0_x64.nsis.zip",
-            updaterSignatureAssetName: "NeverWrite_0.2.0_x64.nsis.zip.sig",
+            updaterAssetName: "NeverWrite_0.2.0_Windows_x64.nsis.zip",
+            updaterSignatureAssetName:
+                "NeverWrite_0.2.0_Windows_x64.nsis.zip.sig",
             updaterUrl:
-                "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_x64.nsis.zip",
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_x64.nsis.zip",
             updaterSignature: "sig-win-x64",
         },
     ];
@@ -127,7 +130,7 @@ test("buildAppcastPlatformsFromTargetMetadata preserves the canonical v1 key ord
     ]);
     assert.equal(
         platforms["windows-x86_64"].url,
-        "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite_0.2.0_x64.nsis.zip",
+        "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_x64.nsis.zip",
     );
 });
 
@@ -136,7 +139,7 @@ test("buildPlatformValidationMatrix aligns manifest and target metadata", () => 
         version: "0.2.0",
         tag: "v0.2.0",
         channel: "stable",
-        appcastBaseUrl: "https://vaultai.github.io/vaultai",
+        appcastBaseUrl: "https://jsgrrchg.github.io/NeverWrite",
         manifest: buildManifest(),
         metadataEntries: buildMetadataEntries(),
     });
@@ -145,7 +148,7 @@ test("buildPlatformValidationMatrix aligns manifest and target metadata", () => 
     assert.equal(rows[0].buildTarget, "aarch64-apple-darwin");
     assert.equal(
         rows[0].feedUrl,
-        "https://vaultai.github.io/vaultai/stable/latest.json",
+        "https://jsgrrchg.github.io/NeverWrite/stable/latest.json",
     );
     assert.equal(rows[3].appcastKey, "windows-x86_64");
 });
@@ -169,7 +172,7 @@ test("renderPlatformValidationChecklist includes invalid signature fixtures", ()
         version: "0.2.0",
         tag: "v0.2.0",
         channel: "stable",
-        appcastBaseUrl: "https://vaultai.github.io/vaultai",
+        appcastBaseUrl: "https://jsgrrchg.github.io/NeverWrite",
         manifest: buildManifest(),
         metadataEntries: buildMetadataEntries(),
     });

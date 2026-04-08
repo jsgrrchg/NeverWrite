@@ -63,8 +63,8 @@ type SortMode =
     | "created_desc"
     | "created_asc";
 
-const SORT_KEY = "vaultai:sort-mode";
-const REVEAL_KEY = "vaultai:reveal-active";
+const SORT_KEY = "neverwrite:sort-mode";
+const REVEAL_KEY = "neverwrite:reveal-active";
 const VIRTUAL_OVERSCAN = 40;
 
 const SORT_OPTIONS: { id: SortMode; label: string }[] = [
@@ -1816,7 +1816,7 @@ export function FileTree() {
 
     useEffect(() => {
         return subscribeSafeStorage((event) => {
-            if (event.key !== "vaultai.fileTree.clipboard") return;
+            if (event.key !== "neverwrite.fileTree.clipboard") return;
             setClipboardVersion((value) => value + 1);
         });
     }, []);

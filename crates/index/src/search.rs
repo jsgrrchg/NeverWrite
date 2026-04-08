@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
 use regex::Regex;
-use vault_ai_types::{
+use neverwrite_types::{
     AdvancedSearchParams, AdvancedSearchResultDto, ContentMatchDto, ContentSearchParam, NoteId,
     NoteMetadata, PropertyFilterParam,
 };
-use vault_ai_vault::Vault;
+use neverwrite_vault::Vault;
 
 use crate::VaultIndex;
 
@@ -339,7 +339,7 @@ impl VaultIndex {
                 let mut passes = true;
 
                 if !params.content_searches.is_empty() {
-                    let pdf_doc = match vault_ai_vault::pdf::extract_pdf_text(
+                    let pdf_doc = match neverwrite_vault::pdf::extract_pdf_text(
                         &vault.root,
                         &pdf_meta.path.0,
                         &pdf_meta.id.0,

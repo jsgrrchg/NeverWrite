@@ -63,7 +63,7 @@ describe("reviewTabPersistence", () => {
 
     it("returns null for invalid or mismatched persisted payloads", () => {
         localStorage.setItem(
-            "vaultai.ai.review.view:/vault:sess-2",
+            "neverwrite.ai.review.view:/vault:sess-2",
             JSON.stringify({
                 version: 999,
                 expandedIdentityKeys: ["a"],

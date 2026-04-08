@@ -26,7 +26,7 @@ use tokio::{process::Command, runtime::Builder, sync::oneshot, task::LocalSet};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use tokio::sync::mpsc as tokio_mpsc;
-use vault_ai_ai::{
+use neverwrite_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
     AiRuntimeSessionSummary, CODEX_RUNTIME_ID,
 };
@@ -42,18 +42,14 @@ use crate::ai::emit::{
 };
 use crate::ai::env::preferred_path_value;
 use crate::branding::APP_BRAND_NAME;
+use crate::technical_branding::{
+    meta_get, meta_get_str, ACP_DIFF_HUNKS_KEY, ACP_DIFF_PREVIOUS_PATH_KEY, ACP_IMPLEMENTATION_ID,
+    ACP_PLAN_DETAIL_KEY, ACP_PLAN_TITLE_KEY, ACP_STATUS_EMPHASIS_KEY, ACP_STATUS_EVENT_TYPE_KEY,
+    ACP_STATUS_KIND_KEY, ACP_USER_INPUT_EVENT_TYPE, ACP_USER_INPUT_RESPONSE_PREFIX,
+};
 
 use super::{process::CodexProcessSpec, setup::apply_auth_env};
 
-const VAULTAI_STATUS_EVENT_TYPE_KEY: &str = "vaultaiEventType";
-const VAULTAI_STATUS_KIND_KEY: &str = "vaultaiStatusKind";
-const VAULTAI_STATUS_EMPHASIS_KEY: &str = "vaultaiStatusEmphasis";
-const VAULTAI_USER_INPUT_EVENT_TYPE: &str = "user_input_request";
-const VAULTAI_USER_INPUT_RESPONSE_PREFIX: &str = "__vaultai_user_input_response__:";
-const VAULTAI_PLAN_TITLE_KEY: &str = "vaultaiPlanTitle";
-const VAULTAI_PLAN_DETAIL_KEY: &str = "vaultaiPlanDetail";
-const VAULTAI_DIFF_PREVIOUS_PATH_KEY: &str = "vaultaiPreviousPath";
-const VAULTAI_DIFF_HUNKS_KEY: &str = "vaultaiHunks";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 
@@ -1069,7 +1065,7 @@ impl RuntimeActor {
 
         if !spec.binary_path.exists() {
             return Err(format!(
-                "Codex ACP no esta compilado aun. Binario esperado en {}. Tambien puedes definir VAULTAI_CODEX_ACP_BIN.",
+                "Codex ACP no esta compilado aun. Binario esperado en {}. Tambien puedes definir NEVERWRITE_CODEX_ACP_BIN.",
                 spec.binary_path.display()
             ));
         }
@@ -1158,7 +1154,8 @@ impl RuntimeActor {
                     )])),
             )
             .client_info(
-                Implementation::new("vaultai", env!("CARGO_PKG_VERSION")).title(APP_BRAND_NAME),
+                Implementation::new(ACP_IMPLEMENTATION_ID, env!("CARGO_PKG_VERSION"))
+                    .title(APP_BRAND_NAME),
             );
 
         connection
@@ -1461,7 +1458,7 @@ impl RuntimeActor {
             },
         };
         let content = format!(
-            "{VAULTAI_USER_INPUT_RESPONSE_PREFIX}{}",
+            "{ACP_USER_INPUT_RESPONSE_PREFIX}{}",
             serde_json::to_string(&response).map_err(|error| error.to_string())?
         );
 
@@ -1736,18 +1733,16 @@ fn map_tool_call(
 
 fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEventPayload> {
     let meta = tool_call.meta.as_ref()?;
-    let event_type = meta.get(VAULTAI_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    let event_type = meta_get_str(meta, ACP_STATUS_EVENT_TYPE_KEY)?;
     if event_type != "status" {
         return None;
     }
 
-    let kind = meta
-        .get(VAULTAI_STATUS_KIND_KEY)
+    let kind = meta_get(meta, ACP_STATUS_KIND_KEY)
         .and_then(|value| value.as_str())
         .unwrap_or("status")
         .to_string();
-    let emphasis = meta
-        .get(VAULTAI_STATUS_EMPHASIS_KEY)
+    let emphasis = meta_get(meta, ACP_STATUS_EMPHASIS_KEY)
         .and_then(|value| value.as_str())
         .unwrap_or("neutral")
         .to_string();
@@ -1773,13 +1768,13 @@ fn map_plan_update(session_id: &str, plan: agent_client_protocol::Plan) -> AiPla
     let title = plan
         .meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_PLAN_TITLE_KEY))
+        .and_then(|meta| meta_get(meta, ACP_PLAN_TITLE_KEY))
         .and_then(|value| value.as_str())
         .map(ToString::to_string);
     let detail = plan
         .meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_PLAN_DETAIL_KEY))
+        .and_then(|meta| meta_get(meta, ACP_PLAN_DETAIL_KEY))
         .and_then(|value| value.as_str())
         .map(ToString::to_string);
 
@@ -1815,8 +1810,8 @@ fn map_user_input_request(
     tool_call: &ToolCall,
 ) -> Option<ParsedUserInputRequest> {
     let meta = tool_call.meta.as_ref()?;
-    let event_type = meta.get(VAULTAI_STATUS_EVENT_TYPE_KEY)?.as_str()?;
-    if event_type != VAULTAI_USER_INPUT_EVENT_TYPE {
+    let event_type = meta_get_str(meta, ACP_STATUS_EVENT_TYPE_KEY)?;
+    if event_type != ACP_USER_INPUT_EVENT_TYPE {
         return None;
     }
 
@@ -1926,7 +1921,7 @@ fn format_terminal_exit_only(exit: &TerminalExitMeta) -> String {
 fn diff_previous_path(diff: &agent_client_protocol::Diff) -> Option<String> {
     diff.meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_DIFF_PREVIOUS_PATH_KEY))
+        .and_then(|meta| meta_get(meta, ACP_DIFF_PREVIOUS_PATH_KEY))
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
 }
@@ -1934,7 +1929,7 @@ fn diff_previous_path(diff: &agent_client_protocol::Diff) -> Option<String> {
 fn diff_hunks(diff: &agent_client_protocol::Diff) -> Option<Vec<AiFileDiffHunkPayload>> {
     diff.meta
         .as_ref()
-        .and_then(|meta| meta.get(VAULTAI_DIFF_HUNKS_KEY))
+        .and_then(|meta| meta_get(meta, ACP_DIFF_HUNKS_KEY))
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .filter(|hunks: &Vec<AiFileDiffHunkPayload>| !hunks.is_empty())
@@ -2133,7 +2128,7 @@ mod tests {
                 Diff::new("/tmp/new.rs", "updated")
                     .old_text("original")
                     .meta(Meta::from_iter([(
-                        VAULTAI_DIFF_PREVIOUS_PATH_KEY.to_string(),
+                        ACP_DIFF_PREVIOUS_PATH_KEY.to_string(),
                         serde_json::json!("/tmp/old.rs"),
                     )])),
             )]);
@@ -2159,7 +2154,7 @@ mod tests {
                 Diff::new("/tmp/watcher.rs", "new line")
                     .old_text("old line")
                     .meta(Meta::from_iter([(
-                        VAULTAI_DIFF_HUNKS_KEY.to_string(),
+                        ACP_DIFF_HUNKS_KEY.to_string(),
                         serde_json::json!([
                             {
                                 "old_start": 12,

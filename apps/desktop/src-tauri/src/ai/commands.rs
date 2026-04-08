@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
-use vault_ai_ai::{
+use neverwrite_ai::{
     AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession,
     CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
 };
@@ -682,14 +682,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::VaultInstance;
-    use vault_ai_vault::Vault;
+    use neverwrite_vault::Vault;
 
     fn make_open_vault_state(vault_key: &str) -> (PathBuf, AppState) {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should move forward")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("vaultai-ai-history-root-test-{suffix}"));
+        let dir = std::env::temp_dir().join(format!("neverwrite-ai-history-root-test-{suffix}"));
         fs::create_dir_all(&dir).expect("temp vault dir should exist");
 
         let mut state = AppState::new();

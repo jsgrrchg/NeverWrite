@@ -2788,6 +2788,101 @@ dependencies = [
 ]
 
 [[package]]
+name = "neverwrite-ai"
+version = "0.1.0"
+dependencies = [
+ "neverwrite-diff",
+ "neverwrite-index",
+ "neverwrite-types",
+ "neverwrite-vault",
+ "serde",
+]
+
+[[package]]
+name = "neverwrite-desktop"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "arboard",
+ "async-trait",
+ "base64 0.22.1",
+ "keyring",
+ "neverwrite-ai",
+ "neverwrite-diff",
+ "neverwrite-index",
+ "neverwrite-types",
+ "neverwrite-vault",
+ "notify",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "portable-pty",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spellbook",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-updater",
+ "tiny_http",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.2",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "neverwrite-diff"
+version = "0.1.0"
+dependencies = [
+ "imara-diff",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "neverwrite-index"
+version = "0.1.0"
+dependencies = [
+ "neverwrite-types",
+ "neverwrite-vault",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "neverwrite-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "neverwrite-vault"
+version = "0.1.0"
+dependencies = [
+ "neverwrite-types",
+ "notify",
+ "pdf-extract",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "walkdir",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5858,101 +5953,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vault-ai-ai"
-version = "0.1.0"
-dependencies = [
- "serde",
- "vault-ai-diff",
- "vault-ai-index",
- "vault-ai-types",
- "vault-ai-vault",
-]
-
-[[package]]
-name = "vault-ai-desktop"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "arboard",
- "async-trait",
- "base64 0.22.1",
- "keyring",
- "notify",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "portable-pty",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "spellbook",
- "tauri",
- "tauri-build",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-updater",
- "tiny_http",
- "tokio",
- "tokio-util",
- "toml 0.8.2",
- "url",
- "uuid",
- "vault-ai-ai",
- "vault-ai-diff",
- "vault-ai-index",
- "vault-ai-types",
- "vault-ai-vault",
-]
-
-[[package]]
-name = "vault-ai-diff"
-version = "0.1.0"
-dependencies = [
- "imara-diff",
- "serde",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "vault-ai-index"
-version = "0.1.0"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
- "vault-ai-types",
- "vault-ai-vault",
-]
-
-[[package]]
-name = "vault-ai-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "vault-ai-vault"
-version = "0.1.0"
-dependencies = [
- "notify",
- "pdf-extract",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
- "vault-ai-types",
- "walkdir",
 ]
 
 [[package]]

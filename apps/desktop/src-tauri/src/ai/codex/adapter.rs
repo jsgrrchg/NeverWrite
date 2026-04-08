@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use tauri::AppHandle;
-use vault_ai_ai::{
+use neverwrite_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiRuntimeSessionSummary,
     AiSession, AiSessionStatus, CODEX_RUNTIME_ID,
 };
@@ -32,7 +32,7 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
         CODEX_RUNTIME_ID
     }
 
-    fn descriptor(&self) -> vault_ai_ai::AiRuntimeDescriptor {
+    fn descriptor(&self) -> neverwrite_ai::AiRuntimeDescriptor {
         self.runtime.descriptor()
     }
 
@@ -46,7 +46,7 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
         }
     }
 
-    fn setup_status(&self, app: &AppHandle) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
+    fn setup_status(&self, app: &AppHandle) -> Result<neverwrite_ai::AiRuntimeSetupStatus, String> {
         self.runtime.setup_status(app)
     }
 
@@ -54,7 +54,7 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
         &mut self,
         app: &AppHandle,
         input: AiRuntimeSetupInput,
-    ) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
+    ) -> Result<neverwrite_ai::AiRuntimeSetupStatus, String> {
         let input: CodexSetupInput = input.into_codex()?;
         let _ = save_setup_config(app, input)?;
         self.runtime.setup_status(app)
@@ -65,7 +65,7 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
         app: &AppHandle,
         method_id: &str,
         vault_root: Option<PathBuf>,
-    ) -> Result<vault_ai_ai::AiRuntimeSetupStatus, String> {
+    ) -> Result<neverwrite_ai::AiRuntimeSetupStatus, String> {
         let process_spec = self.runtime.process_spec(app, vault_root)?;
         self.handle(app).authenticate(process_spec, method_id)?;
         let _ = mark_authenticated_method(app, method_id)?;

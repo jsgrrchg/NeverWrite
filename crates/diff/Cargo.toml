@@ -1,5 +1,5 @@
 [package]
-name = "vault-ai-diff"
+name = "neverwrite-diff"
 version = "0.1.0"
 edition = "2021"
 

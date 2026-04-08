@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use vault_ai_index::VaultIndex;
-use vault_ai_types::{NoteDocument, NoteId, NotePath, PdfDocument, TextRange, WikiLink};
+use neverwrite_index::VaultIndex;
+use neverwrite_types::{NoteDocument, NoteId, NotePath, PdfDocument, TextRange, WikiLink};
 
 fn make_note(
     id: &str,

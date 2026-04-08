@@ -17,7 +17,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 
-const FM_COLLAPSED_KEY = "vaultai:fm-collapsed";
+const FM_COLLAPSED_KEY = "neverwrite:fm-collapsed";
 
 export type FrontmatterValue = string | string[] | null;
 export interface FrontmatterEntry {

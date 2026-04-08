@@ -5,7 +5,7 @@ import {
 } from "../../../app/utils/safeStorage";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
-const CHAT_TABS_STORAGE_KEY_PREFIX = "vaultai.chat.tabs:";
+const CHAT_TABS_STORAGE_KEY_PREFIX = "neverwrite.chat.tabs:";
 const CHAT_TABS_PERSIST_VERSION = 1;
 
 export interface ChatWorkspaceTab {

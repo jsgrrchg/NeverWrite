@@ -1,53 +1,65 @@
 import {
-  CHANGELOG_PATH,
-  collectVersionIssues,
-  getChangelogEntry,
-  normalizeReleaseTag,
-  readDesktopVersions,
-  readFile,
+    CHANGELOG_PATH,
+    collectReleaseIdentityIssues,
+    collectVersionIssues,
+    getChangelogEntry,
+    normalizeReleaseTag,
+    readDesktopReleaseIdentity,
+    readDesktopVersions,
+    readFile,
 } from "./release-metadata-lib.mjs";
 
 function parseArgs(argv) {
-  const args = { tag: null };
+    const args = { tag: null };
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--tag") {
-      args.tag = argv[index + 1] ?? null;
-      index += 1;
-      continue;
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (arg === "--tag") {
+            args.tag = argv[index + 1] ?? null;
+            index += 1;
+            continue;
+        }
+
+        throw new Error(
+            `Unknown argument "${arg}". Supported args: --tag vX.Y.Z`,
+        );
     }
 
-    throw new Error(`Unknown argument "${arg}". Supported args: --tag vX.Y.Z`);
-  }
-
-  return args;
+    return args;
 }
 
 function main() {
-  const { tag } = parseArgs(process.argv.slice(2));
-  const tagVersion = tag ? normalizeReleaseTag(tag) : null;
-  const versions = readDesktopVersions();
-  const issues = collectVersionIssues(versions, tagVersion);
-  const changelog = readFile(CHANGELOG_PATH);
-  const expectedVersion = tagVersion ?? versions.packageJson;
-  const changelogEntry = getChangelogEntry(changelog, expectedVersion);
+    const { tag } = parseArgs(process.argv.slice(2));
+    const tagVersion = tag ? normalizeReleaseTag(tag) : null;
+    const versions = readDesktopVersions();
+    const releaseIdentity = readDesktopReleaseIdentity();
+    const issues = [
+        ...collectVersionIssues(versions, tagVersion),
+        ...collectReleaseIdentityIssues(releaseIdentity),
+    ];
+    const changelog = readFile(CHANGELOG_PATH);
+    const expectedVersion = tagVersion ?? versions.packageJson;
+    const changelogEntry = getChangelogEntry(changelog, expectedVersion);
 
-  if (!changelogEntry) {
-    issues.push(`CHANGELOG.md does not contain a release entry for ${expectedVersion}.`);
-  }
-
-  if (issues.length > 0) {
-    for (const issue of issues) {
-      console.error(`- ${issue}`);
+    if (!changelogEntry) {
+        issues.push(
+            `CHANGELOG.md does not contain a release entry for ${expectedVersion}.`,
+        );
     }
 
-    process.exitCode = 1;
-    return;
-  }
+    if (issues.length > 0) {
+        for (const issue of issues) {
+            console.error(`- ${issue}`);
+        }
 
-  console.log(`Desktop version sources are aligned at ${versions.packageJson}.`);
-  console.log(`CHANGELOG.md contains an entry for ${expectedVersion}.`);
+        process.exitCode = 1;
+        return;
+    }
+
+    console.log(
+        `Desktop version sources are aligned at ${versions.packageJson}.`,
+    );
+    console.log(`CHANGELOG.md contains an entry for ${expectedVersion}.`);
 }
 
 main();

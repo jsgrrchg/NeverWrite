@@ -1252,7 +1252,7 @@ describe("FileTree", () => {
     });
 
     it("reveals the active pdf tab in nested folders", async () => {
-        localStorage.setItem("vaultai:reveal-active", "true");
+        localStorage.setItem("neverwrite:reveal-active", "true");
 
         setVaultNotes([]);
         setVaultEntries([
@@ -1297,7 +1297,7 @@ describe("FileTree", () => {
     });
 
     it("reveals the active generic file tab in nested folders", async () => {
-        localStorage.setItem("vaultai:reveal-active", "true");
+        localStorage.setItem("neverwrite:reveal-active", "true");
 
         setVaultNotes([]);
         setVaultEntries([

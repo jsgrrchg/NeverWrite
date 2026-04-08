@@ -4,7 +4,7 @@ import {
     safeStorageSetItem,
 } from "../../app/utils/safeStorage";
 
-const FILE_TREE_CLIPBOARD_KEY = "vaultai.fileTree.clipboard";
+const FILE_TREE_CLIPBOARD_KEY = "neverwrite.fileTree.clipboard";
 
 export type FileTreeClipboardPayload =
     | {

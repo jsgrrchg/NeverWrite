@@ -373,7 +373,7 @@ describe("editorStore session persistence", () => {
             expect(warnSpy).toHaveBeenCalledWith(
                 "[safe-storage] Failed to persist safe storage item",
                 {
-                    key: "vaultai.session.tabs:/vaults/quota-2026",
+                    key: "neverwrite.session.tabs:/vaults/quota-2026",
                 },
             );
         } finally {
@@ -386,7 +386,7 @@ describe("editorStore session persistence", () => {
 
     it("falls back to the legacy global session key when needed", () => {
         localStorage.setItem(
-            "vaultai.session.tabs",
+            "neverwrite.session.tabs",
             JSON.stringify({
                 noteIds: [{ noteId: "notes/legacy", title: "Legacy" }],
                 activeNoteId: "notes/legacy",
@@ -1341,7 +1341,7 @@ describe("editorStore tab history mode", () => {
                 "config/app.toml",
                 "app.toml",
                 "/vault/config/app.toml",
-                "name = 'VaultAI'",
+                "name = 'NeverWrite'",
                 "application/toml",
                 "text",
             );
@@ -1365,7 +1365,7 @@ describe("editorStore tab history mode", () => {
                 relativePath: "config/app.toml",
                 title: "app.toml",
                 path: "/vault/config/app.toml",
-                content: "name = 'VaultAI'",
+                content: "name = 'NeverWrite'",
                 mimeType: "application/toml",
                 viewer: "text",
             },

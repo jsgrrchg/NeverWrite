@@ -3,16 +3,16 @@ import { type SidebarView } from "../../components/layout/ActivityBar";
 import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { logWarn } from "../utils/runtimeLog";
 
-const SIDEBAR_WIDTH_KEY = "vaultai.sidebar.width";
-const SIDEBAR_COLLAPSED_KEY = "vaultai.sidebar.collapsed";
-const SIDEBAR_VIEW_KEY = "vaultai.sidebar.view";
+const SIDEBAR_WIDTH_KEY = "neverwrite.sidebar.width";
+const SIDEBAR_COLLAPSED_KEY = "neverwrite.sidebar.collapsed";
+const SIDEBAR_VIEW_KEY = "neverwrite.sidebar.view";
 export const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
 export const MAX_SIDEBAR_WIDTH = 2000;
 
-const RIGHT_PANEL_WIDTH_KEY = "vaultai.rightpanel.width";
-const RIGHT_PANEL_COLLAPSED_KEY = "vaultai.rightpanel.collapsed";
-const RIGHT_PANEL_VIEW_KEY = "vaultai.rightpanel.view";
+const RIGHT_PANEL_WIDTH_KEY = "neverwrite.rightpanel.width";
+const RIGHT_PANEL_COLLAPSED_KEY = "neverwrite.rightpanel.collapsed";
+const RIGHT_PANEL_VIEW_KEY = "neverwrite.rightpanel.view";
 export const DEFAULT_RIGHT_PANEL_WIDTH = 280;
 export const MIN_RIGHT_PANEL_WIDTH = 200;
 export const MAX_RIGHT_PANEL_WIDTH = 2000;
@@ -20,9 +20,9 @@ export const DEFAULT_BOTTOM_PANEL_HEIGHT = 240;
 export const MIN_BOTTOM_PANEL_HEIGHT = 160;
 export const MAX_BOTTOM_PANEL_HEIGHT_RATIO = 0.45;
 
-const BOTTOM_PANEL_HEIGHT_KEY = "vaultai.bottompanel.height";
-const BOTTOM_PANEL_COLLAPSED_KEY = "vaultai.bottompanel.collapsed";
-const BOTTOM_PANEL_VIEW_KEY = "vaultai.bottompanel.view";
+const BOTTOM_PANEL_HEIGHT_KEY = "neverwrite.bottompanel.height";
+const BOTTOM_PANEL_COLLAPSED_KEY = "neverwrite.bottompanel.collapsed";
+const BOTTOM_PANEL_VIEW_KEY = "neverwrite.bottompanel.view";
 
 const SIDEBAR_VIEWS: SidebarView[] = [
     "files",

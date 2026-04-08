@@ -454,7 +454,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use vault_ai_vault::Vault;
+    use neverwrite_vault::Vault;
 
     use crate::VaultInstance;
 
@@ -463,7 +463,7 @@ mod tests {
     fn make_map_test_root(label: &str) -> PathBuf {
         let unique_id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "vault-ai-maps-test-{label}-{}-{}-{unique_id}",
+            "neverwrite-maps-test-{label}-{}-{}-{unique_id}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

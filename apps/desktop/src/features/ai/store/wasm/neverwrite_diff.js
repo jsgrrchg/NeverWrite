@@ -1,4 +1,4 @@
-/* @ts-self-types="./vault_ai_diff.d.ts" */
+/* @ts-self-types="./neverwrite_diff.d.ts" */
 
 /**
  * @param {string} file_json
@@ -472,7 +472,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./vault_ai_diff_bg.js": import0,
+        "./neverwrite_diff_bg.js": import0,
     };
 }
 
@@ -642,7 +642,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('vault_ai_diff_bg.wasm', import.meta.url);
+        module_or_path = new URL('neverwrite_diff_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

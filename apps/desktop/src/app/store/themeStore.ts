@@ -24,9 +24,9 @@ interface ThemeStore {
     setThemeName: (name: ThemeName) => void;
 }
 
-const THEME_KEY_PREFIX = "vaultai:theme:";
-const THEME_KEY_FALLBACK = "vaultai:theme";
-const LAST_VAULT_KEY = "vaultai:lastVaultPath";
+const THEME_KEY_PREFIX = "neverwrite:theme:";
+const THEME_KEY_FALLBACK = "neverwrite:theme";
+const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const DEFAULT_THEME: ThemePreference = { mode: "system", themeName: "default" };
 
 const VALID_THEME_NAMES = new Set<ThemeName>([

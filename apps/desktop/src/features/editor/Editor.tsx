@@ -55,7 +55,7 @@ import { getDesktopPlatform } from "../../app/utils/platform";
 import { logError, logWarn } from "../../app/utils/runtimeLog";
 
 export const REQUEST_CLOSE_ACTIVE_TAB_EVENT =
-    "vaultai:editor:request-close-active-tab";
+    "neverwrite:editor:request-close-active-tab";
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";

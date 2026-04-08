@@ -1,7 +1,5 @@
 import { logWarn } from "./runtimeLog";
-
-const SAFE_STORAGE_EVENT = "vaultai:safe-storage";
-const STORAGE_PROBE_KEY = "__vaultai_storage_probe__";
+import { SAFE_STORAGE_EVENT, STORAGE_PROBE_KEY } from "./technicalBranding";
 
 type SafeStorageDetail = {
     key: string;
@@ -219,10 +217,14 @@ export function subscribeSafeStorage(
     };
 
     window.addEventListener("storage", onStorage);
-    window.addEventListener(SAFE_STORAGE_EVENT, onSafeStorage);
+    for (const eventName of [SAFE_STORAGE_EVENT]) {
+        window.addEventListener(eventName, onSafeStorage);
+    }
 
     return () => {
         window.removeEventListener("storage", onStorage);
-        window.removeEventListener(SAFE_STORAGE_EVENT, onSafeStorage);
+        for (const eventName of [SAFE_STORAGE_EVENT]) {
+            window.removeEventListener(eventName, onSafeStorage);
+        }
     };
 }

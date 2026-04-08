@@ -1,4 +1,4 @@
-export const REVEAL_NOTE_IN_TREE_EVENT = "vaultai:reveal-note-in-tree";
+export const REVEAL_NOTE_IN_TREE_EVENT = "neverwrite:reveal-note-in-tree";
 
 export function revealNoteInTree(noteId: string) {
     window.dispatchEvent(

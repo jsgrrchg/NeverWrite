@@ -6,7 +6,7 @@ import {
 } from "../../../app/utils/safeStorage";
 
 const REVIEW_VIEW_STATE_VERSION = 1;
-const REVIEW_VIEW_STATE_PREFIX = "vaultai.ai.review.view";
+const REVIEW_VIEW_STATE_PREFIX = "neverwrite.ai.review.view";
 const REVIEW_VIEW_GLOBAL_SCOPE = "__global__";
 
 interface PersistedReviewHunkLineSpan {

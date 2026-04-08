@@ -1,6 +1,6 @@
 use std::fs;
 
-use vault_ai_types::NoteDocument;
+use neverwrite_types::NoteDocument;
 
 use crate::error::VaultError;
 use crate::vault::Vault;

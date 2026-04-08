@@ -1,6 +1,6 @@
 # Copyright & Licenses
 
-Copyright © 2024–2026 VaultAI Contributors.
+Copyright © 2024–2026 NeverWrite Contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ limitations under the License.
 
 ## Third-Party Dependencies
 
-VaultAI is built upon open-source software. Below is a summary of the licenses
+NeverWrite is built upon open-source software. Below is a summary of the licenses
 governing our direct and transitive dependencies, grouped by license type.
 
 ### License Summary
@@ -232,7 +232,7 @@ No GPL or strong-copyleft dependencies are used in this project.
 
 ## Modified Vendored Code
 
-The following vendored packages have been modified by VaultAI contributors.
+The following vendored packages have been modified by NeverWrite contributors.
 As required by the Apache-2.0 license, modifications are documented below.
 
 ### `vendor/codex-acp` — Zed Industries (Apache-2.0)
@@ -248,7 +248,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| `src/acp-agent.ts`    | Extended with model relabeling, custom tool handling, and integration with VaultAI's agent orchestration |
+| `src/acp-agent.ts`    | Extended with model relabeling, custom tool handling, and integration with NeverWrite's agent orchestration |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at

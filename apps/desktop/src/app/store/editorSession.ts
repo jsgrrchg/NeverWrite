@@ -16,8 +16,8 @@ import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
 
-const SESSION_KEY = "vaultai.session.tabs";
-const SESSION_KEY_PREFIX = "vaultai.session.tabs:";
+const SESSION_KEY = "neverwrite.session.tabs";
+const SESSION_KEY_PREFIX = "neverwrite.session.tabs:";
 
 export interface PersistedSession {
     tabs?: TabInput[];

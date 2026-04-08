@@ -663,7 +663,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let dir = env::temp_dir().join(format!("vaultai-devtools-test-{timestamp}-{suffix}"));
+        let dir = env::temp_dir().join(format!("neverwrite-devtools-test-{timestamp}-{suffix}"));
         fs::create_dir_all(&dir).expect("temp test dir");
         dir
     }
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_requested_cwd() {
-        let dir = env::temp_dir().join("vaultai-devtools-missing-dir");
+        let dir = env::temp_dir().join("neverwrite-devtools-missing-dir");
         let error = resolve_terminal_cwd(Some(dir.to_string_lossy().as_ref()))
             .expect_err("missing cwd should fail");
         assert!(error.contains("does not exist"));

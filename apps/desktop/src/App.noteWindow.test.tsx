@@ -86,7 +86,7 @@ vi.mock("./features/devtools/DeveloperPanel", () => ({
 }));
 
 vi.mock("./app/detachedWindows", () => ({
-    ATTACH_EXTERNAL_TAB_EVENT: "vaultai:attach-external-tab",
+    ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
     getCurrentWindowLabel: () => "note-test",
     getWindowMode: () => "note",
     openDetachedNoteWindow: vi.fn(),

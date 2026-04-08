@@ -17,8 +17,8 @@ import { flushPromises, renderComponent } from "./test/test-utils";
 
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
-const WEB_CLIPPER_CLIP_SAVED_EVENT = "vaultai:web-clipper/clip-saved";
-const WEB_CLIPPER_ROUTE_CLIP_EVENT = "vaultai:web-clipper/route-clip";
+const WEB_CLIPPER_CLIP_SAVED_EVENT = "neverwrite:web-clipper/clip-saved";
+const WEB_CLIPPER_ROUTE_CLIP_EVENT = "neverwrite:web-clipper/route-clip";
 
 vi.mock("./components/layout/AppLayout", () => ({
     AppLayout: ({
@@ -135,7 +135,7 @@ vi.mock("./features/ai/hooks/useAutoOpenReviewTab", () => ({
 }));
 
 vi.mock("./app/detachedWindows", () => ({
-    ATTACH_EXTERNAL_TAB_EVENT: "vaultai:attach-external-tab",
+    ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
     getCurrentWindowLabel: () => "main",
     getWindowMode: () => "main",
     openDetachedNoteWindow: vi.fn(),

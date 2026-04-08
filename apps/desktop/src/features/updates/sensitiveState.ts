@@ -13,7 +13,7 @@ import {
 } from "../ai/store/actionLogModel";
 import type { AIChatSession } from "../ai/types";
 
-const WINDOW_OPERATIONAL_STATE_PREFIX = "vaultai:window-operational-state:";
+const WINDOW_OPERATIONAL_STATE_PREFIX = "neverwrite:window-operational-state:";
 
 export interface WindowOperationalState {
     label: string;

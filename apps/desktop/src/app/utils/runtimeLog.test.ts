@@ -23,7 +23,7 @@ describe("runtimeLog", () => {
         logDebug("review", "should stay silent");
         expect(debugSpy).not.toHaveBeenCalled();
 
-        expect(window.__vaultAiLogs?.enable("review")).toEqual(["review"]);
+        expect(window.__neverwriteLogs?.enable("review")).toEqual(["review"]);
         expect(isDebugLogEnabled("review")).toBe(true);
 
         logDebug("review", "enabled debug log", { ok: true });

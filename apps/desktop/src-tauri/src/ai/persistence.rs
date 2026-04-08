@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::technical_branding::PRODUCT_STATE_DIR_NAME;
 use crate::write_json_atomic;
 
-const SESSIONS_DIR: &str = ".vaultai/sessions";
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
@@ -138,7 +138,7 @@ struct LegacySessionArtifacts {
 }
 
 fn sessions_dir(vault_root: &Path) -> PathBuf {
-    vault_root.join(SESSIONS_DIR)
+    vault_root.join(PRODUCT_STATE_DIR_NAME).join("sessions")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1206,7 +1206,7 @@ mod tests {
             .as_nanos();
         let unique = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "vaultai-history-test-{}-{suffix}-{unique}",
+            "neverwrite-history-test-{}-{suffix}-{unique}",
             std::process::id()
         ));
         fs::create_dir_all(&dir).expect("temp dir should be created");
@@ -1349,7 +1349,7 @@ mod tests {
     fn delete_all_session_histories_only_clears_sessions_dir() {
         let dir = make_temp_dir();
         let history = sample_history();
-        let sibling = dir.join(".vaultai/keep.txt");
+        let sibling = dir.join(PRODUCT_STATE_DIR_NAME).join("keep.txt");
 
         save_session_history(&dir, &history).expect("history should persist");
         fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
@@ -1375,7 +1375,9 @@ mod tests {
         let dir = make_temp_dir();
         let mut history = sample_history();
         history.updated_at = 1;
-        let sibling = dir.join(".vaultai/keep-after-prune.txt");
+        let sibling = dir
+            .join(PRODUCT_STATE_DIR_NAME)
+            .join("keep-after-prune.txt");
 
         save_session_history(&dir, &history).expect("history should persist");
         fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))

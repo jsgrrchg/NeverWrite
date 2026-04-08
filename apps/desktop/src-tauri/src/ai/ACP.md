@@ -1,6 +1,6 @@
 # ACP (Agent Client Protocol) — Architecture Reference
 
-VaultAI currently integrates three AI runtimes through the Agent Client Protocol:
+NeverWrite currently integrates three AI runtimes through the Agent Client Protocol:
 
 - **Claude**
 - **Codex**
@@ -14,32 +14,32 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.25.3) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded VaultAI delta) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.25.3) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-ai-login`, `console-login`, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
-| **VaultAI adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
-| **Session RPC used by VaultAI** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
+| **NeverWrite adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
+| **Session RPC used by NeverWrite** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
 | **ACP SDK version** | `@agentclientprotocol/sdk` 0.17.0 | `agent-client-protocol` 0.10.4 | Gemini CLI ACP implementation |
 | **Vendor dir** | `vendor/Claude-agent-acp-upstream/` | `vendor/codex-acp/` | N/A |
 
 Notes:
 
 - `Gemini` is fully wired into `AiManager`, Tauri commands, setup, process, client and adapter layers.
-- Gemini emits plans and available-command updates from the ACP stream, but VaultAI currently does **not** surface Gemini `user_input` as a supported adapter capability.
+- Gemini emits plans and available-command updates from the ACP stream, but NeverWrite currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
 - The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.91`.
-- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, with a small local delta to preserve VaultAI review, diff, mode and user-input behavior.
+- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, with a small local delta to preserve NeverWrite review, diff, mode and user-input behavior.
 
 ---
 
 ## Binary Resolution (runtime)
 
-When VaultAI needs to spawn a runtime process, it resolves the executable/command in this order.
+When NeverWrite needs to spawn a runtime process, it resolves the executable/command in this order.
 
 ### Claude (`claude/setup.rs` → `resolve_binary_command`)
 
-1. `VAULTAI_CLAUDE_ACP_BIN`
+1. `NEVERWRITE_CLAUDE_ACP_BIN`
 2. Custom path from setup config
 3. **Debug builds only:** vendor JS at `vendor/Claude-agent-acp-upstream/dist/index.js`
 4. Embedded Node runtime + embedded vendor JS at `{resource_dir}/embedded/node/bin/node {resource_dir}/embedded/claude-agent-acp/dist/index.js`
@@ -47,7 +47,7 @@ When VaultAI needs to spawn a runtime process, it resolves the executable/comman
 6. Vendor JS fallback
 7. `claude-agent-acp` in PATH
 
-If the resolved target is a `.js` entry, VaultAI wraps it automatically as:
+If the resolved target is a `.js` entry, NeverWrite wraps it automatically as:
 
 ```text
 node /path/to/index.js
@@ -55,7 +55,7 @@ node /path/to/index.js
 
 ### Codex (`codex/setup.rs` → `resolve_binary_path`)
 
-1. `VAULTAI_CODEX_ACP_BIN`
+1. `NEVERWRITE_CODEX_ACP_BIN`
 2. Custom path from setup config
 3. Bundled binary at `{resource_dir}/binaries/codex-acp`
 4. Vendor compiled binary at `vendor/codex-acp/target/{debug|release}/codex-acp`
@@ -64,11 +64,11 @@ Unlike Claude, the current Codex resolution path does **not** fall back to PATH 
 
 ### Gemini (`gemini/setup.rs` → `resolve_binary_command`)
 
-1. `VAULTAI_GEMINI_ACP_BIN`
+1. `NEVERWRITE_GEMINI_ACP_BIN`
 2. Custom path from setup config
 3. `gemini` in PATH
 
-When spawned, VaultAI appends:
+When spawned, NeverWrite appends:
 
 ```text
 --acp
@@ -107,8 +107,8 @@ On Windows, command lookup is `PATHEXT`-aware.
 
 For staged binaries, `build.rs` checks in this order:
 
-1. `VAULTAI_*_ACP_BUNDLE_BIN`
-2. `VAULTAI_*_ACP_BIN`
+1. `NEVERWRITE_*_ACP_BUNDLE_BIN`
+2. `NEVERWRITE_*_ACP_BIN`
 3. `vendor/{runtime}/target/release/{binary}`
 4. `vendor/{runtime}/target/debug/{binary}`
 5. System PATH
@@ -132,7 +132,7 @@ Staging is target-aware:
 - Windows stages `node.exe` plus sibling runtime files such as `.dll` and `.dat`
 - the staged Claude tree is validated after copy so missing runtime dependencies fail fast
 
-For Windows targets, the build rejects reuse of a non-Windows Node binary. Windows bundles should therefore be built on Windows or with an explicit `VAULTAI_EMBEDDED_NODE_BIN` override pointing to a real Windows `node.exe`.
+For Windows targets, the build rejects reuse of a non-Windows Node binary. Windows bundles should therefore be built on Windows or with an explicit `NEVERWRITE_EMBEDDED_NODE_BIN` override pointing to a real Windows `node.exe`.
 
 ### Tauri resource bundling
 
@@ -158,7 +158,7 @@ It does **not** bundle Gemini today.
 Configured in:
 
 ```text
-~/Library/Application Support/com.vaultai/ai/claude-setup.json
+~/Library/Application Support/com.neverwrite/ai/claude-setup.json
 ```
 
 Secrets are stored in the OS secure secret store, not in the JSON config file.
@@ -206,7 +206,7 @@ Current Claude vendor notes (`0.23.1`):
 Configured in:
 
 ```text
-~/Library/Application Support/com.vaultai/ai/setup.json
+~/Library/Application Support/com.neverwrite/ai/setup.json
 ```
 
 Secrets are stored in the OS secure secret store.
@@ -223,13 +223,13 @@ Supported methods:
 - **`codex-api-key`**
   - Stored locally and injected as `CODEX_API_KEY`
 
-Auth detection is not based only on persisted `auth_method`. VaultAI also considers environment variables and available secrets when computing the effective ready/authenticated state.
+Auth detection is not based only on persisted `auth_method`. NeverWrite also considers environment variables and available secrets when computing the effective ready/authenticated state.
 
-VaultAI still carries a bounded local delta on `vendor/codex-acp` `v0.11.1`.
+NeverWrite still carries a bounded local delta on `vendor/codex-acp` `v0.11.1`.
 
 That delta is intentional and currently lives mainly in `src/thread.rs` and `src/codex_agent.rs` to preserve product behavior that the desktop app already depends on:
 
-- VaultAI-specific metadata for status, plan, diff hunks and `user_input_request`
+- primary `neverwrite*` metadata for status, plan, diff hunks and `user_input_request`
 - reconstruction of `unified_diff` into `old_text` / `new_text` for inline review and the edited-files panel
 - resilient `modes` / approval-preset behavior when Codex expands writable roots under `workspace-write`
 - actor shutdown semantics that do not keep internal message channels alive after external senders are dropped
@@ -241,7 +241,7 @@ In other words, Codex is now aligned with upstream `0.11.1`, but it is not a raw
 Configured in:
 
 ```text
-~/Library/Application Support/com.vaultai/ai/gemini-setup.json
+~/Library/Application Support/com.neverwrite/ai/gemini-setup.json
 ```
 
 Secrets are stored in the OS secure secret store.
@@ -250,14 +250,14 @@ Supported methods:
 
 - **`login_with_google`**
   - Uses Gemini CLI's Google login flow
-  - VaultAI detects readiness by inspecting `~/.gemini/settings.json`
+  - NeverWrite detects readiness by inspecting `~/.gemini/settings.json`
   - The selected auth type must match Google-login aliases and be newer than any invalidation timestamp
 
 - **`use_gemini`**
   - Uses a locally stored Gemini Developer API key
   - `GEMINI_API_KEY` and `GOOGLE_API_KEY` are both treated as valid developer-key sources
 
-Additional Gemini process env injected by VaultAI:
+Additional Gemini process env injected by NeverWrite:
 
 - `GEMINI_API_KEY`
 - `GOOGLE_API_KEY`
@@ -265,7 +265,7 @@ Additional Gemini process env injected by VaultAI:
 - `GOOGLE_CLOUD_LOCATION`
 - `GEMINI_DEFAULT_AUTH_TYPE`
 
-Gemini setup also persists `gateway_base_url` and `gateway_headers`. VaultAI can serialize these into Gemini ACP auth metadata when the runtime is asked to authenticate with `gateway`, but the primary supported VaultAI setup flows today are still Google login and Gemini API key.
+Gemini setup also persists `gateway_base_url` and `gateway_headers`. NeverWrite can serialize these into Gemini ACP auth metadata when the runtime is asked to authenticate with `gateway`, but the primary supported NeverWrite setup flows today are still Google login and Gemini API key.
 
 ---
 
@@ -308,7 +308,7 @@ The actor runs on a dedicated thread with a tokio `LocalSet` so it can safely ho
 
 **Framing:** ACP over stdio. In practice this is line-delimited JSON / NDJSON style framing handled by the ACP client libraries.
 
-### Client → Agent requests used by VaultAI
+### Client → Agent requests used by NeverWrite
 
 - `initialize`
 - `authenticate` (Codex, Gemini)
@@ -326,7 +326,7 @@ The actor runs on a dedicated thread with a tokio `LocalSet` so it can safely ho
 
 Permission approval is resolved through ACP permission request handling inside the client runtime state. Codex `user_input` replies are currently sent back by synthesizing a special prompt payload rather than using a dedicated first-class ACP request method.
 
-### Agent → Client notifications handled by VaultAI
+### Agent → Client notifications handled by NeverWrite
 
 - session updates carrying:
   - message chunks
@@ -339,7 +339,7 @@ Permission approval is resolved through ACP permission request handling inside t
 
 ### Protocol version
 
-VaultAI initializes ACP clients with:
+NeverWrite initializes ACP clients with:
 
 ```rust
 ProtocolVersion::LATEST
@@ -376,7 +376,7 @@ Notes:
 
 - Claude emits plan + available-command updates.
 - Codex emits permission, plan, status, tool activity and `user-input-request`.
-- Gemini emits plan + available-command updates, but VaultAI currently rejects Gemini `respond_user_input`.
+- Gemini emits plan + available-command updates, but NeverWrite currently rejects Gemini `respond_user_input`.
 
 ---
 
@@ -421,7 +421,7 @@ vendor/
 │   ├── dist/index.js
 │   ├── node_modules/
 │   └── package.json
-└── codex-acp/                        # codex-acp v0.11.1 (upstream c3e95ca + bounded VaultAI delta)
+└── codex-acp/                        # codex-acp v0.11.1 (upstream c3e95ca + bounded NeverWrite delta)
     ├── src/main.rs
     └── Cargo.toml
 ```
@@ -431,7 +431,7 @@ vendor/
 ## App Data (macOS)
 
 ```text
-~/Library/Application Support/com.vaultai/
+~/Library/Application Support/com.neverwrite/
 ├── ai/
 │   ├── setup.json                    # Codex setup/auth config
 │   ├── claude-setup.json             # Claude setup/auth config
@@ -455,12 +455,12 @@ External auth state also used:
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `VAULTAI_CLAUDE_ACP_BIN` | Claude build/runtime | Override Claude binary / command path |
-| `VAULTAI_CLAUDE_ACP_BUNDLE_BIN` | Claude build | Override Claude bundle binary |
-| `VAULTAI_EMBEDDED_NODE_BIN` | Claude build | Override embedded Node runtime source |
-| `VAULTAI_CODEX_ACP_BIN` | Codex build/runtime | Override Codex binary path |
-| `VAULTAI_CODEX_ACP_BUNDLE_BIN` | Codex build | Override Codex bundle binary |
-| `VAULTAI_GEMINI_ACP_BIN` | Gemini runtime | Override Gemini CLI command/path |
+| `NEVERWRITE_CLAUDE_ACP_BIN` | Claude build/runtime | Override Claude binary / command path |
+| `NEVERWRITE_CLAUDE_ACP_BUNDLE_BIN` | Claude build | Override Claude bundle binary |
+| `NEVERWRITE_EMBEDDED_NODE_BIN` | Claude build | Override embedded Node runtime source |
+| `NEVERWRITE_CODEX_ACP_BIN` | Codex build/runtime | Override Codex binary path |
+| `NEVERWRITE_CODEX_ACP_BUNDLE_BIN` | Codex build | Override Codex bundle binary |
+| `NEVERWRITE_GEMINI_ACP_BIN` | Gemini runtime | Override Gemini CLI command/path |
 | `ANTHROPIC_BASE_URL` | Claude process | Anthropic gateway URL |
 | `ANTHROPIC_AUTH_TOKEN` | Claude process | Gateway auth token |
 | `ANTHROPIC_CUSTOM_HEADERS` | Claude process | Gateway custom headers |
@@ -477,10 +477,10 @@ External auth state also used:
 
 ## Current Caveats
 
-- Gemini is integrated end-to-end in VaultAI, but it is **not** currently bundled by `build.rs` / Tauri resources.
+- Gemini is integrated end-to-end in NeverWrite, but it is **not** currently bundled by `build.rs` / Tauri resources.
 - Claude is the only ACP runtime whose stderr is currently captured and surfaced in disconnect errors.
-- Codex `user_input` is supported in VaultAI; Gemini `user_input` is not.
-- VaultAI does **not** yet surface Claude `usage_update` in the app, even though newer Claude ACP upstream emits it.
-- VaultAI currently consumes Claude terminal metadata and session config/mode updates, but does **not** yet expose richer Claude tool metadata such as `_meta.claudeCode.toolName`, `toolResponse` or `parentToolUseId`.
-- VaultAI keeps a small local patch on Claude vendor labels so model display text maps `"Default (recommended)"` to `"Opus"` in the exposed model list.
+- Codex `user_input` is supported in NeverWrite; Gemini `user_input` is not.
+- NeverWrite does **not** yet surface Claude `usage_update` in the app, even though newer Claude ACP upstream emits it.
+- NeverWrite currently consumes Claude terminal metadata and session config/mode updates, but does **not** yet expose richer Claude tool metadata such as `_meta.claudeCode.toolName`, `toolResponse` or `parentToolUseId`.
+- NeverWrite keeps a small local patch on Claude vendor labels so model display text maps `"Default (recommended)"` to `"Opus"` in the exposed model list.
 - The document should be kept aligned with `apps/desktop/src-tauri/src/ai/{claude,codex,gemini}/` whenever runtime behavior changes, because the app now has runtime-specific differences that matter operationally.

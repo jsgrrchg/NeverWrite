@@ -5,11 +5,10 @@ import {
     WEB_CLIPPER_BRAND_NAME,
     WEB_CLIPPER_SHORT_NAME,
 } from "./src/lib/branding";
+import { FIREFOX_EXTENSION_ID } from "./src/lib/technical-branding";
 
 const CHROME_EXTENSION_PUBLIC_KEY =
     "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA03lEJ4MBGAMV/SDSJZE4WTsiiTKq2VOEqZNj1qgHfY1vsi5obhoZ8UHD3soC8KrX1AeFUSPmRJri7e3V4m/zFjDEyvGXrKJn0v7h7FrTf2Qb0PgrXjFKycIFHJV5aTygh4KjAo6bKKKOZucn9nb7Rx76bpgg1SVyZWXl7J7QsFexvKLoP8psYq56Bj2hf/G0YRIU3ZUp+00Hyz16Uaro7FaY0HdhOHETNr2J0MiA4xvoAx0NnmIkmioQF67TFRnd4JE1Dd8crsH7dsO0/CwgvSE1jyDbdh7nwrn5Rli0tksjBaKSWGoGrWJq2hZFILxK4DOtSPGpxn2yPTNuceSD7QIDAQAB";
-const FIREFOX_EXTENSION_ID = "web-clipper@vaultai.app";
-
 export default defineConfig({
     srcDir: "src",
     publicDir: "src/assets",

@@ -80,8 +80,15 @@ jobs:
                   echo "version=$VERSION" >> "$GITHUB_OUTPUT"
                   echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
                   echo "channel=stable" >> "$GITHUB_OUTPUT"
-                  echo "repo_slug=${GITHUB_REPOSITORY}" >> "$GITHUB_OUTPUT"
-                  echo "pages_base_url=https://${GITHUB_REPOSITORY_OWNER}.github.io/${{ github.event.repository.name }}" >> "$GITHUB_OUTPUT"
+                  node --input-type=module <<'EOF' >> "$GITHUB_OUTPUT"
+                  import {
+                    CANONICAL_RELEASE_PAGES_BASE_URL,
+                    CANONICAL_RELEASE_REPO_SLUG,
+                  } from "./scripts/appcast-lib.mjs";
+
+                  console.log(`repo_slug=${CANONICAL_RELEASE_REPO_SLUG}`);
+                  console.log(`pages_base_url=${CANONICAL_RELEASE_PAGES_BASE_URL}`);
+                  EOF
                   echo "pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
             - name: Create or update GitHub release
@@ -151,11 +158,11 @@ jobs:
                   if [[ "${{ runner.os }}" == "Windows" ]]; then
                     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
                     powershell -NoProfile -Command "Expand-Archive -Path '$env:RUNNER_TEMP/node.zip' -DestinationPath '$env:RUNNER_TEMP/node-dist'"
-                    echo "VAULTAI_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
                   else
                     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.tar.gz" -o "$RUNNER_TEMP/node.tar.gz"
                     tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$DEST"
-                    echo "VAULTAI_EMBEDDED_NODE_BIN=$DEST/${DIST}/bin/node" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/bin/node" >> "$GITHUB_ENV"
                   fi
 
             - name: Export build environment
@@ -166,7 +173,7 @@ jobs:
                   else
                     CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
                   fi
-                  echo "VAULTAI_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
 
             - name: Build desktop release
               working-directory: apps/desktop

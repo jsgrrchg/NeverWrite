@@ -84,13 +84,13 @@ describe("desktop api client", () => {
         expect(fetchMock.mock.calls[0]?.[0]).toContain("/clips");
         expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({
             "content-type": "application/json",
-            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+            "x-neverwrite-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
         });
         expect(fetchMock.mock.calls[1]?.[0]).toContain("/pair");
         expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({
             "content-type": "application/json",
-            "x-vaultai-clipper-token": "token-1",
-            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+            "x-neverwrite-clipper-token": "token-1",
+            "x-neverwrite-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
         });
         expect(storage.get("clipperDesktopAuth")).toEqual({ token: "token-1" });
     });
@@ -189,18 +189,18 @@ describe("desktop api client", () => {
         expect(fetchMock).toHaveBeenCalledTimes(4);
         expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({
             "content-type": "application/json",
-            "x-vaultai-clipper-token": "stale-token",
-            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+            "x-neverwrite-clipper-token": "stale-token",
+            "x-neverwrite-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
         });
         expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
             "content-type": "application/json",
-            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+            "x-neverwrite-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
         });
         expect(fetchMock.mock.calls[2]?.[0]).toContain("/pair");
         expect(fetchMock.mock.calls[3]?.[1]?.headers).toEqual({
             "content-type": "application/json",
-            "x-vaultai-clipper-token": "token-2",
-            "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+            "x-neverwrite-clipper-token": "token-2",
+            "x-neverwrite-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
         });
         expect(storage.get("clipperDesktopAuth")).toEqual({ token: "token-2" });
     });
@@ -271,8 +271,8 @@ describe("desktop api client", () => {
         for (const [, init] of fetchMock.mock.calls) {
             expect(init?.headers).toEqual({
                 "content-type": "application/json",
-                "x-vaultai-clipper-token": "persisted-token",
-                "x-vaultai-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
+                "x-neverwrite-clipper-token": "persisted-token",
+                "x-neverwrite-extension-id": "pogmjgibofkooljfgaandhoinmenfhao",
             });
         }
     });

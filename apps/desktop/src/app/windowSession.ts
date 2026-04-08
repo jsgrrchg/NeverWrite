@@ -10,8 +10,8 @@ import {
 import type { TabInput } from "./store/editorStore";
 import { logWarn } from "./utils/runtimeLog";
 
-const WINDOW_SESSION_DESCRIPTOR_PREFIX = "vaultai:window-session:";
-const WINDOW_SESSION_SNAPSHOT_KEY = "vaultai:window-session-snapshot";
+const WINDOW_SESSION_DESCRIPTOR_PREFIX = "neverwrite:window-session:";
+const WINDOW_SESSION_SNAPSHOT_KEY = "neverwrite:window-session-snapshot";
 
 export interface PersistedVaultWindow {
     label: string;

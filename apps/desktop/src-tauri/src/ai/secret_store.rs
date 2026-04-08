@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-const SECRET_STORE_SERVICE: &str = "com.vaultai.desktop.ai";
+use crate::technical_branding::SECRET_STORE_SERVICE;
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -56,21 +56,21 @@ trait SecretStoreBackend: Send + Sync {
 struct KeyringSecretStore;
 
 impl KeyringSecretStore {
-    fn entry(&self, account: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SECRET_STORE_SERVICE, account)
+    fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(service, account)
             .map_err(|error| format!("Failed to access the secure secret store: {error}"))
     }
 }
 
 impl SecretStoreBackend for KeyringSecretStore {
     fn set_secret(&self, account: &str, value: &str) -> Result<(), String> {
-        self.entry(account)?
+        Self::entry(SECRET_STORE_SERVICE, account)?
             .set_password(value)
             .map_err(|error| format!("Failed to save a secret in the secure store: {error}"))
     }
 
     fn get_secret(&self, account: &str) -> Result<Option<String>, String> {
-        match self.entry(account)?.get_password() {
+        match Self::entry(SECRET_STORE_SERVICE, account)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(format!(
@@ -80,7 +80,7 @@ impl SecretStoreBackend for KeyringSecretStore {
     }
 
     fn clear_secret(&self, account: &str) -> Result<(), String> {
-        match self.entry(account)?.delete_credential() {
+        match Self::entry(SECRET_STORE_SERVICE, account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!(
                 "Failed to clear a secret from the secure store: {error}"

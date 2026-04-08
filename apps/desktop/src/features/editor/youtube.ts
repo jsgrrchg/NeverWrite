@@ -1,4 +1,4 @@
-export const OPEN_YOUTUBE_MODAL_EVENT = "vaultai:open-youtube-modal";
+export const OPEN_YOUTUBE_MODAL_EVENT = "neverwrite:open-youtube-modal";
 
 export interface OpenYouTubeModalPayload {
     href: string;

@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+
+use crate::technical_branding::app_data_dir;
 
 use super::engine::{
     bundled_hunspell_files_for_language, load_hunspell_bundle, normalize_dictionary_word_key,
@@ -11,10 +13,7 @@ use super::engine::{
 use super::types::ResolvedSpellcheckLanguage;
 
 pub fn app_spellcheck_directory(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let base = app_data_dir(app)?;
     Ok(base.join("spellcheck"))
 }
 

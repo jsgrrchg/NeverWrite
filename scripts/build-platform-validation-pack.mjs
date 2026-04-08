@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { normalizeAppcastChannel, normalizeReleaseVersion } from "./appcast-lib.mjs";
+import {
+    CANONICAL_RELEASE_PAGES_BASE_URL,
+    normalizeAppcastChannel,
+    normalizeReleaseVersion,
+} from "./appcast-lib.mjs";
 import {
     buildPlatformValidationMatrix,
     createInvalidSignatureManifest,
@@ -18,7 +22,7 @@ function parseArgs(argv) {
         appcast: null,
         metadataDir: null,
         outputDir: null,
-        appcastBaseUrl: null,
+        appcastBaseUrl: CANONICAL_RELEASE_PAGES_BASE_URL,
     };
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -73,10 +77,14 @@ function parseArgs(argv) {
         throw new Error("Missing required argument --tag <vX.Y.Z>.");
     }
     if (!args.appcast) {
-        throw new Error("Missing required argument --appcast <path-to-latest.json>.");
+        throw new Error(
+            "Missing required argument --appcast <path-to-latest.json>.",
+        );
     }
     if (!args.metadataDir) {
-        throw new Error("Missing required argument --metadata-dir <directory>.");
+        throw new Error(
+            "Missing required argument --metadata-dir <directory>.",
+        );
     }
     if (!args.outputDir) {
         throw new Error("Missing required argument --output-dir <directory>.");

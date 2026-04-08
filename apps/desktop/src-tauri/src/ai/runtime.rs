@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use tauri::AppHandle;
-use vault_ai_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
+use neverwrite_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
 
 use super::{claude::ClaudeSetupInput, codex::CodexSetupInput, gemini::GeminiSetupInput};
 

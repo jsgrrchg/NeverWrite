@@ -17,7 +17,7 @@ import {
 
 function withTempDir(callback) {
     const tempDir = fs.mkdtempSync(
-        path.join(os.tmpdir(), "vaultai-release-assets-"),
+        path.join(os.tmpdir(), "neverwrite-release-assets-"),
     );
     try {
         callback(tempDir);
@@ -182,7 +182,7 @@ test("stageReleaseAssets renames manual installers and emits appcast metadata", 
             buildTarget: "x86_64-pc-windows-msvc",
             version: "0.2.0",
             tag: "v0.2.0",
-            repoSlug: "vaultai/vaultai",
+            repoSlug: "jsgrrchg/NeverWrite",
             outputDir,
         });
 
@@ -192,8 +192,12 @@ test("stageReleaseAssets renames manual installers and emits appcast metadata", 
         );
         assert.equal(metadata.appcastKey, "windows-x86_64");
         assert.equal(
+            metadata.updaterAssetName,
+            "NeverWrite_0.2.0_Windows_x64.nsis.zip",
+        );
+        assert.equal(
             metadata.updaterUrl,
-            "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite-setup.nsis.zip",
+            "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_x64.nsis.zip",
         );
         assert.equal(metadata.updaterSignature, "sig-win-x64");
         assert.ok(
@@ -202,12 +206,52 @@ test("stageReleaseAssets renames manual installers and emits appcast metadata", 
             ),
         );
         assert.ok(
-            fs.existsSync(path.join(outputDir, "NeverWrite-setup.nsis.zip")),
+            fs.existsSync(
+                path.join(outputDir, "NeverWrite_0.2.0_Windows_x64.nsis.zip"),
+            ),
         );
         assert.ok(
             fs.existsSync(
-                path.join(outputDir, "NeverWrite-setup.nsis.zip.sig"),
+                path.join(
+                    outputDir,
+                    "NeverWrite_0.2.0_Windows_x64.nsis.zip.sig",
+                ),
             ),
+        );
+    });
+});
+
+test("stageReleaseAssets fails fast when bundled updater assets do not follow the native NeverWrite naming", () => {
+    withTempDir((tempDir) => {
+        const bundleRoot = path.join(tempDir, "bundle");
+        const nsisDir = path.join(bundleRoot, "nsis");
+        const outputDir = path.join(tempDir, "staged");
+        fs.mkdirSync(nsisDir, { recursive: true });
+
+        fs.writeFileSync(
+            path.join(nsisDir, "NeverWrite_0.2.0_x64-setup.exe"),
+            "installer",
+        );
+        fs.writeFileSync(
+            path.join(nsisDir, "NeverWrite_0.2.0_x64.nsis.zip"),
+            "updater",
+        );
+        fs.writeFileSync(
+            path.join(nsisDir, "NeverWrite_0.2.0_x64.nsis.zip.sig"),
+            "sig-win-x64",
+        );
+
+        assert.throws(
+            () =>
+                stageReleaseAssets({
+                    bundleRoot,
+                    buildTarget: "x86_64-pc-windows-msvc",
+                    version: "0.2.0",
+                    tag: "v0.2.0",
+                    repoSlug: "jsgrrchg/NeverWrite",
+                    outputDir,
+                }),
+            /Unexpected updater asset name/i,
         );
     });
 });

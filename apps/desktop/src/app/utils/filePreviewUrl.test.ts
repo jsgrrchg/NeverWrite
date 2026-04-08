@@ -8,7 +8,7 @@ import {
 describe("filePreviewUrl", () => {
     it("builds a stable vault preview URL from a relative path", () => {
         expect(buildVaultPreviewUrl("/vault", "docs/spec.pdf")).toContain(
-            "vaultai-file://localhost/vault/",
+            "neverwrite-file://localhost/vault/",
         );
     });
 
@@ -18,7 +18,7 @@ describe("filePreviewUrl", () => {
                 "/vault/assets/image.png",
                 "/vault",
             ),
-        ).toContain("vaultai-file://localhost/vault/");
+        ).toContain("neverwrite-file://localhost/vault/");
     });
 
     it("preserves query suffixes for local vault previews", () => {

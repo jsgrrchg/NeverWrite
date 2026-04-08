@@ -145,7 +145,7 @@ describe("detachedWindows", () => {
         expect(existingWindow.setFocus).toHaveBeenCalled();
         expect(emitTo).toHaveBeenCalledWith(
             "settings",
-            "vaultai:settings-open-section",
+            "neverwrite:settings-open-section",
             { section: "updates" },
         );
     });

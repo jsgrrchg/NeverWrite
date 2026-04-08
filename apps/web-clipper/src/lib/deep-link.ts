@@ -1,4 +1,5 @@
 import type { ClipRequestPayload } from "./clip-request";
+import { DEEP_LINK_SCHEME } from "./technical-branding";
 
 export function createClipDeepLink(payload: ClipRequestPayload): string {
     const params = new URLSearchParams();
@@ -26,7 +27,7 @@ export function createClipDeepLink(payload: ClipRequestPayload): string {
         params.set("clipboardToken", payload.clipboardToken);
     }
 
-    return `vaultai://clip?${params.toString()}`;
+    return `${DEEP_LINK_SCHEME}://clip?${params.toString()}`;
 }
 
 export function openDeepLink(uri: string): void {

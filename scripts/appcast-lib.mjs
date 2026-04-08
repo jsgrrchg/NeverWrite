@@ -12,6 +12,7 @@ import {
 export const DEFAULT_APPCAST_CHANNEL = "stable";
 export const APPCAST_CHANNELS = ["stable", "beta", "nightly"];
 export const PUBLIC_PRODUCT_NAME = "NeverWrite";
+export const CANONICAL_RELEASE_REPO_SLUG = "jsgrrchg/NeverWrite";
 export const V1_BUILD_TARGETS = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -86,6 +87,10 @@ export function buildGitHubPagesBaseUrl(repoSlug) {
     return `https://${owner}.github.io/${repo}`;
 }
 
+export const CANONICAL_RELEASE_PAGES_BASE_URL = buildGitHubPagesBaseUrl(
+    CANONICAL_RELEASE_REPO_SLUG,
+);
+
 export function buildChannelAppcastUrl(baseUrl, channel) {
     const publishPath = getAppcastPublishPath(channel);
     return `${baseUrl.replace(/\/+$/, "")}/${publishPath}`;
@@ -110,6 +115,40 @@ export function buildPublicReleaseAssetName(version, buildTarget) {
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64_Setup.exe`;
         case "x86_64-pc-windows-msvc":
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_x64_Setup.exe`;
+        default:
+            throw new Error(`Unsupported build target "${buildTarget}".`);
+    }
+}
+
+export function getCanonicalAppBundleName() {
+    return `${PUBLIC_PRODUCT_NAME}.app`;
+}
+
+export function getBundledUpdaterArtifactName(buildTarget) {
+    switch (buildTarget) {
+        case "aarch64-apple-darwin":
+        case "x86_64-apple-darwin":
+            return `${PUBLIC_PRODUCT_NAME}.app.tar.gz`;
+        case "aarch64-pc-windows-msvc":
+        case "x86_64-pc-windows-msvc":
+            return `${PUBLIC_PRODUCT_NAME}-setup.nsis.zip`;
+        default:
+            throw new Error(`Unsupported build target "${buildTarget}".`);
+    }
+}
+
+export function buildUpdaterReleaseAssetName(version, buildTarget) {
+    const normalizedVersion = normalizeReleaseVersion(version);
+
+    switch (buildTarget) {
+        case "aarch64-apple-darwin":
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_AppleSilicon.app.tar.gz`;
+        case "x86_64-apple-darwin":
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_Intel.app.tar.gz`;
+        case "aarch64-pc-windows-msvc":
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64.nsis.zip`;
+        case "x86_64-pc-windows-msvc":
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_x64.nsis.zip`;
         default:
             throw new Error(`Unsupported build target "${buildTarget}".`);
     }
