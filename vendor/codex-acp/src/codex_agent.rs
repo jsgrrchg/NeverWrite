@@ -1,18 +1,18 @@
 use agent_client_protocol::{
-    Agent, AgentCapabilities, AuthEnvVar, AuthMethod, AuthMethodAgent, AuthMethodEnvVar,
-    AuthMethodId, AuthenticateRequest, AuthenticateResponse, CancelNotification,
+    Agent, AgentAuthCapabilities, AgentCapabilities, AuthEnvVar, AuthMethod, AuthMethodAgent,
+    AuthMethodEnvVar, AuthMethodId, AuthenticateRequest, AuthenticateResponse, CancelNotification,
     ClientCapabilities, CloseSessionRequest, CloseSessionResponse, Error, Implementation,
     InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, McpServerHttp,
-    McpServerStdio, NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest,
-    PromptResponse, ProtocolVersion, SessionCapabilities, SessionCloseCapabilities, SessionId,
-    SessionInfo, SessionListCapabilities, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
-    SetSessionModelRequest, SetSessionModelResponse,
+    LoadSessionRequest, LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse,
+    McpCapabilities, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
+    NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, ProtocolVersion,
+    SessionCapabilities, SessionCloseCapabilities, SessionId, SessionInfo, SessionListCapabilities,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse, SetSessionModelRequest, SetSessionModelResponse,
 };
 use codex_core::{
     CodexAuth, NewThread, RolloutRecorder, ThreadManager, ThreadSortKey,
-    auth::{AuthManager, read_codex_api_key_from_env, read_openai_api_key_from_env},
+    auth::AuthManager,
     config::{
         Config,
         types::{McpServerConfig, McpServerTransportConfig},
@@ -21,7 +21,11 @@ use codex_core::{
     models_manager::collaboration_mode_presets::CollaborationModesConfig,
     parse_cursor,
 };
-use codex_login::{CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR};
+use codex_exec_server::EnvironmentManager;
+use codex_login::{
+    CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
+    auth::{read_codex_api_key_from_env, read_openai_api_key_from_env},
+};
 use codex_protocol::{
     ThreadId,
     protocol::{InitialHistory, SessionSource},
@@ -29,17 +33,14 @@ use codex_protocol::{
 use std::{
     cell::RefCell,
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex},
 };
 use tracing::{debug, info};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{
-    local_spawner::{AcpFs, LocalSpawner},
-    thread::Thread,
-};
+use crate::thread::Thread;
 
 /// The Codex implementation of the ACP Agent trait.
 ///
@@ -73,12 +74,8 @@ impl CodexAgent {
         );
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
-
-        let local_spawner = LocalSpawner::new();
-        let capabilities_clone = client_capabilities.clone();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
-        let session_roots_clone = session_roots.clone();
-        let thread_manager = ThreadManager::new_with_fs(
+        let thread_manager = ThreadManager::new(
             &config,
             auth_manager.clone(),
             SessionSource::Unknown,
@@ -86,14 +83,7 @@ impl CodexAgent {
                 // False for now
                 default_mode_request_user_input: false,
             },
-            Box::new(move |thread_id| {
-                Arc::new(AcpFs::new(
-                    Self::session_id_from_thread_id(thread_id),
-                    capabilities_clone.clone(),
-                    local_spawner.clone(),
-                    session_roots_clone.clone(),
-                ))
-            }),
+            Arc::new(EnvironmentManager::from_env()),
         );
         Self {
             auth_manager,
@@ -129,12 +119,13 @@ impl CodexAgent {
     /// This is shared between `new_session` and `load_session`.
     fn build_session_config(
         &self,
-        cwd: &PathBuf,
+        cwd: &Path,
         mcp_servers: Vec<McpServer>,
     ) -> Result<Config, Error> {
         let mut config = self.config.clone();
         config.include_apply_patch_tool = true;
-        config.cwd.clone_from(cwd);
+        config.cwd = cwd.try_into().map_err(Error::into_internal_error)?;
+        let cwd = config.cwd.clone();
 
         // Propagate any client-provided MCP servers that codex-rs supports.
         let mut new_mcp_servers = config.mcp_servers.get().clone();
@@ -169,6 +160,7 @@ impl CodexAgent {
                             disabled_reason: None,
                             scopes: None,
                             oauth_resource: None,
+                            tools: Default::default(),
                         },
                     );
                 }
@@ -193,7 +185,7 @@ impl CodexAgent {
                                     Some(env.into_iter().map(|env| (env.name, env.value)).collect())
                                 },
                                 env_vars: vec![],
-                                cwd: Some(cwd.clone()),
+                                cwd: Some(cwd.to_path_buf()),
                             },
                             required: false,
                             enabled: true,
@@ -204,6 +196,7 @@ impl CodexAgent {
                             disabled_reason: None,
                             scopes: None,
                             oauth_resource: None,
+                            tools: Default::default(),
                         },
                     );
                 }
@@ -237,11 +230,12 @@ impl Agent for CodexAgent {
         let mut agent_capabilities = AgentCapabilities::new()
             .prompt_capabilities(PromptCapabilities::new().embedded_context(true).image(true))
             .mcp_capabilities(McpCapabilities::new().http(true))
-            .load_session(true);
+            .load_session(true)
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()));
 
         agent_capabilities.session_capabilities = SessionCapabilities::new()
-            .list(SessionListCapabilities::new())
-            .close(SessionCloseCapabilities::new());
+            .close(SessionCloseCapabilities::new())
+            .list(SessionListCapabilities::new());
 
         let mut auth_methods = vec![
             CodexAuthMethod::ChatGpt.into(),
@@ -328,6 +322,13 @@ impl Agent for CodexAgent {
         Ok(AuthenticateResponse::new())
     }
 
+    async fn logout(&self, _request: LogoutRequest) -> Result<LogoutResponse, Error> {
+        self.auth_manager
+            .logout()
+            .map_err(Error::into_internal_error)?;
+        Ok(LogoutResponse::new())
+    }
+
     async fn new_session(&self, request: NewSessionRequest) -> Result<NewSessionResponse, Error> {
         // Check before sending if authentication was successful or not
         self.check_auth().await?;
@@ -353,7 +354,7 @@ impl Agent for CodexAgent {
         self.session_roots
             .lock()
             .unwrap()
-            .insert(session_id.clone(), config.cwd.clone());
+            .insert(session_id.clone(), config.cwd.to_path_buf());
         let thread = Rc::new(Thread::new(
             session_id.clone(),
             thread,
@@ -417,6 +418,7 @@ impl Agent for CodexAgent {
             config.clone(),
             rollout_path,
             self.auth_manager.clone(),
+            None,
         ))
         .await
         .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -437,7 +439,7 @@ impl Agent for CodexAgent {
         self.session_roots
             .lock()
             .unwrap()
-            .insert(session_id.clone(), config.cwd);
+            .insert(session_id.clone(), config.cwd.to_path_buf());
         self.sessions.borrow_mut().insert(session_id, thread);
 
         Ok(LoadSessionResponse::new()
@@ -512,18 +514,18 @@ impl Agent for CodexAgent {
         &self,
         request: CloseSessionRequest,
     ) -> Result<CloseSessionResponse, Error> {
-        let thread = self.get_thread(&request.session_id)?;
-        thread.shutdown().await?;
-
-        let thread_id = ThreadId::from_string(request.session_id.0.as_ref())
-            .map_err(|error| Error::invalid_params().data(error.to_string()))?;
-        self.thread_manager.remove_thread(&thread_id).await;
+        self.get_thread(&request.session_id)?.shutdown().await?;
+        self.thread_manager
+            .remove_thread(
+                &ThreadId::from_string(&request.session_id.0)
+                    .map_err(Error::into_internal_error)?,
+            )
+            .await;
         self.sessions.borrow_mut().remove(&request.session_id);
         self.session_roots
             .lock()
             .unwrap()
             .remove(&request.session_id);
-
         Ok(CloseSessionResponse::new())
     }
 
@@ -608,12 +610,12 @@ impl From<CodexAuthMethod> for AuthMethodId {
 impl From<CodexAuthMethod> for AuthMethod {
     fn from(method: CodexAuthMethod) -> Self {
         match method {
-            CodexAuthMethod::ChatGpt => AuthMethod::Agent(
+            CodexAuthMethod::ChatGpt => Self::Agent(
                 AuthMethodAgent::new(method, "Login with ChatGPT").description(
                     "Use your ChatGPT login with Codex CLI (requires a paid ChatGPT subscription)",
                 ),
             ),
-            CodexAuthMethod::CodexApiKey => AuthMethod::EnvVar(
+            CodexAuthMethod::CodexApiKey => Self::EnvVar(
                 AuthMethodEnvVar::new(
                     method,
                     format!("Use {CODEX_API_KEY_ENV_VAR}"),
@@ -623,7 +625,7 @@ impl From<CodexAuthMethod> for AuthMethod {
                     "Requires setting the `{CODEX_API_KEY_ENV_VAR}` environment variable."
                 )),
             ),
-            CodexAuthMethod::OpenAiApiKey => AuthMethod::EnvVar(
+            CodexAuthMethod::OpenAiApiKey => Self::EnvVar(
                 AuthMethodEnvVar::new(
                     method,
                     format!("Use {OPENAI_API_KEY_ENV_VAR}"),

@@ -14,13 +14,13 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.23.1) | Rust (`codex-acp` v0.10.0) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.23.1) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded VaultAI delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-login`, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
 | **VaultAI adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
 | **Session RPC used by VaultAI** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
-| **ACP SDK version** | `@agentclientprotocol/sdk` 0.17.0 | `agent-client-protocol` 0.10.2 | Gemini CLI ACP implementation |
+| **ACP SDK version** | `@agentclientprotocol/sdk` 0.17.0 | `agent-client-protocol` 0.10.4 | Gemini CLI ACP implementation |
 | **Vendor dir** | `vendor/Claude-agent-acp-upstream/` | `vendor/codex-acp/` | N/A |
 
 Notes:
@@ -29,6 +29,7 @@ Notes:
 - Gemini emits plans and available-command updates from the ACP stream, but VaultAI currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
 - The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.83`.
+- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, with a small local delta to preserve VaultAI review, diff, mode and user-input behavior.
 
 ---
 
@@ -219,7 +220,16 @@ Supported methods:
 
 Auth detection is not based only on persisted `auth_method`. VaultAI also considers environment variables and available secrets when computing the effective ready/authenticated state.
 
-VaultAI carries a local patch on `vendor/codex-acp` `v0.10.0` so `SessionModeState` / `Approval Preset` survives cases where upstream Codex expands a `workspace-write` sandbox with extra writable roots. Without this patch, Codex can stop emitting `modes` even though the session still has a valid approval+sandbox configuration.
+VaultAI still carries a bounded local delta on `vendor/codex-acp` `v0.11.1`.
+
+That delta is intentional and currently lives mainly in `src/thread.rs` and `src/codex_agent.rs` to preserve product behavior that the desktop app already depends on:
+
+- VaultAI-specific metadata for status, plan, diff hunks and `user_input_request`
+- reconstruction of `unified_diff` into `old_text` / `new_text` for inline review and the edited-files panel
+- resilient `modes` / approval-preset behavior when Codex expands writable roots under `workspace-write`
+- actor shutdown semantics that do not keep internal message channels alive after external senders are dropped
+
+In other words, Codex is now aligned with upstream `0.11.1`, but it is not a raw upstream checkout. The remaining delta is product-facing, not incidental.
 
 ### Gemini
 
@@ -406,7 +416,7 @@ vendor/
 │   ├── dist/index.js
 │   ├── node_modules/
 │   └── package.json
-└── codex-acp/                        # codex-acp v0.10.0 + local VaultAI patch
+└── codex-acp/                        # codex-acp v0.11.1 (upstream c3e95ca + bounded VaultAI delta)
     ├── src/main.rs
     └── Cargo.toml
 ```

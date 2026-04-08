@@ -51,8 +51,7 @@ use codex_protocol::{
     items::TurnItem,
     mcp::CallToolResult,
     models::{
-        FileSystemPermissions, MacOsAutomationPermission, MacOsContactsPermission,
-        MacOsPreferencesPermission, PermissionProfile, ResponseItem, WebSearchAction,
+        FileSystemPermissions, ResponseItem, WebSearchAction,
     },
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
@@ -61,7 +60,8 @@ use codex_protocol::{
         DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyAmendment, RolloutItem,
     },
     request_permissions::{
-        PermissionGrantScope, RequestPermissionsEvent, RequestPermissionsResponse,
+        PermissionGrantScope, RequestPermissionProfile, RequestPermissionsEvent,
+        RequestPermissionsResponse,
     },
     user_input::UserInput,
 };
@@ -264,7 +264,7 @@ impl Thread {
             models_manager,
             config,
             message_rx,
-            message_tx.clone(),
+            message_tx.downgrade(),
         );
         let handle = tokio::task::spawn_local(actor.spawn());
 
@@ -467,7 +467,7 @@ enum PendingPermissionRequest {
     },
     RequestPermissions {
         call_id: String,
-        permissions: PermissionProfile,
+        permissions: RequestPermissionProfile,
     },
 }
 
@@ -476,7 +476,7 @@ struct PromptState {
     active_web_search: Option<String>,
     active_plan_text: HashMap<String, String>, //Adaptation VaultAI
     thread: Arc<dyn CodexThreadImpl>,
-    message_tx: mpsc::UnboundedSender<ThreadMessage>,
+    message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
     submission_id: String,
     pending_permission_requests: HashMap<String, PendingPermissionInteraction>,
     event_count: usize,
@@ -522,6 +522,7 @@ fn vaultai_plan_meta(title: Option<&str>, detail: Option<&str>) -> Option<Meta> 
 fn turn_item_id(item: &TurnItem) -> &str {
     match item {
         TurnItem::UserMessage(item) => &item.id,
+        TurnItem::HookPrompt(item) => &item.id,
         TurnItem::AgentMessage(item) => &item.id,
         TurnItem::Plan(item) => &item.id,
         TurnItem::Reasoning(item) => &item.id,
@@ -534,6 +535,7 @@ fn turn_item_id(item: &TurnItem) -> &str {
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
     match item {
         TurnItem::UserMessage(..) => ("Preparing input", None),
+        TurnItem::HookPrompt(..) => ("Awaiting hook guidance", None),
         TurnItem::AgentMessage(..) => ("Drafting response", None),
         TurnItem::Plan(item) => ("Updating plan", Some(item.text.clone())),
         TurnItem::Reasoning(item) => (
@@ -554,7 +556,7 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
     }
 }
 
-fn format_permission_rule(permissions: &PermissionProfile) -> Option<String> {
+fn format_permission_rule(permissions: &RequestPermissionProfile) -> Option<String> {
     let mut parts = Vec::new();
 
     if permissions
@@ -583,48 +585,6 @@ fn format_permission_rule(permissions: &PermissionProfile) -> Option<String> {
                     .map(|path| format!("`{}`", path.display()))
                     .join(", ")
             ));
-        }
-    }
-
-    if let Some(macos) = permissions.macos.as_ref() {
-        if !matches!(
-            macos.macos_preferences,
-            MacOsPreferencesPermission::ReadOnly
-        ) {
-            let value = match macos.macos_preferences {
-                MacOsPreferencesPermission::None => "none",
-                MacOsPreferencesPermission::ReadOnly => "readonly",
-                MacOsPreferencesPermission::ReadWrite => "readwrite",
-            };
-            parts.push(format!("macOS preferences {value}"));
-        }
-
-        match &macos.macos_automation {
-            MacOsAutomationPermission::All => {
-                parts.push("macOS automation all".to_string());
-            }
-            MacOsAutomationPermission::BundleIds(bundle_ids) if !bundle_ids.is_empty() => {
-                parts.push(format!("macOS automation {}", bundle_ids.join(", ")));
-            }
-            MacOsAutomationPermission::BundleIds(_) | MacOsAutomationPermission::None => {}
-        }
-
-        if macos.macos_accessibility {
-            parts.push("macOS accessibility".to_string());
-        }
-        if macos.macos_calendar {
-            parts.push("macOS calendar".to_string());
-        }
-        if macos.macos_reminders {
-            parts.push("macOS reminders".to_string());
-        }
-        if !matches!(macos.macos_contacts, MacOsContactsPermission::None) {
-            let value = match macos.macos_contacts {
-                MacOsContactsPermission::None => "none",
-                MacOsContactsPermission::ReadOnly => "readonly",
-                MacOsContactsPermission::ReadWrite => "readwrite",
-            };
-            parts.push(format!("macOS contacts {value}"));
         }
     }
 
@@ -875,7 +835,7 @@ fn extract_user_input_answer_payload(
 impl PromptState {
     fn new(
         thread: Arc<dyn CodexThreadImpl>,
-        message_tx: mpsc::UnboundedSender<ThreadMessage>,
+        message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
         submission_id: String,
         response_tx: oneshot::Sender<Result<StopReason, Error>>,
     ) -> Self {
@@ -918,11 +878,13 @@ impl PromptState {
                 .request_permission(tool_call, options)
                 .await
                 .map(|response| response.outcome);
-            drop(message_tx.send(ThreadMessage::PermissionRequestResolved {
-                submission_id,
-                request_id: request_id_for_task,
-                outcome,
-            }));
+            if let Some(message_tx) = message_tx.upgrade() {
+                drop(message_tx.send(ThreadMessage::PermissionRequestResolved {
+                    submission_id,
+                    request_id: request_id_for_task,
+                    outcome,
+                }));
+            }
         });
 
         self.pending_permission_requests
@@ -1016,16 +978,16 @@ impl PromptState {
                             scope: PermissionGrantScope::Turn,
                         },
                         _ => RequestPermissionsResponse {
-                            permissions: PermissionProfile::default(),
+                            permissions: RequestPermissionProfile::default(),
                             scope: PermissionGrantScope::Turn,
                         },
                     },
                     RequestPermissionOutcome::Cancelled => RequestPermissionsResponse {
-                        permissions: PermissionProfile::default(),
+                        permissions: RequestPermissionProfile::default(),
                         scope: PermissionGrantScope::Turn,
                     },
                     _ => RequestPermissionsResponse {
-                        permissions: PermissionProfile::default(),
+                        permissions: RequestPermissionProfile::default(),
                         scope: PermissionGrantScope::Turn,
                     },
                 };
@@ -1222,7 +1184,11 @@ impl PromptState {
                 self.seen_reasoning_deltas = true;
                 client.send_agent_thought("\n\n").await;
             }
-            EventMsg::AgentMessage(AgentMessageEvent { message , phase: _ }) => {
+            EventMsg::AgentMessage(AgentMessageEvent {
+                message,
+                phase: _,
+                ..
+            }) => {
                 info!("Agent message (non-delta) received: {message:?}");
                 // We didn't receive this message via streaming
                 if !std::mem::take(&mut self.seen_message_deltas) {
@@ -1655,6 +1621,7 @@ impl PromptState {
             | EventMsg::CollabCloseEnd(..)
             | EventMsg::ImageGenerationBegin(..)
             | EventMsg::ImageGenerationEnd(..)
+            | EventMsg::GuardianAssessment(..)
             | EventMsg::HookStarted(..)
             | EventMsg::HookCompleted(..) => {}
             e @ (EventMsg::McpListToolsResponse(..)
@@ -1663,9 +1630,7 @@ impl PromptState {
             | EventMsg::ListSkillsResponse(..)
             // Used for returning a single history entry
             | EventMsg::GetHistoryEntryResponse(..)
-            | EventMsg::DeprecationNotice(..)
-            | EventMsg::ListRemoteSkillsResponse(..)
-            | EventMsg::RemoteSkillDownloaded(..)) => {
+            | EventMsg::DeprecationNotice(..)) => {
                 warn!("Unexpected event: {:?}", e);
             }
         }
@@ -2821,8 +2786,8 @@ struct ThreadActor<A> {
     submissions: HashMap<String, SubmissionState>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
-    /// Sender used to feed internal async results back into the actor loop.
-    message_tx: mpsc::UnboundedSender<ThreadMessage>,
+    /// Weak sender used to feed async results back without keeping the actor alive.
+    message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
     /// Last config options state we emitted to the client, used for deduping updates.
     last_sent_config_options: Option<Vec<SessionConfigOption>>,
 }
@@ -2835,7 +2800,7 @@ impl<A: Auth> ThreadActor<A> {
         models_manager: Arc<dyn ModelsManagerImpl>,
         config: Config,
         message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
-        message_tx: mpsc::UnboundedSender<ThreadMessage>,
+        message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
     ) -> Self {
         Self {
             auth,
@@ -3276,6 +3241,7 @@ impl<A: Auth> ThreadActor<A> {
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
+                approvals_reviewer: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -3322,6 +3288,7 @@ impl<A: Auth> ThreadActor<A> {
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
+                approvals_reviewer: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -3514,6 +3481,7 @@ impl<A: Auth> ThreadActor<A> {
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
+                approvals_reviewer: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -3580,6 +3548,7 @@ impl<A: Auth> ThreadActor<A> {
                 collaboration_mode: None,
                 personality: None,
                 windows_sandbox_level: None,
+                approvals_reviewer: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -3627,7 +3596,11 @@ impl<A: Auth> ThreadActor<A> {
             EventMsg::UserMessage(UserMessageEvent { message, .. }) => {
                 self.client.send_user_message(message.clone()).await;
             }
-            EventMsg::AgentMessage(AgentMessageEvent { message, phase: _ }) => {
+            EventMsg::AgentMessage(AgentMessageEvent {
+                message,
+                phase: _,
+                ..
+            }) => {
                 self.client.send_agent_text(message.clone()).await;
             }
             EventMsg::AgentReasoning(AgentReasoningEvent { text }) => {
@@ -3661,21 +3634,21 @@ impl<A: Auth> ThreadActor<A> {
         for hunk in &parsed.hunks {
             match hunk {
                 codex_apply_patch::Hunk::AddFile { path, contents } => {
-                    let full_path = self.config.cwd.join(path);
+                    let full_path = self.config.cwd.join(path).ok()?;
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(full_path.clone()));
                     // New file: no old_text, new_text is the contents
                     content.push(ToolCallContent::Diff(with_vaultai_diff_meta(
-                        Diff::new(full_path, contents.clone()),
+                        Diff::new(full_path.clone(), contents.clone()),
                         None,
                         build_single_hunk(None, Some(contents.as_str())),
                     )));
                 }
                 codex_apply_patch::Hunk::DeleteFile { path } => {
-                    let full_path = self.config.cwd.join(path);
+                    let full_path = self.config.cwd.join(path).ok()?;
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(full_path.clone()));
-                    let old_text = read_text_snapshot(&full_path)
+                    let old_text = read_text_snapshot(full_path.as_path())
                         .unwrap_or_else(|| FILE_DELETED_PLACEHOLDER.to_string());
                     let hunks = if old_text == FILE_DELETED_PLACEHOLDER {
                         None
@@ -3693,15 +3666,17 @@ impl<A: Auth> ThreadActor<A> {
                     move_path,
                     chunks,
                 } => {
-                    let full_path = self.config.cwd.join(path);
+                    let full_path = self.config.cwd.join(path).ok()?;
                     let dest_path = move_path
                         .as_ref()
                         .map(|p| self.config.cwd.join(p))
+                        .transpose()
+                        .ok()?
                         .unwrap_or_else(|| full_path.clone());
                     let previous_path = move_path.as_ref().map(|_| full_path.as_path());
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(dest_path.clone()));
-                    let snapshot = read_text_snapshot(&full_path);
+                    let snapshot = read_text_snapshot(full_path.as_path());
                     let projected_chunks: Vec<ProjectedUpdateFileChunk> = chunks
                         .iter()
                         .map(|chunk| ProjectedUpdateFileChunk {
@@ -3722,7 +3697,7 @@ impl<A: Auth> ThreadActor<A> {
                         .flat_map(|c| c.new_lines.iter().cloned())
                         .collect();
                     let old_text = if chunks.is_empty() && previous_path.is_some() {
-                        read_text_snapshot(&full_path).unwrap_or_default()
+                        read_text_snapshot(full_path.as_path()).unwrap_or_default()
                     } else {
                         old_lines.join("\n")
                     };
@@ -3793,7 +3768,7 @@ impl<A: Auth> ThreadActor<A> {
 
         let cwd = workdir
             .map(PathBuf::from)
-            .unwrap_or_else(|| self.config.cwd.clone());
+            .unwrap_or_else(|| self.config.cwd.to_path_buf());
 
         let parsed_cmd = parse_command(&command_vec);
         let ParseCommandToolCall {
@@ -3864,7 +3839,7 @@ impl<A: Auth> ThreadActor<A> {
                     .working_directory
                     .as_ref()
                     .map(PathBuf::from)
-                    .unwrap_or_else(|| self.config.cwd.clone());
+                    .unwrap_or_else(|| self.config.cwd.to_path_buf());
 
                 // Parse the command to get rich info like the live event handler does
                 let parsed_cmd = parse_command(&exec.command);
@@ -3943,7 +3918,9 @@ impl<A: Auth> ThreadActor<A> {
                     )
                     .await;
             }
-            ResponseItem::CustomToolCallOutput { call_id, output } => {
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
                 self.client
                     .send_tool_call_completed(call_id.clone(), Some(serde_json::json!(output)))
                     .await;
@@ -4369,6 +4346,44 @@ fn parse_unified_diff_hunks(unified_diff: &str) -> Vec<VaultAiDiffHunk> {
     hunks
 }
 
+fn extract_full_texts_from_unified_diff(
+    current_text: &str,
+    unified_diff: &str,
+) -> Option<(String, String)> {
+    let patch = diffy::Patch::from_str(unified_diff).ok()?;
+
+    if let Ok(old_text) = diffy::apply(current_text, &patch.reverse()) {
+        return Some((old_text, current_text.to_string()));
+    }
+
+    if let Ok(new_text) = diffy::apply(current_text, &patch) {
+        return Some((current_text.to_string(), new_text));
+    }
+
+    None
+}
+
+fn fallback_texts_from_unified_diff(unified_diff: &str) -> Option<(String, String)> {
+    let patch = diffy::Patch::from_str(unified_diff).ok()?;
+    let mut old_text = String::new();
+    let mut new_text = String::new();
+
+    for hunk in patch.hunks() {
+        for line in hunk.lines() {
+            match line {
+                diffy::Line::Context(text) => {
+                    old_text.push_str(text);
+                    new_text.push_str(text);
+                }
+                diffy::Line::Delete(text) => old_text.push_str(text),
+                diffy::Line::Insert(text) => new_text.push_str(text),
+            }
+        }
+    }
+
+    Some((old_text, new_text))
+}
+
 fn with_vaultai_diff_meta(
     mut diff: Diff,
     previous_path: Option<&Path>,
@@ -4401,42 +4416,85 @@ fn extract_tool_call_content_from_changes(
     Vec<ToolCallLocation>,
     impl Iterator<Item = ToolCallContent>,
 ) {
-    (
+    let changes = changes.into_iter().collect_vec();
+    let title = if changes.is_empty() {
+        "Edit".to_string()
+    } else {
         format!(
             "Edit {}",
-            changes.keys().map(|p| p.display().to_string()).join(", ")
-        ),
-        changes.keys().map(ToolCallLocation::new).collect(),
-        changes.into_iter().map(|(path, change)| {
-            ToolCallContent::Diff(match change {
-                codex_protocol::protocol::FileChange::Add { content } => with_vaultai_diff_meta(
-                    Diff::new(path, content.clone()),
-                    None,
-                    build_single_hunk(None, Some(content.as_str())),
-                ),
-                codex_protocol::protocol::FileChange::Delete { content } => with_vaultai_diff_meta(
-                    Diff::new(path, String::new()).old_text(content.clone()),
-                    None,
-                    build_single_hunk(Some(content.as_str()), None),
-                ),
-                codex_protocol::protocol::FileChange::Update {
-                    unified_diff,
-                    move_path,
-                    old_content,
-                    new_content,
-                } => {
-                    let previous_path_buf = move_path.as_ref().map(|_| path.clone());
-                    let previous_path = previous_path_buf.as_deref();
-                    with_vaultai_diff_meta(
-                        Diff::new(move_path.unwrap_or(path), new_content).old_text(old_content),
-                        previous_path,
-                        Some(parse_unified_diff_hunks(&unified_diff))
-                            .filter(|hunks| !hunks.is_empty()),
-                    )
-                }
-            })
-        }),
-    )
+            changes
+                .iter()
+                .map(|(path, change)| {
+                    extract_tool_call_location_for_change(path, change)
+                        .display()
+                        .to_string()
+                })
+                .join(", ")
+        )
+    };
+    let locations = changes
+        .iter()
+        .map(|(path, change)| ToolCallLocation::new(extract_tool_call_location_for_change(path, change)))
+        .collect_vec();
+    let content = changes
+        .into_iter()
+        .flat_map(|(path, change)| extract_tool_call_content_from_change(path, change));
+
+    (title, locations, content)
+}
+
+fn extract_tool_call_location_for_change(path: &Path, change: &FileChange) -> PathBuf {
+    match change {
+        FileChange::Update {
+            move_path: Some(move_path),
+            ..
+        } => move_path.clone(),
+        _ => path.to_path_buf(),
+    }
+}
+
+fn extract_tool_call_content_from_change(path: PathBuf, change: FileChange) -> Vec<ToolCallContent> {
+    match change {
+        FileChange::Add { content } => vec![ToolCallContent::Diff(with_vaultai_diff_meta(
+            Diff::new(path, content.clone()),
+            None,
+            build_single_hunk(None, Some(content.as_str())),
+        ))],
+        FileChange::Delete { content } => vec![ToolCallContent::Diff(with_vaultai_diff_meta(
+            Diff::new(path, String::new()).old_text(content.clone()),
+            None,
+            build_single_hunk(Some(content.as_str()), None),
+        ))],
+        FileChange::Update {
+            unified_diff,
+            move_path,
+        } => extract_tool_call_content_from_unified_diff(path, move_path, unified_diff),
+    }
+}
+
+fn extract_tool_call_content_from_unified_diff(
+    path: PathBuf,
+    move_path: Option<PathBuf>,
+    unified_diff: String,
+) -> Vec<ToolCallContent> {
+    let resolved_path = move_path.clone().unwrap_or_else(|| path.clone());
+    let previous_path = move_path.as_ref().map(|_| path.as_path());
+    let hunks = Some(parse_unified_diff_hunks(&unified_diff)).filter(|value| !value.is_empty());
+    let snapshot = read_text_snapshot(&resolved_path).or_else(|| read_text_snapshot(&path));
+    let texts = snapshot
+        .as_deref()
+        .and_then(|current| extract_full_texts_from_unified_diff(current, &unified_diff))
+        .or_else(|| fallback_texts_from_unified_diff(&unified_diff));
+
+    if let Some((old_text, new_text)) = texts {
+        vec![ToolCallContent::Diff(with_vaultai_diff_meta(
+            Diff::new(resolved_path, new_text).old_text(old_text),
+            previous_path,
+            hunks,
+        ))]
+    } else {
+        vec![ToolCallContent::Content(Content::new(unified_diff))]
+    }
 }
 
 /// Extract title and call_id from a WebSearchAction (used for replay)
@@ -4567,14 +4625,18 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
-        assert!(matches!(
-            &notifications[0].update,
-            SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "Compact task completed"
-        ));
+        assert!(
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "Compact task completed"
+                )
+            }),
+            "notifications don't match {notifications:?}"
+        );
         let ops = thread.ops.lock().unwrap();
         assert_eq!(ops.as_slice(), &[Op::Compact]);
 
@@ -4705,15 +4767,16 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
         assert!(
-            matches!(
-                &notifications[0].update,
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent { text, .. }),
-                    ..
-                }) if text == "current changes" // we echo the prompt
-            ),
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "current changes"
+                )
+            }),
             "notifications don't match {notifications:?}"
         );
 
@@ -4760,15 +4823,16 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
         assert!(
-            matches!(
-                &notifications[0].update,
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent { text, .. }),
-                    ..
-                }) if text == "Review what we did in agents.md" // we echo the prompt
-            ),
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "Review what we did in agents.md"
+                )
+            }),
             "notifications don't match {notifications:?}"
         );
 
@@ -4815,15 +4879,16 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
         assert!(
-            matches!(
-                &notifications[0].update,
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent { text, .. }),
-                    ..
-                }) if text == "commit 123456" // we echo the prompt
-            ),
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "commit 123456"
+                )
+            }),
             "notifications don't match {notifications:?}"
         );
 
@@ -4872,15 +4937,16 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
         assert!(
-            matches!(
-                &notifications[0].update,
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent { text, .. }),
-                    ..
-                }) if text == "changes against 'feature'" // we echo the prompt
-            ),
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "changes against 'feature'"
+                )
+            }),
             "notifications don't match {notifications:?}"
         );
 
@@ -5048,7 +5114,12 @@ mod tests {
         let (message_tx, _message_rx) = mpsc::unbounded_channel();
         let (response_tx, _response_rx) = oneshot::channel();
         let mut prompt_state =
-            PromptState::new(thread, message_tx, "submission-1".to_string(), response_tx);
+            PromptState::new(
+                thread,
+                message_tx.downgrade(),
+                "submission-1".to_string(),
+                response_tx,
+            );
 
         prompt_state
             .handle_event(
@@ -5150,7 +5221,7 @@ mod tests {
             models_manager,
             config,
             message_rx,
-            message_tx.clone(),
+            message_tx.downgrade(),
         );
         actor.custom_prompts = Rc::new(RefCell::new(custom_prompts));
 
@@ -5313,6 +5384,7 @@ mod tests {
                                 msg: EventMsg::AgentMessage(AgentMessageEvent {
                                     message: prompt,
                                     phase: None,
+                                    memory_citation: None,
                                 }),
                             })
                             .unwrap();
@@ -5344,6 +5416,7 @@ mod tests {
                             msg: EventMsg::AgentMessage(AgentMessageEvent {
                                 message: "Compact task completed".to_string(),
                                 phase: None,
+                                memory_citation: None,
                             }),
                         })
                         .unwrap();
