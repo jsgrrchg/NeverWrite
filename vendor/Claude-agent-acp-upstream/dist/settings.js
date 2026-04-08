@@ -2,9 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CLAUDE_CONFIG_DIR } from "./acp-agent.js";
 /**
- * Reads and parses a JSON settings file, returning an empty object if not found or invalid
+ * Reads and parses a JSON settings file, returning an empty object if not found or invalid.
+ * Missing files are ignored silently, but malformed or unreadable files are logged.
  */
-async function loadSettingsFile(filePath) {
+async function loadSettingsFile(filePath, logger) {
     if (!filePath) {
         return {};
     }
@@ -12,7 +13,11 @@ async function loadSettingsFile(filePath) {
         const content = await fs.promises.readFile(filePath, "utf-8");
         return JSON.parse(content);
     }
-    catch {
+    catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+            return {};
+        }
+        logger?.error(`Failed to load settings from ${filePath}:`, error);
         return {};
     }
 }
@@ -51,7 +56,9 @@ export class SettingsManager {
         this.mergedSettings = {};
         this.watchers = [];
         this.initialized = false;
+        this.disposed = false;
         this.debounceTimer = null;
+        this.initPromise = null;
         this.cwd = cwd;
         this.onChange = options?.onChange;
         this.logger = options?.logger ?? console;
@@ -63,9 +70,18 @@ export class SettingsManager {
         if (this.initialized) {
             return;
         }
-        await this.loadAllSettings();
-        this.setupWatchers();
-        this.initialized = true;
+        if (this.initPromise) {
+            return this.initPromise;
+        }
+        this.disposed = false;
+        this.initPromise = this.loadAllSettings().then(() => {
+            if (!this.disposed) {
+                this.setupWatchers();
+                this.initialized = true;
+            }
+            this.initPromise = null;
+        });
+        return this.initPromise;
     }
     /**
      * Returns the path to the user settings file
@@ -90,10 +106,10 @@ export class SettingsManager {
      */
     async loadAllSettings() {
         const [userSettings, projectSettings, localSettings, enterpriseSettings] = await Promise.all([
-            loadSettingsFile(this.getUserSettingsPath()),
-            loadSettingsFile(this.getProjectSettingsPath()),
-            loadSettingsFile(this.getLocalSettingsPath()),
-            loadSettingsFile(getManagedSettingsPath()),
+            loadSettingsFile(this.getUserSettingsPath(), this.logger),
+            loadSettingsFile(this.getProjectSettingsPath(), this.logger),
+            loadSettingsFile(this.getLocalSettingsPath(), this.logger),
+            loadSettingsFile(getManagedSettingsPath(), this.logger),
         ]);
         this.userSettings = userSettings;
         this.projectSettings = projectSettings;
@@ -172,9 +188,14 @@ export class SettingsManager {
         }
         this.debounceTimer = setTimeout(async () => {
             this.debounceTimer = null;
+            if (this.disposed) {
+                return;
+            }
             try {
                 await this.loadAllSettings();
-                this.onChange?.();
+                if (!this.disposed) {
+                    this.onChange?.();
+                }
             }
             catch (error) {
                 this.logger.error("Failed to reload settings:", error);
@@ -202,13 +223,15 @@ export class SettingsManager {
         }
         this.dispose();
         this.cwd = cwd;
-        this.initialized = false;
         await this.initialize();
     }
     /**
      * Disposes of file watchers and cleans up resources
      */
     dispose() {
+        this.disposed = true;
+        this.initialized = false;
+        this.initPromise = null;
         if (this.debounceTimer) {
             clearTimeout(this.debounceTimer);
             this.debounceTimer = null;
@@ -217,6 +240,5 @@ export class SettingsManager {
             watcher.close();
         }
         this.watchers = [];
-        this.initialized = false;
     }
 }

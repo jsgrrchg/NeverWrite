@@ -43,10 +43,16 @@ const aiApiMocks = vi.hoisted(() => ({
                   authReady: false,
                   authMethods: [
                       {
-                          id: "claude-login",
-                          name: "Claude login",
+                          id: "claude-ai-login",
+                          name: "Claude subscription",
                           description:
-                              "Open a terminal-based Claude login flow.",
+                              "Open a terminal-based Claude subscription login flow.",
+                      },
+                      {
+                          id: "console-login",
+                          name: "Anthropic Console",
+                          description:
+                              "Open a terminal-based Anthropic Console login flow.",
                       },
                       {
                           id: "gateway",

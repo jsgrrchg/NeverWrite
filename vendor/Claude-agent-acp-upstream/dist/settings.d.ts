@@ -50,7 +50,9 @@ export declare class SettingsManager {
     private onChange?;
     private logger;
     private initialized;
+    private disposed;
     private debounceTimer;
+    private initPromise;
     constructor(cwd: string, options?: SettingsManagerOptions);
     /**
      * Initialize the settings manager by loading all settings and setting up file watchers

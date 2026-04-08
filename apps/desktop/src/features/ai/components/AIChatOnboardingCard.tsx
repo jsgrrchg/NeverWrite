@@ -710,6 +710,12 @@ function getAuthMethodHelpText(methodId: string, runtimeName: string) {
     if (methodId === "chatgpt") {
         return "VaultAI will open the browser to complete sign-in.";
     }
+    if (methodId === "claude-ai-login") {
+        return "VaultAI will open a limited sign-in terminal for your Claude subscription inside the app.";
+    }
+    if (methodId === "console-login") {
+        return "VaultAI will open a limited sign-in terminal for Anthropic Console inside the app.";
+    }
     if (methodId === "claude-login") {
         return "VaultAI will open a limited sign-in terminal inside the app.";
     }
@@ -735,7 +741,11 @@ function getContinueLabel(methodId?: string) {
     if (methodId === "chatgpt") {
         return "Continue with ChatGPT";
     }
-    if (methodId === "claude-login") {
+    if (
+        methodId === "claude-login" ||
+        methodId === "claude-ai-login" ||
+        methodId === "console-login"
+    ) {
         return "Open sign-in terminal";
     }
     if (methodId === "login_with_google") {

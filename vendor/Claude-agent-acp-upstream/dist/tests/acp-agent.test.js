@@ -1140,6 +1140,7 @@ describe("stop reason propagation", () => {
             input,
             cancelled: false,
             cwd: "/test",
+            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: {
                 currentModeId: "default",
                 availableModes: [],
@@ -1166,6 +1167,7 @@ describe("stop reason propagation", () => {
         const agent = createMockAgent();
         injectSession(agent, [
             createResultMessage({ subtype: "success", stop_reason: "max_tokens", is_error: false }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
         ]);
         const response = await agent.prompt({
             sessionId: "test-session",
@@ -1182,6 +1184,7 @@ describe("stop reason propagation", () => {
                 is_error: true,
                 result: "Token limit reached",
             }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
         ]);
         const response = await agent.prompt({
             sessionId: "test-session",
@@ -1198,6 +1201,7 @@ describe("stop reason propagation", () => {
                 is_error: true,
                 errors: ["some error"],
             }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
         ]);
         const response = await agent.prompt({
             sessionId: "test-session",
@@ -1256,6 +1260,7 @@ describe("stop reason propagation", () => {
             query: messageGenerator(),
             input,
             cwd: "/tmp/test",
+            sessionFingerprint: JSON.stringify({ cwd: "/tmp/test", mcpServers: [] }),
             cancelled: false,
             modes: {
                 currentModeId: "default",
@@ -1318,6 +1323,7 @@ describe("session/close", () => {
             input: new Pushable(),
             cancelled: false,
             cwd: "/test",
+            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: {
                 currentModeId: "default",
                 availableModes: [],
@@ -1369,5 +1375,339 @@ describe("session/close", () => {
         await agent.unstable_closeSession({ sessionId: "session-a" });
         expect(agent.sessions["session-a"]).toBeUndefined();
         expect(agent.sessions["session-b"]).toBeDefined();
+    });
+});
+describe("getOrCreateSession param change detection", () => {
+    function createMockAgent() {
+        const mockClient = {
+            sessionUpdate: async () => { },
+        };
+        return new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+    }
+    function injectSession(agent, sessionId, opts = {}) {
+        const cwd = opts.cwd ?? "/test";
+        const mcpServers = (opts.mcpServers ?? []);
+        function* empty() { }
+        const gen = Object.assign(empty(), {
+            interrupt: vi.fn(),
+            supportedCommands: vi.fn().mockResolvedValue([]),
+        });
+        agent.sessions[sessionId] = {
+            query: gen,
+            input: new Pushable(),
+            cancelled: false,
+            cwd,
+            sessionFingerprint: JSON.stringify({
+                cwd,
+                mcpServers: [...mcpServers].sort((a, b) => a.name.localeCompare(b.name)),
+            }),
+            modes: { currentModeId: "default", availableModes: [] },
+            models: { currentModelId: "default", availableModels: [] },
+            settingsManager: { dispose: vi.fn() },
+            accumulatedUsage: {
+                inputTokens: 0,
+                outputTokens: 0,
+                cachedReadTokens: 0,
+                cachedWriteTokens: 0,
+            },
+            configOptions: [],
+            promptRunning: false,
+            pendingMessages: new Map(),
+            nextPendingOrder: 0,
+            abortController: new AbortController(),
+        };
+        return agent.sessions[sessionId];
+    }
+    it("returns cached session when params are unchanged", async () => {
+        const agent = createMockAgent();
+        const session = injectSession(agent, "s1", { cwd: "/project" });
+        await agent.unstable_resumeSession({
+            sessionId: "s1",
+            cwd: "/project",
+            mcpServers: [],
+        });
+        expect(agent.sessions["s1"]).toBe(session);
+        expect(session.settingsManager.dispose).not.toHaveBeenCalled();
+    });
+    it("tears down existing session when cwd changes", async () => {
+        const agent = createMockAgent();
+        const session = injectSession(agent, "s1", { cwd: "/old" });
+        const createSessionSpy = vi
+            .spyOn(agent, "createSession")
+            .mockRejectedValue(new Error("mock"));
+        await expect(agent.unstable_resumeSession({ sessionId: "s1", cwd: "/new", mcpServers: [] })).rejects.toThrow("mock");
+        expect(session.settingsManager.dispose).toHaveBeenCalled();
+        expect(session.abortController.signal.aborted).toBe(true);
+        expect(session.query.interrupt).toHaveBeenCalled();
+        expect(agent.sessions["s1"]).toBeUndefined();
+        expect(createSessionSpy).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/new" }), expect.objectContaining({ resume: "s1" }));
+    });
+    it("tears down existing session when mcpServers change", async () => {
+        const agent = createMockAgent();
+        const session = injectSession(agent, "s1", { cwd: "/project" });
+        const createSessionSpy = vi
+            .spyOn(agent, "createSession")
+            .mockRejectedValue(new Error("mock"));
+        await expect(agent.unstable_resumeSession({
+            sessionId: "s1",
+            cwd: "/project",
+            mcpServers: [{ name: "new-server", command: "node", args: ["server.js"], env: [] }],
+        })).rejects.toThrow("mock");
+        expect(session.settingsManager.dispose).toHaveBeenCalled();
+        expect(session.abortController.signal.aborted).toBe(true);
+        expect(agent.sessions["s1"]).toBeUndefined();
+        expect(createSessionSpy).toHaveBeenCalled();
+    });
+    it("treats mcpServers in different order as unchanged", async () => {
+        const agent = createMockAgent();
+        const servers = [
+            { name: "b-server", command: "node", args: ["b.js"], env: [] },
+            { name: "a-server", command: "node", args: ["a.js"], env: [] },
+        ];
+        const session = injectSession(agent, "s1", {
+            cwd: "/project",
+            mcpServers: servers,
+        });
+        await agent.unstable_resumeSession({
+            sessionId: "s1",
+            cwd: "/project",
+            mcpServers: [...servers].reverse(),
+        });
+        expect(agent.sessions["s1"]).toBe(session);
+        expect(session.settingsManager.dispose).not.toHaveBeenCalled();
+    });
+});
+describe("usage_update computation", () => {
+    function createAssistantMessage(overrides) {
+        return {
+            type: "assistant",
+            parent_tool_use_id: null,
+            uuid: randomUUID(),
+            session_id: "test-session",
+            message: {
+                model: overrides.model,
+                content: [{ type: "text", text: "hello" }],
+                usage: overrides.usage ?? {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_input_tokens: 20,
+                    cache_creation_input_tokens: 10,
+                },
+            },
+        };
+    }
+    function createResultMessageWithModel(overrides) {
+        return {
+            type: "result",
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+            result: "",
+            errors: [],
+            duration_ms: 0,
+            duration_api_ms: 0,
+            num_turns: 1,
+            total_cost_usd: 0.01,
+            usage: {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            modelUsage: overrides.modelUsage,
+            permission_denials: [],
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+    }
+    function createMockAgentWithCapture() {
+        const updates = [];
+        const mockClient = {
+            sessionUpdate: async (notification) => {
+                updates.push(notification);
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        return { agent, updates };
+    }
+    function injectSession(agent, messages) {
+        const input = new Pushable();
+        async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            const { value: userMessage, done } = await iter.next();
+            if (!done && userMessage) {
+                yield {
+                    type: "user",
+                    message: userMessage.message,
+                    parent_tool_use_id: null,
+                    uuid: userMessage.uuid,
+                    session_id: "test-session",
+                    isReplay: true,
+                };
+            }
+            yield* messages;
+        }
+        agent.sessions["test-session"] = {
+            query: messageGenerator(),
+            input,
+            cancelled: false,
+            cwd: "/test",
+            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+            modes: {
+                currentModeId: "default",
+                availableModes: [],
+            },
+            models: {
+                currentModelId: "default",
+                availableModels: [],
+            },
+            settingsManager: {},
+            accumulatedUsage: {
+                inputTokens: 0,
+                outputTokens: 0,
+                cachedReadTokens: 0,
+                cachedWriteTokens: 0,
+            },
+            configOptions: [],
+            promptRunning: false,
+            pendingMessages: new Map(),
+            nextPendingOrder: 0,
+            abortController: new AbortController(),
+        };
+    }
+    it("used sums all token types as post-turn context occupancy proxy", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        injectSession(agent, [
+            createAssistantMessage({
+                model: "claude-opus-4-20250514",
+                usage: {
+                    input_tokens: 1000,
+                    output_tokens: 500,
+                    cache_read_input_tokens: 200,
+                    cache_creation_input_tokens: 100,
+                },
+            }),
+            createResultMessageWithModel({
+                modelUsage: {
+                    "claude-opus-4-20250514": {
+                        inputTokens: 1000,
+                        outputTokens: 500,
+                        cacheReadInputTokens: 200,
+                        cacheCreationInputTokens: 100,
+                        webSearchRequests: 0,
+                        costUSD: 0.01,
+                        contextWindow: 1000000,
+                        maxOutputTokens: 16384,
+                    },
+                },
+            }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+        const usageUpdate = updates.find((u) => u.update?.sessionUpdate === "usage_update");
+        expect(usageUpdate).toBeDefined();
+        expect(usageUpdate.update.used).toBe(1800);
+    });
+    it("size reflects the current model's context window, not min across all", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        injectSession(agent, [
+            createAssistantMessage({ model: "claude-opus-4-20250514" }),
+            createResultMessageWithModel({
+                modelUsage: {
+                    "claude-opus-4-20250514": {
+                        inputTokens: 100,
+                        outputTokens: 50,
+                        cacheReadInputTokens: 20,
+                        cacheCreationInputTokens: 10,
+                        webSearchRequests: 0,
+                        costUSD: 0.01,
+                        contextWindow: 1000000,
+                        maxOutputTokens: 16384,
+                    },
+                    "claude-sonnet-4-20250514": {
+                        inputTokens: 50,
+                        outputTokens: 25,
+                        cacheReadInputTokens: 10,
+                        cacheCreationInputTokens: 5,
+                        webSearchRequests: 0,
+                        costUSD: 0.005,
+                        contextWindow: 200000,
+                        maxOutputTokens: 16384,
+                    },
+                },
+            }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+        const usageUpdate = updates.find((u) => u.update?.sessionUpdate === "usage_update");
+        expect(usageUpdate).toBeDefined();
+        expect(usageUpdate.update.size).toBe(1000000);
+    });
+    it("prefix-matches model usage keys and ignores synthetic/subagent messages", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        injectSession(agent, [
+            createAssistantMessage({ model: "claude-opus-4-6-20250514" }),
+            {
+                type: "assistant",
+                parent_tool_use_id: "tool_use_123",
+                uuid: randomUUID(),
+                session_id: "test-session",
+                message: {
+                    model: "claude-haiku-4-5-20251001",
+                    content: [{ type: "text", text: "subagent response" }],
+                    usage: {
+                        input_tokens: 50,
+                        output_tokens: 25,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                },
+            },
+            {
+                type: "assistant",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                message: {
+                    model: "<synthetic>",
+                    content: [{ type: "text", text: "compacted" }],
+                    usage: {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                },
+            },
+            createResultMessageWithModel({
+                modelUsage: {
+                    "claude-opus-4-6": {
+                        inputTokens: 100,
+                        outputTokens: 50,
+                        cacheReadInputTokens: 20,
+                        cacheCreationInputTokens: 10,
+                        webSearchRequests: 0,
+                        costUSD: 0.01,
+                        contextWindow: 1000000,
+                        maxOutputTokens: 16384,
+                    },
+                    "claude-haiku-4-5-20251001": {
+                        inputTokens: 50,
+                        outputTokens: 25,
+                        cacheReadInputTokens: 0,
+                        cacheCreationInputTokens: 0,
+                        webSearchRequests: 0,
+                        costUSD: 0.001,
+                        contextWindow: 200000,
+                        maxOutputTokens: 8192,
+                    },
+                },
+            }),
+            { type: "system", subtype: "session_state_changed", state: "idle" },
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+        const usageUpdate = updates.find((u) => u.update?.sessionUpdate === "usage_update");
+        expect(usageUpdate).toBeDefined();
+        expect(usageUpdate.update.size).toBe(1000000);
     });
 });

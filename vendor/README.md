@@ -42,7 +42,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/src/codex_agent.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot remains based on `@zed-industries/claude-agent-acp` `0.23.1`
+  - vendored snapshot remains based on `@agentclientprotocol/claude-agent-acp` `0.25.3`
 
 ## Current Codex Delta
 

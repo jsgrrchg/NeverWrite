@@ -23,6 +23,8 @@ type Session = {
     input: Pushable<SDKUserMessage>;
     cancelled: boolean;
     cwd: string;
+    /** Stable snapshot of session-defining params used to decide when a session must be recreated. */
+    sessionFingerprint: string;
     settingsManager: SettingsManager;
     accumulatedUsage: AccumulatedUsage;
     modes: SessionModeState;
@@ -136,6 +138,7 @@ export declare class ClaudeAcpAgent implements Agent {
     authenticate(_params: AuthenticateRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
     cancel(params: CancelNotification): Promise<void>;
+    private teardownSession;
     unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse>;
     unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse | void>;
     setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse>;

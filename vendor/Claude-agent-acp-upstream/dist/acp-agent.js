@@ -21,6 +21,10 @@ function sanitizeTitle(text) {
     }
     return sanitized.slice(0, MAX_TITLE_LENGTH - 1) + "…";
 }
+function computeSessionFingerprint(params) {
+    const servers = [...(params.mcpServers ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    return JSON.stringify({ cwd: params.cwd, mcpServers: servers });
+}
 function isStaticBinary() {
     return process.env.CLAUDE_AGENT_ACP_IS_SINGLE_FILE_BUN !== undefined;
 }
@@ -39,6 +43,7 @@ const ALLOW_BYPASS = !IS_ROOT || !!process.env.IS_SANDBOX;
 // message and without invoking the model.
 const LOCAL_ONLY_COMMANDS = new Set(["/context", "/heapdump", "/extra-usage"]);
 const PERMISSION_MODE_ALIASES = {
+    auto: "auto",
     default: "default",
     acceptedits: "acceptEdits",
     dontask: "dontAsk",
@@ -90,22 +95,37 @@ export class ClaudeAcpAgent {
                 },
             },
         };
-        const terminalAuthMethod = {
-            description: "Run `claude /login` in the terminal",
-            name: "Log in with Claude",
-            id: "claude-login",
-            type: "terminal",
-            args: ["--cli"],
-        };
         const supportsTerminalAuth = request.clientCapabilities?.auth?.terminal === true;
-        // If client supports terminal-auth capability, use that instead.
         const supportsMetaTerminalAuth = request.clientCapabilities?._meta?.["terminal-auth"] === true;
+        const claudeLoginMethod = {
+            description: "Use Claude subscription ",
+            name: "Claude Subscription",
+            id: "claude-ai-login",
+            type: "terminal",
+            args: ["--cli", "auth", "login", "--claudeai"],
+        };
+        const consoleLoginMethod = {
+            description: "Use Anthropic Console (API usage billing)",
+            name: "Anthropic Console",
+            id: "console-login",
+            type: "terminal",
+            args: ["--cli", "auth", "login", "--console"],
+        };
+        // If client supports terminal-auth capability, use that instead.
         if (supportsMetaTerminalAuth) {
-            terminalAuthMethod._meta = {
+            const baseArgs = process.argv.slice(1);
+            claudeLoginMethod._meta = {
                 "terminal-auth": {
                     command: process.execPath,
-                    args: [...process.argv.slice(1), "--cli"],
+                    args: [...baseArgs, "--cli", "auth", "login", "--claudeai"],
                     label: "Claude Login",
+                },
+            };
+            consoleLoginMethod._meta = {
+                "terminal-auth": {
+                    command: process.execPath,
+                    args: [...baseArgs, "--cli", "auth", "login", "--console"],
+                    label: "Anthropic Console Login",
                 },
             };
         }
@@ -140,8 +160,9 @@ export class ClaudeAcpAgent {
             },
             authMethods: [
                 ...(!shouldHideClaudeAuth() && (supportsTerminalAuth || supportsMetaTerminalAuth)
-                    ? [terminalAuthMethod]
+                    ? [claudeLoginMethod]
                     : []),
+                ...(supportsTerminalAuth || supportsMetaTerminalAuth ? [consoleLoginMethod] : []),
                 ...(supportsGatewayAuth ? [gatewayAuthMethod] : []),
             ],
         };
@@ -231,18 +252,15 @@ export class ClaudeAcpAgent {
             cachedWriteTokens: 0,
         };
         let lastAssistantTotalUsage = null;
+        let lastAssistantModel = null;
+        let lastContextWindowSize = 200000;
         const userMessage = promptToClaude(params);
         const promptUuid = randomUUID();
         userMessage.uuid = promptUuid;
-        let promptReplayed = false;
         // These local-only commands return a result without replaying the user
-        // message. Mark promptReplayed=true so their result isn't consumed as a
-        // background task result.
+        // message.
         const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
         const isLocalOnlyCommand = firstText.startsWith("/") && LOCAL_ONLY_COMMANDS.has(firstText.split(" ", 1)[0]);
-        if (isLocalOnlyCommand) {
-            promptReplayed = true;
-        }
         if (session.promptRunning) {
             session.input.push(userMessage);
             const order = session.nextPendingOrder++;
@@ -252,15 +270,13 @@ export class ClaudeAcpAgent {
             if (cancelled) {
                 return { stopReason: "cancelled" };
             }
-            // The replay resolved the promise, mark in this loop too,
-            // so we don't treat the next result as a background task's result.
-            promptReplayed = true;
         }
         else {
             session.input.push(userMessage);
         }
         session.promptRunning = true;
         let handedOff = false;
+        let stopReason = "end_turn";
         try {
             while (true) {
                 const { value: message, done } = await session.query.next();
@@ -288,9 +304,15 @@ export class ClaudeAcpAgent {
                                 break;
                             }
                             case "compact_boundary": {
-                                // We don't know the exact size, but since we compacted,
-                                // we set it to zero. The client gets the exact size on the next message.
                                 lastAssistantTotalUsage = 0;
+                                await this.client.sessionUpdate({
+                                    sessionId: message.session_id,
+                                    update: {
+                                        sessionUpdate: "usage_update",
+                                        used: 0,
+                                        size: lastContextWindowSize,
+                                    },
+                                });
                                 await this.client.sessionUpdate({
                                     sessionId: message.session_id,
                                     update: {
@@ -298,7 +320,6 @@ export class ClaudeAcpAgent {
                                         content: { type: "text", text: "\n\nCompacting completed." },
                                     },
                                 });
-                                promptReplayed = true;
                                 break;
                             }
                             case "local_command_output": {
@@ -309,12 +330,11 @@ export class ClaudeAcpAgent {
                                         content: { type: "text", text: message.content },
                                     },
                                 });
-                                promptReplayed = true;
                                 break;
                             }
                             case "session_state_changed": {
                                 if (message.state === "idle") {
-                                    return { stopReason: "end_turn", usage: sessionUsage(session) };
+                                    return { stopReason, usage: sessionUsage(session) };
                                 }
                                 break;
                             }
@@ -340,9 +360,11 @@ export class ClaudeAcpAgent {
                         session.accumulatedUsage.outputTokens += message.usage.output_tokens;
                         session.accumulatedUsage.cachedReadTokens += message.usage.cache_read_input_tokens;
                         session.accumulatedUsage.cachedWriteTokens += message.usage.cache_creation_input_tokens;
-                        // Calculate context window size from modelUsage (minimum across all models used)
-                        const contextWindows = Object.values(message.modelUsage).map((m) => m.contextWindow);
-                        const contextWindowSize = contextWindows.length > 0 ? Math.min(...contextWindows) : 200000;
+                        const matchingModelUsage = lastAssistantModel
+                            ? getMatchingModelUsage(message.modelUsage, lastAssistantModel)
+                            : null;
+                        const contextWindowSize = matchingModelUsage?.contextWindow ?? 200000;
+                        lastContextWindowSize = contextWindowSize;
                         // Send usage_update notification
                         if (lastAssistantTotalUsage !== null) {
                             await this.client.sessionUpdate({
@@ -358,29 +380,18 @@ export class ClaudeAcpAgent {
                                 },
                             });
                         }
-                        // Check cancelled before promptReplayed — when a cancel races
-                        // with the first result, promptReplayed is still false and the
-                        // result would be consumed as a background task, blocking the
-                        // loop forever (see #442).
                         if (session.cancelled) {
-                            return { stopReason: "cancelled" };
-                        }
-                        if (!promptReplayed) {
-                            // This result is from a background task that finished after
-                            // the previous prompt loop ended. Consume it and continue
-                            // waiting for our own prompt's result.
-                            this.logger.log(`Session ${params.sessionId}: consuming background task result`);
+                            stopReason = "cancelled";
                             break;
                         }
-                        // Build the usage response
-                        const usage = sessionUsage(session);
                         switch (message.subtype) {
                             case "success": {
                                 if (message.result.includes("Please run /login")) {
                                     throw RequestError.authRequired();
                                 }
                                 if (message.stop_reason === "max_tokens") {
-                                    return { stopReason: "max_tokens", usage };
+                                    stopReason = "max_tokens";
+                                    break;
                                 }
                                 if (message.is_error) {
                                     throw RequestError.internalError(undefined, message.result);
@@ -396,12 +407,14 @@ export class ClaudeAcpAgent {
                             }
                             case "error_during_execution": {
                                 if (message.stop_reason === "max_tokens") {
-                                    return { stopReason: "max_tokens", usage };
+                                    stopReason = "max_tokens";
+                                    break;
                                 }
                                 if (message.is_error) {
                                     throw RequestError.internalError(undefined, message.errors.join(", ") || message.subtype);
                                 }
-                                return { stopReason: "end_turn", usage: sessionUsage(session) };
+                                stopReason = "end_turn";
+                                break;
                             }
                             case "error_max_budget_usd":
                             case "error_max_turns":
@@ -409,7 +422,8 @@ export class ClaudeAcpAgent {
                                 if (message.is_error) {
                                     throw RequestError.internalError(undefined, message.errors.join(", ") || message.subtype);
                                 }
-                                return { stopReason: "max_turn_requests", usage };
+                                stopReason = "max_turn_requests";
+                                break;
                             default:
                                 unreachable(message, this.logger);
                                 break;
@@ -433,9 +447,6 @@ export class ClaudeAcpAgent {
                         // Check for prompt replay
                         if (message.type === "user" && "uuid" in message && message.uuid) {
                             if (message.uuid === promptUuid) {
-                                // Our own prompt was replayed back — we're now processing
-                                // our prompt's response (not a background task's).
-                                promptReplayed = true;
                                 break;
                             }
                             const pending = session.pendingMessages.get(message.uuid);
@@ -452,7 +463,7 @@ export class ClaudeAcpAgent {
                                 break;
                             }
                         }
-                        // Store latest assistant usage (excluding subagents)
+                        // Sum all token types as a proxy for post-turn context occupancy.
                         if (message.message.usage && message.parent_tool_use_id === null) {
                             const messageWithUsage = message.message;
                             lastAssistantTotalUsage =
@@ -460,6 +471,12 @@ export class ClaudeAcpAgent {
                                     messageWithUsage.usage.output_tokens +
                                     messageWithUsage.usage.cache_read_input_tokens +
                                     messageWithUsage.usage.cache_creation_input_tokens;
+                        }
+                        if (message.type === "assistant" &&
+                            message.parent_tool_use_id === null &&
+                            message.message.model &&
+                            message.message.model !== "<synthetic>") {
+                            lastAssistantModel = message.message.model;
                         }
                         // Slash commands like /compact can generate invalid output... doesn't match
                         // their own docs: https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-slash-commands#%2Fcompact-compact-conversation-history
@@ -561,15 +578,21 @@ export class ClaudeAcpAgent {
         session.pendingMessages.clear();
         await session.query.interrupt();
     }
-    async unstable_closeSession(params) {
-        const session = this.sessions[params.sessionId];
+    async teardownSession(sessionId) {
+        const session = this.sessions[sessionId];
         if (!session) {
-            throw new Error("Session not found");
+            return;
         }
-        await this.cancel({ sessionId: params.sessionId });
+        await this.cancel({ sessionId });
         session.settingsManager.dispose();
         session.abortController.abort();
-        delete this.sessions[params.sessionId];
+        delete this.sessions[sessionId];
+    }
+    async unstable_closeSession(params) {
+        if (!this.sessions[params.sessionId]) {
+            throw new Error("Session not found");
+        }
+        await this.teardownSession(params.sessionId);
         return {};
     }
     async unstable_setSessionModel(params) {
@@ -644,6 +667,7 @@ export class ClaudeAcpAgent {
     }
     async applySessionMode(sessionId, modeId) {
         switch (modeId) {
+            case "auto":
             case "default":
             case "acceptEdits":
             case "bypassPermissions":
@@ -857,12 +881,16 @@ export class ClaudeAcpAgent {
     async getOrCreateSession(params) {
         const existingSession = this.sessions[params.sessionId];
         if (existingSession) {
-            return {
-                sessionId: params.sessionId,
-                modes: existingSession.modes,
-                models: existingSession.models,
-                configOptions: existingSession.configOptions,
-            };
+            const fingerprint = computeSessionFingerprint(params);
+            if (fingerprint === existingSession.sessionFingerprint) {
+                return {
+                    sessionId: params.sessionId,
+                    modes: existingSession.modes,
+                    models: existingSession.models,
+                    configOptions: existingSession.configOptions,
+                };
+            }
+            await this.teardownSession(params.sessionId);
         }
         const response = await this.createSession({
             cwd: params.cwd,
@@ -899,7 +927,7 @@ export class ClaudeAcpAgent {
         const mcpServers = {};
         if (Array.isArray(params.mcpServers)) {
             for (const server of params.mcpServers) {
-                if ("type" in server) {
+                if ("type" in server && (server.type === "http" || server.type === "sse")) {
                     mcpServers[server.name] = {
                         type: server.type,
                         url: server.url,
@@ -1045,6 +1073,11 @@ export class ClaudeAcpAgent {
         const models = await getAvailableModels(q, initializationResult.models, settingsManager);
         const availableModes = [
             {
+                id: "auto",
+                name: "Auto",
+                description: "Use a model classifier to approve or deny permission prompts.",
+            },
+            {
                 id: "default",
                 name: "Default",
                 description: "Standard behavior, prompts for dangerous operations",
@@ -1083,6 +1116,7 @@ export class ClaudeAcpAgent {
             input: input,
             cancelled: false,
             cwd: params.cwd,
+            sessionFingerprint: computeSessionFingerprint(params),
             settingsManager,
             accumulatedUsage: {
                 inputTokens: 0,
@@ -1227,7 +1261,13 @@ function resolveModelPreference(models, preference) {
 async function getAvailableModels(query, models, settingsManager) {
     const settings = settingsManager.getSettings();
     let currentModel = models[0];
-    if (settings.model) {
+    if (process.env.ANTHROPIC_MODEL) {
+        const match = resolveModelPreference(models, process.env.ANTHROPIC_MODEL);
+        if (match) {
+            currentModel = match;
+        }
+    }
+    else if (settings.model) {
         const match = resolveModelPreference(models, settings.model);
         if (match) {
             currentModel = match;
@@ -1237,7 +1277,7 @@ async function getAvailableModels(query, models, settingsManager) {
     return {
         availableModels: models.map((model) => ({
             modelId: model.value,
-            name: model.displayName.replace("Default (recommended)", "Opus"),
+            name: model.displayName,
             description: model.description,
         })),
         currentModelId: currentModel.value,
@@ -1300,10 +1340,10 @@ export function promptToClaude(prompt) {
             case "text": {
                 let text = chunk.text;
                 // change /mcp:server:command args -> /server:command (MCP) args
-                const mcpMatch = text.match(/^\/mcp:([^:\s]+):(\S+)(\s+.*)?$/);
+                const mcpMatch = text.match(/^\/mcp:([^:\s]+):(\S+)(?:\s(.*))?$/);
                 if (mcpMatch) {
                     const [, server, command, args] = mcpMatch;
-                    text = `/${server}:${command} (MCP)${args || ""}`;
+                    text = `/${server}:${command} (MCP)${args ? ` ${args}` : ""}`;
                 }
                 content.push({ type: "text", text });
                 break;
@@ -1630,4 +1670,25 @@ export function runAcp() {
     const output = nodeToWebReadable(process.stdin);
     const stream = ndJsonStream(input, output);
     new AgentSideConnection((client) => new ClaudeAcpAgent(client), stream);
+}
+function commonPrefixLength(a, b) {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) {
+        i++;
+    }
+    return i;
+}
+function getMatchingModelUsage(modelUsage, currentModel) {
+    let bestKey = null;
+    let bestLen = 0;
+    for (const key of Object.keys(modelUsage)) {
+        const len = commonPrefixLength(key, currentModel);
+        if (len > bestLen) {
+            bestLen = len;
+            bestKey = key;
+        }
+    }
+    if (bestKey) {
+        return modelUsage[bestKey];
+    }
 }

@@ -441,10 +441,10 @@ describe("AIChatPanel tabs lifecycle", () => {
                     authReady: false,
                     authMethods: [
                         {
-                            id: "claude-login",
-                            name: "Claude login",
+                            id: "claude-ai-login",
+                            name: "Claude subscription",
                             description:
-                                "Open a terminal-based Claude login flow.",
+                                "Open a terminal-based Claude subscription login flow.",
                         },
                     ],
                     onboardingRequired: true,
@@ -501,10 +501,10 @@ describe("AIChatPanel tabs lifecycle", () => {
                     authReady: false,
                     authMethods: [
                         {
-                            id: "claude-login",
-                            name: "Claude login",
+                            id: "claude-ai-login",
+                            name: "Claude subscription",
                             description:
-                                "Open a terminal-based Claude login flow.",
+                                "Open a terminal-based Claude subscription login flow.",
                         },
                     ],
                     onboardingRequired: true,

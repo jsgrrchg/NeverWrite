@@ -10,9 +10,10 @@ const baseSetupStatus = {
     authReady: false,
     authMethods: [
         {
-            id: "claude-login",
-            name: "Claude login",
-            description: "Open a terminal-based Claude login flow.",
+            id: "claude-ai-login",
+            name: "Claude subscription",
+            description:
+                "Open a terminal-based Claude subscription login flow.",
         },
         {
             id: "gateway",
@@ -42,7 +43,7 @@ describe("AIChatOnboardingCard", () => {
 
         expect(
             screen.getByText(
-                "VaultAI will open a limited sign-in terminal inside the app.",
+                "VaultAI will open a limited sign-in terminal for your Claude subscription inside the app.",
             ),
         ).toBeInTheDocument();
         expect(

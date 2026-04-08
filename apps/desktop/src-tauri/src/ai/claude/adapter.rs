@@ -10,7 +10,7 @@ use super::{
     process::ClaudeRuntime,
     setup::{
         clear_authenticated_method, clear_gateway_settings, launch_claude_login,
-        mark_authenticated_method, save_setup_config,
+        mark_authenticated_method, save_setup_config, set_preferred_auth_method,
     },
     ClaudeSetupInput,
 };
@@ -68,10 +68,11 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
                 let _ = mark_authenticated_method(app, "gateway")?;
                 self.runtime.setup_status(app)
             }
-            "claude-login" => {
+            "claude-login" | "claude-ai-login" | "console-login" => {
                 let _ = clear_gateway_settings(app)?;
+                let _ = set_preferred_auth_method(app, method_id)?;
                 let resolved = self.runtime.resolved_binary(app)?;
-                launch_claude_login(&resolved, vault_root.as_deref())?;
+                launch_claude_login(&resolved, vault_root.as_deref(), method_id)?;
                 let mut status = self.runtime.setup_status(app)?;
                 status.message = Some(
                     "Claude login opened in a terminal. Finish signing in there, then start a new Claude chat to refresh setup."

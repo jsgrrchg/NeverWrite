@@ -28,6 +28,9 @@ const GATEWAY_EMBEDDED_CREDENTIALS_MESSAGE: &str =
     "Gateway URL must not include embedded credentials.";
 const GATEWAY_URL_REQUIRED_MESSAGE: &str =
     "Enter a gateway base URL before continuing with gateway authentication.";
+const CLAUDE_AI_LOGIN_METHOD_ID: &str = "claude-ai-login";
+const CLAUDE_LOGIN_LEGACY_METHOD_ID: &str = "claude-login";
+const CONSOLE_LOGIN_METHOD_ID: &str = "console-login";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeSetupConfig {
@@ -172,7 +175,25 @@ pub fn mark_authenticated_method(
     if method_id == "gateway" {
         validate_gateway_configured(&config)?;
     }
-    config.auth_method = Some(method_id.to_string());
+    config.auth_method = Some(
+        normalize_claude_auth_method_id(method_id)
+            .unwrap_or(method_id)
+            .to_string(),
+    );
+    config.auth_invalidated_at_ms = None;
+    write_setup_config_to_path(&path, &config)?;
+    Ok(config)
+}
+
+pub fn set_preferred_auth_method(
+    app: &AppHandle,
+    method_id: &str,
+) -> Result<ClaudeSetupConfig, String> {
+    let normalized = normalize_claude_auth_method_id(method_id)
+        .ok_or_else(|| format!("Unsupported Claude auth method: {method_id}"))?;
+    let path = setup_file_path(app)?;
+    let mut config = load_setup_config_from_path(&path)?;
+    config.auth_method = Some(normalized.to_string());
     config.auth_invalidated_at_ms = None;
     write_setup_config_to_path(&path, &config)?;
     Ok(config)
@@ -325,16 +346,21 @@ fn command_from_embedded_node(
     }
 }
 
-pub fn launch_claude_login(resolved: &ResolvedBinary, cwd: Option<&Path>) -> Result<(), String> {
+pub fn launch_claude_login(
+    resolved: &ResolvedBinary,
+    cwd: Option<&Path>,
+    method_id: &str,
+) -> Result<(), String> {
     let program = resolved
         .program
         .as_deref()
         .ok_or_else(|| "Claude runtime binary is not configured.".to_string())?;
 
-    let mut command_parts = Vec::with_capacity(resolved.args.len() + 2);
+    let login_args = claude_login_args(method_id)?;
+    let mut command_parts = Vec::with_capacity(resolved.args.len() + 1 + login_args.len());
     command_parts.push(program.to_string());
     command_parts.extend(resolved.args.iter().cloned());
-    command_parts.push("--cli".to_string());
+    command_parts.extend(login_args.iter().copied().map(str::to_string));
 
     #[cfg(target_os = "windows")]
     {
@@ -451,12 +477,17 @@ fn detect_auth_method(config: &ClaudeSetupConfig) -> Option<String> {
         return Some("gateway".to_string());
     }
 
-    if config.auth_method.as_deref() == Some("claude-login") && claude_login_available(config) {
-        return Some("claude-login".to_string());
+    if let Some(method_id) = config
+        .auth_method
+        .as_deref()
+        .and_then(normalize_claude_auth_method_id)
+        .filter(|_| claude_login_available(config))
+    {
+        return Some(method_id.to_string());
     }
 
     if claude_login_available(config) {
-        return Some("claude-login".to_string());
+        return Some(CLAUDE_AI_LOGIN_METHOD_ID.to_string());
     }
 
     None
@@ -465,9 +496,14 @@ fn detect_auth_method(config: &ClaudeSetupConfig) -> Option<String> {
 fn available_auth_methods() -> Vec<AiAuthMethod> {
     vec![
         AiAuthMethod {
-            id: "claude-login".to_string(),
-            name: "Claude login".to_string(),
-            description: "Open a terminal-based Claude login flow.".to_string(),
+            id: CLAUDE_AI_LOGIN_METHOD_ID.to_string(),
+            name: "Claude subscription".to_string(),
+            description: "Open a terminal-based Claude subscription login flow.".to_string(),
+        },
+        AiAuthMethod {
+            id: CONSOLE_LOGIN_METHOD_ID.to_string(),
+            name: "Anthropic Console".to_string(),
+            description: "Open a terminal-based Anthropic Console login flow.".to_string(),
         },
         AiAuthMethod {
             id: "gateway".to_string(),
@@ -475,6 +511,24 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
             description: "Use a custom Anthropic-compatible gateway just for VaultAI.".to_string(),
         },
     ]
+}
+
+fn normalize_claude_auth_method_id(method_id: &str) -> Option<&'static str> {
+    match method_id {
+        CLAUDE_LOGIN_LEGACY_METHOD_ID | CLAUDE_AI_LOGIN_METHOD_ID => {
+            Some(CLAUDE_AI_LOGIN_METHOD_ID)
+        }
+        CONSOLE_LOGIN_METHOD_ID => Some(CONSOLE_LOGIN_METHOD_ID),
+        _ => None,
+    }
+}
+
+fn claude_login_args(method_id: &str) -> Result<&'static [&'static str], String> {
+    match normalize_claude_auth_method_id(method_id) {
+        Some(CLAUDE_AI_LOGIN_METHOD_ID) => Ok(&["--cli", "auth", "login", "--claudeai"]),
+        Some(CONSOLE_LOGIN_METHOD_ID) => Ok(&["--cli", "auth", "login", "--console"]),
+        _ => Err(format!("Unsupported Claude auth method: {method_id}")),
+    }
 }
 
 fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> ResolvedBinary {
@@ -892,6 +946,34 @@ mod tests {
         };
 
         assert_ne!(detect_auth_method(&config).as_deref(), Some("gateway"));
+    }
+
+    #[test]
+    fn normalize_claude_auth_method_maps_legacy_id() {
+        assert_eq!(
+            normalize_claude_auth_method_id("claude-login"),
+            Some(CLAUDE_AI_LOGIN_METHOD_ID)
+        );
+        assert_eq!(
+            normalize_claude_auth_method_id(CLAUDE_AI_LOGIN_METHOD_ID),
+            Some(CLAUDE_AI_LOGIN_METHOD_ID)
+        );
+        assert_eq!(
+            normalize_claude_auth_method_id(CONSOLE_LOGIN_METHOD_ID),
+            Some(CONSOLE_LOGIN_METHOD_ID)
+        );
+    }
+
+    #[test]
+    fn claude_login_args_match_selected_terminal_auth() {
+        assert_eq!(
+            claude_login_args(CLAUDE_LOGIN_LEGACY_METHOD_ID).unwrap(),
+            ["--cli", "auth", "login", "--claudeai"]
+        );
+        assert_eq!(
+            claude_login_args(CONSOLE_LOGIN_METHOD_ID).unwrap(),
+            ["--cli", "auth", "login", "--console"]
+        );
     }
 
     #[test]

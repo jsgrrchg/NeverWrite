@@ -1,5 +1,15 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { ClaudeAcpAgent } from "../acp-agent.js";
+const mockQuery = vi.hoisted(() => vi.fn(() => ({
+    initializationResult: vi.fn().mockResolvedValue({
+        models: [{ value: "id", displayName: "name", description: "description" }],
+    }),
+    setModel: vi.fn(),
+    supportedCommands: vi.fn().mockResolvedValue([]),
+})));
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+    query: mockQuery,
+}));
 describe("authorization", () => {
     beforeEach(() => {
         vi.useFakeTimers();
@@ -12,16 +22,6 @@ describe("authorization", () => {
         vi.resetAllMocks();
     });
     async function createAgentMock() {
-        const mockQuery = vi.hoisted(() => vi.fn(() => ({
-            initializationResult: vi.fn().mockResolvedValue({
-                models: [{ value: "id", displayName: "name", description: "description" }],
-            }),
-            setModel: vi.fn(),
-            supportedCommands: vi.fn().mockResolvedValue([]),
-        })));
-        vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-            query: mockQuery,
-        }));
         const connectionMock = {
             sessionUpdate: async (_) => { },
         };
@@ -92,10 +92,11 @@ describe("authorization", () => {
                 auth: { _meta: { gateway: true } },
             },
         });
-        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "claude-login" }));
+        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "claude-ai-login" }));
+        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "console-login" }));
         expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "gateway" }));
     });
-    it("hide terminal auth even when terminal-auth is set", async () => {
+    it("hide claude auth but still show console login when terminal-auth is set", async () => {
         const [agent] = await createAgentMock();
         vi.stubGlobal("process", { ...process, argv: ["--hide-claude-auth"] });
         const initializeResponse = await agent.initialize({
@@ -104,7 +105,20 @@ describe("authorization", () => {
                 _meta: { "terminal-auth": true },
             },
         });
-        expect(initializeResponse.authMethods).toStrictEqual([]);
+        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "claude-ai-login" }));
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "console-login" }));
+    });
+    it("hide claude auth but still show console login with terminal capability", async () => {
+        const [agent] = await createAgentMock();
+        vi.stubGlobal("process", { ...process, argv: ["--hide-claude-auth"] });
+        const initializeResponse = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                auth: { terminal: true },
+            },
+        });
+        expect(initializeResponse.authMethods).not.toContainEqual(expect.objectContaining({ id: "claude-ai-login" }));
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "console-login" }));
     });
     it("show claude authentication", async () => {
         const [agent] = await createAgentMock();
@@ -112,6 +126,7 @@ describe("authorization", () => {
             protocolVersion: 1,
             clientCapabilities: { auth: { terminal: true } },
         });
-        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "claude-login" }));
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "claude-ai-login" }));
+        expect(initializeResponse.authMethods).toContainEqual(expect.objectContaining({ id: "console-login" }));
     });
 });

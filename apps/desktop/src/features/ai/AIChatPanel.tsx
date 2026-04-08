@@ -533,7 +533,9 @@ export function AIChatPanel() {
             );
             if (
                 (runtimeId === "claude-acp" &&
-                    input.methodId === "claude-login") ||
+                    (input.methodId === "claude-login" ||
+                        input.methodId === "claude-ai-login" ||
+                        input.methodId === "console-login")) ||
                 (runtimeId === "gemini-acp" &&
                     input.methodId === "login_with_google")
             ) {

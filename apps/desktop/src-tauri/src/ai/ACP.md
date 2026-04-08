@@ -14,9 +14,9 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@zed-industries/claude-agent-acp` v0.23.1) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded VaultAI delta) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.25.3) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded VaultAI delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
-| **Auth methods** | `claude-login`, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
+| **Auth methods** | `claude-ai-login`, `console-login`, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
 | **VaultAI adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
 | **Session RPC used by VaultAI** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
@@ -28,7 +28,7 @@ Notes:
 - `Gemini` is fully wired into `AiManager`, Tauri commands, setup, process, client and adapter layers.
 - Gemini emits plans and available-command updates from the ACP stream, but VaultAI currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
-- The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.83`.
+- The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.91`.
 - Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, with a small local delta to preserve VaultAI review, diff, mode and user-input behavior.
 
 ---
@@ -165,9 +165,14 @@ Secrets are stored in the OS secure secret store, not in the JSON config file.
 
 Supported methods:
 
-- **`claude-login`**
-  - Opens a terminal and runs the resolved Claude runtime in CLI mode
-  - In release, that means embedded Node + embedded Claude vendor entry
+- **`claude-ai-login`**
+  - Opens a terminal and runs the resolved Claude runtime with `--cli auth login --claudeai`
+  - Intended for Claude subscription sign-in
+  - Auth is detected from `~/.claude.json`, checked against any invalidation timestamp
+
+- **`console-login`**
+  - Opens a terminal and runs the resolved Claude runtime with `--cli auth login --console`
+  - Intended for Anthropic Console / API-billed sign-in
   - Auth is detected from `~/.claude.json`, checked against any invalidation timestamp
 
 - **`gateway`**
@@ -412,7 +417,7 @@ apps/desktop/src-tauri/
 │       └── adapter.rs
 │
 vendor/
-├── Claude-agent-acp-upstream/        # @zed-industries/claude-agent-acp v0.23.1
+├── Claude-agent-acp-upstream/        # @agentclientprotocol/claude-agent-acp v0.25.3
 │   ├── dist/index.js
 │   ├── node_modules/
 │   └── package.json

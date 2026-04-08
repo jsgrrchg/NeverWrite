@@ -48,6 +48,14 @@ function isGatewayMethod(id?: string) {
     return id === "gateway";
 }
 
+function isClaudeTerminalAuthMethod(id?: string) {
+    return (
+        id === "claude-login" ||
+        id === "claude-ai-login" ||
+        id === "console-login"
+    );
+}
+
 function getMethodDisplayName(
     status: AIRuntimeSetupStatus | null,
 ): string | null {
@@ -61,6 +69,8 @@ function getShortMethodDesc(id: string): string {
     switch (id) {
         case "chatgpt":
             return "Browser sign-in";
+        case "claude-ai-login":
+        case "console-login":
         case "claude-login":
             return "Terminal sign-in";
         case "openai-api-key":
@@ -82,6 +92,10 @@ function getAuthHelpText(id: string): string {
     switch (id) {
         case "chatgpt":
             return "Opens the browser to complete sign-in with your ChatGPT account.";
+        case "claude-ai-login":
+            return "Opens a sign-in terminal for your Claude subscription inside the app.";
+        case "console-login":
+            return "Opens a sign-in terminal for Anthropic Console inside the app.";
         case "claude-login":
             return "Opens a sign-in terminal inside the app.";
         case "openai-api-key":
@@ -112,7 +126,7 @@ function getActionLabel(
 ): string {
     if (!methodId) return "Connect";
     if (methodId === "chatgpt") return "Continue with ChatGPT";
-    if (methodId === "claude-login") return "Open sign-in terminal";
+    if (isClaudeTerminalAuthMethod(methodId)) return "Open sign-in terminal";
     if (methodId === "login_with_google") return "Open sign-in terminal";
     if (isApiKeyMethod(methodId)) {
         return status.authReady && status.authMethod === methodId
@@ -789,7 +803,7 @@ export function AIProvidersSettings() {
 
             if (
                 (input.runtimeId === "claude-acp" &&
-                    input.methodId === "claude-login") ||
+                    isClaudeTerminalAuthMethod(input.methodId)) ||
                 (input.runtimeId === "gemini-acp" &&
                     input.methodId === "login_with_google")
             ) {
