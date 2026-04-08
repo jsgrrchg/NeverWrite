@@ -1,6 +1,6 @@
-# VaultAI
+# NeverWrite
 
-VaultAI is a local-first knowledge workspace for people who want AI on top of real files, not a hosted black box.
+NeverWrite is a local-first knowledge workspace for people who want AI on top of real files, not a hosted black box.
 
 Today the repository combines:
 
@@ -13,7 +13,7 @@ Today the repository combines:
 
 This README reflects the code currently present in the repository, not a future roadmap.
 
-## What VaultAI Is Today
+## What NeverWrite Is Today
 
 The current product already includes:
 
@@ -191,7 +191,7 @@ The repository already contains broad Vitest coverage in the desktop app and web
 
 ## AI Runtime Notes
 
-VaultAI currently wires three ACP runtimes:
+NeverWrite currently wires three ACP runtimes:
 
 - `codex-acp`
 - `claude-acp`
@@ -226,7 +226,7 @@ Use exact origins only. Wildcards are intentionally unsupported.
 
 ## Project Status
 
-VaultAI is in a polish and hardening phase, not in a toy-MVP phase. Core systems already exist, but the project is still pre-`1.0`.
+NeverWrite is in a polish and hardening phase, not in a toy-MVP phase. Core systems already exist, but the project is still pre-`1.0`.
 
 The areas with the highest product sensitivity right now are:
 

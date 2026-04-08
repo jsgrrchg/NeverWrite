@@ -3,6 +3,7 @@ import {
     loadDesktopClipperToken,
     saveDesktopClipperToken,
 } from "./storage";
+import { APP_BRAND_NAME } from "./branding";
 
 export const DESKTOP_API_PORT = 32145;
 const DESKTOP_API_BASE = `http://127.0.0.1:${DESKTOP_API_PORT}/api/web-clipper`;
@@ -107,7 +108,7 @@ async function fetchDesktopApiResponse(
         }
 
         throw new DesktopApiError(
-            "VaultAI desktop API is unavailable.",
+            `${APP_BRAND_NAME} desktop API is unavailable.`,
             "unavailable",
         );
     } finally {
@@ -137,7 +138,7 @@ async function pairDesktopApi(extensionId: string): Promise<string> {
         const payload = (await response.json()) as DesktopPairingResponse;
         if (!payload.token?.trim()) {
             throw new DesktopApiError(
-                "VaultAI desktop API did not return a valid pairing token.",
+                `${APP_BRAND_NAME} desktop API did not return a valid pairing token.`,
                 "unauthorized",
                 response.status,
             );
@@ -212,7 +213,7 @@ async function requestJson<T>(
         }
 
         throw new DesktopApiError(
-            "VaultAI desktop API is unavailable.",
+            `${APP_BRAND_NAME} desktop API is unavailable.`,
             "unavailable",
         );
     }

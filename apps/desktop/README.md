@@ -1,6 +1,6 @@
-# VaultAI Desktop
+# NeverWrite Desktop
 
-This package contains the main VaultAI desktop application: a Tauri shell with a
+This package contains the main NeverWrite desktop application: a Tauri shell with a
 React/TypeScript frontend and a Rust backend.
 
 It is the primary app in the monorepo and includes:
@@ -87,7 +87,7 @@ runtimes must be exercised through `npm run tauri -- dev`.
 
 ### AI Runtimes
 
-VaultAI currently integrates three ACP runtimes:
+NeverWrite currently integrates three ACP runtimes:
 
 - `codex-acp`
 - `claude-acp`
@@ -136,7 +136,7 @@ The desktop release flow currently targets:
 
 ## Current Status
 
-VaultAI desktop is already feature-rich, but the project is still pre-`1.0` and
+NeverWrite desktop is already feature-rich, but the project is still pre-`1.0` and
 in a polish/hardening phase.
 
 The most sensitive subsystems today are:

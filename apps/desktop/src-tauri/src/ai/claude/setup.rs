@@ -17,6 +17,7 @@ use crate::ai::secret_store::TestSecretStore;
 use crate::ai::secret_store::{
     clear_secret, get_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
 };
+use crate::branding::APP_BRAND_NAME;
 
 const SETUP_FILE_NAME: &str = "claude-setup.json";
 const ANTHROPIC_CUSTOM_HEADERS_SECRET: &str = "anthropic_custom_headers";
@@ -508,7 +509,10 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
         AiAuthMethod {
             id: "gateway".to_string(),
             name: "Custom gateway".to_string(),
-            description: "Use a custom Anthropic-compatible gateway just for VaultAI.".to_string(),
+            description: format!(
+                "Use a custom Anthropic-compatible gateway just for {}.",
+                APP_BRAND_NAME
+            ),
         },
     ]
 }

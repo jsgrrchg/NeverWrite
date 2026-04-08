@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>VaultAI needs microphone access for voice-to-text transcription.</string>
+	<string>NeverWrite needs microphone access for voice-to-text transcription.</string>
 </dict>
 </plist>

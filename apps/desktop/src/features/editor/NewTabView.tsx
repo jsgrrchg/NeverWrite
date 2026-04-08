@@ -27,6 +27,7 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { emitFileTreeNoteDrag } from "../../features/ai/dragEvents";
 import { openVaultFileEntry } from "../../app/utils/vaultEntries";
+import { APP_BRAND_NAME } from "../../app/utils/branding";
 
 interface SearchResultDto {
     id: string;
@@ -369,7 +370,7 @@ export function NewTabView() {
                             className="text-[11px] uppercase tracking-[0.16em] mb-1"
                             style={{ color: "var(--accent)" }}
                         >
-                            VaultAI
+                            {APP_BRAND_NAME}
                         </div>
                         <h1
                             className="text-2xl font-semibold"

@@ -70,7 +70,9 @@ function renderComposer({
         />,
     );
 
-    const composer = screen.getByRole("textbox", { name: "Message VaultAI" });
+    const composer = screen.getByRole("textbox", {
+        name: "Message NeverWrite",
+    });
     return { composer, onChange, onSubmit, onStop };
 }
 
@@ -142,7 +144,7 @@ describe("AIChatComposer mention picker", () => {
         );
 
         const composer = screen.getByRole("textbox", {
-            name: "Message VaultAI",
+            name: "Message NeverWrite",
         });
         composer.textContent = "@alpha";
         setCaret(composer.firstChild as Text, 6);
@@ -192,7 +194,7 @@ describe("AIChatComposer mention picker", () => {
         );
 
         const composer = screen.getByRole("textbox", {
-            name: "Message VaultAI",
+            name: "Message NeverWrite",
         });
         composer.textContent = "@main";
         setCaret(composer.firstChild as Text, 5);

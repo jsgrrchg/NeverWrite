@@ -69,25 +69,25 @@ test("buildManualDownloadRows exposes the public installer set for humans", () =
             buildTarget: "aarch64-apple-darwin",
             platformLabel: "macOS",
             architectureLabel: "Apple Silicon",
-            assetName: "VaultAI_0.2.0_macOS_AppleSilicon.dmg",
+            assetName: "NeverWrite_0.2.0_macOS_AppleSilicon.dmg",
         },
         {
             buildTarget: "x86_64-apple-darwin",
             platformLabel: "macOS",
             architectureLabel: "Intel",
-            assetName: "VaultAI_0.2.0_macOS_Intel.dmg",
+            assetName: "NeverWrite_0.2.0_macOS_Intel.dmg",
         },
         {
             buildTarget: "aarch64-pc-windows-msvc",
             platformLabel: "Windows",
             architectureLabel: "ARM64",
-            assetName: "VaultAI_0.2.0_Windows_ARM64_Setup.exe",
+            assetName: "NeverWrite_0.2.0_Windows_ARM64_Setup.exe",
         },
         {
             buildTarget: "x86_64-pc-windows-msvc",
             platformLabel: "Windows",
             architectureLabel: "x64",
-            assetName: "VaultAI_0.2.0_Windows_x64_Setup.exe",
+            assetName: "NeverWrite_0.2.0_Windows_x64_Setup.exe",
         },
     ]);
 });
@@ -98,8 +98,8 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
         "## Added\n\n- Manual packaging polish.",
     );
     assert.match(body, /## Manual installers/);
-    assert.match(body, /VaultAI_0.2.0_macOS_AppleSilicon\.dmg/);
-    assert.match(body, /VaultAI_0.2.0_Windows_x64_Setup\.exe/);
+    assert.match(body, /NeverWrite_0.2.0_macOS_AppleSilicon\.dmg/);
+    assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
     assert.match(body, /internal updater assets/i);
     assert.match(body, /## Release notes/);
 });
@@ -111,31 +111,37 @@ test("collectBundleArtifacts locates macOS bundles and updater archives", () => 
         fs.mkdirSync(dmgDir, { recursive: true });
         fs.mkdirSync(macosDir, { recursive: true });
 
-        fs.writeFileSync(path.join(dmgDir, "VaultAI.dmg"), "dmg");
-        fs.writeFileSync(path.join(macosDir, "VaultAI.app.tar.gz"), "tar");
-        fs.writeFileSync(path.join(macosDir, "VaultAI.app.tar.gz.sig"), "sig");
-        fs.mkdirSync(path.join(macosDir, "VaultAI.app"));
+        fs.writeFileSync(path.join(dmgDir, "NeverWrite.dmg"), "dmg");
+        fs.writeFileSync(path.join(macosDir, "NeverWrite.app.tar.gz"), "tar");
+        fs.writeFileSync(
+            path.join(macosDir, "NeverWrite.app.tar.gz.sig"),
+            "sig",
+        );
+        fs.mkdirSync(path.join(macosDir, "NeverWrite.app"));
 
         const artifacts = collectBundleArtifacts(
             tempDir,
             "aarch64-apple-darwin",
         );
-        assert.equal(path.basename(artifacts.manualAssetPath), "VaultAI.dmg");
+        assert.equal(
+            path.basename(artifacts.manualAssetPath),
+            "NeverWrite.dmg",
+        );
         assert.equal(
             path.basename(artifacts.updaterAssetPath),
-            "VaultAI.app.tar.gz",
+            "NeverWrite.app.tar.gz",
         );
         assert.equal(
             path.basename(artifacts.updaterSignaturePath),
-            "VaultAI.app.tar.gz.sig",
+            "NeverWrite.app.tar.gz.sig",
         );
-        assert.equal(path.basename(artifacts.appBundlePath), "VaultAI.app");
+        assert.equal(path.basename(artifacts.appBundlePath), "NeverWrite.app");
     });
 });
 
 test("validateMacosBundleResources ensures resources exist inside the app bundle", () => {
     withTempDir((tempDir) => {
-        const appBundlePath = path.join(tempDir, "VaultAI.app");
+        const appBundlePath = path.join(tempDir, "NeverWrite.app");
         const resourcesDir = path.join(appBundlePath, "Contents", "Resources");
         for (const relativePath of requiredStagedResourcePaths(
             "x86_64-apple-darwin",
@@ -159,15 +165,15 @@ test("stageReleaseAssets renames manual installers and emits appcast metadata", 
         fs.mkdirSync(nsisDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(nsisDir, "VaultAI_0.2.0_x64-setup.exe"),
+            path.join(nsisDir, "NeverWrite_0.2.0_x64-setup.exe"),
             "installer",
         );
         fs.writeFileSync(
-            path.join(nsisDir, "VaultAI-setup.nsis.zip"),
+            path.join(nsisDir, "NeverWrite-setup.nsis.zip"),
             "updater",
         );
         fs.writeFileSync(
-            path.join(nsisDir, "VaultAI-setup.nsis.zip.sig"),
+            path.join(nsisDir, "NeverWrite-setup.nsis.zip.sig"),
             "sig-win-x64",
         );
 
@@ -182,24 +188,26 @@ test("stageReleaseAssets renames manual installers and emits appcast metadata", 
 
         assert.equal(
             metadata.manualAssetName,
-            "VaultAI_0.2.0_Windows_x64_Setup.exe",
+            "NeverWrite_0.2.0_Windows_x64_Setup.exe",
         );
         assert.equal(metadata.appcastKey, "windows-x86_64");
         assert.equal(
             metadata.updaterUrl,
-            "https://github.com/vaultai/vaultai/releases/download/v0.2.0/VaultAI-setup.nsis.zip",
+            "https://github.com/vaultai/vaultai/releases/download/v0.2.0/NeverWrite-setup.nsis.zip",
         );
         assert.equal(metadata.updaterSignature, "sig-win-x64");
         assert.ok(
             fs.existsSync(
-                path.join(outputDir, "VaultAI_0.2.0_Windows_x64_Setup.exe"),
+                path.join(outputDir, "NeverWrite_0.2.0_Windows_x64_Setup.exe"),
             ),
         );
         assert.ok(
-            fs.existsSync(path.join(outputDir, "VaultAI-setup.nsis.zip")),
+            fs.existsSync(path.join(outputDir, "NeverWrite-setup.nsis.zip")),
         );
         assert.ok(
-            fs.existsSync(path.join(outputDir, "VaultAI-setup.nsis.zip.sig")),
+            fs.existsSync(
+                path.join(outputDir, "NeverWrite-setup.nsis.zip.sig"),
+            ),
         );
     });
 });

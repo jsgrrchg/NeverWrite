@@ -90,7 +90,7 @@ jobs:
               run: |
                   VERSION="${{ steps.meta.outputs.version }}"
                   TAG="${{ steps.meta.outputs.tag }}"
-                  TITLE="VaultAI v${VERSION}"
+                  TITLE="NeverWrite v${VERSION}"
                   if gh release view "$TAG" >/dev/null 2>&1; then
                     gh release edit "$TAG" --title "$TITLE" --notes-file release-body.md
                   else

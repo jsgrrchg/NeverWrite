@@ -736,7 +736,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         renderComponent(<AIChatPanel />);
 
         const textbox = screen.getByRole("textbox", {
-            name: "Message VaultAI",
+            name: "Message NeverWrite",
         });
         expect(textbox.textContent).toContain("Draft A");
         expect(screen.getByText("Doc A")).toBeTruthy();
@@ -752,7 +752,7 @@ describe("AIChatPanel tabs lifecycle", () => {
             expect(useChatStore.getState().activeSessionId).toBe("session-b");
             expect(
                 screen.getByRole("textbox", {
-                    name: "Message VaultAI",
+                    name: "Message NeverWrite",
                 }).textContent,
             ).toContain("Draft B");
             expect(screen.queryByText("Doc A")).toBeNull();
@@ -873,7 +873,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         renderComponent(<AIChatPanel />);
 
         const textbox = screen.getByRole("textbox", {
-            name: "Message VaultAI",
+            name: "Message NeverWrite",
         });
         expect(textbox.textContent).toContain("Draft B");
         await waitFor(() => {
@@ -1038,7 +1038,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         await waitFor(() => {
             expect(screen.getByText("Editing queued message")).toBeTruthy();
             expect(
-                screen.getByRole("textbox", { name: "Message VaultAI" })
+                screen.getByRole("textbox", { name: "Message NeverWrite" })
                     .textContent,
             ).toContain("First queued item");
             expect(
@@ -1263,7 +1263,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         renderComponent(<AIChatPanel />);
 
         const textbox = screen.getByRole("textbox", {
-            name: "Message VaultAI",
+            name: "Message NeverWrite",
         });
         textbox.textContent = "Queued while streaming";
         fireEvent.input(textbox);

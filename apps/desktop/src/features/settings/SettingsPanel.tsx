@@ -36,6 +36,7 @@ import { SETTINGS_OPEN_SECTION_EVENT } from "../../app/detachedWindows";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { readSearchParam } from "../../app/utils/safeBrowser";
 import { subscribeSafeStorage } from "../../app/utils/safeStorage";
+import { APP_BRAND_NAME } from "../../app/utils/branding";
 import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { AIProvidersSettings } from "./AIProvidersSettings";
@@ -744,7 +745,7 @@ function GeneralSettings() {
             <SectionLabel>Startup</SectionLabel>
             <Row
                 label="Open last vault on launch"
-                description="Automatically reopen the last vault when VaultAI starts."
+                description={`Automatically reopen the last vault when ${APP_BRAND_NAME} starts.`}
                 control={
                     <Toggle
                         value={openLastVaultOnLaunch}
@@ -783,7 +784,7 @@ function AppearanceSettings() {
             <SectionLabel>Mode</SectionLabel>
             <Row
                 label="System theme"
-                description="Choose how VaultAI looks. 'System' follows your OS preference."
+                description={`Choose how ${APP_BRAND_NAME} looks. 'System' follows your OS preference.`}
                 control={
                     <SegmentedControl
                         value={mode}

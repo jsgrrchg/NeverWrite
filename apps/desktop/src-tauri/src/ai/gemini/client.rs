@@ -41,6 +41,7 @@ use crate::ai::emit::{
     AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
 };
 use crate::ai::env::preferred_path_value;
+use crate::branding::APP_BRAND_NAME;
 
 use super::{process::GeminiProcessSpec, setup::apply_auth_env};
 
@@ -1165,7 +1166,7 @@ impl RuntimeActor {
                     .terminal(false),
             )
             .client_info(
-                Implementation::new("vaultai", env!("CARGO_PKG_VERSION")).title("VaultAI"),
+                Implementation::new("vaultai", env!("CARGO_PKG_VERSION")).title(APP_BRAND_NAME),
             );
 
         connection

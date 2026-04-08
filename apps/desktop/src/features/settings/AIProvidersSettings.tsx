@@ -8,6 +8,7 @@ import {
     aiUpdateSetup,
 } from "../ai/api";
 import { AIAuthTerminalModal } from "../ai/components/AIAuthTerminalModal";
+import { APP_BRAND_NAME } from "../../app/utils/branding";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
 import type {
     AIEnvironmentDiagnostics,
@@ -99,15 +100,15 @@ function getAuthHelpText(id: string): string {
         case "claude-login":
             return "Opens a sign-in terminal inside the app.";
         case "openai-api-key":
-            return "Store an OpenAI API key locally for VaultAI only.";
+            return `Store an OpenAI API key locally for ${APP_BRAND_NAME} only.`;
         case "codex-api-key":
-            return "Store a Codex API key locally for VaultAI only.";
+            return `Store a Codex API key locally for ${APP_BRAND_NAME} only.`;
         case "gateway":
             return "Route requests through a custom gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
         case "login_with_google":
             return "Opens a Gemini sign-in terminal inside the app.";
         case "use_gemini":
-            return "Store a Gemini API key locally for VaultAI only.";
+            return `Store a Gemini API key locally for ${APP_BRAND_NAME} only.`;
         default:
             return "Complete authentication to connect this provider.";
     }
@@ -1204,8 +1205,8 @@ export function AIProvidersSettings() {
                                 marginTop: 2,
                             }}
                         >
-                            Inspect the PATH inherited by VaultAI, the PATH
-                            injected into runtimes, and which binaries are
+                            Inspect the PATH inherited by {APP_BRAND_NAME}, the
+                            PATH injected into runtimes, and which binaries are
                             actually resolvable.
                         </div>
                     </div>
@@ -1279,12 +1280,12 @@ export function AIProvidersSettings() {
                             <>
                                 <DiagnosticsPathBlock
                                     label="Process PATH"
-                                    helper="This is the PATH inherited by the VaultAI desktop process itself."
+                                    helper={`This is the PATH inherited by the ${APP_BRAND_NAME} desktop process itself.`}
                                     entries={diagnostics.inheritedEntries}
                                 />
                                 <DiagnosticsPathBlock
                                     label="Injected Runtime PATH"
-                                    helper="This is the normalized PATH that VaultAI now injects into Codex, Claude and Gemini child processes."
+                                    helper={`This is the normalized PATH that ${APP_BRAND_NAME} now injects into Codex, Claude and Gemini child processes.`}
                                     entries={diagnostics.preferredEntries}
                                 />
 

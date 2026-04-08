@@ -48,6 +48,7 @@ import {
 } from "../../../app/services/pretextService";
 import { estimateComposerTextHeight } from "./chatTextPretext";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { AI_MESSAGE_LABEL, APP_BRAND_NAME } from "../../../app/utils/branding";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
@@ -182,7 +183,7 @@ const CODEX_SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "logout",
         label: "/logout",
-        description: "Sign out this runtime in VaultAI.",
+        description: `Sign out this runtime in ${APP_BRAND_NAME}.`,
         insertText: "/logout",
     },
 ];
@@ -1755,7 +1756,7 @@ export function AIChatComposer({
                     contentEditable={!disabled}
                     suppressContentEditableWarning
                     role="textbox"
-                    aria-label="Message VaultAI"
+                    aria-label={AI_MESSAGE_LABEL}
                     autoCorrect="off"
                     autoCapitalize="off"
                     spellCheck={false}

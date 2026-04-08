@@ -1,6 +1,6 @@
 {
-    "name": "vaultai-web-clipper",
-    "description": "VaultAI browser extension built as an isolated WXT app inside the monorepo.",
+    "name": "neverwrite-web-clipper",
+    "description": "NeverWrite browser extension built as an isolated WXT app inside the monorepo.",
     "private": true,
     "version": "0.1.0",
     "type": "module",

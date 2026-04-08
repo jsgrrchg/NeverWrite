@@ -19,7 +19,7 @@ const baseSetupStatus = {
             id: "gateway",
             name: "Custom gateway",
             description:
-                "Use a custom Anthropic-compatible gateway just for VaultAI.",
+                "Use a custom Anthropic-compatible gateway just for NeverWrite.",
         },
     ],
     onboardingRequired: true,
@@ -43,7 +43,7 @@ describe("AIChatOnboardingCard", () => {
 
         expect(
             screen.getByText(
-                "VaultAI will open a limited sign-in terminal for your Claude subscription inside the app.",
+                "NeverWrite will open a limited sign-in terminal for your Claude subscription inside the app.",
             ),
         ).toBeInTheDocument();
         expect(
@@ -270,7 +270,7 @@ describe("AIChatOnboardingCard", () => {
                             id: "use_gemini",
                             name: "Gemini API key",
                             description:
-                                "Use a Gemini Developer API key stored only for VaultAI.",
+                                "Use a Gemini Developer API key stored only for NeverWrite.",
                         },
                     ],
                     onboardingRequired: true,
@@ -282,7 +282,7 @@ describe("AIChatOnboardingCard", () => {
 
         expect(
             screen.getByText(
-                "VaultAI will open a Gemini sign-in terminal inside the app.",
+                "NeverWrite will open a Gemini sign-in terminal inside the app.",
             ),
         ).toBeInTheDocument();
 
@@ -334,7 +334,7 @@ describe("AIChatOnboardingCard", () => {
                             id: "use_gemini",
                             name: "Gemini API key",
                             description:
-                                "Use a Gemini Developer API key stored only for VaultAI.",
+                                "Use a Gemini Developer API key stored only for NeverWrite.",
                         },
                     ],
                     onboardingRequired: false,

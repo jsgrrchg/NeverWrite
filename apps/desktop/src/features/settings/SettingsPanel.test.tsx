@@ -58,7 +58,7 @@ const aiApiMocks = vi.hoisted(() => ({
                           id: "gateway",
                           name: "Custom gateway",
                           description:
-                              "Use a custom Anthropic-compatible gateway just for VaultAI.",
+                              "Use a custom Anthropic-compatible gateway just for NeverWrite.",
                       },
                   ],
                   onboardingRequired: true,
@@ -81,7 +81,7 @@ const aiApiMocks = vi.hoisted(() => ({
                           id: "openai-api-key",
                           name: "API key",
                           description:
-                              "Use an OpenAI API key stored locally in VaultAI.",
+                              "Use an OpenAI API key stored locally in NeverWrite.",
                       },
                   ],
                   onboardingRequired: false,
@@ -184,7 +184,7 @@ describe("SettingsPanel", () => {
             JSON.stringify([
                 {
                     path: "/home/user/projects/VaultAI",
-                    name: "VaultAI",
+                    name: "NeverWrite",
                 },
                 {
                     path: "/home/user/notes/Work 2026",
@@ -207,13 +207,13 @@ describe("SettingsPanel", () => {
             overflowY: "auto",
         });
         expect(screen.getByText("2/2")).toBeInTheDocument();
-        expect(screen.getByText("VaultAI")).toBeInTheDocument();
+        expect(screen.getByText("NeverWrite")).toBeInTheDocument();
         expect(screen.getByText("Work 2026")).toBeInTheDocument();
 
         fireEvent.change(search, { target: { value: "work" } });
 
         expect(screen.getByText("1/2")).toBeInTheDocument();
-        expect(screen.queryByText("VaultAI")).not.toBeInTheDocument();
+        expect(screen.queryByText("NeverWrite")).not.toBeInTheDocument();
         expect(screen.getByText("Work 2026")).toBeInTheDocument();
 
         fireEvent.change(search, { target: { value: "missing" } });
@@ -434,7 +434,7 @@ describe("SettingsPanel", () => {
                         rawJson: {},
                         target: "darwin-aarch64",
                         downloadUrl:
-                            "https://github.com/example/vaultai/releases/download/v0.2.0/VaultAI.app.tar.gz",
+                            "https://github.com/example/vaultai/releases/download/v0.2.0/NeverWrite.app.tar.gz",
                     },
                 };
             }
@@ -472,7 +472,7 @@ describe("SettingsPanel", () => {
                 label: "main",
                 windowMode: "main",
                 windowRole: "main",
-                windowTitle: "VaultAI",
+                windowTitle: "NeverWrite",
                 dirtyTabs: ["Draft note"],
                 pendingReviewSessions: ["Refactor updater"],
                 activeAgentSessions: ["Release cleanup · Streaming response"],
@@ -517,7 +517,7 @@ describe("SettingsPanel", () => {
                         rawJson: {},
                         target: "darwin-aarch64",
                         downloadUrl:
-                            "https://github.com/example/vaultai/releases/download/v0.2.0/VaultAI.app.tar.gz",
+                            "https://github.com/example/vaultai/releases/download/v0.2.0/NeverWrite.app.tar.gz",
                     },
                 };
             }

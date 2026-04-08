@@ -17,6 +17,7 @@ import {
     safeStorageSetItem,
     safeStorageTrySetItem,
 } from "./utils/safeStorage";
+import { SETTINGS_WINDOW_TITLE } from "./utils/branding";
 import { logWarn } from "./utils/runtimeLog";
 
 const DETACHED_WINDOW_PREFIX = "note";
@@ -390,7 +391,7 @@ export async function openSettingsWindow(
     const url = `/?${params.toString()}`;
     const win = new WebviewWindow(label, {
         url: resolveWindowUrl(url),
-        title: "Settings — VaultAI",
+        title: SETTINGS_WINDOW_TITLE,
         width: 820,
         height: 560,
         minWidth: 640,

@@ -1,4 +1,5 @@
 mod ai;
+mod branding;
 mod clipper_api;
 mod devtools;
 mod file_preview_gateway;
@@ -44,6 +45,8 @@ use vault_ai_vault::vault::{is_ignored_dir_name, is_supported_text_path};
 use vault_ai_vault::{
     start_watcher, DiscoveredNoteFile, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
 };
+
+use crate::branding::APP_BRAND_NAME;
 
 const VAULT_NOTE_CHANGED_EVENT: &str = "vault://note-changed";
 const MENU_ACTION_EVENT: &str = "menu-action";
@@ -5212,7 +5215,7 @@ fn build_macos_dock_menu(delegate: &AnyObject) -> Option<Retained<CocoaMenu>> {
     };
 
     let recent_vaults = read_recent_vaults_file(app);
-    let menu = CocoaMenu::initWithTitle(CocoaMenu::alloc(mtm), &NSString::from_str("VaultAI"));
+    let menu = CocoaMenu::initWithTitle(CocoaMenu::alloc(mtm), &NSString::from_str(APP_BRAND_NAME));
     let vaults_item = unsafe {
         CocoaMenuItem::initWithTitle_action_keyEquivalent(
             CocoaMenuItem::alloc(mtm),
@@ -5322,11 +5325,11 @@ fn macos_menu_item<R: tauri::Runtime, M: Manager<R>>(
 #[cfg(target_os = "macos")]
 fn build_macos_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu<R>> {
     let about_metadata = AboutMetadataBuilder::new()
-        .name(Some("VaultAI"))
+        .name(Some(APP_BRAND_NAME))
         .version(Some(manager.package_info().version.to_string()))
         .build();
 
-    let app_menu = SubmenuBuilder::new(manager, "VaultAI")
+    let app_menu = SubmenuBuilder::new(manager, APP_BRAND_NAME)
         .about(Some(about_metadata))
         .separator()
         .services()
@@ -5601,7 +5604,10 @@ fn resolve_web_clipper_vault_key(
         .collect();
 
     if ready_keys.is_empty() {
-        return Err("No ready vault is available in VaultAI.".to_string());
+        return Err(format!(
+            "No ready vault is available in {}.",
+            APP_BRAND_NAME
+        ));
     }
 
     if let Some(path_hint) = vault_path_hint
@@ -5633,7 +5639,10 @@ fn resolve_web_clipper_vault_key(
         return Ok(ready_keys[0].clone());
     }
 
-    Err("VaultAI has multiple open vaults. Provide a more specific vault hint.".to_string())
+    Err(format!(
+        "{} has multiple open vaults. Provide a more specific vault hint.",
+        APP_BRAND_NAME
+    ))
 }
 
 fn normalize_web_clipper_folder(folder: &str) -> Result<String, String> {
@@ -6110,7 +6119,7 @@ pub fn run() {
 
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", main_window_url)
-                    .title("VaultAI")
+                    .title(APP_BRAND_NAME)
                     .inner_size(1200.0, 800.0);
 
             #[cfg(target_os = "macos")]
@@ -6279,7 +6288,8 @@ mod tests {
 
     #[test]
     fn updater_endpoint_accepts_github_pages_in_production() {
-        let endpoint = Url::parse("https://vaultai.github.io/VaultAI/stable/latest.json").unwrap();
+        let endpoint =
+            Url::parse("https://vaultai.github.io/neverwrite/stable/latest.json").unwrap();
 
         assert!(validate_updater_endpoint_url(
             &endpoint,
@@ -6292,7 +6302,8 @@ mod tests {
 
     #[test]
     fn updater_endpoint_rejects_public_feed_in_non_production_by_default() {
-        let endpoint = Url::parse("https://vaultai.github.io/VaultAI/stable/latest.json").unwrap();
+        let endpoint =
+            Url::parse("https://vaultai.github.io/neverwrite/stable/latest.json").unwrap();
 
         let error =
             validate_updater_endpoint_url(&endpoint, UpdaterRuntimeMode::NonProduction, false, &[])
@@ -6341,7 +6352,7 @@ mod tests {
 
     #[test]
     fn updater_download_rejects_non_github_host_in_production_without_allowlist() {
-        let download_url = Url::parse("https://cdn.example.com/VaultAI-setup.nsis.zip").unwrap();
+        let download_url = Url::parse("https://cdn.example.com/NeverWrite-setup.nsis.zip").unwrap();
 
         let error =
             validate_update_download_url(&download_url, UpdaterRuntimeMode::Production, false, &[])
@@ -6352,7 +6363,8 @@ mod tests {
 
     #[test]
     fn updater_download_accepts_allowlisted_host_in_production() {
-        let download_url = Url::parse("https://downloads.example.com/VaultAI.app.tar.gz").unwrap();
+        let download_url =
+            Url::parse("https://downloads.example.com/NeverWrite.app.tar.gz").unwrap();
         let allowed_hosts = vec!["downloads.example.com".to_string()];
 
         assert!(validate_update_download_url(
@@ -6683,10 +6695,7 @@ mod tests {
         let mut dirs = Vec::new();
 
         for path in paths {
-            let dir = unique_test_dir(&format!(
-                "vault-ai-web-clipper-state-test-{}",
-                dirs.len()
-            ));
+            let dir = unique_test_dir(&format!("vault-ai-web-clipper-state-test-{}", dirs.len()));
             fs::create_dir_all(&dir).unwrap();
 
             let mut instance = VaultInstance::new();

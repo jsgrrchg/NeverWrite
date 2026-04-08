@@ -295,7 +295,7 @@ impl AiRuntimeAdapter for GeminiRuntimeAdapter {
         _request_id: &str,
         _answers: HashMap<String, Vec<String>>,
     ) -> Result<AiSession, String> {
-        Err("Gemini ACP no soporta user_input en VaultAI.".to_string())
+        Err("Gemini ACP no soporta user_input en NeverWrite.".to_string())
     }
 }
 

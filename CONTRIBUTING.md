@@ -1,6 +1,6 @@
-# Contributing to VaultAI
+# Contributing to NeverWrite
 
-Thanks for your interest in contributing to VaultAI. This guide covers everything you need to get started.
+Thanks for your interest in contributing to NeverWrite. This guide covers everything you need to get started.
 
 ## Prerequisites
 | Tool | Version | Notes |

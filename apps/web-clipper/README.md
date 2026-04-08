@@ -1,6 +1,6 @@
-# VaultAI Web Clipper
+# NeverWrite Web Clipper
 
-This package is an isolated browser-extension project inside the VaultAI monorepo.
+This package is an isolated browser-extension project inside the NeverWrite monorepo.
 
 ## Development
 
@@ -71,8 +71,8 @@ Use exact origins only. Wildcards are intentionally unsupported.
 ## Shortcuts
 
 - Toolbar click opens the dedicated clip window.
-- Context menu entry: `Save to VaultAI`
-- Context menu entry: `Open VaultAI Side Panel`
+- Context menu entry: `Save to NeverWrite`
+- Context menu entry: `Open NeverWrite Side Panel`
 - Keyboard shortcut: `Ctrl+Shift+S` on Windows/Linux, `Command+Shift+S` on macOS
 
 ## Phase 3 Features
@@ -84,7 +84,7 @@ Use exact origins only. Wildcards are intentionally unsupported.
 
 ## Desktop API
 
-When VaultAI desktop is running, the extension also tries a direct local integration first:
+When NeverWrite desktop is running, the extension also tries a direct local integration first:
 
 - Base URL: `http://127.0.0.1:32145/api/web-clipper`
 - Endpoints used by the extension:
@@ -106,7 +106,7 @@ extension identity and that token.
 
 If the local API is unavailable, the extension falls back to the deep-link handoff flow.
 
-On macOS, that deep-link fallback only works with an installed VaultAI app bundle
+On macOS, that deep-link fallback only works with an installed NeverWrite app bundle
 that has the `vaultai://` scheme registered. `npm run tauri dev` does not
 register custom URI schemes with the OS, so the browser fallback cannot be
 validated end-to-end against a pure dev session there.

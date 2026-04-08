@@ -14,6 +14,7 @@ use crate::ai::secret_store::TestSecretStore;
 use crate::ai::secret_store::{
     clear_secret, get_secret, has_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
 };
+use crate::branding::APP_BRAND_NAME;
 
 const SETUP_FILE_NAME: &str = "gemini-setup.json";
 const GEMINI_PROGRAM_NAME: &str = "gemini";
@@ -322,7 +323,10 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
         AiAuthMethod {
             id: "use_gemini".to_string(),
             name: "Gemini API key".to_string(),
-            description: "Use a Gemini Developer API key stored only for VaultAI.".to_string(),
+            description: format!(
+                "Use a Gemini Developer API key stored only for {}.",
+                APP_BRAND_NAME
+            ),
         },
     ]
 }

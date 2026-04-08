@@ -12,6 +12,7 @@ use crate::ai::secret_store::TestSecretStore;
 use crate::ai::secret_store::{
     clear_secret, get_secret, has_secret, set_secret, NormalizedSecretValuePatch, SecretValuePatch,
 };
+use crate::branding::APP_BRAND_NAME;
 
 const SETUP_FILE_NAME: &str = "setup.json";
 const CODEX_API_KEY_SECRET: &str = "codex_api_key";
@@ -310,13 +311,16 @@ fn available_auth_methods() -> Vec<AiAuthMethod> {
     methods.push(AiAuthMethod {
         id: "openai-api-key".to_string(),
         name: "API key".to_string(),
-        description: "Use an OpenAI API key stored locally in VaultAI.".to_string(),
+        description: format!(
+            "Use an OpenAI API key stored locally in {}.",
+            APP_BRAND_NAME
+        ),
     });
 
     methods.push(AiAuthMethod {
         id: "codex-api-key".to_string(),
         name: "Codex API key".to_string(),
-        description: "Use a Codex API key stored locally in VaultAI.".to_string(),
+        description: format!("Use a Codex API key stored locally in {}.", APP_BRAND_NAME),
     });
 
     methods

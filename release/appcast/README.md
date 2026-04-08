@@ -1,6 +1,6 @@
 # Appcast Layout
 
-This directory documents the static appcast shape for VaultAI.
+This directory documents the static appcast shape for NeverWrite.
 
 ## Public topology
 
@@ -46,10 +46,10 @@ This keeps the client decoupled from release asset listing and `releases/latest/
 
 | Build target | Appcast key | Public manual asset | Updater artifact family |
 | --- | --- | --- | --- |
-| `aarch64-apple-darwin` | `darwin-aarch64` | `VaultAI_<version>_macOS_AppleSilicon.dmg` | macOS updater archive (`.app.tar.gz`) |
-| `x86_64-apple-darwin` | `darwin-x86_64` | `VaultAI_<version>_macOS_Intel.dmg` | macOS updater archive (`.app.tar.gz`) |
-| `aarch64-pc-windows-msvc` | `windows-aarch64` | `VaultAI_<version>_Windows_ARM64_Setup.exe` | Windows updater archive (`.nsis.zip`) |
-| `x86_64-pc-windows-msvc` | `windows-x86_64` | `VaultAI_<version>_Windows_x64_Setup.exe` | Windows updater archive (`.nsis.zip`) |
+| `aarch64-apple-darwin` | `darwin-aarch64` | `NeverWrite_<version>_macOS_AppleSilicon.dmg` | macOS updater archive (`.app.tar.gz`) |
+| `x86_64-apple-darwin` | `darwin-x86_64` | `NeverWrite_<version>_macOS_Intel.dmg` | macOS updater archive (`.app.tar.gz`) |
+| `aarch64-pc-windows-msvc` | `windows-aarch64` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | Windows updater archive (`.nsis.zip`) |
+| `x86_64-pc-windows-msvc` | `windows-x86_64` | `NeverWrite_<version>_Windows_x64_Setup.exe` | Windows updater archive (`.nsis.zip`) |
 
 ## Signed updater artifact convention
 
@@ -60,19 +60,19 @@ This keeps the client decoupled from release asset listing and `releases/latest/
 
 Examples:
 
-- `VaultAI.app.tar.gz` -> `VaultAI.app.tar.gz.sig`
-- `VaultAI-setup.nsis.zip` -> `VaultAI-setup.nsis.zip.sig`
+- `NeverWrite.app.tar.gz` -> `NeverWrite.app.tar.gz.sig`
+- `NeverWrite-setup.nsis.zip` -> `NeverWrite-setup.nsis.zip.sig`
 
 ## Manual Installation
 
 The public/manual installer set for v1 is intentionally small:
 
 - macOS:
-  - `VaultAI_<version>_macOS_AppleSilicon.dmg`
-  - `VaultAI_<version>_macOS_Intel.dmg`
+  - `NeverWrite_<version>_macOS_AppleSilicon.dmg`
+  - `NeverWrite_<version>_macOS_Intel.dmg`
 - Windows:
-  - `VaultAI_<version>_Windows_ARM64_Setup.exe`
-  - `VaultAI_<version>_Windows_x64_Setup.exe`
+  - `NeverWrite_<version>_Windows_ARM64_Setup.exe`
+  - `NeverWrite_<version>_Windows_x64_Setup.exe`
 
 `MSI` is explicitly out of scope for v1.
 

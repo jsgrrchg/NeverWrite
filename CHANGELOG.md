@@ -1,6 +1,6 @@
 # Changelog
 
-All notable user-facing changes to VaultAI will be documented in this file.
+All notable user-facing changes to NeverWrite will be documented in this file.
 
 ## Format
 
@@ -16,7 +16,7 @@ Entries are grouped by release version under the following categories:
 
 ## Versioning
 
-VaultAI uses [Semantic Versioning](https://semver.org/) with `0.x` releases
+NeverWrite uses [Semantic Versioning](https://semver.org/) with `0.x` releases
 during the beta phase. The minor version increments with each release — there
 is no upper limit before `1.0`. The `1.0` release signals a stable, public API
 and UX commitment.
@@ -29,7 +29,7 @@ Patch versions (`0.x.1`, `0.x.2`) are reserved for hotfixes within a release.
 
 ## What belongs here
 
-Only changes that matter to users who download and use VaultAI. Internal
+Only changes that matter to users who download and use NeverWrite. Internal
 refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---

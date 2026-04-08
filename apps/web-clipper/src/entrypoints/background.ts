@@ -1,3 +1,5 @@
+import { APP_BRAND_NAME, WEB_CLIPPER_SIDE_PANEL_TITLE } from "../lib/branding";
+
 const CONTEXT_MENU_ID = "vaultai-save-to-vault";
 const CONTEXT_MENU_SIDE_PANEL_ID = "vaultai-open-side-panel";
 
@@ -5,12 +7,12 @@ async function initializeContextMenu() {
     await browser.contextMenus.removeAll();
     browser.contextMenus.create({
         id: CONTEXT_MENU_ID,
-        title: "Save to VaultAI",
+        title: `Save to ${APP_BRAND_NAME}`,
         contexts: ["page", "selection", "link"],
     });
     browser.contextMenus.create({
         id: CONTEXT_MENU_SIDE_PANEL_ID,
-        title: "Open VaultAI Side Panel",
+        title: `Open ${WEB_CLIPPER_SIDE_PANEL_TITLE}`,
         contexts: ["page", "selection", "link"],
     });
 }

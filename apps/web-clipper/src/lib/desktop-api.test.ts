@@ -220,7 +220,7 @@ describe("desktop api client", () => {
                 folder: "",
             }),
         ).rejects.toMatchObject({
-            message: "VaultAI desktop API is unavailable.",
+            message: "NeverWrite desktop API is unavailable.",
             isUnauthorized: false,
             isUnavailable: true,
         });
@@ -234,7 +234,7 @@ describe("desktop api client", () => {
                 new Response(
                     JSON.stringify({
                         ok: true,
-                        message: "VaultAI desktop API is ready.",
+                        message: "NeverWrite desktop API is ready.",
                     }),
                     {
                         status: 200,

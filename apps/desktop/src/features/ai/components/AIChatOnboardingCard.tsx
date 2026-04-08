@@ -5,6 +5,7 @@ import type {
     AIRuntimeSetupStatus,
     AISecretPatch,
 } from "../types";
+import { APP_BRAND_NAME } from "../../../app/utils/branding";
 import { getClaudeGatewayUrlValidationMessage } from "../utils/claudeGatewayUrl";
 
 interface AIChatOnboardingCardProps {
@@ -130,7 +131,7 @@ export function AIChatOnboardingCard({
         : `Connect ${runtimeName} to start chatting`;
     const subtitle = isSettingsMode
         ? "Update credentials, reconnect authentication, or override the runtime path."
-        : "VaultAI keeps a runtime-specific local setup. Existing external editor settings are not modified.";
+        : `${APP_BRAND_NAME} keeps a runtime-specific local setup. Existing external editor settings are not modified.`;
 
     return (
         <div className="px-3 pt-3">
@@ -366,7 +367,8 @@ export function AIChatOnboardingCard({
                                                 color: "var(--text-secondary)",
                                             }}
                                         >
-                                            Stored locally for VaultAI only.
+                                            Stored locally for {APP_BRAND_NAME}{" "}
+                                            only.
                                         </div>
                                         {isSettingsMode ||
                                         setupStatus.authMethod ===
@@ -454,9 +456,7 @@ export function AIChatOnboardingCard({
                                             }}
                                         >
                                             Headers are stored locally for
-                                            VaultAI only. Use HTTPS for remote
-                                            gateways. Plain HTTP is only allowed
-                                            for localhost.
+                                            {` ${APP_BRAND_NAME} only. Use HTTPS for remote gateways. Plain HTTP is only allowed for localhost.`}
                                         </div>
                                         {gatewayUrlError ? (
                                             <div
@@ -708,33 +708,33 @@ function getApiKeyPlaceholder(methodId?: string) {
 
 function getAuthMethodHelpText(methodId: string, runtimeName: string) {
     if (methodId === "chatgpt") {
-        return "VaultAI will open the browser to complete sign-in.";
+        return `${APP_BRAND_NAME} will open the browser to complete sign-in.`;
     }
     if (methodId === "claude-ai-login") {
-        return "VaultAI will open a limited sign-in terminal for your Claude subscription inside the app.";
+        return `${APP_BRAND_NAME} will open a limited sign-in terminal for your Claude subscription inside the app.`;
     }
     if (methodId === "console-login") {
-        return "VaultAI will open a limited sign-in terminal for Anthropic Console inside the app.";
+        return `${APP_BRAND_NAME} will open a limited sign-in terminal for Anthropic Console inside the app.`;
     }
     if (methodId === "claude-login") {
-        return "VaultAI will open a limited sign-in terminal inside the app.";
+        return `${APP_BRAND_NAME} will open a limited sign-in terminal inside the app.`;
     }
     if (methodId === "login_with_google") {
-        return "VaultAI will open a Gemini sign-in terminal inside the app.";
+        return `${APP_BRAND_NAME} will open a Gemini sign-in terminal inside the app.`;
     }
     if (methodId === "gateway") {
         return `Configure a custom ${runtimeName} gateway for this app only. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.`;
     }
     if (methodId === "codex-api-key") {
-        return "Store a Codex API key locally for VaultAI only.";
+        return `Store a Codex API key locally for ${APP_BRAND_NAME} only.`;
     }
     if (methodId === "openai-api-key") {
-        return "Store an OpenAI API key locally for VaultAI only.";
+        return `Store an OpenAI API key locally for ${APP_BRAND_NAME} only.`;
     }
     if (methodId === "use_gemini") {
-        return "Store a Gemini API key locally for VaultAI only.";
+        return `Store a Gemini API key locally for ${APP_BRAND_NAME} only.`;
     }
-    return `Complete ${runtimeName} authentication in VaultAI.`;
+    return `Complete ${runtimeName} authentication in ${APP_BRAND_NAME}.`;
 }
 
 function getContinueLabel(methodId?: string) {

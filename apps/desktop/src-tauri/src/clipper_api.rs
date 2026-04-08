@@ -7,8 +7,8 @@ use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
 use crate::{
-    web_clipper_list_folders, web_clipper_list_tags, web_clipper_ready_vaults,
-    web_clipper_save_note,
+    branding::APP_BRAND_NAME, web_clipper_list_folders, web_clipper_list_tags,
+    web_clipper_ready_vaults, web_clipper_save_note,
 };
 
 const WEB_CLIPPER_API_PORT: u16 = 32145;
@@ -438,19 +438,23 @@ pub(crate) fn start_server(app: AppHandle) {
 
             let response = match (request.method(), path) {
                 (&Method::Get, "/api/web-clipper/health") => match web_clipper_ready_vaults(&app) {
-                    Ok(vaults) => json_response(
-                        json!({
-                            "ok": true,
-                            "message": if vaults.is_empty() {
-                                "VaultAI is running, but no vault is ready."
-                            } else {
-                                "VaultAI desktop API is ready."
-                            },
-                            "vaults": vaults.into_iter().map(|(path, name)| json!({ "path": path, "name": name })).collect::<Vec<_>>(),
-                        }),
-                        StatusCode(200),
-                        Some(&authorized.origin),
-                    ),
+                    Ok(vaults) => {
+                        let message = if vaults.is_empty() {
+                            format!("{} is running, but no vault is ready.", APP_BRAND_NAME)
+                        } else {
+                            format!("{} desktop API is ready.", APP_BRAND_NAME)
+                        };
+
+                        json_response(
+                            json!({
+                                "ok": true,
+                                "message": message,
+                                "vaults": vaults.into_iter().map(|(path, name)| json!({ "path": path, "name": name })).collect::<Vec<_>>(),
+                            }),
+                            StatusCode(200),
+                            Some(&authorized.origin),
+                        )
+                    }
                     Err(message) => json_response(
                         json!({ "ok": false, "message": message }),
                         StatusCode(500),

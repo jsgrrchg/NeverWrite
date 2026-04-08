@@ -11,6 +11,7 @@ import {
 
 export const DEFAULT_APPCAST_CHANNEL = "stable";
 export const APPCAST_CHANNELS = ["stable", "beta", "nightly"];
+export const PUBLIC_PRODUCT_NAME = "NeverWrite";
 export const V1_BUILD_TARGETS = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -102,13 +103,13 @@ export function buildPublicReleaseAssetName(version, buildTarget) {
     const normalizedVersion = normalizeReleaseVersion(version);
     switch (buildTarget) {
         case "aarch64-apple-darwin":
-            return `VaultAI_${normalizedVersion}_macOS_AppleSilicon.dmg`;
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_AppleSilicon.dmg`;
         case "x86_64-apple-darwin":
-            return `VaultAI_${normalizedVersion}_macOS_Intel.dmg`;
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_Intel.dmg`;
         case "aarch64-pc-windows-msvc":
-            return `VaultAI_${normalizedVersion}_Windows_ARM64_Setup.exe`;
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64_Setup.exe`;
         case "x86_64-pc-windows-msvc":
-            return `VaultAI_${normalizedVersion}_Windows_x64_Setup.exe`;
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_x64_Setup.exe`;
         default:
             throw new Error(`Unsupported build target "${buildTarget}".`);
     }

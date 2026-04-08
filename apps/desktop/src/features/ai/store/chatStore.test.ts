@@ -211,7 +211,7 @@ const readySetupStatus = {
         {
             id: "openai-api-key",
             name: "API key",
-            description: "Use an OpenAI API key stored locally in VaultAI.",
+            description: "Use an OpenAI API key stored locally in NeverWrite.",
         },
     ],
     onboarding_required: false,

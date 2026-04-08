@@ -16,6 +16,7 @@ import {
     EMPTY_TERMINAL_SNAPSHOT,
     type TerminalSessionView,
 } from "../../devtools/terminal/terminalTypes";
+import { APP_BRAND_NAME } from "../../../app/utils/branding";
 
 interface AIAuthTerminalModalProps {
     open: boolean;
@@ -378,7 +379,7 @@ export function AIAuthTerminalModal({
                             style={{ color: "var(--text-secondary)" }}
                         >
                             {terminalExited
-                                ? "If sign-in completed, VaultAI will detect it after refreshing setup."
+                                ? `If sign-in completed, ${APP_BRAND_NAME} will detect it after refreshing setup.`
                                 : "Complete the sign-in flow in the terminal, then close this dialog or wait for it to exit."}
                         </div>
                         <div className="flex items-center gap-2">
