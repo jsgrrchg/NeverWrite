@@ -220,6 +220,32 @@ describe("MarkdownContent", () => {
         ).toBeInTheDocument();
     });
 
+    it("does not crash on markdown links with malformed URI encoding", () => {
+        renderComponent(
+            <MarkdownContent
+                content="Use [100% notes](/vault/100% notes.md)."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "100% notes" }),
+        ).toBeInTheDocument();
+    });
+
+    it("does not crash on absolute vault file paths with literal percent signs", () => {
+        renderComponent(
+            <MarkdownContent
+                content="Open `/vault/100% notes.md`."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "100% notes" }),
+        ).toBeInTheDocument();
+    });
+
     it("renders unified diff code blocks with exact line gutters", () => {
         renderComponent(
             <MarkdownContent

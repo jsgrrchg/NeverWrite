@@ -47,6 +47,14 @@ interface MarkdownContentProps {
     chatFontSize?: number;
 }
 
+function safeDecodeUriComponent(value: string) {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
+}
+
 function parseVaultReference(value: string) {
     const trimmed = value.trim();
     const match = /^(.*?\.md)(?::(\d+)|#L(\d+))?$/i.exec(trimmed);
@@ -459,7 +467,9 @@ function renderInlineMarkdown(
             const linkMatch = /\[([^\]]+)\]\(([^)]+)\)/.exec(full);
             if (linkMatch) {
                 const url = linkMatch[2];
-                const decoded = decodeURIComponent(url);
+                // Assistant output may include literal "%" characters in links.
+                // Keep rendering resilient when the URL is not valid URI-encoded text.
+                const decoded = safeDecodeUriComponent(url);
                 const parsedUrlReference = resolveVaultNoteReference(decoded, {
                     allowRelative: true,
                 });
@@ -597,7 +607,7 @@ function renderInlineMarkdown(
             }
         } else if (match[6]) {
             // Absolute vault file path.
-            const filePath = decodeURIComponent(full);
+            const filePath = safeDecodeUriComponent(full);
             const excalidrawRef = parseExcalidrawReference(filePath);
             const pdfPathRef = parsePdfReference(filePath);
             const textFileRef = parseTextFileReference(filePath);
