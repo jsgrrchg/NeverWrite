@@ -67,6 +67,8 @@ interface AIChatComposerProps {
     composerFontSize?: number;
     composerFontFamily?: EditorFontFamily;
     availableCommands?: AIAvailableCommand[];
+    isStopping?: boolean;
+    hasPendingSubmitAfterStop?: boolean;
     expanded?: boolean;
     contextBar?: ReactNode;
     footer?: ReactNode;
@@ -925,6 +927,8 @@ export function AIChatComposer({
     composerFontSize = 14,
     composerFontFamily = "system",
     availableCommands = [],
+    isStopping = false,
+    hasPendingSubmitAfterStop = false,
     expanded = false,
     contextBar,
     footer,
@@ -1133,8 +1137,12 @@ export function AIChatComposer({
     }, [parts, pillMetrics, pillMetricsSignature, serializedValue]);
 
     const isStreaming = status === "streaming";
+    const isStopTransitionActive = isStopping || hasPendingSubmitAfterStop;
     const isEmpty = serializedValue.length === 0;
-    const canSubmit = !disabled && !isEmpty;
+    const canSubmit = !disabled && !isEmpty && !hasPendingSubmitAfterStop;
+    const stopTransitionLabel = hasPendingSubmitAfterStop
+        ? "Sending next message after stop..."
+        : "Stopping previous run...";
 
     const closeMentionPicker = () => setMentionState(EMPTY_MENTION_STATE);
     const closeSlashPicker = () => setSlashState(EMPTY_SLASH_STATE);
@@ -1974,7 +1982,19 @@ export function AIChatComposer({
                         minHeight: expanded ? 42 : undefined,
                     }}
                 >
-                    <div className="min-w-0 flex-1">{footer}</div>
+                    <div className="min-w-0 flex-1">
+                        {isStopTransitionActive ? (
+                            <div
+                                className="truncate px-1 pb-1 text-xs"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                }}
+                            >
+                                {stopTransitionLabel}
+                            </div>
+                        ) : null}
+                        {footer}
+                    </div>
                     {onAttachFile && (
                         <div className="relative">
                             <button
@@ -2168,8 +2188,20 @@ export function AIChatComposer({
                             opacity: canSubmit ? 1 : 0.4,
                             transition: "all 0.15s ease",
                         }}
-                        aria-label={isStreaming ? "Queue" : "Send"}
-                        title={isStreaming ? "Queue" : "Send"}
+                        aria-label={
+                            hasPendingSubmitAfterStop
+                                ? "Waiting for stop"
+                                : isStreaming
+                                  ? "Queue"
+                                  : "Send"
+                        }
+                        title={
+                            hasPendingSubmitAfterStop
+                                ? "Waiting for stop"
+                                : isStreaming
+                                  ? "Queue"
+                                  : "Send"
+                        }
                     >
                         <svg
                             width="16"
@@ -2184,11 +2216,11 @@ export function AIChatComposer({
                             <path d="M8 12V4M4 7l4-3 4 3" />
                         </svg>
                     </button>
-                    {isStreaming && (
+                    {(isStreaming || isStopping) && (
                         <button
                             type="button"
                             onClick={onStop}
-                            disabled={disabled}
+                            disabled={disabled || isStopping}
                             className="flex shrink-0 items-center justify-center rounded-full"
                             style={{
                                 width: 28,
@@ -2196,11 +2228,11 @@ export function AIChatComposer({
                                 color: "#fff",
                                 backgroundColor: "#b91c1c",
                                 border: "none",
-                                opacity: disabled ? 0.4 : 1,
+                                opacity: disabled || isStopping ? 0.4 : 1,
                                 transition: "all 0.15s ease",
                             }}
-                            aria-label="Stop"
-                            title="Stop"
+                            aria-label={isStopping ? "Stopping" : "Stop"}
+                            title={isStopping ? "Stopping" : "Stop"}
                         >
                             <svg
                                 width="14"

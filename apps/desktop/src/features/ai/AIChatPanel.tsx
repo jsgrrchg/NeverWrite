@@ -115,6 +115,9 @@ export function AIChatPanel() {
     const composerPartsBySessionId = useChatStore(
         (state) => state.composerPartsBySessionId,
     );
+    const interruptedTurnStateBySessionId = useChatStore(
+        (state) => state.interruptedTurnStateBySessionId,
+    );
     const screenshotTimersRef = useRef<
         Map<string, { timeoutId: number; durationMs: number }>
     >(new Map());
@@ -317,6 +320,9 @@ export function AIChatPanel() {
         }),
     );
     const composerSessionId = currentSession?.sessionId ?? null;
+    const composerInterruptedTurnState = composerSessionId
+        ? (interruptedTurnStateBySessionId[composerSessionId] ?? null)
+        : null;
     const fileOptions = useMemo(
         () =>
             entries
@@ -932,6 +938,12 @@ export function AIChatPanel() {
                     composerFontSize={composerFontSize}
                     composerFontFamily={composerFontFamily}
                     availableCommands={currentSession?.availableCommands}
+                    isStopping={Boolean(
+                        composerInterruptedTurnState?.isStopping,
+                    )}
+                    hasPendingSubmitAfterStop={Boolean(
+                        composerInterruptedTurnState?.pendingManualSend,
+                    )}
                     onToggleAutoContext={toggleAutoContext}
                     expanded={composerExpanded}
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}

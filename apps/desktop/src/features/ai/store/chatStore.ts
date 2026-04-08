@@ -212,6 +212,17 @@ interface PausedQueueState {
     reinstateAfterNextManualSend: DeferredQueuedMessage[];
 }
 
+interface PendingInterruptedSend {
+    item: QueuedChatMessage;
+    preserveComposerState?: boolean;
+}
+
+interface InterruptedTurnState {
+    isStopping: boolean;
+    ignoreLateActivity: boolean;
+    pendingManualSend?: PendingInterruptedSend;
+}
+
 function aiPrefsEqual(
     left: Pick<
         ChatStore,
@@ -1010,6 +1021,7 @@ interface ChatStore {
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
     activeQueuedMessageBySessionId: Record<string, DeferredQueuedMessage>;
     pausedQueueBySessionId: Record<string, PausedQueueState>;
+    interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
     initialize: () => Promise<void>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
@@ -2458,6 +2470,34 @@ function cleanupPausedQueueBySessionId(
     return nextPausedQueueBySessionId;
 }
 
+function cleanupInterruptedTurnStateBySessionId(
+    interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>,
+    sessionId: string,
+    nextInterruptedTurnState?: InterruptedTurnState | null,
+) {
+    if (
+        nextInterruptedTurnState &&
+        (nextInterruptedTurnState.isStopping ||
+            nextInterruptedTurnState.ignoreLateActivity ||
+            nextInterruptedTurnState.pendingManualSend)
+    ) {
+        return {
+            ...interruptedTurnStateBySessionId,
+            [sessionId]: nextInterruptedTurnState,
+        };
+    }
+
+    if (!(sessionId in interruptedTurnStateBySessionId)) {
+        return interruptedTurnStateBySessionId;
+    }
+
+    const nextInterruptedTurnStateBySessionId = {
+        ...interruptedTurnStateBySessionId,
+    };
+    delete nextInterruptedTurnStateBySessionId[sessionId];
+    return nextInterruptedTurnStateBySessionId;
+}
+
 function restoreDeferredQueuedMessage(
     queue: QueuedChatMessage[],
     deferredMessage: DeferredQueuedMessage,
@@ -2552,6 +2592,117 @@ async function waitForPendingStop(sessionId: string) {
 async function stabilizeQueueSession(sessionId: string) {
     await waitForPendingStop(sessionId);
     healIdleQueuedState(sessionId);
+}
+
+function shouldIgnoreLateActivityForSession(
+    state: Pick<ChatStore, "interruptedTurnStateBySessionId">,
+    sessionId: string,
+) {
+    return (
+        state.interruptedTurnStateBySessionId[sessionId]?.ignoreLateActivity ===
+        true
+    );
+}
+
+function markSessionStopping(sessionId: string) {
+    useChatStore.setState((state) => {
+        const current = state.interruptedTurnStateBySessionId[sessionId];
+        return {
+            interruptedTurnStateBySessionId:
+                cleanupInterruptedTurnStateBySessionId(
+                    state.interruptedTurnStateBySessionId,
+                    sessionId,
+                    {
+                        isStopping: true,
+                        ignoreLateActivity: true,
+                        pendingManualSend: current?.pendingManualSend,
+                    },
+                ),
+        };
+    });
+}
+
+function finalizeSessionStopping(sessionId: string) {
+    useChatStore.setState((state) => {
+        const current = state.interruptedTurnStateBySessionId[sessionId];
+        if (!current) {
+            return state;
+        }
+
+        return {
+            interruptedTurnStateBySessionId:
+                cleanupInterruptedTurnStateBySessionId(
+                    state.interruptedTurnStateBySessionId,
+                    sessionId,
+                    {
+                        isStopping: false,
+                        ignoreLateActivity: true,
+                        pendingManualSend: current.pendingManualSend,
+                    },
+                ),
+        };
+    });
+}
+
+function clearInterruptedTurnState(sessionId: string) {
+    useChatStore.setState((state) => ({
+        interruptedTurnStateBySessionId:
+            cleanupInterruptedTurnStateBySessionId(
+                state.interruptedTurnStateBySessionId,
+                sessionId,
+                null,
+            ),
+    }));
+}
+
+function queuePendingInterruptedSend(
+    sessionId: string,
+    pending: PendingInterruptedSend,
+) {
+    let queued = false;
+    useChatStore.setState((state) => {
+        const currentSession = state.sessionsById[sessionId];
+        if (!currentSession) {
+            return state;
+        }
+
+        const existing = state.interruptedTurnStateBySessionId[sessionId];
+        if (existing?.pendingManualSend) {
+            return state;
+        }
+
+        queued = true;
+
+        return {
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: pending.preserveComposerState
+                    ? currentSession
+                    : {
+                          ...currentSession,
+                          attachments: [],
+                      },
+            },
+            composerPartsBySessionId: pending.preserveComposerState
+                ? state.composerPartsBySessionId
+                : {
+                      ...state.composerPartsBySessionId,
+                      [sessionId]: createEmptyComposerParts(),
+                  },
+            interruptedTurnStateBySessionId:
+                cleanupInterruptedTurnStateBySessionId(
+                    state.interruptedTurnStateBySessionId,
+                    sessionId,
+                    {
+                        isStopping: true,
+                        ignoreLateActivity: true,
+                        pendingManualSend: pending,
+                    },
+                ),
+            sessionOrder: touchSessionOrder(state.sessionOrder, sessionId),
+        };
+    });
+    return queued;
 }
 
 function updatePermissionMessageState(
@@ -4693,6 +4844,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             return;
         }
 
+        clearInterruptedTurnState(activeSessionId);
+
         if (session.runtimeState !== "live") {
             const resumedSessionId = await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
@@ -4858,6 +5011,45 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
     }
 
+    async function flushPendingInterruptedSend(
+        sessionId: string,
+        options?: {
+            waitForStop?: boolean;
+        },
+    ) {
+        if (options?.waitForStop !== false) {
+            await waitForPendingStop(sessionId);
+        }
+        const interruption =
+            get().interruptedTurnStateBySessionId[sessionId] ?? null;
+        const pending = interruption?.pendingManualSend;
+        if (!pending) {
+            return;
+        }
+
+        const session = get().sessionsById[sessionId];
+        if (!session || session.isResumingSession || isSessionBusy(session)) {
+            return;
+        }
+
+        if (get().pausedQueueBySessionId[sessionId]) {
+            releasePausedQueueForManualSend(sessionId);
+            const nextQueuedMessageId = (
+                get().queuedMessagesBySessionId[sessionId] ?? []
+            )[0]?.id;
+            if (
+                nextQueuedMessageId &&
+                !get().activeQueuedMessageBySessionId[sessionId]
+            ) {
+                activateQueuedMessage(sessionId, nextQueuedMessageId);
+            }
+        }
+
+        await dispatchMessage(sessionId, pending.item, "immediate", {
+            preserveComposerState: pending.preserveComposerState,
+        });
+    }
+
     return {
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
@@ -4885,6 +5077,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         queuedMessageEditBySessionId: {},
         activeQueuedMessageBySessionId: {},
         pausedQueueBySessionId: {},
+        interruptedTurnStateBySessionId: {},
 
         syncAutoContextForVault: (vaultPath) => {
             const next = loadAutoContextPreference(vaultPath);
@@ -5664,6 +5857,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                               sessionId,
                                               null,
                                           ),
+                                      interruptedTurnStateBySessionId:
+                                          cleanupInterruptedTurnStateBySessionId(
+                                              nextState.interruptedTurnStateBySessionId,
+                                              sessionId,
+                                              null,
+                                          ),
                                   };
                               },
                               {
@@ -5671,6 +5870,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                       state.queuedMessagesBySessionId,
                                   activeQueuedMessageBySessionId:
                                       state.activeQueuedMessageBySessionId,
+                                  interruptedTurnStateBySessionId:
+                                      state.interruptedTurnStateBySessionId,
                               },
                           ),
                       }
@@ -5787,6 +5988,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             session_id,
                             null,
                         ),
+                    interruptedTurnStateBySessionId:
+                        cleanupInterruptedTurnStateBySessionId(
+                            state.interruptedTurnStateBySessionId,
+                            session_id,
+                            null,
+                        ),
                 };
             });
 
@@ -5797,6 +6004,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyMessageStarted: ({ session_id }) => {
+            if (shouldIgnoreLateActivityForSession(get(), session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(session_id);
             set((state) => {
                 const session = state.sessionsById[session_id];
@@ -5823,6 +6033,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyMessageDelta: ({ session_id, message_id, delta }) => {
+            if (shouldIgnoreLateActivityForSession(get(), session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(session_id);
             set((state) => {
                 const session = state.sessionsById[session_id];
@@ -5895,6 +6108,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyThinkingStarted: ({ session_id, message_id }) => {
+            if (shouldIgnoreLateActivityForSession(get(), session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(session_id);
             flushDeltasSync();
             set((state) => {
@@ -5936,6 +6152,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyThinkingDelta: ({ session_id, message_id, delta }) => {
+            if (shouldIgnoreLateActivityForSession(get(), session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(session_id);
             set((state) => {
                 const session = state.sessionsById[session_id];
@@ -5953,6 +6172,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyThinkingCompleted: ({ session_id, message_id }) => {
+            if (shouldIgnoreLateActivityForSession(get(), session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(session_id);
             flushDeltasSync();
             set((state) => {
@@ -5977,6 +6199,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyToolActivity: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(payload.session_id);
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
@@ -6054,6 +6279,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyStatusEvent: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -6094,6 +6322,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyPlanUpdate: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -6146,6 +6377,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         applyPermissionRequest: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
 
@@ -6210,7 +6444,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
-        applyUserInputRequest: (payload) =>
+        applyUserInputRequest: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
+
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
                 if (!session) return state;
@@ -6254,7 +6492,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         payload.session_id,
                     ),
                 };
-            }),
+            });
+        },
 
         ensureSessionTranscriptLoaded: async (sessionId, mode = "latest") => {
             return loadPersistedTranscript(
@@ -6827,7 +7066,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sendMessage: async (sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
-            await stabilizeQueueSession(resolvedSessionId);
             const { sessionsById, composerPartsBySessionId } = get();
             const session = sessionsById[resolvedSessionId];
             if (!session || session.isResumingSession) {
@@ -6839,6 +7077,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 createEmptyComposerParts();
             const queuedItem = buildQueuedMessage(session, composerParts);
             if (!queuedItem) return;
+            const pendingStop = _pendingStopBySessionId.get(resolvedSessionId);
 
             const queuedMessageEdit =
                 get().queuedMessageEditBySessionId[resolvedSessionId];
@@ -6850,7 +7089,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     status: "queued",
                     optimisticMessageId: undefined,
                 };
-                const shouldRequeueEditedMessage = isSessionBusy(session);
+                const shouldDeferUntilStop = Boolean(pendingStop);
+                const shouldRequeueEditedMessage =
+                    !shouldDeferUntilStop && isSessionBusy(session);
 
                 set((state) => {
                     const finalizedEdit = finalizeQueuedMessageEditState(
@@ -6886,6 +7127,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
+                if (shouldDeferUntilStop && pendingStop) {
+                    const queued = queuePendingInterruptedSend(
+                        resolvedSessionId,
+                        {
+                            item: updatedQueuedItem,
+                            preserveComposerState: true,
+                        },
+                    );
+                    if (queued) {
+                        void pendingStop.finally(() => {
+                            void flushPendingInterruptedSend(
+                                resolvedSessionId,
+                            );
+                        });
+                    }
+                    return;
+                }
+
                 if (get().pausedQueueBySessionId[resolvedSessionId]) {
                     releasePausedQueueForManualSend(resolvedSessionId);
                 }
@@ -6900,7 +7159,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            if (isSessionBusy(session)) {
+            if (pendingStop) {
+                const queued = queuePendingInterruptedSend(resolvedSessionId, {
+                    item: queuedItem,
+                });
+                if (queued) {
+                    void pendingStop.finally(() => {
+                        void flushPendingInterruptedSend(resolvedSessionId);
+                    });
+                }
+                return;
+            }
+
+            await stabilizeQueueSession(resolvedSessionId);
+            const stabilizedSession = get().sessionsById[resolvedSessionId];
+            if (!stabilizedSession || stabilizedSession.isResumingSession) {
+                return;
+            }
+
+            if (isSessionBusy(stabilizedSession)) {
                 get().enqueueMessage(resolvedSessionId, queuedItem);
                 set((state) => {
                     const targetSession = state.sessionsById[resolvedSessionId];
@@ -7069,6 +7346,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             stopPromise = (async () => {
                 clearStaleStreamingCheck(resolvedSessionId);
                 clearBufferedDeltasForSession(resolvedSessionId);
+                markSessionStopping(resolvedSessionId);
                 const activeQueuedMessage =
                     get().activeQueuedMessageBySessionId[resolvedSessionId] ??
                     null;
@@ -7123,6 +7401,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 ),
                         },
                     };
+                });
+                finalizeSessionStopping(resolvedSessionId);
+                await flushPendingInterruptedSend(resolvedSessionId, {
+                    waitForStop: false,
                 });
             })().finally(() => {
                 if (
@@ -8068,6 +8350,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionId,
                 null,
             );
+            const nextInterruptedTurnStateBySessionId =
+                cleanupInterruptedTurnStateBySessionId(
+                    state.interruptedTurnStateBySessionId,
+                    sessionId,
+                    null,
+                );
             const remainingIds = sortSessionIdsByRecency(nextSessionsById);
             const nextActiveId =
                 state.activeSessionId === sessionId
@@ -8092,6 +8380,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 activeQueuedMessageBySessionId:
                     nextActiveQueuedMessageBySessionId,
                 pausedQueueBySessionId: nextPausedQueueBySessionId,
+                interruptedTurnStateBySessionId:
+                    nextInterruptedTurnStateBySessionId,
             });
             if (nextActiveId && !nextSessionsById[nextActiveId]) {
                 await get().newSession();
@@ -8139,6 +8429,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 queuedMessageEditBySessionId: {},
                 activeQueuedMessageBySessionId: {},
                 pausedQueueBySessionId: {},
+                interruptedTurnStateBySessionId: {},
             });
             await get().newSession();
         },
@@ -8663,6 +8954,7 @@ export function resetChatStore() {
         queuedMessageEditBySessionId: {},
         activeQueuedMessageBySessionId: {},
         pausedQueueBySessionId: {},
+        interruptedTurnStateBySessionId: {},
     });
 }
 

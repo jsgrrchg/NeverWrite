@@ -28,6 +28,8 @@ function renderComposer({
     runtimeId,
     composerFontFamily = "system",
     availableCommands = [],
+    isStopping = false,
+    hasPendingSubmitAfterStop = false,
     onSubmit = vi.fn(),
     onStop = vi.fn(),
 }: {
@@ -36,6 +38,8 @@ function renderComposer({
     runtimeId?: string;
     composerFontFamily?: EditorFontFamily;
     availableCommands?: AIAvailableCommand[];
+    isStopping?: boolean;
+    hasPendingSubmitAfterStop?: boolean;
     onSubmit?: ReturnType<typeof vi.fn>;
     onStop?: ReturnType<typeof vi.fn>;
 } = {}) {
@@ -56,6 +60,8 @@ function renderComposer({
             runtimeId={runtimeId}
             composerFontFamily={composerFontFamily}
             availableCommands={availableCommands}
+            isStopping={isStopping}
+            hasPendingSubmitAfterStop={hasPendingSubmitAfterStop}
             onChange={onChange}
             onMentionAttach={vi.fn()}
             onFolderAttach={vi.fn()}
@@ -282,6 +288,22 @@ describe("AIChatComposer mention picker", () => {
         expect(onStop).toHaveBeenCalledTimes(1);
         expect(onSubmit).not.toHaveBeenCalled();
         expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+    });
+
+    it("shows stop progress feedback while the next message is waiting for stop", () => {
+        renderComposer({
+            status: "idle",
+            isStopping: true,
+            hasPendingSubmitAfterStop: true,
+        });
+
+        expect(
+            screen.getByText("Sending next message after stop..."),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Waiting for stop" }),
+        ).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Stopping" })).toBeDisabled();
     });
 
     it("opens a mention pill in a new tab from the context menu", async () => {
