@@ -1,7 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
 import { PdfTabView } from "./PdfTabView";
 import {
     createDeferred,
@@ -292,7 +291,8 @@ describe("PdfTabView", () => {
         expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled();
     });
 
-    it("handles pinch-style wheel zoom on first load before toolbar zoom is used", async () => {
+    it("blocks pinch-style wheel zoom and keeps toolbar controls as the only zoom path", async () => {
+        const user = userEvent.setup();
         const pdfDocument = {
             destroy: vi.fn(),
             getPage: vi.fn().mockImplementation(async () => createMockPage()),
@@ -330,98 +330,24 @@ describe("PdfTabView", () => {
 
         expect(scrollSurface).toBeTruthy();
 
-        fireEvent.wheel(scrollSurface!, {
+        const pinchWheelEvent = new WheelEvent("wheel", {
+            bubbles: true,
+            cancelable: true,
             ctrlKey: true,
             deltaY: -100,
         });
 
-        await act(async () => {
-            await new Promise((resolve) => window.setTimeout(resolve, 200));
-        });
+        scrollSurface!.dispatchEvent(pinchWheelEvent);
 
-        await waitFor(() => {
-            expect(screen.getByText("125%")).toBeInTheDocument();
-        });
-    });
+        expect(pinchWheelEvent.defaultPrevented).toBe(true);
+        expect(screen.getByText("100%")).toBeInTheDocument();
 
-    it("anchors wheel zoom to the pointer instead of drifting the viewport", async () => {
-        const pdfDocument = {
-            destroy: vi.fn(),
-            getPage: vi.fn().mockImplementation(async () => createMockPage()),
-            numPages: 1,
-        };
+        await user.click(screen.getByTitle("Zoom in"));
 
-        getDocumentMock.mockReturnValue({
-            destroy: vi.fn(),
-            promise: Promise.resolve(pdfDocument),
-        });
-
-        setEditorTabs([
-            {
-                kind: "pdf",
-                id: "pdf-tab",
-                entryId: "entry-1",
-                title: "Doc",
-                path: "/vault/docs/doc.pdf",
-                page: 1,
-                zoom: 1,
-                viewMode: "single",
-            },
-        ]);
-
-        const { container } = renderComponent(<PdfTabView />);
-
-        await waitFor(() => {
-            expect(container.querySelector("canvas")).toBeInTheDocument();
-        });
-
-        const scrollSurface = container.querySelector(
-            "div[class*='overflow-auto']",
-        ) as HTMLDivElement | null;
-        const content =
-            scrollSurface?.firstElementChild as HTMLDivElement | null;
-
-        expect(scrollSurface).toBeTruthy();
-        expect(content).toBeTruthy();
-
-        Object.defineProperty(scrollSurface!, "scrollTop", {
-            configurable: true,
-            writable: true,
-            value: 300,
-        });
-        Object.defineProperty(scrollSurface!, "scrollLeft", {
-            configurable: true,
-            writable: true,
-            value: 40,
-        });
-        scrollSurface!.getBoundingClientRect = () =>
-            ({
-                left: 0,
-                top: 0,
-                right: 900,
-                bottom: 700,
-                width: 900,
-                height: 700,
-                x: 0,
-                y: 0,
-                toJSON: () => ({}),
-            }) as DOMRect;
-
-        fireEvent.wheel(scrollSurface!, {
-            ctrlKey: true,
-            clientX: 180,
-            clientY: 200,
-            deltaY: -100,
-        });
-
-        expect(scrollSurface!.scrollTop).toBe(425);
-        expect(scrollSurface!.scrollLeft).toBe(95);
         expect(screen.getByText("125%")).toBeInTheDocument();
-        expect(content!.style.transformOrigin).toBe("");
-        expect(content!.style.transform).toBe("");
     });
 
-    it("allows native pan gestures on the PDF surface", async () => {
+    it("preserves pan gestures while suppressing gesture-based pinch zoom on the PDF surface", async () => {
         const pdfDocument = {
             destroy: vi.fn(),
             getPage: vi.fn().mockImplementation(async () => createMockPage()),
@@ -459,7 +385,23 @@ describe("PdfTabView", () => {
             "canvas",
         ) as HTMLCanvasElement | null;
 
-        expect(scrollSurface?.style.touchAction).toBe("pan-x pan-y pinch-zoom");
+        expect(scrollSurface?.style.touchAction).toBe("pan-x pan-y");
         expect(canvas?.style.touchAction).not.toBe("none");
+
+        const panWheelEvent = new WheelEvent("wheel", {
+            bubbles: true,
+            cancelable: true,
+            deltaY: 120,
+        });
+        scrollSurface!.dispatchEvent(panWheelEvent);
+
+        const pinchGestureEvent = new Event("gesturestart", {
+            bubbles: true,
+            cancelable: true,
+        });
+        scrollSurface!.dispatchEvent(pinchGestureEvent);
+
+        expect(panWheelEvent.defaultPrevented).toBe(false);
+        expect(pinchGestureEvent.defaultPrevented).toBe(true);
     });
 });
