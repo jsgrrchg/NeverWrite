@@ -390,6 +390,7 @@ export function FileTextTabView() {
         lineWrapping,
         syncCurrentSelection,
         tab,
+        tabRef,
         trackedFileMatch?.trackedFile.diffBase,
     ]);
 
@@ -471,13 +472,13 @@ export function FileTextTabView() {
             );
         });
         return unsub;
-    }, [inlineReviewEnabled]);
+    }, [inlineReviewEnabled, tabRef]);
 
     useEffect(() => {
         return subscribeEditorReviewSync(() =>
             resolveEditorTargetForOpenTab(tabRef.current),
         );
-    }, [tab?.id, tab?.path, tab?.relativePath]);
+    }, [tab?.id, tab?.path, tab?.relativePath, tabRef]);
 
     useEffect(() => {
         const currentTab = tabRef.current;
@@ -489,7 +490,12 @@ export function FileTextTabView() {
             useChatStore.getState().sessionsById,
             { mode: "source" },
         );
-    }, [inlineReviewEnabled, tab, trackedFileMatch?.trackedFile.version]);
+    }, [
+        inlineReviewEnabled,
+        tab,
+        tabRef,
+        trackedFileMatch?.trackedFile.version,
+    ]);
 
     useEffect(() => {
         queueMicrotask(() => setEditorContextMenu(null));
