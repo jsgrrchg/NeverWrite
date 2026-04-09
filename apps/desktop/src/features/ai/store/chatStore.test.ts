@@ -566,13 +566,13 @@ describe("chatStore", () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
 
-        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
 
         useChatStore.getState().toggleAutoContext();
 
-        expect(useChatStore.getState().autoContextEnabled).toBe(false);
+        expect(useChatStore.getState().autoContextEnabled).toBe(true);
         expect(localStorage.getItem(getAutoContextKey("/vaults/one"))).toBe(
-            "false",
+            "true",
         );
         expect(localStorage.getItem(AI_PREFS_KEY)).toBeNull();
     });
@@ -678,7 +678,7 @@ describe("chatStore", () => {
 
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
-        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
 
         localStorage.setItem(
             AI_PREFS_KEY,
@@ -697,7 +697,7 @@ describe("chatStore", () => {
         vi.advanceTimersByTime(80);
 
         expect(useChatStore.getState().editDiffZoom).toBe(0.8);
-        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
 
         localStorage.setItem(getAutoContextKey("/vaults/two"), "false");
         window.dispatchEvent(
@@ -708,7 +708,7 @@ describe("chatStore", () => {
         );
 
         vi.advanceTimersByTime(80);
-        expect(useChatStore.getState().autoContextEnabled).toBe(true);
+        expect(useChatStore.getState().autoContextEnabled).toBe(false);
 
         localStorage.setItem(getAutoContextKey("/vaults/one"), "false");
         window.dispatchEvent(
@@ -869,6 +869,7 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
         const activeSessionId = getActiveSessionId();
         useChatStore.setState((state) => ({
+            autoContextEnabled: true,
             sessionsById: {
                 ...state.sessionsById,
                 [activeSessionId]: {

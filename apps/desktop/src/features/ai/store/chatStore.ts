@@ -289,11 +289,11 @@ function loadAutoContextPreference(vaultPath: string | null) {
         if (raw === "true") return true;
         if (raw === "false") return false;
     } catch {
-        return true;
+        return false;
     }
 
     const legacyPrefs = loadAiPreferences();
-    return legacyPrefs.autoContextEnabled !== false;
+    return legacyPrefs.autoContextEnabled === true;
 }
 
 function saveAutoContextPreference(
@@ -5062,7 +5062,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         notePickerOpen: false,
         historyViewOpen: false,
         historySelectedSessionId: null,
-        autoContextEnabled: true,
+        autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
         composerFontSize: DEFAULT_AI_PREFERENCES.composerFontSize,
         chatFontSize: DEFAULT_AI_PREFERENCES.chatFontSize,
