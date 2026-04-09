@@ -2061,4 +2061,58 @@ describe("editorStore tab management", () => {
             viewMode: "single",
         });
     });
+
+    it("hydrates pane workspaces while mirroring the focused pane into legacy fields", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "pane-1",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                    activationHistory: ["tab-a"],
+                    tabNavigationHistory: ["tab-a"],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [
+                        makeFileTab({
+                            id: "file-b",
+                            relativePath: "src/main.ts",
+                            title: "main.ts",
+                            path: "/vault/src/main.ts",
+                            content: "console.log('ok')",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        }),
+                    ],
+                    activeTabId: "file-b",
+                    activationHistory: ["file-b"],
+                    tabNavigationHistory: ["file-b"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            "pane-2",
+        );
+
+        const state = useEditorStore.getState();
+
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes).toHaveLength(2);
+        expect(state.panes[0]?.activeTabId).toBe("tab-a");
+        expect(state.panes[1]?.activeTabId).toBe("file-b");
+        expect(state.tabs[0]).toMatchObject({
+            id: "file-b",
+            kind: "file",
+            relativePath: "src/main.ts",
+        });
+        expect(state.activeTabId).toBe("file-b");
+    });
 });

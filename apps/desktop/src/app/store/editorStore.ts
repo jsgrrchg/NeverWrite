@@ -89,6 +89,123 @@ export type {
 export { markSessionReady, readPersistedSession } from "./editorSession";
 
 const MAX_RECENTLY_CLOSED_TABS = 20;
+export const PRIMARY_EDITOR_PANE_ID = "primary";
+
+interface LegacyWorkspaceState {
+    tabs: Tab[];
+    activeTabId: string | null;
+    activationHistory: string[];
+    tabNavigationHistory: string[];
+    tabNavigationIndex: number;
+}
+
+export interface EditorPaneState extends LegacyWorkspaceState {
+    id: string;
+}
+
+export interface EditorPaneInput {
+    id?: string;
+    tabs: TabInput[];
+    activeTabId: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
+}
+
+function normalizeLegacyWorkspaceState(
+    workspace: Partial<LegacyWorkspaceState>,
+): LegacyWorkspaceState {
+    const tabs = workspace.tabs ?? [];
+    const tabIds = new Set(tabs.map((tab) => tab.id));
+    const activeTabId =
+        workspace.activeTabId && tabIds.has(workspace.activeTabId)
+            ? workspace.activeTabId
+            : (tabs[0]?.id ?? null);
+
+    const activationHistory = (workspace.activationHistory ?? []).filter((id) =>
+        tabIds.has(id),
+    );
+    if (activeTabId && !activationHistory.includes(activeTabId)) {
+        activationHistory.push(activeTabId);
+    }
+
+    const tabNavigationHistory = (workspace.tabNavigationHistory ?? []).filter(
+        (id) => tabIds.has(id),
+    );
+
+    if (activeTabId && !tabNavigationHistory.includes(activeTabId)) {
+        tabNavigationHistory.push(activeTabId);
+    }
+
+    const tabNavigationIndex = activeTabId
+        ? Math.max(
+              0,
+              Math.min(
+                  workspace.tabNavigationIndex ??
+                      tabNavigationHistory.lastIndexOf(activeTabId),
+                  tabNavigationHistory.length - 1,
+              ),
+          )
+        : -1;
+
+    return {
+        tabs,
+        activeTabId,
+        activationHistory,
+        tabNavigationHistory,
+        tabNavigationIndex,
+    };
+}
+
+function createEditorPaneState(
+    id: string,
+    workspace: Partial<LegacyWorkspaceState> = {},
+): EditorPaneState {
+    return {
+        id,
+        ...normalizeLegacyWorkspaceState(workspace),
+    };
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]) {
+    return (
+        left.length === right.length &&
+        left.every((value, index) => value === right[index])
+    );
+}
+
+function getResolvedFocusedPaneId(
+    panes: readonly EditorPaneState[],
+    focusedPaneId: string | null | undefined,
+) {
+    if (focusedPaneId && panes.some((pane) => pane.id === focusedPaneId)) {
+        return focusedPaneId;
+    }
+    return panes[0]?.id ?? PRIMARY_EDITOR_PANE_ID;
+}
+
+function buildFocusedPaneProjection(args: {
+    panes: EditorPaneState[];
+    focusedPaneId?: string | null;
+}) {
+    const panes =
+        args.panes.length > 0
+            ? args.panes.map((pane) => createEditorPaneState(pane.id, pane))
+            : [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)];
+    const focusedPaneId = getResolvedFocusedPaneId(panes, args.focusedPaneId);
+    const focusedPane =
+        panes.find((pane) => pane.id === focusedPaneId) ?? panes[0];
+
+    return {
+        panes,
+        focusedPaneId,
+        tabs: focusedPane.tabs,
+        activeTabId: focusedPane.activeTabId,
+        activationHistory: focusedPane.activationHistory,
+        tabNavigationHistory: focusedPane.tabNavigationHistory,
+        tabNavigationIndex: focusedPane.tabNavigationIndex,
+    };
+}
 
 function pushTabToActivation(history: string[], tabId: string) {
     return [...history.filter((id) => id !== tabId), tabId];
@@ -430,6 +547,8 @@ export interface ReloadedDetail {
 }
 
 interface EditorStore {
+    panes: EditorPaneState[];
+    focusedPaneId: string | null;
     tabs: Tab[];
     activeTabId: string | null;
     recentlyClosedTabs: RecentlyClosedTab[];
@@ -487,6 +606,10 @@ interface EditorStore {
     updatePdfZoom: (tabId: string, zoom: number) => void;
     updatePdfViewMode: (tabId: string, viewMode: PdfViewMode) => void;
     reorderTabs: (fromIndex: number, toIndex: number) => void;
+    hydrateWorkspace: (
+        panes: EditorPaneInput[],
+        focusedPaneId?: string | null,
+    ) => void;
     hydrateTabs: (tabs: TabInput[], activeTabId: string | null) => void;
     insertExternalTab: (tab: TabInput, index?: number) => void;
     queueReveal: (reveal: PendingReveal) => void;
@@ -522,6 +645,8 @@ interface EditorStore {
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
+    panes: [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)],
+    focusedPaneId: PRIMARY_EDITOR_PANE_ID,
     tabs: [],
     activeTabId: null,
     recentlyClosedTabs: [],
@@ -969,6 +1094,47 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
+    hydrateWorkspace: (panes, focusedPaneId) => {
+        const seenGraph = new Set<string>();
+        const hydratedPanes = panes.flatMap((pane, index) => {
+            const hydratedTabs: Tab[] = pane.tabs.flatMap((tab): Tab[] => {
+                const normalized = normalizeHydratedTab(tab);
+                if (!normalized) {
+                    return [];
+                }
+                if (isGraphTab(normalized)) {
+                    if (seenGraph.size > 0) {
+                        return [];
+                    }
+                    seenGraph.add(normalized.id);
+                }
+                return [normalized];
+            });
+
+            return [
+                createEditorPaneState(pane.id?.trim() || `pane-${index + 1}`, {
+                    tabs: hydratedTabs,
+                    activeTabId: pane.activeTabId,
+                    activationHistory: pane.activationHistory,
+                    tabNavigationHistory: pane.tabNavigationHistory,
+                    tabNavigationIndex: pane.tabNavigationIndex,
+                }),
+            ];
+        });
+
+        set({
+            ...buildFocusedPaneProjection({
+                panes:
+                    hydratedPanes.length > 0
+                        ? hydratedPanes
+                        : [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)],
+                focusedPaneId,
+            }),
+            recentlyClosedTabs: [],
+            dirtyTabIds: new Set<string>(),
+        });
+    },
+
     hydrateTabs: (tabs, activeTabId) => {
         const seenGraph = new Set<string>();
         const hydratedTabs: Tab[] = tabs.flatMap((tab): Tab[] => {
@@ -989,6 +1155,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 ? activeTabId
                 : (hydratedTabs[0]?.id ?? null);
         set({
+            panes: [
+                createEditorPaneState(PRIMARY_EDITOR_PANE_ID, {
+                    tabs: hydratedTabs,
+                    activeTabId: nextActiveTabId,
+                    activationHistory: nextActiveTabId ? [nextActiveTabId] : [],
+                    tabNavigationHistory: nextActiveTabId
+                        ? [nextActiveTabId]
+                        : [],
+                    tabNavigationIndex: nextActiveTabId ? 0 : -1,
+                }),
+            ],
+            focusedPaneId: PRIMARY_EDITOR_PANE_ID,
             tabs: hydratedTabs,
             activeTabId: nextActiveTabId,
             recentlyClosedTabs: [],
@@ -1291,6 +1469,100 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }));
     },
 }));
+
+let _syncingPaneMirror = false;
+
+useEditorStore.subscribe((state) => {
+    if (_syncingPaneMirror) {
+        return;
+    }
+
+    const projection = buildFocusedPaneProjection({
+        panes:
+            state.panes.length > 0
+                ? state.panes.map((pane) =>
+                      pane.id ===
+                      getResolvedFocusedPaneId(state.panes, state.focusedPaneId)
+                          ? createEditorPaneState(pane.id, {
+                                tabs: state.tabs,
+                                activeTabId: state.activeTabId,
+                                activationHistory: state.activationHistory,
+                                tabNavigationHistory:
+                                    state.tabNavigationHistory,
+                                tabNavigationIndex: state.tabNavigationIndex,
+                            })
+                          : pane,
+                  )
+                : [
+                      createEditorPaneState(PRIMARY_EDITOR_PANE_ID, {
+                          tabs: state.tabs,
+                          activeTabId: state.activeTabId,
+                          activationHistory: state.activationHistory,
+                          tabNavigationHistory: state.tabNavigationHistory,
+                          tabNavigationIndex: state.tabNavigationIndex,
+                      }),
+                  ],
+        focusedPaneId: state.focusedPaneId,
+    });
+
+    const focusedPane = projection.panes.find(
+        (pane) => pane.id === projection.focusedPaneId,
+    );
+    const currentFocusedPane = state.panes.find(
+        (pane) => pane.id === projection.focusedPaneId,
+    );
+
+    const panesChanged =
+        state.panes.length !== projection.panes.length ||
+        projection.panes.some((pane, index) => {
+            const current = state.panes[index];
+            return (
+                !current ||
+                current.id !== pane.id ||
+                current.activeTabId !== pane.activeTabId ||
+                current.tabNavigationIndex !== pane.tabNavigationIndex ||
+                current.tabs !== pane.tabs ||
+                !stringArraysEqual(
+                    current.activationHistory,
+                    pane.activationHistory,
+                ) ||
+                !stringArraysEqual(
+                    current.tabNavigationHistory,
+                    pane.tabNavigationHistory,
+                )
+            );
+        });
+    const legacyChanged =
+        state.focusedPaneId !== projection.focusedPaneId ||
+        state.tabs !== focusedPane?.tabs ||
+        state.activeTabId !== focusedPane?.activeTabId ||
+        !stringArraysEqual(
+            state.activationHistory,
+            focusedPane?.activationHistory ?? [],
+        ) ||
+        !stringArraysEqual(
+            state.tabNavigationHistory,
+            focusedPane?.tabNavigationHistory ?? [],
+        ) ||
+        state.tabNavigationIndex !== focusedPane?.tabNavigationIndex ||
+        !currentFocusedPane;
+
+    if (!panesChanged && !legacyChanged) {
+        return;
+    }
+
+    _syncingPaneMirror = true;
+    useEditorStore.setState({
+        panes: projection.panes,
+        focusedPaneId: projection.focusedPaneId,
+        tabs: projection.tabs,
+        activeTabId: projection.activeTabId,
+        activationHistory: projection.activationHistory,
+        tabNavigationHistory: projection.tabNavigationHistory,
+        tabNavigationIndex: projection.tabNavigationIndex,
+    });
+    _syncingPaneMirror = false;
+});
 
 // Debounced session persistence — only write when tab list or active tab changes
 let _sessionTimer: ReturnType<typeof setTimeout> | null = null;

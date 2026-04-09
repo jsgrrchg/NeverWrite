@@ -255,6 +255,131 @@ describe("editorSession", () => {
         expect(session.activeFilePath).toBe("data/report.csv");
     });
 
+    it("serializes and restores pane-aware workspace sessions", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "pane-1",
+                    tabs: [
+                        {
+                            id: "note-1",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Note A",
+                            content: "Body A",
+                            history: [
+                                {
+                                    kind: "note",
+                                    noteId: "notes/a",
+                                    title: "Note A",
+                                    content: "Body A",
+                                },
+                            ],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "note-1",
+                    activationHistory: ["note-1"],
+                    tabNavigationHistory: ["note-1"],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [
+                        {
+                            id: "file-1",
+                            kind: "file",
+                            relativePath: "src/main.ts",
+                            title: "main.ts",
+                            path: "/vault/src/main.ts",
+                            content: "console.log('ok')",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                            history: [
+                                {
+                                    kind: "file",
+                                    relativePath: "src/main.ts",
+                                    title: "main.ts",
+                                    path: "/vault/src/main.ts",
+                                    content: "console.log('ok')",
+                                    mimeType: "text/typescript",
+                                    viewer: "text",
+                                },
+                            ],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "file-1",
+                    activationHistory: ["file-1"],
+                    tabNavigationHistory: ["file-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "pane-2",
+            tabs: [
+                {
+                    id: "file-1",
+                    kind: "file",
+                    relativePath: "src/main.ts",
+                    title: "main.ts",
+                    path: "/vault/src/main.ts",
+                    content: "console.log('ok')",
+                    mimeType: "text/typescript",
+                    viewer: "text",
+                    history: [
+                        {
+                            kind: "file",
+                            relativePath: "src/main.ts",
+                            title: "main.ts",
+                            path: "/vault/src/main.ts",
+                            content: "console.log('ok')",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        },
+                    ],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "file-1",
+        });
+
+        expect(session.panes).toEqual([
+            expect.objectContaining({
+                id: "pane-1",
+                activeTabId: "note-1",
+            }),
+            expect.objectContaining({
+                id: "pane-2",
+                activeTabId: "file-1",
+            }),
+        ]);
+        expect(session.focusedPaneId).toBe("pane-2");
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.focusedPaneId).toBe("pane-2");
+        expect(restored?.panes).toHaveLength(2);
+        expect(restored?.panes?.[0]).toMatchObject({
+            id: "pane-1",
+            activeTabId: "note-1",
+        });
+        expect(restored?.panes?.[1]).toMatchObject({
+            id: "pane-2",
+            activeTabId: "file-1",
+        });
+        expect(restored?.tabs[0]).toMatchObject({
+            id: "file-1",
+            kind: "file",
+            relativePath: "src/main.ts",
+        });
+        expect(restored?.activeTabId).toBe("file-1");
+    });
+
     it("restores legacy persisted sessions through the session module", async () => {
         localStorage.setItem(
             getEditorSessionKey("/vaults/project-alpha"),

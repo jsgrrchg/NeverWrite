@@ -21,7 +21,18 @@ import { toVaultRelativePath } from "../utils/vaultPaths";
 const SESSION_KEY = "neverwrite.session.tabs";
 const SESSION_KEY_PREFIX = "neverwrite.session.tabs:";
 
+export interface PersistedSessionPane {
+    id: string;
+    tabs: TabInput[];
+    activeTabId: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
+}
+
 export interface PersistedSession {
+    panes?: PersistedSessionPane[];
+    focusedPaneId?: string | null;
     tabs?: TabInput[];
     activeTabId?: string | null;
     noteIds: Array<{
@@ -82,11 +93,22 @@ export interface PersistedSession {
 }
 
 export interface EditorSessionState {
+    panes?: Array<{
+        id: string;
+        tabs: Tab[];
+        activeTabId: string | null;
+        activationHistory: string[];
+        tabNavigationHistory: string[];
+        tabNavigationIndex: number;
+    }>;
+    focusedPaneId?: string | null;
     tabs: Tab[];
     activeTabId: string | null;
 }
 
 export interface RestoredEditorSession {
+    panes?: PersistedSessionPane[];
+    focusedPaneId?: string | null;
     tabs: TabInput[];
     activeTabId: string | null;
 }
@@ -132,7 +154,8 @@ export function hasPersistedSessionData(
 ) {
     return Boolean(
         session &&
-        (session.noteIds.length ||
+        (session.panes?.length ||
+            session.noteIds.length ||
             session.tabs?.length ||
             session.pdfTabs?.length ||
             session.fileTabs?.length ||
@@ -141,7 +164,86 @@ export function hasPersistedSessionData(
     );
 }
 
+function normalizePersistedTabs(tabs: Tab[]) {
+    return tabs.flatMap((tab): TabInput[] => {
+        if (!isHistoryTab(tab)) {
+            return isGraphTab(tab) || isMapTab(tab) ? [tab] : [];
+        }
+
+        const normalized = normalizeHistoryTab(tab);
+        return normalized ? [normalized] : [];
+    });
+}
+
+function buildPersistedPanes(
+    state: EditorSessionState,
+): PersistedSessionPane[] | undefined {
+    if (!state.panes?.length) {
+        const tabs = normalizePersistedTabs(state.tabs);
+        const activeTabId =
+            state.activeTabId &&
+            tabs.some((tab) => tab.id === state.activeTabId)
+                ? state.activeTabId
+                : null;
+        return tabs.length > 0 || activeTabId
+            ? [
+                  {
+                      id: "primary",
+                      tabs,
+                      activeTabId,
+                      activationHistory: activeTabId ? [activeTabId] : [],
+                      tabNavigationHistory: activeTabId ? [activeTabId] : [],
+                      tabNavigationIndex: activeTabId ? 0 : -1,
+                  },
+              ]
+            : undefined;
+    }
+
+    return state.panes
+        .map((pane) => ({
+            id: pane.id,
+            tabs: normalizePersistedTabs(pane.tabs),
+            activeTabId:
+                pane.activeTabId &&
+                pane.tabs.some((tab) => tab.id === pane.activeTabId)
+                    ? pane.activeTabId
+                    : null,
+            activationHistory: pane.activationHistory.filter((tabId) =>
+                pane.tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationHistory: pane.tabNavigationHistory.filter((tabId) =>
+                pane.tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationIndex: pane.tabNavigationIndex,
+        }))
+        .filter((pane) => pane.tabs.length > 0 || pane.activeTabId !== null);
+}
+
 export function getEditorSessionSignature(state: EditorSessionState) {
+    const panes = buildPersistedPanes(state);
+    if (panes?.length) {
+        let signature = state.focusedPaneId ?? "";
+        for (const pane of panes) {
+            signature += `|pane:${pane.id}:${pane.activeTabId ?? ""}`;
+            for (const tab of pane.tabs) {
+                if (isGraphTab(tab)) {
+                    signature += "|graph";
+                    continue;
+                }
+                if (isHistoryTab(tab)) {
+                    const normalized = normalizeHistoryTab(tab);
+                    if (!normalized) {
+                        continue;
+                    }
+                    signature += getHistoryTabHandler(
+                        normalized.kind,
+                    ).fingerprint(normalized as never);
+                }
+            }
+        }
+        return signature;
+    }
+
     let signature = state.activeTabId ?? "";
     for (const tab of state.tabs) {
         if (isReviewTab(tab)) {
@@ -167,6 +269,7 @@ export function getEditorSessionSignature(state: EditorSessionState) {
 export function buildPersistedSession(
     state: EditorSessionState,
 ): PersistedSession {
+    const panes = buildPersistedPanes(state);
     const activeTab =
         state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
     const normalizedTabs = state.tabs.flatMap((tab) => {
@@ -208,6 +311,8 @@ export function buildPersistedSession(
     }
 
     return {
+        panes,
+        focusedPaneId: state.focusedPaneId ?? panes?.[0]?.id ?? null,
         activeTabId: activeTab?.id ?? null,
         noteIds,
         pdfTabs,
@@ -224,6 +329,19 @@ export function buildPersistedSession(
             activeTab && isMapTab(activeTab) ? activeTab.relativePath : null,
         activeGraphTab: activeTab ? isGraphTab(activeTab) : false,
     };
+}
+
+function normalizeRestoredTabInput(tab: TabInput): TabInput | null {
+    if (isReviewTab(tab)) {
+        return null;
+    }
+    if (isHistoryTab(tab)) {
+        return normalizeHistoryTab(tab);
+    }
+    if (isGraphTab(tab) || isMapTab(tab)) {
+        return tab;
+    }
+    return null;
 }
 
 async function restoreLegacyNoteTabs(session: PersistedSession) {
@@ -261,6 +379,50 @@ async function restoreLegacyNoteTabs(session: PersistedSession) {
         }
     }
     return restoredTabs;
+}
+
+function restorePersistedPaneTabs(
+    panes: PersistedSessionPane[],
+): PersistedSessionPane[] {
+    const seenGraph = new Set<string>();
+
+    return panes.map((pane, index) => {
+        const tabs = pane.tabs.flatMap((tab): TabInput[] => {
+            const normalized = normalizeRestoredTabInput(tab);
+            if (!normalized) {
+                return [];
+            }
+            if (isGraphTab(normalized)) {
+                if (seenGraph.size > 0) {
+                    return [];
+                }
+                seenGraph.add(normalized.id);
+            }
+            return [normalized];
+        });
+        const activeTabId =
+            pane.activeTabId && tabs.some((tab) => tab.id === pane.activeTabId)
+                ? pane.activeTabId
+                : (tabs[0]?.id ?? null);
+
+        return {
+            id: pane.id || `pane-${index + 1}`,
+            tabs,
+            activeTabId,
+            activationHistory: (pane.activationHistory ?? []).filter((tabId) =>
+                tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationHistory: (pane.tabNavigationHistory ?? []).filter(
+                (tabId) => tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationIndex:
+                typeof pane.tabNavigationIndex === "number"
+                    ? pane.tabNavigationIndex
+                    : activeTabId
+                      ? 0
+                      : -1,
+        };
+    });
 }
 
 function restoreLegacyPdfTabs(session: PersistedSession) {
@@ -510,6 +672,29 @@ export async function restorePersistedSession(
 
     if (!restoredTabs.length) {
         return null;
+    }
+
+    if (session?.panes?.length) {
+        const restoredPanes = restorePersistedPaneTabs(session.panes);
+        const focusedPaneId =
+            typeof session.focusedPaneId === "string"
+                ? session.focusedPaneId
+                : (restoredPanes[0]?.id ?? null);
+        const focusedPane =
+            restoredPanes.find((pane) => pane.id === focusedPaneId) ??
+            restoredPanes[0] ??
+            null;
+
+        if (!focusedPane) {
+            return null;
+        }
+
+        return {
+            panes: restoredPanes,
+            focusedPaneId,
+            tabs: focusedPane.tabs,
+            activeTabId: focusedPane.activeTabId,
+        };
     }
 
     return {

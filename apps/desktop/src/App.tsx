@@ -1112,6 +1112,7 @@ export default function App() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
+    const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const tabs = useEditorStore((s) => s.tabs);
@@ -1303,8 +1304,12 @@ export default function App() {
             includeMaps: EXCALIDRAW_RUNTIME_SUPPORTED,
         });
         if (!restored) return;
+        if (restored.panes?.length) {
+            hydrateWorkspace(restored.panes, restored.focusedPaneId);
+            return;
+        }
         hydrateTabs(restored.tabs, restored.activeTabId);
-    }, [hydrateTabs]);
+    }, [hydrateTabs, hydrateWorkspace]);
 
     useEffect(() => {
         const blockNativeContextMenu = (event: MouseEvent) => {
