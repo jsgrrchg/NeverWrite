@@ -1,11 +1,15 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use neverwrite_types::{NoteId, NotePath, PdfDocument};
+use serde::{Deserialize, Serialize};
 
 use crate::error::VaultError;
+
+const PDF_EXTRACTION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPdfFile {
@@ -78,6 +82,30 @@ fn system_time_to_secs(t: std::time::SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
+fn run_with_timeout<T, F>(timeout: Duration, task_name: &str, task: F) -> Result<T, VaultError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let _ = sender.send(task());
+    });
+
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(VaultError::PdfExtraction(error)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(VaultError::PdfExtraction(format!(
+            "{task_name} timed out after {}s",
+            timeout.as_secs()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(VaultError::PdfExtraction(format!(
+            "{task_name} worker disconnected unexpectedly"
+        ))),
+    }
+}
+
 /// Extract text from a PDF. Uses cache if valid, otherwise extracts and caches.
 pub fn extract_pdf_text(
     vault_root: &Path,
@@ -108,8 +136,9 @@ pub fn extract_pdf_text(
 
     // Extract from PDF
     let bytes = std::fs::read(pdf_path).map_err(|e| VaultError::PdfExtraction(e.to_string()))?;
-    let pages = pdf_extract::extract_text_from_mem_by_pages(&bytes)
-        .map_err(|e| VaultError::PdfExtraction(format!("{e}")))?;
+    let pages = run_with_timeout(PDF_EXTRACTION_TIMEOUT, "PDF extraction", move || {
+        pdf_extract::extract_text_from_mem_by_pages(&bytes).map_err(|e| e.to_string())
+    })?;
     let page_count = pages.len();
 
     // Cache the result
@@ -169,5 +198,29 @@ pub fn extract_pdf_batch(
     PdfBatchResult {
         documents,
         failures,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_with_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn run_with_timeout_returns_task_result() {
+        let result = run_with_timeout(Duration::from_millis(50), "PDF extraction", || Ok(42));
+
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn run_with_timeout_returns_timeout_error() {
+        let result = run_with_timeout(Duration::from_millis(10), "PDF extraction", || {
+            std::thread::sleep(Duration::from_millis(50));
+            Ok::<_, String>(())
+        });
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("timed out"));
     }
 }
