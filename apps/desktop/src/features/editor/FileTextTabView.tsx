@@ -254,33 +254,36 @@ export function FileTextTabView() {
         });
     }, []);
 
-    const syncCurrentSelection = useCallback((view: EditorView) => {
-        const selection = view.state.selection.main;
-        if (selection.empty) {
-            useEditorStore.getState().clearCurrentSelection();
-            return;
-        }
+    const syncCurrentSelection = useCallback(
+        (view: EditorView) => {
+            const selection = view.state.selection.main;
+            if (selection.empty) {
+                useEditorStore.getState().clearCurrentSelection();
+                return;
+            }
 
-        const currentTab = tabRef.current;
-        if (!currentTab) {
-            useEditorStore.getState().clearCurrentSelection();
-            return;
-        }
+            const currentTab = tabRef.current;
+            if (!currentTab) {
+                useEditorStore.getState().clearCurrentSelection();
+                return;
+            }
 
-        const startLine = view.state.doc.lineAt(selection.from).number;
-        const endLine = view.state.doc.lineAt(
-            Math.max(selection.from, selection.to - 1),
-        ).number;
-        useEditorStore.getState().setCurrentSelection({
-            noteId: null,
-            path: currentTab.path,
-            text: view.state.sliceDoc(selection.from, selection.to),
-            from: selection.from,
-            to: selection.to,
-            startLine,
-            endLine,
-        });
-    }, []);
+            const startLine = view.state.doc.lineAt(selection.from).number;
+            const endLine = view.state.doc.lineAt(
+                Math.max(selection.from, selection.to - 1),
+            ).number;
+            useEditorStore.getState().setCurrentSelection({
+                noteId: null,
+                path: currentTab.path,
+                text: view.state.sliceDoc(selection.from, selection.to),
+                from: selection.from,
+                to: selection.to,
+                startLine,
+                endLine,
+            });
+        },
+        [tabRef],
+    );
 
     useEffect(() => {
         const container = containerRef.current;

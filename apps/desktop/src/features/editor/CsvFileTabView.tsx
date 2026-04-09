@@ -83,17 +83,12 @@ const csvTextColumn = createTextColumn<string>({
 });
 
 export function CsvFileTabView() {
-    const contentRef = useRef("");
-    const editorStateRef = useRef<CsvEditorState>(
-        buildCsvEditorState("", null),
-    );
+    const initialEditorState = buildCsvEditorState("", null);
+    const contentRef = useRef(initialEditorState.rawContent);
+    const editorStateRef = useRef<CsvEditorState>(initialEditorState);
     const gridViewportRef = useRef<HTMLDivElement>(null);
-    const [editorState, setEditorState] = useState<CsvEditorState>(() => {
-        const initialState = buildCsvEditorState("", null);
-        contentRef.current = initialState.rawContent;
-        editorStateRef.current = initialState;
-        return initialState;
-    });
+    const [editorState, setEditorState] =
+        useState<CsvEditorState>(initialEditorState);
     const [viewMode, setViewMode] = useState<CsvViewMode>("table");
     const [gridHeight, setGridHeight] = useState(420);
 
