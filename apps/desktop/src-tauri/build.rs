@@ -642,6 +642,28 @@ fn resolve_runtime_source(
         }
     }
 
+    // In dev we prefer the staged/local runtime so frontend-only edits do not
+    // trigger a full rebuild of the embedded ACP on every desktop restart.
+    if cargo_profile() != "release" {
+        if destination.exists() {
+            println!(
+                "cargo:warning=Reusing staged {} runtime at {} for dev build.",
+                spec.label,
+                destination.display()
+            );
+            return Some(destination.to_path_buf());
+        }
+
+        if let Some(source) = candidates.iter().find(|path| path.exists()) {
+            println!(
+                "cargo:warning=Reusing existing {} runtime at {} for dev build.",
+                spec.label,
+                source.display()
+            );
+            return Some(source.clone());
+        }
+    }
+
     if spec.label == "codex" {
         match build_vendor_runtime(manifest_dir, spec) {
             Ok(Some(source)) => return Some(source),
