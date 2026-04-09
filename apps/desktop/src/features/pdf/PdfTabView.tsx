@@ -35,8 +35,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
-const PINCH_SENSITIVITY = 0.0025;
-const PINCH_COMMIT_DELAY = 150;
+const WHEEL_ZOOM_SENSITIVITY = 0.0025;
+const WHEEL_ZOOM_COMMIT_DELAY = 150;
 const CONTINUOUS_PAGE_GAP = 20;
 const CONTINUOUS_OVERSCAN_PX = 1200;
 const CONTINUOUS_MAX_RENDERED_PAGES = 15;
@@ -260,9 +260,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const previousViewModeRef = useRef(tab.viewMode);
     const pendingProgrammaticPageRef = useRef<number | null>(null);
-    const pinchZoomRef = useRef(tab.zoom);
-    const pinchTimerRef = useRef(0);
-    const pendingWheelZoomRef = useRef<number | null>(null);
+    const wheelZoomTimerRef = useRef(0);
     const wheelZoomModifierRef = useWheelZoomModifier();
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         pageNumber: number;
@@ -277,6 +275,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         null,
     );
     const [retryCount, setRetryCount] = useState(0);
+    const [liveZoom, setLiveZoom] = useState<number | null>(null);
     const [scrollTop, setScrollTop] = useState(0);
     const [scrollContainer, setScrollContainer] =
         useState<HTMLDivElement | null>(null);
@@ -303,9 +302,11 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const loading = !error && !activePdf;
     const pdf = activePdf?.pdf ?? null;
     const numPages = activePdf?.numPages ?? 0;
+    const effectiveZoom = liveZoom ?? tab.zoom;
+    const effectiveZoomRef = useRef(effectiveZoom);
     const continuousLayouts = useMemo(
-        () => (pageMetrics ? buildPageLayouts(pageMetrics, tab.zoom) : []),
-        [pageMetrics, tab.zoom],
+        () => (pageMetrics ? buildPageLayouts(pageMetrics, effectiveZoom) : []),
+        [effectiveZoom, pageMetrics],
     );
     const effectiveViewportHeight = Math.max(
         viewportHeight,
@@ -396,7 +397,29 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     useEffect(() => {
         pageRefs.current = {};
-    }, [tab.path, tab.viewMode, tab.zoom, retryCount]);
+    }, [effectiveZoom, retryCount, tab.path, tab.viewMode]);
+
+    useEffect(() => {
+        effectiveZoomRef.current = effectiveZoom;
+    }, [effectiveZoom]);
+
+    useEffect(() => {
+        if (liveZoom === null) return;
+        if (Math.abs(tab.zoom - liveZoom) > 0.0001) return;
+        setLiveZoom(null);
+    }, [liveZoom, tab.zoom]);
+
+    useEffect(() => {
+        return () => {
+            window.clearTimeout(wheelZoomTimerRef.current);
+        };
+    }, []);
+
+    useEffect(() => {
+        window.clearTimeout(wheelZoomTimerRef.current);
+        setLiveZoom(null);
+        effectiveZoomRef.current = tab.zoom;
+    }, [tab.id, tab.path]);
 
     useEffect(() => {
         queueMicrotask(() => setPageMetrics(null));
@@ -614,12 +637,16 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }, [numPages, scrollToPage, tab.id, tab.page, tab.viewMode, updatePdfPage]);
 
     const zoomIn = useCallback(() => {
-        updatePdfZoom(tab.id, clampZoom(tab.zoom, "in"));
-    }, [tab.id, tab.zoom, updatePdfZoom]);
+        window.clearTimeout(wheelZoomTimerRef.current);
+        setLiveZoom(null);
+        updatePdfZoom(tab.id, clampZoom(effectiveZoom, "in"));
+    }, [effectiveZoom, tab.id, updatePdfZoom]);
 
     const zoomOut = useCallback(() => {
-        updatePdfZoom(tab.id, clampZoom(tab.zoom, "out"));
-    }, [tab.id, tab.zoom, updatePdfZoom]);
+        window.clearTimeout(wheelZoomTimerRef.current);
+        setLiveZoom(null);
+        updatePdfZoom(tab.id, clampZoom(effectiveZoom, "out"));
+    }, [effectiveZoom, tab.id, updatePdfZoom]);
 
     const toggleViewMode = useCallback(() => {
         const nextViewMode =
@@ -677,24 +704,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }, []);
 
     useEffect(() => {
-        pinchZoomRef.current = tab.zoom;
-        if (pendingWheelZoomRef.current === null) {
-            return;
-        }
-
-        if (Math.abs(tab.zoom - pendingWheelZoomRef.current) > 0.0001) {
-            return;
-        }
-
-        const content = contentRef.current;
-        if (content) {
-            content.style.transform = "";
-            content.style.transformOrigin = "";
-        }
-        pendingWheelZoomRef.current = null;
-    }, [tab.zoom]);
-
-    useEffect(() => {
         if (!scrollContainer) return;
 
         function handleWheel(event: WheelEvent) {
@@ -702,20 +711,19 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
             if (!isWheelZoomGesture(event, wheelZoomModifierRef)) return;
             event.preventDefault();
 
-            const prev = pinchZoomRef.current;
+            const prev = effectiveZoomRef.current;
             const next = Math.min(
                 MAX_ZOOM,
                 Math.max(
                     MIN_ZOOM,
-                    prev * (1 - event.deltaY * PINCH_SENSITIVITY),
+                    prev * (1 - event.deltaY * WHEEL_ZOOM_SENSITIVITY),
                 ),
             );
-            pinchZoomRef.current = next;
+            if (Math.abs(next - prev) < 0.0001) return;
 
             const containerRect = scrollContainer.getBoundingClientRect();
             const pointerOffsetX = event.clientX - containerRect.left;
             const pointerOffsetY = event.clientY - containerRect.top;
-            const visualScaleRatio = next / tab.zoom;
             const scrollScaleRatio = next / prev;
             const nextScrollLeft = clampScrollOffset(
                 (scrollContainer.scrollLeft + pointerOffsetX) *
@@ -728,42 +736,26 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     pointerOffsetY,
             );
 
-            const content = contentRef.current;
-            if (content) {
-                content.style.transformOrigin = "0 0";
-                content.style.transform = `scale(${visualScaleRatio})`;
-            }
-
+            setLiveZoom(next);
+            effectiveZoomRef.current = next;
             scrollContainer.scrollLeft = nextScrollLeft;
             scrollContainer.scrollTop = nextScrollTop;
+            setScrollTop(nextScrollTop);
 
-            window.clearTimeout(pinchTimerRef.current);
-            pendingWheelZoomRef.current = next;
-            pinchTimerRef.current = window.setTimeout(() => {
+            window.clearTimeout(wheelZoomTimerRef.current);
+            wheelZoomTimerRef.current = window.setTimeout(() => {
                 updatePdfZoom(tab.id, persistWheelZoom(next));
-            }, PINCH_COMMIT_DELAY);
+            }, WHEEL_ZOOM_COMMIT_DELAY);
         }
 
         scrollContainer.addEventListener("wheel", handleWheel, {
             passive: false,
         });
-        const capturedContent = contentRef.current;
         return () => {
             scrollContainer.removeEventListener("wheel", handleWheel);
-            window.clearTimeout(pinchTimerRef.current);
-            pendingWheelZoomRef.current = null;
-            if (capturedContent) {
-                capturedContent.style.transform = "";
-                capturedContent.style.transformOrigin = "";
-            }
+            window.clearTimeout(wheelZoomTimerRef.current);
         };
-    }, [
-        scrollContainer,
-        tab.id,
-        tab.zoom,
-        updatePdfZoom,
-        wheelZoomModifierRef,
-    ]);
+    }, [scrollContainer, tab.id, updatePdfZoom, wheelZoomModifierRef]);
 
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
@@ -940,7 +932,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
                 <ToolbarButton
                     onClick={zoomOut}
-                    disabled={tab.zoom <= ZOOM_STEPS[0]}
+                    disabled={effectiveZoom <= ZOOM_STEPS[0]}
                     title="Zoom out"
                 >
                     <MinusIcon />
@@ -952,11 +944,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                         fontVariantNumeric: "tabular-nums",
                     }}
                 >
-                    {formatZoomPercentage(tab.zoom)}
+                    {formatZoomPercentage(effectiveZoom)}
                 </span>
                 <ToolbarButton
                     onClick={zoomIn}
-                    disabled={tab.zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+                    disabled={
+                        effectiveZoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]
+                    }
                     title="Zoom in"
                 >
                     <PlusIcon />
@@ -1021,7 +1015,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     padding: 24,
                     background:
                         "color-mix(in srgb, var(--bg-primary) 92%, #000)",
-                    touchAction: "none",
+                    touchAction: "pan-x pan-y pinch-zoom",
                 }}
             >
                 {tab.viewMode === "continuous" ? (
@@ -1029,7 +1023,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                         ref={contentRef}
                         className="w-full"
                         style={{
-                            willChange: "transform",
                             filter: activeFilter.css,
                             position:
                                 continuousLayouts.length > 0
@@ -1051,10 +1044,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                         ) : (
                             visibleContinuousLayouts.map((layout) => (
                                 <PdfPageCanvas
-                                    key={`${tab.path}:${retryCount}:${layout.pageNumber}:${tab.zoom}`}
+                                    key={`${tab.path}:${retryCount}:${layout.pageNumber}:${effectiveZoom}`}
                                     pdf={pdf}
                                     pageNumber={layout.pageNumber}
-                                    zoom={tab.zoom}
+                                    zoom={effectiveZoom}
                                     onRenderError={setPdfError}
                                     onContextMenu={handlePdfContextMenu}
                                     registerElement={registerPageElement}
@@ -1072,15 +1065,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                         ref={contentRef}
                         className="w-full flex justify-center"
                         style={{
-                            willChange: "transform",
                             filter: activeFilter.css,
                         }}
                     >
                         <PdfPageCanvas
-                            key={`${tab.path}:${retryCount}:${tab.page}:${tab.zoom}`}
+                            key={`${tab.path}:${retryCount}:${tab.page}:${effectiveZoom}`}
                             pdf={pdf}
                             pageNumber={tab.page}
-                            zoom={tab.zoom}
+                            zoom={effectiveZoom}
                             onRenderError={setPdfError}
                             onContextMenu={handlePdfContextMenu}
                         />
@@ -1242,7 +1234,6 @@ function PdfPageCanvas({
                     style={{
                         boxShadow: "0 2px 16px rgba(0,0,0,0.15)",
                         background: "#fff",
-                        touchAction: "none",
                     }}
                 />
                 <div

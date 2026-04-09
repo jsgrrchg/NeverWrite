@@ -416,11 +416,12 @@ describe("PdfTabView", () => {
 
         expect(scrollSurface!.scrollTop).toBe(425);
         expect(scrollSurface!.scrollLeft).toBe(95);
-        expect(content!.style.transformOrigin).toBe("0 0");
-        expect(content!.style.transform).toBe("scale(1.25)");
+        expect(screen.getByText("125%")).toBeInTheDocument();
+        expect(content!.style.transformOrigin).toBe("");
+        expect(content!.style.transform).toBe("");
     });
 
-    it("exposes native pinch-zoom touch action on the PDF surface", async () => {
+    it("allows native pan gestures on the PDF surface", async () => {
         const pdfDocument = {
             destroy: vi.fn(),
             getPage: vi.fn().mockImplementation(async () => createMockPage()),
@@ -458,7 +459,7 @@ describe("PdfTabView", () => {
             "canvas",
         ) as HTMLCanvasElement | null;
 
-        expect(scrollSurface?.style.touchAction).toBe("none");
-        expect(canvas?.style.touchAction).toBe("none");
+        expect(scrollSurface?.style.touchAction).toBe("pan-x pan-y pinch-zoom");
+        expect(canvas?.style.touchAction).not.toBe("none");
     });
 });
