@@ -74,6 +74,8 @@ interface OpenPayloadByKindMap {
         content: string;
         mimeType: string | null;
         viewer: FileViewerMode;
+        sizeBytes?: number | null;
+        contentTruncated?: boolean;
     };
     map: {
         kind: "map";
@@ -160,6 +162,10 @@ function serializeFileTabForSession(tab: FileTab) {
         path: tab.path,
         mimeType: tab.mimeType,
         viewer: tab.viewer,
+        ...(typeof tab.sizeBytes === "number"
+            ? { sizeBytes: tab.sizeBytes }
+            : {}),
+        ...(tab.contentTruncated ? { contentTruncated: true } : {}),
         history: tab.history
             .filter((entry): entry is FileHistoryEntry => entry.kind === "file")
             .map((entry) => ({
@@ -168,6 +174,10 @@ function serializeFileTabForSession(tab: FileTab) {
                 path: entry.path,
                 mimeType: entry.mimeType,
                 viewer: entry.viewer,
+                ...(typeof entry.sizeBytes === "number"
+                    ? { sizeBytes: entry.sizeBytes }
+                    : {}),
+                ...(entry.contentTruncated ? { contentTruncated: true } : {}),
             })),
         historyIndex: tab.historyIndex,
     };
@@ -254,6 +264,10 @@ const fileTabHandler: HistoryTabHandler<"file"> = {
             payload.content,
             payload.mimeType,
             payload.viewer,
+            {
+                sizeBytes: payload.sizeBytes,
+                contentTruncated: payload.contentTruncated,
+            },
         ),
     createOpenEntry: (payload) =>
         createFileHistoryEntry(
@@ -263,6 +277,10 @@ const fileTabHandler: HistoryTabHandler<"file"> = {
             payload.content,
             payload.mimeType,
             payload.viewer,
+            {
+                sizeBytes: payload.sizeBytes,
+                contentTruncated: payload.contentTruncated,
+            },
         ),
     entryFromTab: (tab) => createHistoryEntryFromTab(tab) as FileHistoryEntry,
     buildFromHistory: (id, history, historyIndex) =>
@@ -281,6 +299,10 @@ const fileTabHandler: HistoryTabHandler<"file"> = {
                           payload.content,
                           payload.mimeType,
                           payload.viewer,
+                          {
+                              sizeBytes: payload.sizeBytes,
+                              contentTruncated: payload.contentTruncated,
+                          },
                       )
                     : entry,
             ),

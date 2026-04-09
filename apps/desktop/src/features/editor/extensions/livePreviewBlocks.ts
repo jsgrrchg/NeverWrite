@@ -1765,18 +1765,23 @@ function isRenderableImageUrl(url: string): boolean {
 function parseWikilinkEmbedTarget(
     raw: string,
 ): { target: string; heading?: string; width?: number } | null {
-    const match = raw.match(/^!\[\[([^\]]+)\]\]$/);
-    if (!match) return null;
-    const parts = match[1].split("|");
-    const inner = parts[0]?.trim() ?? "";
+    if (!raw.startsWith("![[") || !raw.endsWith("]]")) return null;
+
+    let inner = raw.slice(3, -2).trim();
     if (!inner) return null;
 
     let width: number | undefined;
-    const dimStr = parts[1]?.trim();
-    if (dimStr) {
+    const widthSeparator = inner.lastIndexOf("|");
+    if (widthSeparator >= 0) {
+        const dimStr = inner.slice(widthSeparator + 1).trim();
         const dimMatch = dimStr.match(/^(\d+)(?:x\d+)?$/);
-        if (dimMatch) width = Number(dimMatch[1]);
+        if (dimMatch) {
+            width = Number(dimMatch[1]);
+            inner = inner.slice(0, widthSeparator).trim();
+        }
     }
+
+    if (!inner) return null;
 
     const hashIdx = inner.indexOf("#");
     if (hashIdx >= 0) {

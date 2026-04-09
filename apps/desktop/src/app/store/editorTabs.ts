@@ -2,7 +2,23 @@ import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useVaultStore } from "./vaultStore";
 
 export type PdfViewMode = "single" | "continuous";
-export type FileViewerMode = "text" | "image";
+export type FileViewerMode = "text" | "image" | "csv";
+
+const IMAGE_FILE_EXTENSIONS = new Set([
+    "png",
+    "jpg",
+    "jpeg",
+    "jpe",
+    "jfif",
+    "gif",
+    "webp",
+    "svg",
+    "avif",
+    "bmp",
+    "ico",
+]);
+
+const CSV_FILE_EXTENSIONS = new Set(["csv"]);
 
 export interface NoteHistoryEntry {
     kind: "note";
@@ -29,6 +45,8 @@ export interface FileHistoryEntry {
     content: string;
     mimeType: string | null;
     viewer: FileViewerMode;
+    sizeBytes?: number | null;
+    contentTruncated?: boolean;
 }
 
 export interface MapHistoryEntry {
@@ -64,12 +82,19 @@ export type PdfHistoryEntryInput = Omit<
 
 export type FileHistoryEntryInput = Omit<
     FileHistoryEntry,
-    "kind" | "content" | "mimeType" | "viewer"
+    | "kind"
+    | "content"
+    | "mimeType"
+    | "viewer"
+    | "sizeBytes"
+    | "contentTruncated"
 > & {
     kind?: "file";
     content?: string;
     mimeType?: string | null;
     viewer?: FileViewerMode;
+    sizeBytes?: number | null;
+    contentTruncated?: boolean;
 };
 
 export type MapHistoryEntryInput = Omit<MapHistoryEntry, "kind"> & {
@@ -114,6 +139,8 @@ export interface FileTab {
     content: string;
     mimeType: string | null;
     viewer: FileViewerMode;
+    sizeBytes?: number | null;
+    contentTruncated?: boolean;
     history: TabHistoryEntry[];
     historyIndex: number;
 }
@@ -165,13 +192,21 @@ export type PdfTabInput = Omit<
 
 export type FileTabInput = Omit<
     FileTab,
-    "kind" | "history" | "historyIndex" | "mimeType" | "viewer"
+    | "kind"
+    | "history"
+    | "historyIndex"
+    | "mimeType"
+    | "viewer"
+    | "sizeBytes"
+    | "contentTruncated"
 > & {
     kind?: "file";
     mimeType?: string | null;
     viewer?: FileViewerMode;
     history?: TabHistoryEntryInput[];
     historyIndex?: number;
+    sizeBytes?: number | null;
+    contentTruncated?: boolean;
 };
 
 export type MapTabInput = Omit<MapTab, "kind" | "history" | "historyIndex"> & {
@@ -382,6 +417,10 @@ export function createFileHistoryEntry(
     content: string,
     mimeType: string | null,
     viewer: FileViewerMode,
+    options?: {
+        sizeBytes?: number | null;
+        contentTruncated?: boolean;
+    },
 ): FileHistoryEntry {
     return {
         kind: "file",
@@ -391,6 +430,10 @@ export function createFileHistoryEntry(
         content,
         mimeType,
         viewer,
+        ...(typeof options?.sizeBytes === "number"
+            ? { sizeBytes: options.sizeBytes }
+            : {}),
+        ...(options?.contentTruncated ? { contentTruncated: true } : {}),
     };
 }
 
@@ -460,9 +503,21 @@ export function normalizeHistoryEntry(
         path,
         "content" in entry ? (entry.content ?? "") : "",
         mimeType,
-        "viewer" in entry
-            ? (entry.viewer ?? inferFileViewer(path, mimeType))
-            : inferFileViewer(path, mimeType),
+        normalizeFileViewer(
+            "viewer" in entry ? entry.viewer : undefined,
+            path,
+            mimeType,
+        ),
+        {
+            sizeBytes:
+                "sizeBytes" in entry && typeof entry.sizeBytes === "number"
+                    ? entry.sizeBytes
+                    : null,
+            contentTruncated:
+                "contentTruncated" in entry
+                    ? Boolean(entry.contentTruncated)
+                    : false,
+        },
     );
 }
 
@@ -486,6 +541,10 @@ export function createHistoryEntryFromTab(tab: HistoryTab): TabHistoryEntry {
             tab.content,
             tab.mimeType,
             tab.viewer,
+            {
+                sizeBytes: tab.sizeBytes,
+                contentTruncated: tab.contentTruncated,
+            },
         );
     }
 
@@ -529,6 +588,10 @@ export function buildTabFromHistory(
             content: entry.content,
             mimeType: entry.mimeType,
             viewer: entry.viewer,
+            ...(typeof entry.sizeBytes === "number"
+                ? { sizeBytes: entry.sizeBytes }
+                : {}),
+            ...(entry.contentTruncated ? { contentTruncated: true } : {}),
             history,
             historyIndex: safeIndex,
         };
@@ -600,6 +663,10 @@ export function createFileTab(
     content: string,
     mimeType: string | null,
     viewer: FileViewerMode,
+    options?: {
+        sizeBytes?: number | null;
+        contentTruncated?: boolean;
+    },
 ): FileTab {
     return {
         id: crypto.randomUUID(),
@@ -610,6 +677,10 @@ export function createFileTab(
         content,
         mimeType,
         viewer,
+        ...(typeof options?.sizeBytes === "number"
+            ? { sizeBytes: options.sizeBytes }
+            : {}),
+        ...(options?.contentTruncated ? { contentTruncated: true } : {}),
         history: [
             createFileHistoryEntry(
                 relativePath,
@@ -618,6 +689,7 @@ export function createFileTab(
                 content,
                 mimeType,
                 viewer,
+                options,
             ),
         ],
         historyIndex: 0,
@@ -722,13 +794,21 @@ export function ensureFileTabHistory(tab: FileTabInput): FileTab {
             tab.path,
             tab.content,
             tab.mimeType ?? null,
-            tab.viewer ?? inferFileViewer(tab.path, tab.mimeType ?? null),
+            normalizeFileViewer(tab.viewer, tab.path, tab.mimeType ?? null),
+            {
+                sizeBytes:
+                    typeof tab.sizeBytes === "number" ? tab.sizeBytes : null,
+                contentTruncated: Boolean(tab.contentTruncated),
+            },
         );
         return buildTabFromHistory(tab.id, history, historyIndex) as FileTab;
     }
 
-    const viewer =
-        tab.viewer ?? inferFileViewer(tab.path, tab.mimeType ?? null);
+    const viewer = normalizeFileViewer(
+        tab.viewer,
+        tab.path,
+        tab.mimeType ?? null,
+    );
 
     return buildTabFromHistory(
         tab.id,
@@ -740,6 +820,13 @@ export function ensureFileTabHistory(tab: FileTabInput): FileTab {
                 tab.content,
                 tab.mimeType ?? null,
                 viewer,
+                {
+                    sizeBytes:
+                        typeof tab.sizeBytes === "number"
+                            ? tab.sizeBytes
+                            : null,
+                    contentTruncated: Boolean(tab.contentTruncated),
+                },
             ),
         ],
         0,
@@ -750,8 +837,16 @@ export function ensureFileTabDefaults(tab: FileTabInput): FileTab {
     return {
         ...ensureFileTabHistory(tab),
         mimeType: tab.mimeType ?? null,
-        viewer: tab.viewer ?? inferFileViewer(tab.path, tab.mimeType ?? null),
+        viewer: normalizeFileViewer(tab.viewer, tab.path, tab.mimeType ?? null),
+        ...(typeof tab.sizeBytes === "number"
+            ? { sizeBytes: tab.sizeBytes }
+            : {}),
+        ...(tab.contentTruncated ? { contentTruncated: true } : {}),
     };
+}
+
+export function isFileViewerMode(value: unknown): value is FileViewerMode {
+    return value === "text" || value === "image" || value === "csv";
 }
 
 export function inferFileViewer(
@@ -760,22 +855,24 @@ export function inferFileViewer(
 ): FileViewerMode {
     const extension = path.split(".").pop()?.toLowerCase() ?? "";
     if (mimeType?.startsWith("image/")) return "image";
-    if (
-        extension === "png" ||
-        extension === "jpg" ||
-        extension === "jpeg" ||
-        extension === "jpe" ||
-        extension === "jfif" ||
-        extension === "gif" ||
-        extension === "webp" ||
-        extension === "svg" ||
-        extension === "avif" ||
-        extension === "bmp" ||
-        extension === "ico"
-    ) {
+    if (mimeType?.startsWith("text/csv")) return "csv";
+    if (CSV_FILE_EXTENSIONS.has(extension)) return "csv";
+    if (IMAGE_FILE_EXTENSIONS.has(extension)) {
         return "image";
     }
     return "text";
+}
+
+export function normalizeFileViewer(
+    viewer: unknown,
+    path: string,
+    mimeType: string | null,
+): FileViewerMode {
+    return isFileViewerMode(viewer) ? viewer : inferFileViewer(path, mimeType);
+}
+
+export function fileViewerNeedsTextContent(viewer: FileViewerMode) {
+    return viewer !== "image";
 }
 
 export function ensureNoteTabHistory(tab: NoteTabInput): NoteTab {

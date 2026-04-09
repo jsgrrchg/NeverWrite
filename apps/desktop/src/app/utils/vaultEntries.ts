@@ -6,6 +6,7 @@ import {
     isPdfTab,
     type TabInput,
 } from "../store/editorStore";
+import { inferFileViewer } from "../store/editorTabs";
 import { useVaultStore, type VaultEntryDto } from "../store/vaultStore";
 import { toVaultRelativePath } from "./vaultPaths";
 import { vaultInvoke } from "./vaultInvoke";
@@ -288,6 +289,8 @@ type VaultFileReadDetail = {
     file_name: string;
     mime_type: string | null;
     content: string;
+    size_bytes?: number | null;
+    content_truncated?: boolean;
 };
 
 async function buildVaultEntryTab(
@@ -334,6 +337,8 @@ async function buildVaultEntryTab(
             mimeType: entry.mime_type,
             viewer: "image",
             content: "",
+            sizeBytes: entry.size,
+            contentTruncated: false,
         };
     }
 
@@ -352,8 +357,10 @@ async function buildVaultEntryTab(
         title: detail.file_name,
         path: detail.path,
         mimeType: detail.mime_type,
-        viewer: "text",
+        viewer: inferFileViewer(detail.path, detail.mime_type),
         content: detail.content,
+        sizeBytes: detail.size_bytes ?? null,
+        contentTruncated: Boolean(detail.content_truncated),
     };
 }
 
@@ -409,6 +416,10 @@ export async function openVaultFileEntry(
                 "",
                 entry.mime_type,
                 "image",
+                {
+                    sizeBytes: entry.size,
+                    contentTruncated: false,
+                },
             );
         return;
     }
@@ -434,7 +445,11 @@ export async function openVaultFileEntry(
             detail.path,
             detail.content,
             detail.mime_type,
-            "text",
+            inferFileViewer(detail.path, detail.mime_type),
+            {
+                sizeBytes: detail.size_bytes ?? null,
+                contentTruncated: Boolean(detail.content_truncated),
+            },
         );
 }
 

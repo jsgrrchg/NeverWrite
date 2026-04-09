@@ -109,7 +109,7 @@ describe("FileTabView", () => {
         );
     });
 
-    it("supports Command + wheel zoom from fit mode", () => {
+    it("supports Command + wheel zoom from fit mode", async () => {
         setEditorTabs([
             {
                 id: "image-tab",
@@ -132,14 +132,17 @@ describe("FileTabView", () => {
         expect(scrollSurface?.style.touchAction).toBe("pan-x pan-y pinch-zoom");
         expect(image.style.touchAction).toBe("pan-x pan-y pinch-zoom");
 
-        fireEvent.keyDown(window, { key: "Meta" });
-        fireEvent.wheel(scrollSurface!, { deltaY: -10 });
-        fireEvent.keyUp(window, { key: "Meta" });
+        await act(async () => {
+            fireEvent.keyDown(window, { key: "Meta" });
+            fireEvent.wheel(scrollSurface!, { deltaY: -10 });
+            fireEvent.keyUp(window, { key: "Meta" });
+            await Promise.resolve();
+        });
 
         expect(screen.getByText("102.5%")).toBeInTheDocument();
     });
 
-    it("anchors image wheel zoom to the pointer by adjusting scroll offsets", () => {
+    it("anchors image wheel zoom to the pointer by adjusting scroll offsets", async () => {
         setEditorTabs([
             {
                 id: "image-tab",
@@ -183,13 +186,16 @@ describe("FileTabView", () => {
                 toJSON: () => ({}),
             }) as DOMRect;
 
-        fireEvent.keyDown(window, { key: "Meta" });
-        fireEvent.wheel(scrollSurface!, {
-            clientX: 180,
-            clientY: 200,
-            deltaY: -100,
+        await act(async () => {
+            fireEvent.keyDown(window, { key: "Meta" });
+            fireEvent.wheel(scrollSurface!, {
+                clientX: 180,
+                clientY: 200,
+                deltaY: -100,
+            });
+            fireEvent.keyUp(window, { key: "Meta" });
+            await Promise.resolve();
         });
-        fireEvent.keyUp(window, { key: "Meta" });
 
         expect(scrollSurface!.scrollTop).toBeCloseTo(425);
         expect(scrollSurface!.scrollLeft).toBeCloseTo(95);
@@ -252,6 +258,34 @@ describe("FileTabView", () => {
             content: 'name = "NeverWrite"\nversion = "1.0.0"',
             opId: expect.any(String),
         });
+    });
+
+    it("renders csv files in the dedicated table viewer", async () => {
+        setEditorTabs([
+            {
+                id: "csv-tab",
+                kind: "file",
+                relativePath: "data/report.csv",
+                title: "report.csv",
+                path: "/vault/data/report.csv",
+                mimeType: "text/csv",
+                viewer: "csv",
+                content: "name,amount\nAlice,10",
+            },
+        ]);
+
+        await act(async () => {
+            renderComponent(<FileTabView />);
+            await Promise.resolve();
+        });
+
+        expect(document.querySelector(".cm-editor")).toBeNull();
+        expect(
+            screen.getByRole("button", { name: "Table" }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Raw" })).toBeInTheDocument();
+        expect(screen.getByText("Rows: 1 · Columns: 2")).toBeInTheDocument();
+        expect(screen.getByDisplayValue("Alice")).toBeInTheDocument();
     });
 
     it("switches text files in history mode without writing the next file or showing a false conflict", async () => {

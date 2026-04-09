@@ -69,4 +69,36 @@ describe("code block live preview", () => {
         view.destroy();
         parent.remove();
     });
+
+    it("renders pdf embeds when the file name contains brackets", () => {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc =
+            "![[/RESEARCH/2026/Papers/2025 - DeepSeek-R1 Reasoning via RL [DeepSeek].pdf]]\nNext line";
+        const state = EditorState.create({
+            doc,
+            selection: EditorSelection.cursor(doc.length),
+            extensions: [
+                markdown({ base: markdownLanguage }),
+                livePreviewExtension("/vault", {
+                    resolveWikilink: () => false,
+                    navigateWikilink: () => {},
+                    getNoteLinkTarget: () => null,
+                    openLinkContextMenu: () => {},
+                }),
+            ],
+        });
+
+        const view = new EditorView({ state, parent });
+
+        const embed = view.dom.querySelector(".cm-pdf-embed-chip");
+        expect(embed).not.toBeNull();
+        expect(view.dom.querySelector(".cm-pdf-embed-name")?.textContent).toBe(
+            "2025 - DeepSeek-R1 Reasoning via RL [DeepSeek].pdf",
+        );
+
+        view.destroy();
+        parent.remove();
+    });
 });

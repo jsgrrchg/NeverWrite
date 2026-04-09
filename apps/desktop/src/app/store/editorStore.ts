@@ -48,6 +48,7 @@ import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
 
 export {
+    fileViewerNeedsTextContent,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -420,6 +421,8 @@ export interface EditorSelectionContext {
 export interface ReloadedDetail {
     content: ResourceReloadDetail["content"];
     title: ResourceReloadDetail["title"];
+    sizeBytes?: ResourceReloadDetail["sizeBytes"];
+    contentTruncated?: ResourceReloadDetail["contentTruncated"];
     origin?: ResourceReloadDetail["origin"];
     opId?: ResourceReloadDetail["opId"];
     revision?: ResourceReloadDetail["revision"];
@@ -454,6 +457,10 @@ interface EditorStore {
         content: string,
         mimeType: string | null,
         viewer: FileViewerMode,
+        options?: {
+            sizeBytes?: number | null;
+            contentTruncated?: boolean;
+        },
     ) => void;
     openMap: (relativePath: string, title: string) => void;
     openGraph: () => void;
@@ -586,7 +593,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         });
     },
 
-    openFile: (relativePath, title, path, content, mimeType, viewer) => {
+    openFile: (
+        relativePath,
+        title,
+        path,
+        content,
+        mimeType,
+        viewer,
+        options,
+    ) => {
         set((state) =>
             openOrReuseHistoryTab(state, {
                 kind: "file",
@@ -596,6 +611,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 content,
                 mimeType,
                 viewer,
+                sizeBytes: options?.sizeBytes ?? null,
+                contentTruncated: options?.contentTruncated ?? false,
             }),
         );
     },

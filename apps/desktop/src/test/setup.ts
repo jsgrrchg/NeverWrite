@@ -220,6 +220,129 @@ vi.mock("@xterm/addon-web-links", () => ({
     },
 }));
 
+vi.mock("react-datasheet-grid", async () => {
+    const React = await import("react");
+
+    return {
+        createTextColumn: (column: unknown) => column,
+        keyColumn: (key: string, column: Record<string, unknown>) => ({
+            ...column,
+            dataKey: key,
+        }),
+        DataSheetGrid: ({
+            value = [],
+            onChange,
+            columns = [],
+            stickyRightColumn,
+            className,
+        }: {
+            value?: Array<Record<string, string>>;
+            onChange?: (rows: Array<Record<string, string>>) => void;
+            columns?: Array<Record<string, unknown>>;
+            stickyRightColumn?: Record<string, unknown>;
+            className?: string;
+        }) =>
+            React.createElement(
+                "div",
+                { className },
+                React.createElement(
+                    "div",
+                    { className: "dsg-container" },
+                    React.createElement(
+                        "div",
+                        { className: "dsg-row dsg-row-header" },
+                        columns.map((column, index) =>
+                            React.createElement(
+                                "div",
+                                {
+                                    key: `header-${String(column.dataKey ?? index)}`,
+                                    className: "dsg-cell-header-container",
+                                },
+                                column.title as React.ReactNode,
+                            ),
+                        ),
+                        stickyRightColumn
+                            ? React.createElement(
+                                  "div",
+                                  {
+                                      key: "sticky-header",
+                                      className: "dsg-cell-header-container",
+                                  },
+                                  stickyRightColumn.title as React.ReactNode,
+                              )
+                            : null,
+                    ),
+                    value.map((row, rowIndex) =>
+                        React.createElement(
+                            "div",
+                            {
+                                key:
+                                    row.__csv_row_id ??
+                                    `row-${rowIndex.toString()}`,
+                                className: "dsg-row",
+                            },
+                            columns.map((column, columnIndex) => {
+                                const dataKey = String(
+                                    column.dataKey ?? columnIndex,
+                                );
+                                return React.createElement("input", {
+                                    key: `cell-${rowIndex.toString()}-${dataKey}`,
+                                    className: "dsg-input",
+                                    value: row[dataKey] ?? "",
+                                    onChange: (
+                                        event: React.ChangeEvent<HTMLInputElement>,
+                                    ) => {
+                                        onChange?.(
+                                            value.map((candidate, index) =>
+                                                index === rowIndex
+                                                    ? {
+                                                          ...candidate,
+                                                          [dataKey]:
+                                                              event.target
+                                                                  .value,
+                                                      }
+                                                    : candidate,
+                                            ),
+                                        );
+                                    },
+                                });
+                            }),
+                            stickyRightColumn?.component
+                                ? React.createElement(
+                                      stickyRightColumn.component as React.ComponentType<{
+                                          rowData: Record<string, string>;
+                                          rowIndex: number;
+                                          deleteRow: () => void;
+                                      }>,
+                                      {
+                                          key: `sticky-cell-${rowIndex.toString()}`,
+                                          rowData: row,
+                                          rowIndex,
+                                          deleteRow: () => {
+                                              onChange?.(
+                                                  value.filter(
+                                                      (_, index) =>
+                                                          index !== rowIndex,
+                                                  ),
+                                              );
+                                          },
+                                      },
+                                  )
+                                : null,
+                        ),
+                    ),
+                ),
+            ),
+    };
+});
+
+vi.mock("react-resize-detector", () => ({
+    useResizeDetector: () => ({
+        width: 960,
+        height: 420,
+    }),
+}));
+
 const mockCurrentWindow = {
     listen: vi.fn(),
     once: vi.fn(),

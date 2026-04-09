@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    type FileViewerMode,
     isFileTab,
     isGraphTab,
     isMapTab,
@@ -44,7 +45,7 @@ function makeFileTab(overrides: {
     path: string;
     content: string;
     mimeType: string | null;
-    viewer: "text" | "image";
+    viewer: FileViewerMode;
 }) {
     return {
         ...overrides,
@@ -225,6 +226,38 @@ describe("editorStore session persistence", () => {
             viewer: "image",
         });
         expect(session?.activeFilePath).toBe("assets/cover.avif");
+        expect(session?.tabs).toBeUndefined();
+        expect(session?.fileTabs?.[0]).not.toHaveProperty("content");
+    });
+
+    it("persists csv file viewer mode per vault path", async () => {
+        markSessionReady();
+        useVaultStore.setState({ vaultPath: "/vaults/data-2026" });
+
+        useEditorStore.setState({
+            tabs: [
+                makeFileTab({
+                    id: "file-tab-csv",
+                    relativePath: "data/report.csv",
+                    title: "report.csv",
+                    path: "/vaults/data-2026/data/report.csv",
+                    mimeType: "text/csv",
+                    viewer: "csv",
+                    content: "name,amount\nAlice,10",
+                }),
+            ],
+            activeTabId: "file-tab-csv",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const session = readPersistedSession("/vaults/data-2026");
+        expect(session?.fileTabs?.[0]).toMatchObject({
+            relativePath: "data/report.csv",
+            viewer: "csv",
+            mimeType: "text/csv",
+        });
+        expect(session?.activeFilePath).toBe("data/report.csv");
         expect(session?.tabs).toBeUndefined();
         expect(session?.fileTabs?.[0]).not.toHaveProperty("content");
     });

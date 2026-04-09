@@ -59,6 +59,7 @@ import {
     writeWindowSessionEntry,
 } from "./app/windowSession";
 import {
+    fileViewerNeedsTextContent,
     useEditorStore,
     isFileTab,
     isGraphTab,
@@ -1590,7 +1591,7 @@ export default function App() {
                         .tabs.find(
                             (t) =>
                                 isFileTab(t) &&
-                                t.viewer === "text" &&
+                                fileViewerNeedsTextContent(t.viewer) &&
                                 t.relativePath === relativePath,
                         );
                     if (openTab) {
@@ -1610,6 +1611,8 @@ export default function App() {
                             void vaultInvoke<{
                                 file_name: string;
                                 content: string;
+                                size_bytes?: number | null;
+                                content_truncated?: boolean;
                             }>("read_vault_file", {
                                 relativePath,
                             }).then((detail) => {
@@ -1624,6 +1627,10 @@ export default function App() {
                                     .reloadFileContent(relativePath, {
                                         title: detail.file_name,
                                         content: detail.content,
+                                        sizeBytes: detail.size_bytes ?? null,
+                                        contentTruncated: Boolean(
+                                            detail.content_truncated,
+                                        ),
                                         origin: change.origin,
                                         opId: change.op_id,
                                         revision: change.revision,

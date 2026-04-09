@@ -46,9 +46,11 @@
         "@xterm/addon-web-links": "^0.12.0",
         "@xterm/xterm": "^6.0.0",
         "katex": "^0.16.38",
+        "papaparse": "^5.5.3",
         "pdfjs-dist": "5.5.207",
-        "react": "^19.2.0",
-        "react-dom": "^19.2.0",
+        "react": "19.2.5",
+        "react-datasheet-grid": "^4.11.6",
+        "react-dom": "19.2.5",
         "react-force-graph-2d": "^1.29.1",
         "react-force-graph-3d": "^1.29.1",
         "tailwindcss": "^4.2.1",
@@ -61,6 +63,7 @@
         "@testing-library/user-event": "^14.6.1",
         "@types/katex": "^0.16.8",
         "@types/node": "^24.10.1",
+        "@types/papaparse": "^5.5.2",
         "@types/react": "^19.2.7",
         "@types/react-dom": "^19.2.3",
         "@types/three": "^0.183.1",
@@ -74,5 +77,10 @@
         "typescript-eslint": "^8.48.0",
         "vite": "^7.3.1",
         "vitest": "^3.2.4"
+    },
+    "overrides": {
+        "react": "$react",
+        "react-dom": "$react-dom",
+        "react-resize-detector": "12.3.0"
     }
 }
