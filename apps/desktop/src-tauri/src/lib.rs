@@ -2821,6 +2821,8 @@ struct VaultFileDetail {
     file_name: String,
     mime_type: Option<String>,
     content: String,
+    size_bytes: u64,
+    content_truncated: bool,
 }
 
 fn build_vault_file_detail(
@@ -2835,6 +2837,9 @@ fn build_vault_file_detail(
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| relative_path.clone());
+    let size_bytes = std::fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .map_err(|error| error.to_string())?;
 
     let mime_type = vault
         .discover_vault_entries()
@@ -2849,6 +2854,8 @@ fn build_vault_file_detail(
         file_name,
         mime_type,
         content,
+        size_bytes,
+        content_truncated: false,
     })
 }
 
@@ -2903,6 +2910,8 @@ fn save_vault_file(
             file_name: entry.file_name.clone(),
             mime_type: entry.mime_type.clone(),
             content,
+            size_bytes: entry.size,
+            content_truncated: false,
         };
 
         let revision =

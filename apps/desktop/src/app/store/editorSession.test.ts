@@ -5,6 +5,7 @@ import {
     getEditorSessionKey,
     restorePersistedSession,
 } from "./editorSession";
+import { normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
 
@@ -170,6 +171,90 @@ describe("editorSession", () => {
         expect(session.activeTabId).toBe("file-1");
     });
 
+    it("normalizes csv file tabs with the csv viewer by default", () => {
+        const normalized = normalizeHistoryTab({
+            id: "file-csv",
+            kind: "file",
+            relativePath: "data/report.csv",
+            title: "report.csv",
+            path: "/vault/data/report.csv",
+            content: "name,amount\nAlice,10",
+            mimeType: "text/csv",
+        });
+
+        expect(normalized).toMatchObject({
+            kind: "file",
+            relativePath: "data/report.csv",
+            viewer: "csv",
+            historyIndex: 0,
+        });
+        expect(normalized?.history).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                viewer: "csv",
+            }),
+        ]);
+    });
+
+    it("serializes csv file tabs preserving the csv viewer metadata", () => {
+        const session = buildPersistedSession({
+            tabs: [
+                {
+                    id: "file-csv",
+                    kind: "file",
+                    relativePath: "data/report.csv",
+                    title: "report.csv",
+                    path: "/vault/data/report.csv",
+                    content: "name,amount\nAlice,10",
+                    mimeType: "text/csv",
+                    viewer: "csv",
+                    sizeBytes: 2048,
+                    contentTruncated: true,
+                    history: [
+                        {
+                            kind: "file",
+                            relativePath: "data/report.csv",
+                            title: "report.csv",
+                            path: "/vault/data/report.csv",
+                            content: "name,amount\nAlice,10",
+                            mimeType: "text/csv",
+                            viewer: "csv",
+                            sizeBytes: 2048,
+                            contentTruncated: true,
+                        },
+                    ],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "file-csv",
+        });
+
+        expect(session.fileTabs).toEqual([
+            {
+                relativePath: "data/report.csv",
+                title: "report.csv",
+                path: "/vault/data/report.csv",
+                mimeType: "text/csv",
+                viewer: "csv",
+                sizeBytes: 2048,
+                contentTruncated: true,
+                history: [
+                    {
+                        relativePath: "data/report.csv",
+                        title: "report.csv",
+                        path: "/vault/data/report.csv",
+                        mimeType: "text/csv",
+                        viewer: "csv",
+                        sizeBytes: 2048,
+                        contentTruncated: true,
+                    },
+                ],
+                historyIndex: 0,
+            },
+        ]);
+        expect(session.activeFilePath).toBe("data/report.csv");
+    });
+
     it("restores legacy persisted sessions through the session module", async () => {
         localStorage.setItem(
             getEditorSessionKey("/vaults/project-alpha"),
@@ -233,9 +318,12 @@ describe("editorSession", () => {
             throw new Error(`Unexpected command: ${command}`);
         });
 
-        const restored = await restorePersistedSession("/vaults/project-alpha", {
-            includeMaps: true,
-        });
+        const restored = await restorePersistedSession(
+            "/vaults/project-alpha",
+            {
+                includeMaps: true,
+            },
+        );
 
         expect(restored).not.toBeNull();
         expect(restored?.tabs.map((tab) => tab.kind ?? "note")).toEqual([
@@ -271,5 +359,121 @@ describe("editorSession", () => {
             title: "Graph View",
         });
         expect(restored?.activeTabId).toBe(restored?.tabs[3]?.id ?? null);
+    });
+
+    it("restores legacy csv file tabs with inferred viewer and file content", async () => {
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify({
+                noteIds: [],
+                fileTabs: [
+                    {
+                        relativePath: "data/report.csv",
+                        title: "report.csv",
+                        path: "/vault/data/report.csv",
+                        mimeType: "text/csv",
+                    },
+                ],
+                activeNoteId: null,
+                activeFilePath: "data/report.csv",
+            }),
+        );
+
+        vi.mocked(invoke).mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "data/report.csv",
+                    vaultPath: "/vaults/project-alpha",
+                });
+                return { content: "name,amount\nAlice,10" };
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored).not.toBeNull();
+        expect(restored?.tabs).toHaveLength(1);
+        expect(restored?.tabs[0]).toMatchObject({
+            kind: "file",
+            relativePath: "data/report.csv",
+            viewer: "csv",
+            content: "name,amount\nAlice,10",
+        });
+        expect(restored?.activeTabId).toBe(restored?.tabs[0]?.id ?? null);
+    });
+
+    it("restores legacy csv file tabs preserving explicit viewer metadata", async () => {
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify({
+                noteIds: [],
+                fileTabs: [
+                    {
+                        relativePath: "data/report.csv",
+                        title: "report.csv",
+                        path: "/vault/data/report.csv",
+                        mimeType: "text/csv",
+                        viewer: "csv",
+                        sizeBytes: 2048,
+                        contentTruncated: true,
+                        history: [
+                            {
+                                relativePath: "data/report.csv",
+                                title: "report.csv",
+                                path: "/vault/data/report.csv",
+                                mimeType: "text/csv",
+                                viewer: "csv",
+                                sizeBytes: 2048,
+                                contentTruncated: true,
+                            },
+                        ],
+                        historyIndex: 0,
+                    },
+                ],
+                activeNoteId: null,
+                activeFilePath: "data/report.csv",
+            }),
+        );
+
+        vi.mocked(invoke).mockImplementation(async (command, args) => {
+            if (command === "read_vault_file") {
+                expect(args).toMatchObject({
+                    relativePath: "data/report.csv",
+                    vaultPath: "/vaults/project-alpha",
+                });
+                return {
+                    content: "name,amount\nAlice,10",
+                    size_bytes: 2048,
+                    content_truncated: true,
+                };
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored).not.toBeNull();
+        expect(restored?.tabs).toHaveLength(1);
+        expect(restored?.tabs[0]).toMatchObject({
+            kind: "file",
+            relativePath: "data/report.csv",
+            viewer: "csv",
+            content: "name,amount\nAlice,10",
+            sizeBytes: 2048,
+            contentTruncated: true,
+            historyIndex: 0,
+        });
+        expect(restored?.tabs[0]).toMatchObject({
+            history: [
+                expect.objectContaining({
+                    viewer: "csv",
+                    content: "name,amount\nAlice,10",
+                    sizeBytes: 2048,
+                    contentTruncated: true,
+                }),
+            ],
+        });
+        expect(restored?.activeTabId).toBe(restored?.tabs[0]?.id ?? null);
     });
 });

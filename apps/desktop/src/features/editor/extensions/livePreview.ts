@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { resolveLinkHref, linkReferenceField } from "./livePreviewHelpers";
 import { dispatchOpenYouTubeModal } from "../youtube";
+import { openVaultEmbedTarget } from "../embedNavigation";
 import {
     createCodeBlockLivePreviewExtension,
     createImageLivePreviewExtension,
@@ -31,6 +32,7 @@ const POINTER_INTERACTIVE_PREVIEW_SELECTOR = [
     ".cm-note-embed",
     ".cm-lp-footnote-ref",
     ".cm-lp-table-link",
+    "[data-embed-target][data-embed-kind]",
 ].join(", ");
 
 const KEYBOARD_INTERACTIVE_PREVIEW_SELECTOR = [
@@ -255,6 +257,18 @@ function activateInteractivePreview(
     view: EditorView,
     interactions: TableInteractionHandlers,
 ) {
+    const embedWidget = target.closest(
+        "[data-embed-target][data-embed-kind]",
+    ) as HTMLElement | null;
+    const embedKind = embedWidget?.dataset.embedKind;
+    if (
+        embedWidget?.dataset.embedTarget &&
+        (embedKind === "pdf" || embedKind === "image")
+    ) {
+        void openVaultEmbedTarget(embedWidget.dataset.embedTarget, embedKind);
+        return true;
+    }
+
     const embed = target.closest(".cm-note-embed") as HTMLElement | null;
     if (embed?.dataset.wikilinkTarget) {
         interactions.navigateWikilink(embed.dataset.wikilinkTarget);

@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath, URL } from "node:url";
 
 function manualChunks(id: string) {
     if (!id.includes("node_modules")) {
@@ -36,6 +37,23 @@ function manualChunks(id: string) {
 export default defineConfig({
     plugins: [react(), tailwindcss()],
     clearScreen: false,
+    resolve: {
+        dedupe: ["react", "react-dom"],
+        alias: [
+            {
+                find: "react",
+                replacement: fileURLToPath(
+                    new URL("./node_modules/react", import.meta.url),
+                ),
+            },
+            {
+                find: "react-dom",
+                replacement: fileURLToPath(
+                    new URL("./node_modules/react-dom", import.meta.url),
+                ),
+            },
+        ],
+    },
     build: {
         // The desktop app intentionally ships several large lazy chunks
         // (CodeMirror languages, graph tooling, Mermaid definitions).

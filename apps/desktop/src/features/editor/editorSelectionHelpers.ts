@@ -46,4 +46,5 @@ export const EDITOR_INTERACTIVE_PREVIEW_SELECTOR = [
     ".cm-lp-footnote-ref",
     ".cm-lp-table-link",
     ".cm-lp-table-url",
+    "[data-embed-target][data-embed-kind]",
 ].join(", ");

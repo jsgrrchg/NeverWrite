@@ -8,6 +8,7 @@ import {
 } from "react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
+    fileViewerNeedsTextContent,
     useEditorStore,
     isFileTab,
     type FileTab,
@@ -20,6 +21,7 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePreviewUrl";
 import { formatZoomPercentage } from "../../app/utils/zoom";
 import { FileTextTabView } from "./FileTextTabView";
+import { CsvFileTabView } from "./CsvFileTabView";
 
 const IMG_MIN_ZOOM = 0.1;
 const IMG_MAX_ZOOM = 10;
@@ -49,10 +51,25 @@ export function FileTabView() {
         );
     }
 
-    return tab.viewer === "image" ? (
-        <ImageFileViewer key={tab.path} tab={tab} />
-    ) : (
-        <FileTextTabView key={tab.id} />
+    if (tab.viewer === "image") {
+        return <ImageFileViewer key={tab.path} tab={tab} />;
+    }
+
+    if (tab.viewer === "csv") {
+        return <CsvFileTabView key={tab.id} />;
+    }
+
+    if (fileViewerNeedsTextContent(tab.viewer)) {
+        return <FileTextTabView key={tab.id} />;
+    }
+
+    return (
+        <div
+            className="h-full flex items-center justify-center"
+            style={{ color: "var(--text-secondary)" }}
+        >
+            Unsupported file viewer
+        </div>
     );
 }
 

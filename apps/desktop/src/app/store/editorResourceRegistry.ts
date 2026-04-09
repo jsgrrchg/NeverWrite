@@ -19,6 +19,8 @@ export type ResourceKind = "note" | "file";
 export interface ResourceReloadDetail {
     content: string;
     title: string;
+    sizeBytes?: number | null;
+    contentTruncated?: boolean;
     origin?: "user" | "agent" | "external" | "system" | "unknown";
     opId?: string | null;
     revision?: number;
@@ -182,13 +184,23 @@ const noteResourceHandler: ResourceHandler<"note"> = {
 const fileResourceHandler: ResourceHandler<"file"> = {
     kind: "file",
     updateOpenTab: (tab, detail) => {
-        if (tab.content === detail.content && tab.title === detail.title) {
+        const nextSizeBytes = detail.sizeBytes ?? tab.sizeBytes;
+        const nextContentTruncated =
+            detail.contentTruncated ?? tab.contentTruncated;
+        if (
+            tab.content === detail.content &&
+            tab.title === detail.title &&
+            tab.sizeBytes === nextSizeBytes &&
+            tab.contentTruncated === nextContentTruncated
+        ) {
             return tab;
         }
         return {
             ...tab,
             content: detail.content,
             title: detail.title,
+            sizeBytes: nextSizeBytes,
+            contentTruncated: nextContentTruncated,
         };
     },
     removeFromTabs: (tabs, relativePath) => {

@@ -1,9 +1,11 @@
 import {
+    fileViewerNeedsTextContent,
     isFileTab,
     isGraphTab,
     isHistoryTab,
     isMapTab,
     isNoteTab,
+    normalizeFileViewer,
     isPdfTab,
     isReviewTab,
     type FileViewerMode,
@@ -51,6 +53,8 @@ export interface PersistedSession {
         path: string;
         mimeType?: string | null;
         viewer?: FileViewerMode;
+        sizeBytes?: number | null;
+        contentTruncated?: boolean;
         content?: string;
         history?: Array<{
             relativePath: string;
@@ -58,6 +62,8 @@ export interface PersistedSession {
             path: string;
             mimeType?: string | null;
             viewer?: FileViewerMode;
+            sizeBytes?: number | null;
+            contentTruncated?: boolean;
         }>;
         historyIndex?: number;
     }>;
@@ -302,17 +308,24 @@ async function restoreLegacyFileTabs(session: PersistedSession) {
     const restoredTabs: TabInput[] = [];
     for (const entry of session.fileTabs ?? []) {
         let content = entry.content ?? "";
-        const viewer =
-            entry.viewer ??
-            (entry.mimeType?.startsWith("image/") ? "image" : "text");
+        const viewer = normalizeFileViewer(
+            entry.viewer,
+            entry.path,
+            entry.mimeType ?? null,
+        );
 
-        if (!content && viewer === "text") {
+        if (!content && fileViewerNeedsTextContent(viewer)) {
             try {
-                const detail = await vaultInvoke<{ content: string }>(
-                    "read_vault_file",
-                    { relativePath: entry.relativePath },
-                );
+                const detail = await vaultInvoke<{
+                    content: string;
+                    size_bytes?: number | null;
+                    content_truncated?: boolean;
+                }>("read_vault_file", {
+                    relativePath: entry.relativePath,
+                });
                 content = detail.content;
+                entry.sizeBytes = detail.size_bytes ?? null;
+                entry.contentTruncated = Boolean(detail.content_truncated);
             } catch {
                 content = "";
             }
@@ -326,6 +339,11 @@ async function restoreLegacyFileTabs(session: PersistedSession) {
                     path: entry.path,
                     mimeType: entry.mimeType ?? null,
                     viewer,
+                    sizeBytes:
+                        typeof entry.sizeBytes === "number"
+                            ? entry.sizeBytes
+                            : null,
+                    contentTruncated: Boolean(entry.contentTruncated),
                 },
             ]
         ).map((historyEntry) => ({
@@ -333,11 +351,16 @@ async function restoreLegacyFileTabs(session: PersistedSession) {
             title: historyEntry.title,
             path: historyEntry.path,
             mimeType: historyEntry.mimeType ?? null,
-            viewer:
-                historyEntry.viewer ??
-                (historyEntry.mimeType?.startsWith("image/")
-                    ? "image"
-                    : "text"),
+            viewer: normalizeFileViewer(
+                historyEntry.viewer,
+                historyEntry.path,
+                historyEntry.mimeType ?? null,
+            ),
+            sizeBytes:
+                typeof historyEntry.sizeBytes === "number"
+                    ? historyEntry.sizeBytes
+                    : null,
+            contentTruncated: Boolean(historyEntry.contentTruncated),
             content: "",
         }));
         const historyIndex = Math.min(
@@ -357,6 +380,9 @@ async function restoreLegacyFileTabs(session: PersistedSession) {
             mimeType: entry.mimeType ?? null,
             viewer,
             content,
+            sizeBytes:
+                typeof entry.sizeBytes === "number" ? entry.sizeBytes : null,
+            contentTruncated: Boolean(entry.contentTruncated),
             history,
             historyIndex,
         });
