@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
-use regex::Regex;
 use neverwrite_types::{
     AdvancedSearchParams, AdvancedSearchResultDto, ContentMatchDto, ContentSearchParam, NoteId,
     NoteMetadata, PropertyFilterParam,
 };
 use neverwrite_vault::Vault;
+use regex::Regex;
 
 use crate::VaultIndex;
 
@@ -284,8 +284,11 @@ impl VaultIndex {
         }
 
         // Phase 2b: PDF search
-        // Skip PDFs if tag or property filters are active (PDFs have neither)
-        if params.tag_filters.is_empty() && params.property_filters.is_empty() {
+        // PDFs participate only in lightweight title/path matching.
+        if params.tag_filters.is_empty()
+            && params.property_filters.is_empty()
+            && params.content_searches.is_empty()
+        {
             let mut pdf_candidates: HashSet<&NoteId> = self.pdf_metadata.keys().collect();
 
             for filter in &params.file_filters {
@@ -334,41 +337,6 @@ impl VaultIndex {
                     None => continue,
                 };
 
-                let mut content_matches: Vec<ContentMatchDto> = Vec::new();
-                let mut content_score = 0.0f64;
-                let mut passes = true;
-
-                if !params.content_searches.is_empty() {
-                    let pdf_doc = match neverwrite_vault::pdf::extract_pdf_text(
-                        &vault.root,
-                        &pdf_meta.path.0,
-                        &pdf_meta.id.0,
-                    ) {
-                        Ok(doc) => doc,
-                        Err(_) => continue,
-                    };
-
-                    for cs in &params.content_searches {
-                        let found = search_pdf_content(&pdf_doc.extracted_pages, cs);
-                        if cs.negated {
-                            if !found.is_empty() {
-                                passes = false;
-                                break;
-                            }
-                        } else if found.is_empty() {
-                            passes = false;
-                            break;
-                        } else {
-                            content_score += found.len() as f64 * 0.3;
-                            content_matches.extend(found);
-                        }
-                    }
-                }
-
-                if !passes {
-                    continue;
-                }
-
                 let entry = self.pdf_search_index.get(*pdf_id);
                 let title_path_score = if let Some(entry) = entry {
                     let mut best = 0.0f64;
@@ -387,17 +355,11 @@ impl VaultIndex {
                     0.0
                 };
 
-                let score = if title_path_score > 0.0 && content_score > 0.0 {
-                    title_path_score * 0.6 + content_score * 0.4
-                } else if content_score > 0.0 {
-                    content_score
-                } else if title_path_score > 0.0 {
+                let score = if title_path_score > 0.0 {
                     title_path_score
                 } else {
                     0.5
                 };
-
-                content_matches.truncate(5);
 
                 results.push(AdvancedSearchResultDto {
                     id: pdf_id.0.clone(),
@@ -407,7 +369,7 @@ impl VaultIndex {
                     score,
                     tags: vec![],
                     modified_at: pdf_meta.modified_at,
-                    matches: content_matches,
+                    matches: vec![],
                 });
             }
         }
@@ -777,36 +739,6 @@ fn truncate_line(line: &str, max: usize) -> String {
     } else {
         format!("{}...", &line[..max])
     }
-}
-
-// ── PDF content search ────────────────────────────────
-
-fn search_pdf_content(pages: &[String], cs: &ContentSearchParam) -> Vec<ContentMatchDto> {
-    let matcher = build_matcher(&cs.value, cs.is_regex);
-    let mut results = Vec::new();
-
-    for (page_idx, page_text) in pages.iter().enumerate() {
-        for (line_num, line) in page_text.lines().enumerate() {
-            let line_lower = line.to_lowercase();
-            let hits = matcher.find_in(&line_lower);
-            if !hits.is_empty() {
-                for (start, end) in hits.iter().take(2) {
-                    results.push(ContentMatchDto {
-                        line_number: line_num + 1,
-                        line_content: truncate_line(line, 200),
-                        match_start: *start,
-                        match_end: *end,
-                        page: Some(page_idx + 1),
-                    });
-                }
-            }
-            if results.len() >= 10 {
-                return results;
-            }
-        }
-    }
-
-    results
 }
 
 // ── Property / frontmatter filter ─────────────────────

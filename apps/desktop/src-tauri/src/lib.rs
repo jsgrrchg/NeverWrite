@@ -1755,25 +1755,35 @@ fn rebuild_index(instance: &mut VaultInstance) -> Result<(), String> {
         .discover_pdf_files()
         .map_err(|error| error.to_string())?;
     for pdf_file in pdf_files {
-        match neverwrite_vault::pdf::extract_pdf_text(&vault.root, &pdf_file.path, &pdf_file.id) {
-            Ok(doc) => {
-                index.register_pdf(
-                    &doc,
-                    pdf_file.modified_at,
-                    pdf_file.created_at,
-                    pdf_file.size,
-                );
-            }
-            Err(error) => {
-                eprintln!("[pdf] Failed to extract {}: {error}", pdf_file.id);
-            }
-        }
+        register_pdf_file_metadata(&mut index, &pdf_file);
     }
 
     instance.index = Some(index);
     invalidate_graph_query_cache(instance);
     invalidate_graph_cache(instance);
     Ok(())
+}
+
+fn register_pdf_file_metadata(
+    index: &mut VaultIndex,
+    pdf_file: &neverwrite_vault::pdf::DiscoveredPdfFile,
+) {
+    let title = pdf_file
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("untitled")
+        .to_string();
+
+    index.reindex_pdf_metadata(
+        NoteId(pdf_file.id.clone()),
+        neverwrite_types::NotePath(pdf_file.path.clone()),
+        title,
+        0,
+        pdf_file.modified_at,
+        pdf_file.created_at,
+        pdf_file.size,
+    );
 }
 
 // --- File watcher ---
@@ -1840,34 +1850,40 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 if path_has_extension(path, "pdf") =>
             {
                 let pdf_id = vault.path_to_entry_id(path);
-                match neverwrite_vault::pdf::extract_pdf_text(&vault.root, path, &pdf_id) {
-                    Ok(doc) => {
-                        let meta = std::fs::metadata(path).ok();
-                        let modified_at = meta
-                            .as_ref()
-                            .and_then(|m| m.modified().ok())
-                            .map(|t| {
-                                t.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs()
-                            })
-                            .unwrap_or(0);
-                        let created_at = meta
-                            .as_ref()
-                            .and_then(|m| m.created().ok())
-                            .map(|t| {
-                                t.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs()
-                            })
-                            .unwrap_or(modified_at);
-                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                        index.reindex_pdf(&doc, modified_at, created_at, size);
-                        search_changed = true;
-                    }
-                    Err(e) => {
-                        eprintln!("[pdf-watcher] Failed to extract {}: {e}", path.display());
-                    }
+                if let Ok(meta) = std::fs::metadata(path) {
+                    let modified_at = meta
+                        .modified()
+                        .ok()
+                        .map(|t| {
+                            t.duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                        })
+                        .unwrap_or(0);
+                    let created_at = meta
+                        .created()
+                        .ok()
+                        .map(|t| {
+                            t.duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                        })
+                        .unwrap_or(modified_at);
+                    let title = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("untitled")
+                        .to_string();
+                    index.reindex_pdf_metadata(
+                        NoteId(pdf_id),
+                        neverwrite_types::NotePath(path.clone()),
+                        title,
+                        0,
+                        modified_at,
+                        created_at,
+                        meta.len(),
+                    );
+                    search_changed = true;
                 }
                 // Emit a vault entry change so the frontend can refresh its entries list
                 Some(build_vault_note_change(
@@ -1910,13 +1926,10 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                 search_changed = true;
                 if path_has_extension(to, "pdf") {
                     let new_id = vault.path_to_entry_id(to);
-                    if let Ok(doc) =
-                        neverwrite_vault::pdf::extract_pdf_text(&vault.root, to, &new_id)
-                    {
-                        let meta = std::fs::metadata(to).ok();
+                    if let Ok(meta) = std::fs::metadata(to) {
                         let modified_at = meta
-                            .as_ref()
-                            .and_then(|m| m.modified().ok())
+                            .modified()
+                            .ok()
                             .map(|t| {
                                 t.duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
@@ -1924,16 +1937,28 @@ fn handle_external_vault_event(app: &AppHandle, vault_path: &str, event: VaultEv
                             })
                             .unwrap_or(0);
                         let created_at = meta
-                            .as_ref()
-                            .and_then(|m| m.created().ok())
+                            .created()
+                            .ok()
                             .map(|t| {
                                 t.duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs()
                             })
                             .unwrap_or(modified_at);
-                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                        index.register_pdf(&doc, modified_at, created_at, size);
+                        let title = to
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .unwrap_or("untitled")
+                            .to_string();
+                        index.register_pdf_metadata(
+                            NoteId(new_id),
+                            neverwrite_types::NotePath(to.clone()),
+                            title,
+                            0,
+                            modified_at,
+                            created_at,
+                            meta.len(),
+                        );
                         search_changed = true;
                     }
                 }
@@ -2375,62 +2400,12 @@ fn run_open_vault_job(
         }
     };
 
-    // PDF extraction — discover PDFs and extract only those missing from the index
+    // Keep PDFs discoverable in search by syncing lightweight metadata only.
     let pdf_files = vault.discover_pdf_files().unwrap_or_default();
     if !pdf_files.is_empty() {
-        let missing_pdfs: Vec<_> = pdf_files
-            .iter()
-            .filter(|f| {
-                let id = neverwrite_types::NoteId(f.id.clone());
-                match index.pdf_metadata.get(&id) {
-                    Some(existing) => {
-                        existing.modified_at != f.modified_at || existing.size != f.size
-                    }
-                    None => true,
-                }
-            })
-            .collect();
-
-        if !missing_pdfs.is_empty() {
-            update_open_state_for_job(app, vault_path, job_id, |open_state| {
-                open_state.update_stage(
-                    "extracting_pdfs",
-                    "Extracting PDFs...",
-                    0,
-                    missing_pdfs.len(),
-                );
-            })?;
-
-            let mut pdf_failures = 0usize;
-            for (i, pdf_file) in missing_pdfs.iter().enumerate() {
-                ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
-                match neverwrite_vault::pdf::extract_pdf_text(
-                    &vault.root,
-                    &pdf_file.path,
-                    &pdf_file.id,
-                ) {
-                    Ok(doc) => {
-                        index.register_pdf(
-                            &doc,
-                            pdf_file.modified_at,
-                            pdf_file.created_at,
-                            pdf_file.size,
-                        );
-                    }
-                    Err(e) => {
-                        pdf_failures += 1;
-                        eprintln!("[pdf] Failed to extract {}: {e}", pdf_file.id);
-                    }
-                }
-                let msg = if pdf_failures > 0 {
-                    format!("Extracting PDFs... ({} failed)", pdf_failures)
-                } else {
-                    "Extracting PDFs...".to_string()
-                };
-                let _ = update_open_state_for_job(app, vault_path, job_id, |open_state| {
-                    open_state.update_stage("extracting_pdfs", &msg, i + 1, missing_pdfs.len());
-                });
-            }
+        for pdf_file in &pdf_files {
+            ensure_not_cancelled(&cancel, app, vault_path, job_id)?;
+            register_pdf_file_metadata(&mut index, pdf_file);
         }
 
         // Remove PDFs that no longer exist on disk

@@ -527,6 +527,33 @@ fn register_pdf_adds_to_index() {
 }
 
 #[test]
+fn register_pdf_metadata_adds_to_index_without_content_extraction() {
+    let mut index = build_sample_index();
+    index.register_pdf_metadata(
+        NoteId("papers/quantum".into()),
+        NotePath(PathBuf::from("papers/quantum.pdf")),
+        "Quantum Computing".into(),
+        0,
+        1000,
+        900,
+        5000,
+    );
+
+    assert!(index
+        .pdf_metadata
+        .contains_key(&NoteId("papers/quantum".into())));
+    assert!(index
+        .pdf_search_index
+        .contains_key(&NoteId("papers/quantum".into())));
+
+    let meta = &index.pdf_metadata[&NoteId("papers/quantum".into())];
+    assert_eq!(meta.title, "Quantum Computing");
+    assert_eq!(meta.page_count, 0);
+    assert_eq!(meta.modified_at, 1000);
+    assert_eq!(meta.size, 5000);
+}
+
+#[test]
 fn remove_pdf_cleans_index() {
     let mut index = build_sample_index();
     let doc = make_pdf("papers/quantum", "Quantum Computing", vec!["text"]);
@@ -554,6 +581,36 @@ fn reindex_pdf_updates_metadata() {
     let meta = &index.pdf_metadata[&NoteId("report".into())];
     assert_eq!(meta.title, "New Title");
     assert_eq!(meta.page_count, 2);
+    assert_eq!(meta.modified_at, 2000);
+    assert_eq!(meta.size, 8000);
+}
+
+#[test]
+fn reindex_pdf_metadata_updates_metadata() {
+    let mut index = build_sample_index();
+    index.register_pdf_metadata(
+        NoteId("report".into()),
+        NotePath(PathBuf::from("report.pdf")),
+        "Old Title".into(),
+        0,
+        1000,
+        900,
+        5000,
+    );
+
+    index.reindex_pdf_metadata(
+        NoteId("report".into()),
+        NotePath(PathBuf::from("report.pdf")),
+        "New Title".into(),
+        0,
+        2000,
+        900,
+        8000,
+    );
+
+    let meta = &index.pdf_metadata[&NoteId("report".into())];
+    assert_eq!(meta.title, "New Title");
+    assert_eq!(meta.page_count, 0);
     assert_eq!(meta.modified_at, 2000);
     assert_eq!(meta.size, 8000);
 }

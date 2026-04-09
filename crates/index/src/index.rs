@@ -149,21 +149,42 @@ impl VaultIndex {
         created_at: u64,
         size: u64,
     ) {
-        let id = doc.id.clone();
+        self.register_pdf_metadata(
+            doc.id.clone(),
+            doc.path.clone(),
+            doc.title.clone(),
+            doc.page_count,
+            modified_at,
+            created_at,
+            size,
+        );
+    }
+
+    pub fn register_pdf_metadata(
+        &mut self,
+        id: NoteId,
+        path: neverwrite_types::NotePath,
+        title: String,
+        page_count: usize,
+        modified_at: u64,
+        created_at: u64,
+        size: u64,
+    ) {
+        let metadata_id = id.clone();
         self.pdf_search_index.insert(
             id.clone(),
             SearchEntry {
-                title_lower: doc.title.to_lowercase(),
+                title_lower: title.to_lowercase(),
                 path_lower: id.0.to_lowercase(),
             },
         );
         self.pdf_metadata.insert(
             id,
             PdfMetadata {
-                id: doc.id.clone(),
-                path: doc.path.clone(),
-                title: doc.title.clone(),
-                page_count: doc.page_count,
+                id: metadata_id,
+                path,
+                title,
+                page_count,
                 modified_at,
                 created_at,
                 size,
@@ -179,6 +200,20 @@ impl VaultIndex {
     pub fn reindex_pdf(&mut self, doc: &PdfDocument, modified_at: u64, created_at: u64, size: u64) {
         self.remove_pdf(&doc.id);
         self.register_pdf(doc, modified_at, created_at, size);
+    }
+
+    pub fn reindex_pdf_metadata(
+        &mut self,
+        id: NoteId,
+        path: neverwrite_types::NotePath,
+        title: String,
+        page_count: usize,
+        modified_at: u64,
+        created_at: u64,
+        size: u64,
+    ) {
+        self.remove_pdf(&id);
+        self.register_pdf_metadata(id, path, title, page_count, modified_at, created_at, size);
     }
 
     pub fn get_note_metadata(&self, note_id: &NoteId) -> Option<&NoteMetadata> {
