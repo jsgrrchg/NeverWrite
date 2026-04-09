@@ -3,9 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CODEX_RUNTIME_ID};
 
 #[cfg(test)]
 use crate::ai::secret_store::TestSecretStore;

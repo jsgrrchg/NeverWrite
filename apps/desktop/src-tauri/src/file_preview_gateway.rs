@@ -4,8 +4,8 @@ use std::sync::Mutex;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use tauri::{http, Manager, Runtime};
 use neverwrite_vault::ScopedPathIntent;
+use tauri::{http, Manager, Runtime};
 
 pub use crate::technical_branding::FILE_PREVIEW_SCHEME;
 use crate::technical_branding::{PRODUCT_CACHE_DIR_NAME, PRODUCT_STATE_DIR_NAME};
@@ -190,9 +190,9 @@ fn detect_mime_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use neverwrite_vault::Vault;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
-    use neverwrite_vault::Vault;
 
     #[test]
     fn parse_preview_request_decodes_vault_and_relative_path() {

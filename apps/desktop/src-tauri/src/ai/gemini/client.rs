@@ -24,11 +24,11 @@ use tauri::AppHandle;
 use tokio::{process::Command, runtime::Builder, sync::oneshot, task::LocalSet};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use tokio::sync::mpsc as tokio_mpsc;
 use neverwrite_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiModeOption, AiModelOption,
     AiRuntimeSessionSummary, GEMINI_RUNTIME_ID,
 };
+use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::ai::emit::{
     emit_available_commands_updated, emit_message_completed, emit_message_delta,

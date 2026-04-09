@@ -1,6 +1,6 @@
+use neverwrite_ai::AiSession;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use neverwrite_ai::AiSession;
 
 pub const AI_SESSION_CREATED_EVENT: &str = "ai://session-created";
 pub const AI_SESSION_UPDATED_EVENT: &str = "ai://session-updated";

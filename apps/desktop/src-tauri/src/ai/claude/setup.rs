@@ -6,10 +6,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CLAUDE_RUNTIME_ID};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use neverwrite_ai::{AiAuthMethod, AiRuntimeBinarySource, AiRuntimeSetupStatus, CLAUDE_RUNTIME_ID};
 
 use crate::ai::env::find_program_on_preferred_path;
 #[cfg(test)]

@@ -9,12 +9,12 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+use neverwrite_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID};
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
-use neverwrite_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID};
 
 use super::claude::{
     save_setup_config as save_claude_setup_config, ClaudeRuntime, ClaudeSetupInput,

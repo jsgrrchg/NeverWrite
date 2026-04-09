@@ -1,10 +1,10 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use tauri::AppHandle;
 use neverwrite_ai::{
     AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiRuntimeSessionSummary,
     AiSession, AiSessionStatus, CODEX_RUNTIME_ID,
 };
+use tauri::AppHandle;
 
 use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
 

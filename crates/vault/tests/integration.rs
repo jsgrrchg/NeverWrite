@@ -1,9 +1,9 @@
+use neverwrite_vault::pdf;
+use neverwrite_vault::Vault;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use tempfile::TempDir;
-use neverwrite_vault::pdf;
-use neverwrite_vault::Vault;
 
 fn setup_vault() -> (TempDir, Vault) {
     let dir = TempDir::new().unwrap();

@@ -1,8 +1,10 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use neverwrite_ai::{
+    AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession,
+};
 use serde::Deserialize;
 use tauri::AppHandle;
-use neverwrite_ai::{AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession};
 
 use super::{
     claude::ClaudeRuntimeAdapter,
@@ -518,11 +520,11 @@ impl AiManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use neverwrite_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
-    use neverwrite_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus};
 
     use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities};
 
