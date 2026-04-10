@@ -926,7 +926,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             disabled: paneCount <= 1,
                         },
                         {
-                            label: "Unify All Tabs Here",
+                            label: "Unify All Tabs",
                             action: () => unifyAllPanesInto(paneId),
                             disabled: paneCount <= 1,
                         },

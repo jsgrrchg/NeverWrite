@@ -405,7 +405,7 @@ describe("EditorPaneBar", () => {
             screen.getByRole("button", { name: "Pane 2 actions" }),
         );
         await user.click(
-            await screen.findByRole("button", { name: "Unify All Tabs Here" }),
+            await screen.findByRole("button", { name: "Unify All Tabs" }),
         );
 
         await waitFor(() => {
