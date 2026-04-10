@@ -269,7 +269,12 @@ export function AIChatPanel() {
     );
     const chatFontSize = useChatStore((state) => state.chatFontSize);
     const chatFontFamily = useChatStore((state) => state.chatFontFamily);
-    const tabs = useChatTabsStore((state) => state.tabs);
+    const allChatTabs = useChatTabsStore((state) => state.tabs);
+    // Only show sidebar tabs — workspace tabs are rendered by AIChatSessionView
+    const tabs = useMemo(
+        () => allChatTabs.filter((tab) => tab.location !== "workspace"),
+        [allChatTabs],
+    );
     const activeTabId = useChatTabsStore((state) => state.activeTabId);
     const tabsReady = useChatTabsStore((state) => state.isReady);
     const ensureSessionTab = useChatTabsStore(
@@ -815,6 +820,20 @@ export function AIChatPanel() {
         shouldFocusSelectedRuntime,
         tabsReady,
     ]);
+
+    // When the active sidebar tab moves to workspace, switch to the next sidebar tab
+    useEffect(() => {
+        if (!activeTabId) return;
+        const activeTab = allChatTabs.find((t) => t.id === activeTabId);
+        if (activeTab?.location === "workspace") {
+            const nextSidebarTab = allChatTabs.find(
+                (t) => t.id !== activeTabId && t.location !== "workspace",
+            );
+            if (nextSidebarTab) {
+                setActiveTab(nextSidebarTab.id);
+            }
+        }
+    }, [activeTabId, allChatTabs, setActiveTab]);
 
     if (historyViewOpen) {
         return <ChatHistoryView />;

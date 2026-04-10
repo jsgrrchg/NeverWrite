@@ -7,6 +7,7 @@ import {
     isNoteTab,
     normalizeFileViewer,
     isPdfTab,
+    isChatTab,
     isReviewTab,
     type FileViewerMode,
     type PdfViewMode,
@@ -285,7 +286,7 @@ export function getEditorSessionSignature(state: EditorSessionState) {
 
     let signature = state.activeTabId ?? "";
     for (const tab of state.tabs) {
-        if (isReviewTab(tab)) {
+        if (isReviewTab(tab) || isChatTab(tab)) {
             continue;
         }
         if (isGraphTab(tab)) {
@@ -383,7 +384,7 @@ export function buildPersistedSession(
 }
 
 function normalizeRestoredTabInput(tab: TabInput): TabInput | null {
-    if (isReviewTab(tab)) {
+    if (isReviewTab(tab) || isChatTab(tab)) {
         return null;
     }
     if (isHistoryTab(tab)) {

@@ -13,11 +13,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
     type Tab,
+    isChatTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
     selectEditorPaneState,
     useEditorStore,
 } from "../../app/store/editorStore";
+import { moveChatToSidebar } from "../ai/chatPaneMovement";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -95,6 +97,22 @@ function renderTabLeadingIcon(tab: Tab): ReactNode {
         );
     }
 
+    if (tab.kind === "ai-chat") {
+        return (
+            <span
+                aria-hidden="true"
+                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
+                style={{
+                    background:
+                        "color-mix(in srgb, var(--accent) 12%, transparent)",
+                    color: "var(--accent)",
+                }}
+            >
+                C
+            </span>
+        );
+    }
+
     if (tab.kind === "map") {
         return (
             <span
@@ -166,7 +184,11 @@ const CROSS_PANE_TAB_DROP_PREVIEW_EVENT =
     "neverwrite:cross-pane-tab-drop-preview";
 
 function duplicateTabForNewPane(tab: Tab): Tab | null {
-    if (tab.kind === "ai-review" || tab.kind === "graph") {
+    if (
+        tab.kind === "ai-review" ||
+        tab.kind === "ai-chat" ||
+        tab.kind === "graph"
+    ) {
         return null;
     }
 
@@ -820,7 +842,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                     title={`Close ${tab.title}`}
                                     onClick={(event) => {
                                         event.stopPropagation();
-                                        closeTab(tab.id);
+                                        if (isChatTab(tab)) {
+                                            moveChatToSidebar(tab.sessionId);
+                                        } else {
+                                            closeTab(tab.id);
+                                        }
                                     }}
                                     className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded opacity-45 transition group-hover:opacity-100"
                                     style={{ color: "inherit" }}
@@ -945,9 +971,23 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         const entries: ContextMenuEntry[] = [
                             {
                                 label: "Close",
-                                action: () => closeTab(targetTab.id),
+                                action: () => {
+                                    if (isChatTab(targetTab)) {
+                                        moveChatToSidebar(targetTab.sessionId);
+                                    } else {
+                                        closeTab(targetTab.id);
+                                    }
+                                },
                             },
                         ];
+
+                        if (isChatTab(targetTab)) {
+                            entries.push({
+                                label: "Return to AI Panel",
+                                action: () =>
+                                    moveChatToSidebar(targetTab.sessionId),
+                            });
+                        }
 
                         const duplicatedTab = duplicateTabForNewPane(targetTab);
                         entries.push({ type: "separator" });

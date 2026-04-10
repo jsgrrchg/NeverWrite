@@ -185,13 +185,22 @@ function adjustEditorFontSize(delta: number) {
 
 function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
-    if (rightPanelView === "chat") {
-        return <AIChatPanel />;
-    }
-    if (rightPanelView === "outline") {
-        return <OutlineRightPanel />;
-    }
-    return <LinksPanel />;
+    return (
+        <>
+            {/* Always mount AIChatPanel so its Tauri event listeners stay
+                bound even when a ChatTab lives in the editor workspace and
+                the sidebar is switched to outline/links. */}
+            <div
+                style={{
+                    display: rightPanelView === "chat" ? "contents" : "none",
+                }}
+            >
+                <AIChatPanel />
+            </div>
+            {rightPanelView === "outline" && <OutlineRightPanel />}
+            {rightPanelView === "links" && <LinksPanel />}
+        </>
+    );
 }
 
 function VaultOpeningOverlay() {

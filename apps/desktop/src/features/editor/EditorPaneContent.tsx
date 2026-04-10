@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
     useEditorStore,
+    isChatTab,
     isFileTab,
     isGraphTab,
     isMapTab,
@@ -25,6 +26,7 @@ type EditorPanelView =
     | "new"
     | "search"
     | "ai-review"
+    | "ai-chat"
     | "editor"
     | "map"
     | "graph";
@@ -38,6 +40,12 @@ const LazyExcalidrawTabView = React.lazy(() =>
 const LazyGraphTabView = React.lazy(() =>
     import("../graph/GraphTabView").then((m) => ({
         default: m.GraphTabView,
+    })),
+);
+
+const LazyAIChatSessionView = React.lazy(() =>
+    import("../ai/components/AIChatSessionView").then((m) => ({
+        default: m.AIChatSessionView,
     })),
 );
 
@@ -86,6 +94,12 @@ function renderEditorPanelView(
             return <FileTabView paneId={paneId} />;
         case "ai-review":
             return <AIReviewView paneId={paneId} />;
+        case "ai-chat":
+            return (
+                <React.Suspense fallback={null}>
+                    <LazyAIChatSessionView paneId={paneId} />
+                </React.Suspense>
+            );
         case "map":
             if (!EXCALIDRAW_RUNTIME_SUPPORTED) {
                 return <UnsupportedMapView />;
@@ -102,7 +116,9 @@ function renderEditorPanelView(
         case "graph":
             return null;
         default:
-            return <Editor paneId={paneId} emptyStateMessage={emptyStateMessage} />;
+            return (
+                <Editor paneId={paneId} emptyStateMessage={emptyStateMessage} />
+            );
     }
 }
 
@@ -121,6 +137,7 @@ export function EditorPaneContent({
         if (isPdfTab(tab)) return "pdf";
         if (isFileTab(tab)) return "file";
         if (isReviewTab(tab)) return "ai-review";
+        if (isChatTab(tab)) return "ai-chat";
         if (isMapTab(tab)) return "map";
         if (isGraphTab(tab)) return "graph";
         if (!isNoteTab(tab)) return "editor";
@@ -128,8 +145,8 @@ export function EditorPaneContent({
         if (tab.noteId === "__search__") return "search";
         return "editor";
     });
-    const paneTabs = useEditorStore((state) =>
-        selectEditorPaneState(state, paneId).tabs,
+    const paneTabs = useEditorStore(
+        (state) => selectEditorPaneState(state, paneId).tabs,
     );
     const hasGraphTab = paneTabs.some((tab) => isGraphTab(tab));
     const isGraphActive = view === "graph";

@@ -8326,6 +8326,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
             }
             useEditorStore.getState().closeReview(sessionId);
+            useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
             _queueDrainLocks.delete(sessionId);
             clearChatRowUiSession(sessionId);
@@ -8412,10 +8413,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (vaultPath) {
                 await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
             }
-            // Close all review tabs before clearing sessions
+            // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {
                 editor.closeReview(sessionId);
+                editor.closeChat(sessionId);
             }
             useChatTabsStore.getState().reset();
             _queueDrainLocks.clear();

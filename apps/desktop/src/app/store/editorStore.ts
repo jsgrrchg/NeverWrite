@@ -2,9 +2,11 @@ import { create } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import {
     buildTabFromHistory,
+    createChatTab,
     createGraphTab,
     createMapTab,
     ensureFileTabDefaults,
+    isChatTab,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -13,6 +15,7 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
+    type ChatTab,
     type FileViewerMode,
     type HistoryTab,
     type NavigableHistoryTab,
@@ -49,6 +52,7 @@ import { useVaultStore } from "./vaultStore";
 
 export {
     fileViewerNeedsTextContent,
+    isChatTab,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -61,6 +65,7 @@ export {
     isTransientTab,
 } from "./editorTabs";
 export type {
+    ChatTab,
     FileHistoryEntry,
     FileTab,
     FileTabInput,
@@ -474,7 +479,7 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isReviewTab(tab) || isGraphTab(tab)) {
+    if (isReviewTab(tab) || isChatTab(tab) || isGraphTab(tab)) {
         return tab;
     }
     return null;
@@ -849,6 +854,11 @@ interface EditorStore {
         options?: { background?: boolean; title?: string },
     ) => void;
     closeReview: (sessionId: string) => void;
+    openChat: (
+        sessionId: string,
+        options?: { background?: boolean; title?: string; paneId?: string },
+    ) => void;
+    closeChat: (sessionId: string) => void;
     goBack: () => void;
     goForward: () => void;
     navigateToHistoryIndex: (index: number) => void;
@@ -1115,6 +1125,114 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     closeReview: (sessionId) => {
         const tab = selectEditorWorkspaceTabs(get()).find(
             (t) => isReviewTab(t) && t.sessionId === sessionId,
+        );
+        if (tab) get().closeTab(tab.id);
+    },
+
+    openChat: (sessionId, options) => {
+        set((state) => {
+            const workspace = getEffectivePaneWorkspace(state);
+
+            // Reuse existing ChatTab for this session if already open
+            const existingPane = workspace.panes.find((pane) =>
+                pane.tabs.some(
+                    (tab) => isChatTab(tab) && tab.sessionId === sessionId,
+                ),
+            );
+            const existing =
+                existingPane?.tabs.find(
+                    (tab): tab is ChatTab =>
+                        isChatTab(tab) && tab.sessionId === sessionId,
+                ) ?? null;
+            if (existingPane && existing) {
+                const nextTitle = options?.title ?? existing.title;
+                const nextPane =
+                    nextTitle === existing.title
+                        ? existingPane
+                        : createEditorPaneState(existingPane.id, {
+                              ...existingPane,
+                              tabs: existingPane.tabs.map((tab) =>
+                                  tab.id === existing.id
+                                      ? { ...tab, title: nextTitle }
+                                      : tab,
+                              ),
+                          });
+                if (options?.background) {
+                    if (nextPane === existingPane) {
+                        return state;
+                    }
+                    return buildFocusedPaneProjection({
+                        panes: workspace.panes.map((pane) =>
+                            pane.id === existingPane.id ? nextPane : pane,
+                        ),
+                        focusedPaneId: workspace.focusedPaneId,
+                    });
+                }
+                const projection = activatePaneTab(
+                    {
+                        panes: workspace.panes.map((pane) =>
+                            pane.id === existingPane.id ? nextPane : pane,
+                        ),
+                        focusedPaneId: existingPane.id,
+                    },
+                    existingPane.id,
+                    existing.id,
+                );
+                return (
+                    projection ??
+                    buildFocusedPaneProjection({
+                        panes: workspace.panes.map((pane) =>
+                            pane.id === existingPane.id ? nextPane : pane,
+                        ),
+                        focusedPaneId: existingPane.id,
+                    })
+                );
+            }
+
+            const newTab: ChatTab = createChatTab(
+                sessionId,
+                options?.title ?? "Chat",
+            );
+
+            // Insert into specified pane or focused pane
+            const targetPaneId =
+                options?.paneId ?? workspace.focusedPaneId ?? null;
+            const targetPane = targetPaneId
+                ? (workspace.panes.find((p) => p.id === targetPaneId) ?? null)
+                : null;
+            const focusedPane = targetPane ?? selectEditorPaneState(workspace);
+
+            const nextPane = options?.background
+                ? createEditorPaneState(focusedPane.id, {
+                      ...focusedPane,
+                      tabs: [...focusedPane.tabs, newTab],
+                  })
+                : createEditorPaneState(
+                      focusedPane.id,
+                      insertNormalizedTab(focusedPane, newTab),
+                  );
+
+            if (options?.background) {
+                return buildFocusedPaneProjection({
+                    panes: workspace.panes.map((pane) =>
+                        pane.id === focusedPane.id ? nextPane : pane,
+                    ),
+                    focusedPaneId: workspace.focusedPaneId,
+                });
+            }
+
+            return buildFocusedPaneProjection({
+                panes: workspace.panes.map((pane) =>
+                    pane.id === focusedPane.id ? nextPane : pane,
+                ),
+                focusedPaneId: focusedPane.id,
+            });
+        });
+    },
+
+    closeChat: (sessionId) => {
+        const tab = selectEditorWorkspaceTabs(get()).find(
+            (t) => isChatTab(t) && t.sessionId === sessionId,
         );
         if (tab) get().closeTab(tab.id);
     },
