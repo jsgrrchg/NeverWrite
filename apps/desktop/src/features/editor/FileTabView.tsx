@@ -11,6 +11,7 @@ import {
     fileViewerNeedsTextContent,
     useEditorStore,
     isFileTab,
+    selectEditorPaneActiveTab,
     type FileTab,
 } from "../../app/store/editorStore";
 import {
@@ -32,11 +33,13 @@ function clampScrollOffset(offset: number) {
     return Number.isFinite(offset) ? Math.max(0, offset) : 0;
 }
 
-export function FileTabView() {
+interface FileTabViewProps {
+    paneId?: string;
+}
+
+export function FileTabView({ paneId }: FileTabViewProps) {
     const tab = useEditorStore((state) => {
-        const current = state.tabs.find(
-            (candidate) => candidate.id === state.activeTabId,
-        );
+        const current = selectEditorPaneActiveTab(state, paneId);
         return current && isFileTab(current) ? current : null;
     });
 
@@ -56,11 +59,11 @@ export function FileTabView() {
     }
 
     if (tab.viewer === "csv") {
-        return <CsvFileTabView key={tab.id} />;
+        return <CsvFileTabView key={tab.id} paneId={paneId} />;
     }
 
     if (fileViewerNeedsTextContent(tab.viewer)) {
-        return <FileTextTabView key={tab.id} />;
+        return <FileTextTabView key={tab.id} paneId={paneId} />;
     }
 
     return (

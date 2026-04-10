@@ -22,6 +22,8 @@ import {
     isFileTab,
     isNoteTab,
     isPdfTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import {
@@ -1483,12 +1485,12 @@ export function FileTree() {
     const refreshStructure = useVaultStore((s) => s.refreshStructure);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
-    const activeNoteId = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    const activeNoteId = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         return tab && isNoteTab(tab) ? tab.noteId : null;
     });
-    const activeEntryPath = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    const activeEntryPath = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         if (tab && (isPdfTab(tab) || isFileTab(tab))) {
             return tab.path;
         }
@@ -1497,6 +1499,10 @@ export function FileTree() {
     const openNote = useEditorStore((s) => s.openNote);
     const closeTab = useEditorStore((s) => s.closeTab);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
+    const insertExternalTabInNewPane = useEditorStore(
+        (s) => s.insertExternalTabInNewPane,
+    );
+    const paneCount = useEditorStore((s) => s.panes.length);
     const bookmarkItems = useBookmarkStore((s) => s.items);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
@@ -2869,8 +2875,9 @@ export function FileTree() {
 
     const openTreeNote = useCallback(
         async (note: NoteDto) => {
-            const { tabs: currentTabs } = useEditorStore.getState();
-            const existing = currentTabs.find(
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find(
                 (tab): tab is NoteTab =>
                     isNoteTab(tab) && tab.noteId === note.id,
             );
@@ -2891,8 +2898,9 @@ export function FileTree() {
     const handleOpenNoteInNewTab = useCallback(
         async (note: NoteDto) => {
             try {
-                const { tabs: currentTabs } = useEditorStore.getState();
-                const existing = currentTabs.find(
+                const existing = selectEditorWorkspaceTabs(
+                    useEditorStore.getState(),
+                ).find(
                     (tab): tab is NoteTab =>
                         isNoteTab(tab) && tab.noteId === note.id,
                 );
@@ -2915,6 +2923,36 @@ export function FileTree() {
             }
         },
         [insertExternalTab, readNoteContent],
+    );
+
+    const handleAddNoteToNewPane = useCallback(
+        async (note: NoteDto) => {
+            try {
+                const existing = selectEditorWorkspaceTabs(
+                    useEditorStore.getState(),
+                ).find(
+                    (tab): tab is NoteTab =>
+                        isNoteTab(tab) && tab.noteId === note.id,
+                );
+                const content =
+                    existing?.content ??
+                    (await readNoteContent(note.id)).content;
+
+                insertExternalTabInNewPane({
+                    id: crypto.randomUUID(),
+                    noteId: note.id,
+                    title: note.title,
+                    content,
+                });
+            } catch (error) {
+                logError(
+                    "file-tree",
+                    "Failed to add tree note to new pane",
+                    error,
+                );
+            }
+        },
+        [insertExternalTabInNewPane, readNoteContent],
     );
 
     const handleNoteClick = async (
@@ -3056,8 +3094,9 @@ export function FileTree() {
 
     const persistCopiedNote = useCallback(
         async (note: NoteDto, targetPath: string) => {
-            const { tabs: currentTabs } = useEditorStore.getState();
-            const existing = currentTabs.find(
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find(
                 (tab): tab is NoteTab =>
                     isNoteTab(tab) && tab.noteId === note.id,
             );
@@ -3274,7 +3313,9 @@ export function FileTree() {
         async (notesToDelete: NoteDto[]) => {
             const noteIds = new Set(notesToDelete.map((note) => note.id));
 
-            const { tabs: currentTabs } = useEditorStore.getState();
+            const currentTabs = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            );
             currentTabs.forEach((tab) => {
                 if (isNoteTab(tab) && noteIds.has(tab.noteId)) {
                     closeTab(tab.id, { reason: "delete" });
@@ -3309,7 +3350,9 @@ export function FileTree() {
             );
             if (!approved) return;
 
-            const { tabs: currentTabs } = useEditorStore.getState();
+            const currentTabs = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            );
             const prefix = relativePath + "/";
             const sourceAbsolutePath = vaultPath
                 ? `${vaultPath}/${relativePath}`
@@ -3407,8 +3450,9 @@ export function FileTree() {
             }
 
             try {
-                const { tabs: currentTabs } = useEditorStore.getState();
-                const existing = currentTabs.find(
+                const existing = selectEditorWorkspaceTabs(
+                    useEditorStore.getState(),
+                ).find(
                     (tab): tab is NoteTab =>
                         isNoteTab(tab) && tab.noteId === note.id,
                 );
@@ -3620,6 +3664,11 @@ export function FileTree() {
                     {
                         label: "Open in New Tab",
                         action: () => void handleOpenNoteInNewTab(note),
+                    },
+                    {
+                        label: "Add to New Pane",
+                        action: () => void handleAddNoteToNewPane(note),
+                        disabled: paneCount >= 3,
                     },
                     { type: "separator" },
                     {
@@ -3886,6 +3935,7 @@ export function FileTree() {
         handleEntryRenameStart,
         handleFolderRenameStart,
         handleAddFileToChat,
+        handleAddNoteToNewPane,
         handleAddPdfToChat,
         handleMoveEntryToTrash,
         handlePdfClick,
@@ -3896,6 +3946,7 @@ export function FileTree() {
         handleRevealNoteInFinder,
         openMoveMenu,
         openTreeNote,
+        paneCount,
         startCreating,
         treeClipboard,
         bookmarkItems,

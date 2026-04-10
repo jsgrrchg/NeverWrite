@@ -1,4 +1,8 @@
-import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    selectFocusedEditorTab,
+} from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../app/utils/vaultEntries";
 import {
@@ -53,10 +57,7 @@ let cachedVaultPath: string | null = null;
 let cachedResolverRevision: number | null = null;
 
 function getActiveNoteId() {
-    const activeTabId = useEditorStore.getState().activeTabId;
-    const activeTab = useEditorStore
-        .getState()
-        .tabs.find((tab) => tab.id === activeTabId);
+    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     return activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
 }
 

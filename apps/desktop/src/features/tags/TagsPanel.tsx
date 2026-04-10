@@ -4,6 +4,7 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import {
     useEditorStore,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
 import {
@@ -136,10 +137,9 @@ export function TagsPanel() {
     const handleNoteClick = async (noteId: string) => {
         const note = noteMap.get(noteId);
         if (!note) return;
-        const { tabs: currentTabs } = useEditorStore.getState();
-        const existing = currentTabs.find(
-            (t): t is NoteTab => isNoteTab(t) && t.noteId === noteId,
-        );
+        const existing = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === noteId);
         if (existing) {
             openNote(note.id, note.title, existing.content);
             return;
@@ -158,8 +158,9 @@ export function TagsPanel() {
         const note = noteMap.get(noteId);
         if (!note) return;
         try {
-            const currentTabs = useEditorStore.getState().tabs;
-            const existing = currentTabs.find(
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find(
                 (tab): tab is NoteTab =>
                     isNoteTab(tab) && tab.noteId === noteId,
             );

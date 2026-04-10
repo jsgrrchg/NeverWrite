@@ -17,6 +17,7 @@ import {
     isFileTab,
     isPdfTab,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
@@ -83,7 +84,7 @@ function QuickSwitcherDialog() {
     const closeModal = useCommandStore((s) => s.closeModal);
     const notes = useVaultStore((s) => s.notes);
     const entries = useVaultStore((s) => s.entries);
-    const tabs = useEditorStore((s) => s.tabs);
+    const panes = useEditorStore((s) => s.panes);
     const openNote = useEditorStore((s) => s.openNote);
     const openPdf = useEditorStore((s) => s.openPdf);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
@@ -96,6 +97,7 @@ function QuickSwitcherDialog() {
         () => new Map(entries.map((entry) => [entry.path, entry])),
         [entries],
     );
+    const tabs = useMemo(() => panes.flatMap((pane) => pane.tabs), [panes]);
 
     const buildNoteItem = useCallback(
         (note: NoteDto): QuickSwitcherItem => ({
@@ -274,11 +276,9 @@ function QuickSwitcherDialog() {
 
             if (item.kind !== "note") return;
             const note = item.note;
-            const existing = useEditorStore
-                .getState()
-                .tabs.find(
-                    (t): t is NoteTab => isNoteTab(t) && t.noteId === note.id,
-                );
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === note.id);
             if (existing) {
                 openNote(note.id, note.title, existing.content);
                 return;

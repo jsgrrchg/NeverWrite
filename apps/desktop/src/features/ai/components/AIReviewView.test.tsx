@@ -81,6 +81,24 @@ function makeSession(
 
 function setupReviewTab(sessionId: string) {
     useEditorStore.setState({
+        panes: [
+            {
+                id: "primary",
+                tabs: [
+                    {
+                        id: `review-${sessionId}`,
+                        kind: "ai-review" as const,
+                        sessionId,
+                        title: "Review",
+                    },
+                ],
+                activeTabId: `review-${sessionId}`,
+                activationHistory: [`review-${sessionId}`],
+                tabNavigationHistory: [`review-${sessionId}`],
+                tabNavigationIndex: 0,
+            },
+        ],
+        focusedPaneId: "primary",
         tabs: [
             {
                 id: `review-${sessionId}`,
@@ -90,6 +108,9 @@ function setupReviewTab(sessionId: string) {
             },
         ],
         activeTabId: `review-${sessionId}`,
+        activationHistory: [`review-${sessionId}`],
+        tabNavigationHistory: [`review-${sessionId}`],
+        tabNavigationIndex: 0,
     });
 }
 
@@ -125,6 +146,17 @@ describe("AIReviewView", () => {
         localStorage.clear();
         resetChatStore();
         useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+            ],
+            focusedPaneId: "primary",
             tabs: [],
             activeTabId: null,
             activationHistory: [],
@@ -138,6 +170,79 @@ describe("AIReviewView", () => {
     it("shows fallback when no review tab is active", () => {
         renderComponent(<AIReviewView />);
         expect(screen.getByText("No review tab active")).toBeInTheDocument();
+    });
+
+    it("renders the review session from the requested pane even when another pane is focused", () => {
+        const sessionId = "sess-pane-review";
+        const file = makeTrackedFile({
+            path: "/vault/notes/review.md",
+            originPath: "/vault/notes/review.md",
+            identityKey: "review-file",
+        });
+
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "note-primary",
+                            kind: "note",
+                            noteId: "notes/current",
+                            title: "Current",
+                            content: "body",
+                            history: [],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "note-primary",
+                    activationHistory: ["note-primary"],
+                    tabNavigationHistory: ["note-primary"],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: `review-${sessionId}`,
+                            kind: "ai-review",
+                            sessionId,
+                            title: "Review",
+                        },
+                    ],
+                    activeTabId: `review-${sessionId}`,
+                    activationHistory: [`review-${sessionId}`],
+                    tabNavigationHistory: [`review-${sessionId}`],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                {
+                    id: "note-primary",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "body",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "note-primary",
+            activationHistory: ["note-primary"],
+            tabNavigationHistory: ["note-primary"],
+            tabNavigationIndex: 0,
+        });
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        renderComponent(<AIReviewView paneId="secondary" />);
+
+        expect(screen.getByText("review.md")).toBeInTheDocument();
     });
 
     it("shows empty state when session has no buffer entries", () => {
@@ -487,7 +592,9 @@ describe("AIReviewView", () => {
 
         expect(diffContent).toHaveStyle({ fontSize: "0.76em" });
         expect(
-            JSON.parse(localStorage.getItem("neverwrite.ai.preferences") ?? "{}"),
+            JSON.parse(
+                localStorage.getItem("neverwrite.ai.preferences") ?? "{}",
+            ),
         ).toMatchObject({
             editDiffZoom: 0.76,
         });

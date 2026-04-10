@@ -32,7 +32,12 @@ import {
     aiUpdateSetup,
     aiRegisterFileBaseline,
 } from "../api";
-import { isNoteTab, useEditorStore } from "../../../app/store/editorStore";
+import {
+    isNoteTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
+    useEditorStore,
+} from "../../../app/store/editorStore";
 import {
     useVaultStore,
     type VaultNoteChange,
@@ -1717,8 +1722,7 @@ function hasManualAttachment(
 function getAutoContextAttachments(baseAttachments: AIChatAttachment[]) {
     if (!useChatStore.getState().autoContextEnabled) return [];
 
-    const { tabs, activeTabId } = useEditorStore.getState();
-    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     const activeNoteId =
         activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
     const notes = useVaultStore.getState().notes;
@@ -2045,7 +2049,7 @@ function migrateSessionLocalState(
 }
 
 function registerOpenEditorBaselines(sessionId: string) {
-    const tabs = useEditorStore.getState().tabs;
+    const tabs = selectEditorWorkspaceTabs(useEditorStore.getState());
     for (const tab of tabs) {
         if (isNoteTab(tab) && tab.content != null) {
             aiRegisterFileBaseline(
@@ -2646,12 +2650,11 @@ function finalizeSessionStopping(sessionId: string) {
 
 function clearInterruptedTurnState(sessionId: string) {
     useChatStore.setState((state) => ({
-        interruptedTurnStateBySessionId:
-            cleanupInterruptedTurnStateBySessionId(
-                state.interruptedTurnStateBySessionId,
-                sessionId,
-                null,
-            ),
+        interruptedTurnStateBySessionId: cleanupInterruptedTurnStateBySessionId(
+            state.interruptedTurnStateBySessionId,
+            sessionId,
+            null,
+        ),
     }));
 }
 
@@ -5034,9 +5037,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (get().pausedQueueBySessionId[sessionId]) {
             releasePausedQueueForManualSend(sessionId);
-            const nextQueuedMessageId = (
-                get().queuedMessagesBySessionId[sessionId] ?? []
-            )[0]?.id;
+            const nextQueuedMessageId = (get().queuedMessagesBySessionId[
+                sessionId
+            ] ?? [])[0]?.id;
             if (
                 nextQueuedMessageId &&
                 !get().activeQueuedMessageBySessionId[sessionId]
@@ -7137,9 +7140,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (queued) {
                         void pendingStop.finally(() => {
-                            void flushPendingInterruptedSend(
-                                resolvedSessionId,
-                            );
+                            void flushPendingInterruptedSend(resolvedSessionId);
                         });
                     }
                     return;

@@ -12,6 +12,8 @@ import {
     type PendingReveal,
     isNoteTab,
     type NoteTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
 } from "../../app/store/editorStore";
 import { useShallow } from "zustand/react/shallow";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
@@ -392,7 +394,7 @@ export function LinksPanel() {
     // `tabs` is NOT subscribed here — event handlers use getState() instead.
     const { activeNoteId, activeTitle, activeContent } = useEditorStore(
         useShallow((s) => {
-            const tab = s.tabs.find((t) => t.id === s.activeTabId);
+            const tab = selectFocusedEditorTab(s);
             return {
                 activeNoteId: tab && isNoteTab(tab) ? tab.noteId : null,
                 activeTitle: tab?.title ?? null,
@@ -516,9 +518,9 @@ export function LinksPanel() {
     ];
 
     const openNoteById = async (id: string, title: string) => {
-        const existing = useEditorStore
-            .getState()
-            .tabs.find((t): t is NoteTab => isNoteTab(t) && t.noteId === id);
+        const existing = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === id);
         if (existing) {
             openNote(id, title, existing.content);
             return;
@@ -535,11 +537,9 @@ export function LinksPanel() {
 
     const openBacklinkInNewTab = async (bl: BacklinkDto) => {
         try {
-            const existing = useEditorStore
-                .getState()
-                .tabs.find(
-                    (t): t is NoteTab => isNoteTab(t) && t.noteId === bl.id,
-                );
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === bl.id);
             const content =
                 existing?.content ??
                 (
@@ -598,12 +598,11 @@ export function LinksPanel() {
 
     const openOutgoingInNewTab = async (link: ResolvedOutgoingLink) => {
         try {
-            const existing = useEditorStore
-                .getState()
-                .tabs.find(
-                    (t): t is NoteTab =>
-                        isNoteTab(t) && t.noteId === link.note.id,
-                );
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find(
+                (t): t is NoteTab => isNoteTab(t) && t.noteId === link.note.id,
+            );
             const content =
                 existing?.content ??
                 (

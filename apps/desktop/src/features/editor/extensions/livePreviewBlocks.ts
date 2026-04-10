@@ -26,7 +26,12 @@ import {
     getYouTubeThumbnailUrl,
 } from "../youtube";
 
-import { useEditorStore, isNoteTab } from "../../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
+} from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { emitFileTreeNoteDrag } from "../../ai/dragEvents";
 import {
@@ -95,12 +100,7 @@ export function invalidateLivePreviewNoteCache(
 }
 
 function getActiveNotePath() {
-    const activeTabId = useEditorStore.getState().activeTabId;
-    if (!activeTabId) return null;
-
-    const activeTab = useEditorStore
-        .getState()
-        .tabs.find((tab) => tab.id === activeTabId);
+    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     if (!activeTab || !isNoteTab(activeTab)) return null;
 
     return (
@@ -903,14 +903,14 @@ class NoteEmbedWidget extends WidgetType {
                     entry.title === this.target ||
                     entry.id.replace(/\.md$/i, "") === this.target,
             );
-        const openTab = useEditorStore
-            .getState()
-            .tabs.find(
-                (tab) =>
-                    (isNoteTab(tab) && tab.noteId === note?.id) ||
-                    (isNoteTab(tab) && tab.noteId === this.target) ||
-                    tab.title === this.target,
-            );
+        const openTab = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find(
+            (tab) =>
+                (isNoteTab(tab) && tab.noteId === note?.id) ||
+                (isNoteTab(tab) && tab.noteId === this.target) ||
+                tab.title === this.target,
+        );
 
         const title = document.createElement("div");
         title.className = "cm-note-embed-title";

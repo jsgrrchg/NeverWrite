@@ -17,6 +17,7 @@ import { getHistoryTabHandler, normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
+import { useLayoutStore } from "./layoutStore";
 
 const SESSION_KEY = "neverwrite.session.tabs";
 const SESSION_KEY_PREFIX = "neverwrite.session.tabs:";
@@ -33,6 +34,7 @@ export interface PersistedSessionPane {
 export interface PersistedSession {
     panes?: PersistedSessionPane[];
     focusedPaneId?: string | null;
+    paneSizes?: number[];
     tabs?: TabInput[];
     activeTabId?: string | null;
     noteIds: Array<{
@@ -102,6 +104,7 @@ export interface EditorSessionState {
         tabNavigationIndex: number;
     }>;
     focusedPaneId?: string | null;
+    paneSizes?: number[];
     tabs: Tab[];
     activeTabId: string | null;
 }
@@ -109,6 +112,7 @@ export interface EditorSessionState {
 export interface RestoredEditorSession {
     panes?: PersistedSessionPane[];
     focusedPaneId?: string | null;
+    paneSizes?: number[];
     tabs: TabInput[];
     activeTabId: string | null;
 }
@@ -216,13 +220,34 @@ function buildPersistedPanes(
             ),
             tabNavigationIndex: pane.tabNavigationIndex,
         }))
-        .filter((pane) => pane.tabs.length > 0 || pane.activeTabId !== null);
+        .filter((pane) => pane.id.trim().length > 0);
+}
+
+function normalizePaneSizesForPersistence(count: number, paneSizes?: number[]) {
+    const normalizedCount = Math.max(1, Math.min(3, Math.floor(count) || 1));
+    const incoming = (paneSizes ?? []).filter(
+        (value) => Number.isFinite(value) && value > 0,
+    );
+
+    if (incoming.length === normalizedCount) {
+        const total = incoming.reduce((sum, value) => sum + value, 0);
+        if (total > 0) {
+            return incoming.map((value) => value / total);
+        }
+    }
+
+    return Array.from({ length: normalizedCount }, () => 1 / normalizedCount);
 }
 
 export function getEditorSessionSignature(state: EditorSessionState) {
     const panes = buildPersistedPanes(state);
     if (panes?.length) {
         let signature = state.focusedPaneId ?? "";
+        const paneSizes = normalizePaneSizesForPersistence(
+            panes.length,
+            state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
+        );
+        signature += `|sizes:${paneSizes.map((value) => value.toFixed(6)).join(",")}`;
         for (const pane of panes) {
             signature += `|pane:${pane.id}:${pane.activeTabId ?? ""}`;
             for (const tab of pane.tabs) {
@@ -270,9 +295,13 @@ export function buildPersistedSession(
     state: EditorSessionState,
 ): PersistedSession {
     const panes = buildPersistedPanes(state);
+    const allTabs =
+        state.panes?.length && panes?.length
+            ? panes.flatMap((pane) => pane.tabs)
+            : state.tabs;
     const activeTab =
         state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
-    const normalizedTabs = state.tabs.flatMap((tab) => {
+    const normalizedTabs = allTabs.flatMap((tab) => {
         if (!isHistoryTab(tab)) {
             return [];
         }
@@ -310,15 +339,23 @@ export function buildPersistedSession(
         );
     }
 
+    const paneSizes = panes?.length
+        ? normalizePaneSizesForPersistence(
+              panes.length,
+              state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
+          )
+        : undefined;
+
     return {
         panes,
         focusedPaneId: state.focusedPaneId ?? panes?.[0]?.id ?? null,
+        paneSizes,
         activeTabId: activeTab?.id ?? null,
         noteIds,
         pdfTabs,
         fileTabs,
         mapTabs,
-        hasGraphTab: state.tabs.some((tab) => isGraphTab(tab)),
+        hasGraphTab: allTabs.some((tab) => isGraphTab(tab)),
         activeNoteId:
             activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
         activePdfEntryId:
@@ -647,6 +684,33 @@ export async function restorePersistedSession(
         return null;
     }
 
+    if (session?.panes?.length) {
+        const restoredPanes = restorePersistedPaneTabs(session.panes);
+        const focusedPaneId =
+            typeof session.focusedPaneId === "string"
+                ? session.focusedPaneId
+                : (restoredPanes[0]?.id ?? null);
+        const focusedPane =
+            restoredPanes.find((pane) => pane.id === focusedPaneId) ??
+            restoredPanes[0] ??
+            null;
+
+        if (!focusedPane) {
+            return null;
+        }
+
+        return {
+            panes: restoredPanes,
+            focusedPaneId,
+            paneSizes: normalizePaneSizesForPersistence(
+                restoredPanes.length,
+                session.paneSizes,
+            ),
+            tabs: focusedPane.tabs,
+            activeTabId: focusedPane.activeTabId,
+        };
+    }
+
     const restoredTabs: TabInput[] = [];
     if (session?.tabs?.length) {
         restoredTabs.push(...session.tabs);
@@ -674,30 +738,8 @@ export async function restorePersistedSession(
         return null;
     }
 
-    if (session?.panes?.length) {
-        const restoredPanes = restorePersistedPaneTabs(session.panes);
-        const focusedPaneId =
-            typeof session.focusedPaneId === "string"
-                ? session.focusedPaneId
-                : (restoredPanes[0]?.id ?? null);
-        const focusedPane =
-            restoredPanes.find((pane) => pane.id === focusedPaneId) ??
-            restoredPanes[0] ??
-            null;
-
-        if (!focusedPane) {
-            return null;
-        }
-
-        return {
-            panes: restoredPanes,
-            focusedPaneId,
-            tabs: focusedPane.tabs,
-            activeTabId: focusedPane.activeTabId,
-        };
-    }
-
     return {
+        paneSizes: normalizePaneSizesForPersistence(1, session?.paneSizes),
         tabs: restoredTabs,
         activeTabId: session
             ? resolveRestoredActiveTabId(session, restoredTabs, vaultPath)

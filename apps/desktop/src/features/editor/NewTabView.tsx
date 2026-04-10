@@ -16,6 +16,7 @@ import {
 import {
     useEditorStore,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -291,10 +292,9 @@ export function NewTabView() {
     ];
 
     const handleOpen = async (id: string, title: string) => {
-        const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find(
-            (t): t is NoteTab => isNoteTab(t) && t.noteId === id,
-        );
+        const existing = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === id);
         if (existing) {
             openNote(id, title, existing.content);
             return;

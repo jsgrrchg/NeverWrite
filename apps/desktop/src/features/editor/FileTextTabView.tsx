@@ -48,7 +48,11 @@ import { shouldEnableInlineReviewMergeView } from "./editorReviewGate";
 import { useEditableFileResource } from "./useEditableFileResource";
 import { logError } from "../../app/utils/runtimeLog";
 
-export function FileTextTabView() {
+interface FileTextTabViewProps {
+    paneId?: string;
+}
+
+export function FileTextTabView({ paneId }: FileTextTabViewProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const syntaxCompartmentRef = useRef(new Compartment());
@@ -109,9 +113,13 @@ export function FileTextTabView() {
         keepLocalFileVersion,
         flushCurrentSave,
     } = useEditableFileResource({
+        paneId,
         getCurrentContent,
         applyIncomingContent: replaceEditorDocument,
     });
+    const isPaneFocused = useEditorStore(
+        (state) => state.focusedPaneId === paneId,
+    );
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;
     const trackedFileMatch = tab
@@ -125,6 +133,7 @@ export function FileTextTabView() {
         : null;
 
     useEffect(() => {
+        if (paneId && !isPaneFocused) return;
         const handler = (event: KeyboardEvent) => {
             if (event.defaultPrevented) return;
             if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -145,7 +154,7 @@ export function FileTextTabView() {
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, []);
+    }, [isPaneFocused, paneId]);
 
     const copySelectedText = useCallback(async () => {
         const view = viewRef.current;

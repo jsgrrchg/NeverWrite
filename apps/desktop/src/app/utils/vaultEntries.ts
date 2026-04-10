@@ -367,13 +367,22 @@ async function buildVaultEntryTab(
 export async function insertVaultEntryTab(
     entry: VaultEntryDto,
     index?: number,
+    options?: { paneId?: string; newPane?: boolean },
 ) {
     const nextTab = await buildVaultEntryTab(entry);
     if (!nextTab) {
         return false;
     }
 
-    useEditorStore.getState().insertExternalTab(nextTab, index);
+    const store = useEditorStore.getState();
+    if (options?.newPane) {
+        return store.insertExternalTabInNewPane(nextTab) !== null;
+    }
+    if (options?.paneId) {
+        store.insertExternalTabInPane(nextTab, options.paneId, index);
+        return true;
+    }
+    store.insertExternalTab(nextTab, index);
     return true;
 }
 
@@ -385,17 +394,32 @@ export function isExcalidrawVaultEntry(
 
 export async function openVaultFileEntry(
     entry: VaultEntryDto,
-    options?: { newTab?: boolean },
+    options?: { newTab?: boolean; paneId?: string; newPane?: boolean },
 ) {
+    const store = useEditorStore.getState();
+
     if (isExcalidrawVaultEntry(entry)) {
-        useEditorStore
-            .getState()
-            .openMap(entry.relative_path, entry.title || entry.file_name);
+        if (options?.newPane) {
+            store.insertExternalTabInNewPane({
+                id: crypto.randomUUID(),
+                kind: "map",
+                relativePath: entry.relative_path,
+                title: entry.title || entry.file_name,
+            });
+            return;
+        }
+        if (options?.paneId) {
+            store.focusPane(options.paneId);
+        }
+        store.openMap(entry.relative_path, entry.title || entry.file_name);
         return;
     }
 
-    if (options?.newTab) {
-        const inserted = await insertVaultEntryTab(entry);
+    if (options?.newTab || options?.newPane || options?.paneId) {
+        const inserted = await insertVaultEntryTab(entry, undefined, {
+            paneId: options?.paneId,
+            newPane: options?.newPane,
+        });
         if (!inserted) {
             try {
                 await openPath(entry.path);
@@ -407,20 +431,21 @@ export async function openVaultFileEntry(
     }
 
     if (getVaultEntryViewerKind(entry) === "image") {
-        useEditorStore
-            .getState()
-            .openFile(
-                entry.relative_path,
-                entry.file_name,
-                entry.path,
-                "",
-                entry.mime_type,
-                "image",
-                {
-                    sizeBytes: entry.size,
-                    contentTruncated: false,
-                },
-            );
+        if (options?.paneId) {
+            store.focusPane(options.paneId);
+        }
+        store.openFile(
+            entry.relative_path,
+            entry.file_name,
+            entry.path,
+            "",
+            entry.mime_type,
+            "image",
+            {
+                sizeBytes: entry.size,
+                contentTruncated: false,
+            },
+        );
         return;
     }
 

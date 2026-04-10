@@ -18,6 +18,7 @@ import type { AIChatSession } from "../ai/types";
 import {
     isFileTab,
     isNoteTab,
+    selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -919,8 +920,7 @@ function getMergeTargetId(target: EditorTarget | null) {
 }
 
 function getActiveEditorTargetDebugInfo() {
-    const { tabs, activeTabId } = useEditorStore.getState();
-    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     const editorTab =
         activeTab && (isNoteTab(activeTab) || isFileTab(activeTab))
             ? activeTab

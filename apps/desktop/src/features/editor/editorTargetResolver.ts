@@ -1,6 +1,7 @@
 import {
     isFileTab,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type FileTab,
     type NoteTab,
     useEditorStore,
@@ -42,8 +43,7 @@ export function resolveMarkdownNoteIdForPath(path: string): string | null {
         return null;
     }
 
-    const { tabs } = useEditorStore.getState();
-    const openTab = tabs.find(
+    const openTab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
         (tab) =>
             isNoteTab(tab) &&
             normalizeVaultPathMatch(tab.noteId) === normalizedPath,
@@ -96,8 +96,7 @@ function resolveAbsoluteNotePathForNoteId(noteId: string): string {
 
 export function findOpenNoteTarget(path: string): NoteEditorTarget | null {
     const noteId = resolveNoteIdCandidate(path);
-    const { tabs } = useEditorStore.getState();
-    const openTab = tabs.find(
+    const openTab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
         (tab) =>
             isNoteTab(tab) &&
             normalizeVaultPathMatch(tab.noteId) ===
@@ -125,8 +124,7 @@ export function findOpenFileTarget(path: string): FileEditorTarget | null {
     const normalizedRelativePath = relativePath
         ? normalizeVaultPathMatch(relativePath)
         : null;
-    const { tabs } = useEditorStore.getState();
-    const openTab = tabs.find(
+    const openTab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
         (tab) =>
             isFileTab(tab) &&
             (normalizeVaultPathMatch(tab.path) === normalizedPath ||

@@ -206,14 +206,37 @@ describe("SearchPanel", () => {
         vi.useFakeTimers();
         const invokeMock = mockInvoke();
 
-        setEditorTabs([
-            {
-                id: "tab-existing",
-                noteId: "notes/roadmap",
-                title: "Roadmap",
-                content: "cached",
-            },
-        ]);
+        act(() => {
+            useEditorStore.getState().hydrateWorkspace(
+                [
+                    {
+                        id: "primary",
+                        tabs: [
+                            {
+                                id: "tab-current",
+                                noteId: "notes/current",
+                                title: "Current",
+                                content: "current",
+                            },
+                        ],
+                        activeTabId: "tab-current",
+                    },
+                    {
+                        id: "secondary",
+                        tabs: [
+                            {
+                                id: "tab-existing",
+                                noteId: "notes/roadmap",
+                                title: "Roadmap",
+                                content: "cached",
+                            },
+                        ],
+                        activeTabId: "tab-existing",
+                    },
+                ],
+                "primary",
+            );
+        });
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "search_notes") {

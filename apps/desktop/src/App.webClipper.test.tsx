@@ -1,4 +1,4 @@
-import { act } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { openVaultWindow } from "./app/detachedWindows";
 import { useEditorStore } from "./app/store/editorStore";
+import { getEditorSessionKey } from "./app/store/editorSession";
+import { useLayoutStore } from "./app/store/layoutStore";
 import { useVaultStore } from "./app/store/vaultStore";
 import { readWindowSessionSnapshot } from "./app/windowSession";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
@@ -77,6 +79,18 @@ vi.mock("./features/editor/UnifiedBar", () => ({
     UnifiedBar: ({ windowMode }: { windowMode: string }) => (
         <div data-testid="unified-bar" data-window-mode={windowMode} />
     ),
+}));
+
+vi.mock("./features/editor/WorkspaceChromeBar", () => ({
+    WorkspaceChromeBar: () => <div data-testid="workspace-chrome-bar" />,
+}));
+
+vi.mock("./features/editor/MultiPaneWorkspace", () => ({
+    MultiPaneWorkspace: () => <div data-testid="multi-pane-workspace" />,
+}));
+
+vi.mock("./features/editor/EditorPaneContent", () => ({
+    EditorPaneContent: () => <div data-testid="editor-pane-content" />,
 }));
 
 vi.mock("./features/editor/Editor", () => ({
@@ -192,6 +206,9 @@ describe("App web clipper routing", () => {
             isLoading: false,
             error: null,
         });
+        useLayoutStore.setState({
+            editorPaneSizes: [1],
+        });
 
         useEditorStore.setState({
             tabs: [],
@@ -226,6 +243,59 @@ describe("App web clipper routing", () => {
         expect(invoke).toHaveBeenCalledWith("unregister_window_vault_route", {
             label: "main",
         });
+    });
+
+    it("restores a persisted multipane workspace and reapplies pane sizes", async () => {
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/a"),
+            JSON.stringify({
+                panes: [
+                    {
+                        id: "primary",
+                        tabs: [
+                            {
+                                id: "tab-a",
+                                kind: "note",
+                                noteId: "notes/a",
+                                title: "A",
+                                content: "Alpha",
+                                history: [],
+                                historyIndex: 0,
+                            },
+                        ],
+                        activeTabId: "tab-a",
+                    },
+                    {
+                        id: "secondary",
+                        tabs: [
+                            {
+                                id: "tab-b",
+                                kind: "note",
+                                noteId: "notes/b",
+                                title: "B",
+                                content: "Beta",
+                                history: [],
+                                historyIndex: 0,
+                            },
+                        ],
+                        activeTabId: "tab-b",
+                    },
+                ],
+                focusedPaneId: "secondary",
+                paneSizes: [0.4, 0.6],
+                noteIds: [],
+                activeNoteId: null,
+            }),
+        );
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        expect(useEditorStore.getState().panes).toHaveLength(2);
+        expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+        expect(screen.getByTestId("workspace-chrome-bar")).toBeInTheDocument();
+        expect(screen.getByTestId("multi-pane-workspace")).toBeInTheDocument();
+        expect(useLayoutStore.getState().editorPaneSizes).toEqual([0.4, 0.6]);
     });
 
     it("dispatches native menu actions into the command store", async () => {

@@ -116,6 +116,17 @@ beforeEach(() => {
     safeStorageClear();
     localStorage.clear();
     useEditorStore.setState({
+        panes: [
+            {
+                id: "primary",
+                tabs: [],
+                activeTabId: null,
+                activationHistory: [],
+                tabNavigationHistory: [],
+                tabNavigationIndex: -1,
+            },
+        ],
+        focusedPaneId: "primary",
         tabs: [],
         activeTabId: null,
         recentlyClosedTabs: [],
@@ -1534,6 +1545,160 @@ describe("editorStore tab management", () => {
         expect(state.activeTabId).toBe("tab-a");
     });
 
+    it("switches to a tab in another pane and focuses that pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().switchTab("tab-b");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.activeTabId).toBe("tab-b");
+        expect(state.panes[0]?.activeTabId).toBe("tab-a");
+        expect(state.panes[1]?.activeTabId).toBe("tab-b");
+    });
+
+    it("closes a tab in a non-focused pane without collapsing that pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().closeTab("tab-b");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("primary");
+        expect(state.activeTabId).toBe("tab-a");
+        expect(state.panes).toHaveLength(2);
+        expect(state.panes[1]?.tabs).toEqual([]);
+        expect(state.panes[1]?.activeTabId).toBeNull();
+    });
+
+    it("reuses and closes review tabs across panes", () => {
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                    activationHistory: ["tab-a"],
+                    tabNavigationHistory: ["tab-a"],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "review-1",
+                            kind: "ai-review",
+                            sessionId: "session-1",
+                            title: "Initial review",
+                        },
+                    ],
+                    activeTabId: "review-1",
+                    activationHistory: ["review-1"],
+                    tabNavigationHistory: ["review-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            activeTabId: "tab-a",
+            activationHistory: ["tab-a"],
+            tabNavigationHistory: ["tab-a"],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore.getState().openReview("session-1", {
+            title: "Updated review",
+        });
+
+        let state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.activeTabId).toBe("review-1");
+        expect(
+            state.panes[1]?.tabs.find((tab) => isReviewTab(tab)),
+        ).toMatchObject({
+            title: "Updated review",
+        });
+
+        useEditorStore.getState().focusPane("primary");
+        useEditorStore.getState().closeReview("session-1");
+
+        state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("primary");
+        expect(state.panes[1]?.tabs.some((tab) => isReviewTab(tab))).toBe(
+            false,
+        );
+        expect(state.panes[1]?.activeTabId).toBeNull();
+    });
+
     it("tracks dirty tabs and clears them when the tab closes", () => {
         useEditorStore.setState({
             tabs: [
@@ -2114,5 +2279,122 @@ describe("editorStore tab management", () => {
             relativePath: "src/main.ts",
         });
         expect(state.activeTabId).toBe("file-b");
+    });
+
+    it("creates a new pane with an external tab and focuses it", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            "tab-a",
+        );
+
+        const paneId = useEditorStore.getState().insertExternalTabInNewPane({
+            id: "tab-b",
+            kind: "note",
+            noteId: "notes/b",
+            title: "B",
+            content: "Beta",
+        });
+
+        const state = useEditorStore.getState();
+        expect(paneId).toBe("secondary");
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes).toHaveLength(2);
+        expect(state.panes[1]?.tabs[0]).toMatchObject({
+            id: "tab-b",
+            noteId: "notes/b",
+        });
+        expect(state.activeTabId).toBe("tab-b");
+    });
+
+    it("moves tabs between panes and focuses the target pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().moveTabToPane("tab-a", "secondary");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes[0]?.tabs).toHaveLength(0);
+        expect(state.panes[1]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-a",
+        ]);
+        expect(state.activeTabId).toBe("tab-a");
+    });
+
+    it("closes a pane explicitly and merges its tabs into a neighboring pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "secondary",
+        );
+
+        useEditorStore.getState().closePane("secondary");
+
+        const state = useEditorStore.getState();
+        expect(state.panes).toHaveLength(1);
+        expect(state.focusedPaneId).toBe("primary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
     });
 });

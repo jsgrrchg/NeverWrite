@@ -206,4 +206,90 @@ describe("editorTargetResolver", () => {
             openTab: null,
         });
     });
+
+    it("finds an open note target in a non-focused pane", () => {
+        useVaultStore.setState({
+            notes: [
+                {
+                    id: "notes/reference",
+                    path: "/vault/notes/reference.md",
+                    title: "Reference",
+                    modified_at: 0,
+                    created_at: 0,
+                },
+            ],
+        });
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "tab-secondary-note",
+                            kind: "note",
+                            noteId: "notes/reference",
+                            title: "Reference",
+                            content: "from secondary pane",
+                            history: [],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "tab-secondary-note",
+                },
+            ],
+            "primary",
+        );
+
+        expect(findOpenNoteTarget("/vault/notes/reference.md")).toMatchObject({
+            kind: "note",
+            noteId: "notes/reference",
+            openTab: {
+                id: "tab-secondary-note",
+            },
+        });
+    });
+
+    it("finds an open file target in a non-focused pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "tab-secondary-file",
+                            kind: "file",
+                            relativePath: "src/worker.rs",
+                            path: "/vault/src/worker.rs",
+                            title: "worker.rs",
+                            content: "fn worker() {}",
+                            mimeType: "text/rust",
+                            viewer: "text",
+                            history: [],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "tab-secondary-file",
+                },
+            ],
+            "primary",
+        );
+
+        expect(findOpenFileTarget("/vault/src/worker.rs")).toMatchObject({
+            kind: "file",
+            relativePath: "src/worker.rs",
+            openTab: {
+                id: "tab-secondary-file",
+            },
+        });
+    });
 });

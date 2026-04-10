@@ -8,7 +8,11 @@ import {
 } from "react";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
-import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
+import {
+    useEditorStore,
+    isNoteTab,
+    selectFocusedEditorTab,
+} from "../../app/store/editorStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -278,9 +282,7 @@ export function AIChatPanel() {
     const createNote = useVaultStore((state) => state.createNote);
     const openNote = useEditorStore((state) => state.openNote);
     const activeEditorNoteId = useEditorStore((state) => {
-        const tab = state.tabs.find(
-            (candidate) => candidate.id === state.activeTabId,
-        );
+        const tab = selectFocusedEditorTab(state);
         return tab && isNoteTab(tab) ? tab.noteId : null;
     });
     const activeTab = activeTabId

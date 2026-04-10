@@ -7,6 +7,7 @@ import {
 } from "./editorSession";
 import { normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageClear } from "../utils/safeStorage";
+import { useLayoutStore } from "./layoutStore";
 import { useVaultStore } from "./vaultStore";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -18,6 +19,7 @@ describe("editorSession", () => {
         safeStorageClear();
         localStorage.clear();
         useVaultStore.setState({ vaultPath: "/vaults/project-alpha" });
+        useLayoutStore.setState({ editorPaneSizes: [1] });
     });
 
     afterEach(() => {
@@ -256,6 +258,9 @@ describe("editorSession", () => {
     });
 
     it("serializes and restores pane-aware workspace sessions", async () => {
+        useLayoutStore.setState({
+            editorPaneSizes: [0.35, 0.65],
+        });
         const session = buildPersistedSession({
             panes: [
                 {
@@ -354,6 +359,7 @@ describe("editorSession", () => {
             }),
         ]);
         expect(session.focusedPaneId).toBe("pane-2");
+        expect(session.paneSizes).toEqual([0.35, 0.65]);
 
         localStorage.setItem(
             getEditorSessionKey("/vaults/project-alpha"),
@@ -363,6 +369,7 @@ describe("editorSession", () => {
         const restored = await restorePersistedSession("/vaults/project-alpha");
 
         expect(restored?.focusedPaneId).toBe("pane-2");
+        expect(restored?.paneSizes).toEqual([0.35, 0.65]);
         expect(restored?.panes).toHaveLength(2);
         expect(restored?.panes?.[0]).toMatchObject({
             id: "pane-1",
@@ -378,6 +385,65 @@ describe("editorSession", () => {
             relativePath: "src/main.ts",
         });
         expect(restored?.activeTabId).toBe("file-1");
+    });
+
+    it("restores empty panes from pane-aware workspace sessions", async () => {
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify({
+                panes: [
+                    {
+                        id: "primary",
+                        tabs: [],
+                        activeTabId: null,
+                    },
+                    {
+                        id: "secondary",
+                        tabs: [
+                            {
+                                id: "note-1",
+                                kind: "note",
+                                noteId: "notes/a",
+                                title: "Note A",
+                                content: "Body A",
+                                history: [
+                                    {
+                                        kind: "note",
+                                        noteId: "notes/a",
+                                        title: "Note A",
+                                        content: "Body A",
+                                    },
+                                ],
+                                historyIndex: 0,
+                            },
+                        ],
+                        activeTabId: "note-1",
+                    },
+                ],
+                focusedPaneId: "primary",
+                paneSizes: [0.5, 0.5],
+                noteIds: [],
+                activeNoteId: null,
+            }),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.focusedPaneId).toBe("primary");
+        expect(restored?.paneSizes).toEqual([0.5, 0.5]);
+        expect(restored?.panes).toEqual([
+            expect.objectContaining({
+                id: "primary",
+                tabs: [],
+                activeTabId: null,
+            }),
+            expect.objectContaining({
+                id: "secondary",
+                activeTabId: "note-1",
+            }),
+        ]);
+        expect(restored?.tabs).toEqual([]);
+        expect(restored?.activeTabId).toBeNull();
     });
 
     it("restores legacy persisted sessions through the session module", async () => {

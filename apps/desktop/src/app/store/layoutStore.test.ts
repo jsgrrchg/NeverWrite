@@ -27,7 +27,9 @@ describe("layoutStore bottom panel", () => {
             bottomPanelHeight: 320,
             bottomPanelView: "terminal",
         });
-        expect(localStorage.getItem("neverwrite.bottompanel.height")).toBe("320");
+        expect(localStorage.getItem("neverwrite.bottompanel.height")).toBe(
+            "320",
+        );
         expect(localStorage.getItem("neverwrite.bottompanel.collapsed")).toBe(
             "false",
         );
@@ -53,6 +55,17 @@ describe("layoutStore bottom panel", () => {
         });
         expect(localStorage.getItem("neverwrite.bottompanel.view")).toBe(
             "terminal",
+        );
+    });
+
+    it("normalizes and persists editor pane proportions", () => {
+        useLayoutStore.getState().setEditorPaneSizes(3, [2, 1, 1]);
+
+        expect(useLayoutStore.getState().editorPaneSizes).toEqual([
+            0.5, 0.25, 0.25,
+        ]);
+        expect(localStorage.getItem("neverwrite.editor-pane.sizes")).toBe(
+            JSON.stringify([0.5, 0.25, 0.25]),
         );
     });
 });
