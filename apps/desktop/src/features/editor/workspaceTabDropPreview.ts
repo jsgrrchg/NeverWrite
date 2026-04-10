@@ -49,8 +49,8 @@ export function resolvePaneDropPosition(
     const distances = [
         { position: "left" as const, distance: clientX - rect.left },
         { position: "right" as const, distance: rect.right - clientX },
-        { position: "top" as const, distance: clientY - rect.top },
-        { position: "bottom" as const, distance: rect.bottom - clientY },
+        { position: "up" as const, distance: clientY - rect.top },
+        { position: "down" as const, distance: rect.bottom - clientY },
     ].filter(({ position, distance }) => {
         if (distance < 0) {
             return false;

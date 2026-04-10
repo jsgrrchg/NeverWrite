@@ -46,9 +46,9 @@ function getDropOverlayLabel(position: CrossPaneTabDropPreview["position"]) {
             return "Split left";
         case "right":
             return "Split right";
-        case "top":
+        case "up":
             return "Split up";
-        case "bottom":
+        case "down":
             return "Split down";
         default:
             return "Add as tab";
@@ -83,7 +83,7 @@ function getDropOverlayStyle(position: CrossPaneTabDropPreview["position"]) {
                 bottom: 8,
                 width: "34%",
             };
-        case "top":
+        case "up":
             return {
                 ...base,
                 left: 8,
@@ -91,7 +91,7 @@ function getDropOverlayStyle(position: CrossPaneTabDropPreview["position"]) {
                 top: 8,
                 height: "34%",
             };
-        case "bottom":
+        case "down":
             return {
                 ...base,
                 left: 8,

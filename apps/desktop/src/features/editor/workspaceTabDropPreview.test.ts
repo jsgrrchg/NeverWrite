@@ -16,7 +16,7 @@ describe("workspaceTabDropPreview", () => {
     it("classifies each edge as a split target", () => {
         expect(resolvePaneDropPosition(112, 180, paneRect)).toBe("left");
         expect(resolvePaneDropPosition(488, 180, paneRect)).toBe("right");
-        expect(resolvePaneDropPosition(300, 52, paneRect)).toBe("top");
-        expect(resolvePaneDropPosition(300, 328, paneRect)).toBe("bottom");
+        expect(resolvePaneDropPosition(300, 52, paneRect)).toBe("up");
+        expect(resolvePaneDropPosition(300, 328, paneRect)).toBe("down");
     });
 });
