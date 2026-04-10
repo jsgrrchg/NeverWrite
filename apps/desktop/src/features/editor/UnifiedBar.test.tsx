@@ -436,6 +436,24 @@ describe("UnifiedBar tab strip drop", () => {
         expect(useEditorStore.getState().activeTabId).toBeNull();
     });
 
+    it("does not render the ACP chat button next to the new-tab button", async () => {
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        expect(container.querySelector('button[title="New ACP"]')).toBeNull();
+    });
+
     it("shrinks editor tabs continuously and expands them again when space returns", async () => {
         const resizeCallbacks: ResizeObserverCallback[] = [];
         const originalResizeObserver = globalThis.ResizeObserver;

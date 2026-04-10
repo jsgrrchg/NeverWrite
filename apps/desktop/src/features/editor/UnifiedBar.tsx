@@ -38,8 +38,7 @@ import {
     isPdfTab,
     type Tab,
 } from "../../app/store/editorStore";
-import { moveChatToSidebar, newChatInWorkspace } from "../ai/chatPaneMovement";
-import { useChatStore } from "../ai/store/chatStore";
+import { moveChatToSidebar } from "../ai/chatPaneMovement";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -472,35 +471,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
     const internalDragActiveRef = useRef(false);
-    const [acpMenuOpen, setAcpMenuOpen] = useState(false);
-    const acpButtonRef = useRef<HTMLButtonElement | null>(null);
-    const acpMenuRef = useRef<HTMLDivElement | null>(null);
-    const aiRuntimeDescriptors = useChatStore((s) => s.runtimes);
-    const aiRuntimes = aiRuntimeDescriptors.map((d) => d.runtime);
-
-    // Close ACP menu on click outside or Escape
-    useEffect(() => {
-        if (!acpMenuOpen) return;
-        const handleDown = (e: globalThis.MouseEvent) => {
-            if (
-                acpMenuRef.current &&
-                !acpMenuRef.current.contains(e.target as Node) &&
-                acpButtonRef.current &&
-                !acpButtonRef.current.contains(e.target as Node)
-            ) {
-                setAcpMenuOpen(false);
-            }
-        };
-        const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setAcpMenuOpen(false);
-        };
-        document.addEventListener("mousedown", handleDown);
-        document.addEventListener("keydown", handleKey);
-        return () => {
-            document.removeEventListener("mousedown", handleDown);
-            document.removeEventListener("keydown", handleKey);
-        };
-    }, [acpMenuOpen]);
 
     const handleMoveTabFileToTrash = useCallback(
         async (path: string, title: string) => {
@@ -1869,113 +1839,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     >
                                         +
                                     </button>
-
-                                    {/* New ACP button — opens a runtime picker dropdown */}
-                                    <div style={{ position: "relative" }}>
-                                        <button
-                                            ref={acpButtonRef}
-                                            onMouseDown={(e) =>
-                                                e.stopPropagation()
-                                            }
-                                            onClick={() =>
-                                                setAcpMenuOpen((v) => !v)
-                                            }
-                                            title="New ACP"
-                                            className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
-                                            style={{
-                                                alignSelf: "center",
-                                                marginLeft: 2,
-                                                flexShrink: 0,
-                                                ...getChromeButtonStyle(
-                                                    acpMenuOpen,
-                                                ),
-                                            }}
-                                        >
-                                            <svg
-                                                width="14"
-                                                height="14"
-                                                viewBox="0 0 16 16"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                strokeWidth="1.3"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            >
-                                                <path d="M2 3h12v8H5l-3 3V3z" />
-                                            </svg>
-                                        </button>
-                                        {acpMenuOpen &&
-                                            createPortal(
-                                                <div
-                                                    ref={acpMenuRef}
-                                                    style={{
-                                                        position: "fixed",
-                                                        top:
-                                                            (acpButtonRef.current?.getBoundingClientRect()
-                                                                .bottom ?? 0) +
-                                                            4,
-                                                        left:
-                                                            acpButtonRef.current?.getBoundingClientRect()
-                                                                .left ?? 0,
-                                                        zIndex: 10010,
-                                                        minWidth: 160,
-                                                        background:
-                                                            "var(--bg-elevated)",
-                                                        border: "1px solid var(--border)",
-                                                        borderRadius: 8,
-                                                        padding: "4px 0",
-                                                        boxShadow:
-                                                            "0 4px 16px rgba(0,0,0,0.18)",
-                                                    }}
-                                                    onMouseDown={(e) =>
-                                                        e.stopPropagation()
-                                                    }
-                                                >
-                                                    {aiRuntimes.map(
-                                                        (runtime) => (
-                                                            <button
-                                                                key={runtime.id}
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    setAcpMenuOpen(
-                                                                        false,
-                                                                    );
-                                                                    void newChatInWorkspace(
-                                                                        runtime.id,
-                                                                    );
-                                                                }}
-                                                                className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
-                                                                style={{
-                                                                    color: "var(--text-primary)",
-                                                                    cursor: "pointer",
-                                                                    background:
-                                                                        "transparent",
-                                                                    border: "none",
-                                                                }}
-                                                                onMouseEnter={(
-                                                                    e,
-                                                                ) => {
-                                                                    e.currentTarget.style.background =
-                                                                        "var(--bg-hover)";
-                                                                }}
-                                                                onMouseLeave={(
-                                                                    e,
-                                                                ) => {
-                                                                    e.currentTarget.style.background =
-                                                                        "transparent";
-                                                                }}
-                                                            >
-                                                                {runtime.name.replace(
-                                                                    / ACP$/,
-                                                                    "",
-                                                                )}
-                                                            </button>
-                                                        ),
-                                                    )}
-                                                </div>,
-                                                document.body,
-                                            )}
-                                    </div>
                                 </div>
 
                                 <div
