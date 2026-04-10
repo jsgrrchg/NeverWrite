@@ -383,11 +383,14 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
     },
 
     setActiveTab: (tabId) =>
-        set((state) =>
-            state.tabs.some((tab) => tab.id === tabId)
+        set((state) => {
+            if (state.activeTabId === tabId) {
+                return state;
+            }
+            return state.tabs.some((tab) => tab.id === tabId)
                 ? { activeTabId: tabId }
-                : state,
-        ),
+                : state;
+        }),
 
     ensureSessionTab: (
         sessionId,
@@ -656,23 +659,55 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
     },
 
     moveToWorkspace: (sessionId) => {
-        set((state) => ({
-            tabs: state.tabs.map((tab) =>
-                tab.sessionId === sessionId
-                    ? { ...tab, location: "workspace" as const }
-                    : tab,
-            ),
-        }));
+        if (!sessionId) return;
+
+        set((state) => {
+            const existing = state.tabs.find(
+                (tab) => tab.sessionId === sessionId,
+            );
+
+            if (!existing) {
+                return {
+                    tabs: [
+                        ...state.tabs,
+                        { ...createTab(sessionId), location: "workspace" },
+                    ],
+                };
+            }
+
+            if (existing.location === "workspace") {
+                return state;
+            }
+
+            return {
+                tabs: state.tabs.map((tab) =>
+                    tab.sessionId === sessionId
+                        ? { ...tab, location: "workspace" as const }
+                        : tab,
+                ),
+            };
+        });
     },
 
     moveToSidebar: (sessionId) => {
-        set((state) => ({
-            tabs: state.tabs.map((tab) =>
-                tab.sessionId === sessionId
-                    ? { ...tab, location: undefined }
-                    : tab,
-            ),
-        }));
+        if (!sessionId) return;
+
+        set((state) => {
+            const existing = state.tabs.find(
+                (tab) => tab.sessionId === sessionId,
+            );
+            if (!existing || existing.location === undefined) {
+                return state;
+            }
+
+            return {
+                tabs: state.tabs.map((tab) =>
+                    tab.sessionId === sessionId
+                        ? { ...tab, location: undefined }
+                        : tab,
+                ),
+            };
+        });
     },
 
     reset: () => {

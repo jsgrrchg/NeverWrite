@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 
@@ -102,5 +102,63 @@ describe("ContextMenu scroll-to-close behaviour", () => {
         renderMenu(onClose);
         fireEvent.mouseDown(document.body);
         expect(onClose).toHaveBeenCalled();
+    });
+
+    it("closes before running a leaf action", async () => {
+        const callOrder: string[] = [];
+        const onClose = vi.fn(() => {
+            callOrder.push("close");
+        });
+        const action = vi.fn(() => {
+            callOrder.push("action");
+        });
+
+        render(
+            <ContextMenu
+                menu={{ x: 100, y: 100, payload: undefined }}
+                entries={[{ label: "New Agent", action }]}
+                onClose={onClose}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "New Agent" }));
+
+        expect(onClose).toHaveBeenCalledTimes(1);
+        await waitFor(() => {
+            expect(action).toHaveBeenCalledTimes(1);
+        });
+        expect(callOrder).toEqual(["close", "action"]);
+    });
+
+    it("closes before running a submenu action", async () => {
+        const callOrder: string[] = [];
+        const onClose = vi.fn(() => {
+            callOrder.push("close");
+        });
+        const action = vi.fn(() => {
+            callOrder.push("action");
+        });
+
+        render(
+            <ContextMenu
+                menu={{ x: 100, y: 100, payload: undefined }}
+                entries={[
+                    {
+                        label: "New Agent",
+                        children: [{ label: "Claude", action }],
+                    },
+                ]}
+                onClose={onClose}
+            />,
+        );
+
+        fireEvent.mouseEnter(screen.getByRole("button", { name: "New Agent" }));
+        fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+        expect(onClose).toHaveBeenCalledTimes(1);
+        await waitFor(() => {
+            expect(action).toHaveBeenCalledTimes(1);
+        });
+        expect(callOrder).toEqual(["close", "action"]);
     });
 });

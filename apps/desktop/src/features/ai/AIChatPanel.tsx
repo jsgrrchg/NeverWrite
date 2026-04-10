@@ -683,22 +683,30 @@ export function AIChatPanel() {
             return;
         }
 
-        const activeSessionHasTab = tabs.some(
+        const activeSessionSidebarTabId =
+            tabs.find((tab) => tab.sessionId === activeSessionId)?.id ?? null;
+        const activeSessionHasAnyTab = allChatTabs.some(
             (tab) => tab.sessionId === activeSessionId,
         );
-        if (!activeSessionHasTab || !activeTabId) {
+        if (!activeSessionHasAnyTab) {
             const tabId = ensureSessionTab(
                 activeSessionId,
                 activeSession?.historySessionId ?? null,
                 activeSession?.runtimeId ?? null,
             );
             setActiveTab(tabId);
+            return;
+        }
+
+        if (!activeTabId && activeSessionSidebarTabId) {
+            setActiveTab(activeSessionSidebarTabId);
         }
     }, [
         activeSessionId,
         activeSession,
         activeTabId,
         activeTabSessionId,
+        allChatTabs,
         currentSession,
         ensureSessionTab,
         setActiveTab,

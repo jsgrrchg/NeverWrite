@@ -44,6 +44,23 @@ export function ContextMenu<T>({
     const [submenuDirectionByLabel, setSubmenuDirectionByLabel] = useState<
         Record<string, "left" | "right">
     >({});
+    const closeAndRunAction = (action?: () => void) => {
+        onClose();
+        if (!action) return;
+        // Provider changes can reorder menu entries; close first so the menu
+        // is not rerendered while a submenu click is still in flight.
+        queueMicrotask(action);
+    };
+    const entriesResetKey = entries
+        .map((entry) => {
+            if (entry.type === "separator") {
+                return "separator";
+            }
+            return `${entry.label}:${entry.disabled ? "1" : "0"}:${
+                entry.children?.length ?? 0
+            }`;
+        })
+        .join("|");
 
     useLayoutEffect(() => {
         const element = ref.current;
@@ -61,8 +78,10 @@ export function ContextMenu<T>({
 
     useEffect(() => {
         setOpenSubmenuLabel(null);
-        setSubmenuDirectionByLabel({});
-    }, [menu.x, menu.y, entries]);
+        setSubmenuDirectionByLabel((current) =>
+            Object.keys(current).length > 0 ? {} : current,
+        );
+    }, [menu.x, menu.y, entriesResetKey]);
 
     useEffect(() => {
         const handleDown = (event: MouseEvent) => {
@@ -188,8 +207,7 @@ export function ContextMenu<T>({
                                     );
                                     return;
                                 }
-                                entry.action?.();
-                                onClose();
+                                closeAndRunAction(entry.action);
                             }}
                             className="text-left px-3 py-1.5 text-xs rounded"
                             style={{
@@ -277,8 +295,7 @@ export function ContextMenu<T>({
                                             disabled={child.disabled}
                                             onClick={() => {
                                                 if (child.disabled) return;
-                                                child.action?.();
-                                                onClose();
+                                                closeAndRunAction(child.action);
                                             }}
                                             className="text-left px-3 py-1.5 text-xs rounded"
                                             style={{

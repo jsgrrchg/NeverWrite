@@ -114,6 +114,27 @@ describe("chatTabsStore", () => {
         ).toEqual(["session-b", "session-c", "session-a"]);
     });
 
+    it("creates hidden workspace metadata when moving a session without a sidebar tab", () => {
+        useChatTabsStore.getState().moveToWorkspace("session-a");
+
+        expect(useChatTabsStore.getState().tabs).toHaveLength(1);
+        expect(useChatTabsStore.getState().tabs[0]).toMatchObject({
+            sessionId: "session-a",
+            location: "workspace",
+        });
+        expect(useChatTabsStore.getState().activeTabId).toBeNull();
+    });
+
+    it("does not rewrite state when moving an already-workspace session again", () => {
+        useChatTabsStore.getState().moveToWorkspace("session-a");
+        const firstTab = useChatTabsStore.getState().tabs[0];
+
+        useChatTabsStore.getState().moveToWorkspace("session-a");
+
+        expect(useChatTabsStore.getState().tabs).toHaveLength(1);
+        expect(useChatTabsStore.getState().tabs[0]).toBe(firstTab);
+    });
+
     it("replaces persisted session ids with live ids", () => {
         useChatTabsStore.getState().openSessionTab("persisted:history-1");
         const originalTabId = useChatTabsStore.getState().tabs[0]?.id;
