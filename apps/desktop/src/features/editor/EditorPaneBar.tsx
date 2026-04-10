@@ -566,9 +566,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             <div
                 ref={tabStripRef}
                 data-pane-tab-strip={paneId}
-                className="flex items-center gap-1 px-2 py-1 shrink-0 overflow-x-auto scrollbar-hidden"
+                className="flex items-center gap-1 px-2 py-0.5 shrink-0 overflow-x-auto scrollbar-hidden"
                 style={{
+                    height: 38,
                     minHeight: 38,
+                    boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     background: isFocused
                         ? "color-mix(in srgb, var(--bg-secondary) 96%, var(--accent) 4%)"
@@ -600,7 +602,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 role="tab"
                                 tabIndex={0}
                                 aria-selected={isActive}
-                                className="group inline-flex min-w-0 max-w-55 shrink-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left"
+                                className="group inline-flex h-8 min-w-0 max-w-55 shrink-0 items-center gap-2 rounded-lg px-2.5 text-left"
                                 onPointerDownCapture={(event) =>
                                     handleTabPointerDownCapture(tab.id, event)
                                 }
@@ -639,6 +641,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                     });
                                 }}
                                 style={{
+                                    boxSizing: "border-box",
                                     border: isActive
                                         ? "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))"
                                         : "1px solid color-mix(in srgb, var(--border) 46%, transparent)",

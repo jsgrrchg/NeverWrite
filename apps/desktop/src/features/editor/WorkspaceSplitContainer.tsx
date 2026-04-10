@@ -180,7 +180,7 @@ function WorkspacePane({
                 border: isFocused
                     ? "1px solid color-mix(in srgb, var(--accent) 26%, var(--border))"
                     : "1px solid transparent",
-                borderRadius: 14,
+                borderRadius: 0,
                 background: "var(--bg-primary)",
                 boxShadow: isFocused
                     ? "0 14px 32px rgba(15, 23, 42, 0.08)"
@@ -404,67 +404,100 @@ export function WorkspaceSplitContainer({
                         </div>
                         {index < node.children.length - 1 ? (
                             <div
-                                role="separator"
-                                aria-orientation={orientation}
-                                aria-label={`Resize split ${node.id} sections ${index + 1} and ${index + 2}`}
                                 className="relative shrink-0"
                                 style={{
                                     width:
                                         node.direction === "row"
-                                            ? RESIZER_HITBOX_SIZE
+                                            ? RESIZER_VISIBLE_SIZE
                                             : "100%",
                                     height:
                                         node.direction === "column"
-                                            ? RESIZER_HITBOX_SIZE
+                                            ? RESIZER_VISIBLE_SIZE
                                             : "100%",
-                                    cursor,
+                                    background:
+                                        "color-mix(in srgb, var(--border) 40%, transparent)",
+                                    zIndex: 10,
                                 }}
-                                onPointerDown={(event) =>
-                                    handleDividerPointerDown(index, event)
-                                }
-                                onPointerUp={(event) =>
-                                    stopResize(event.pointerId)
-                                }
-                                onPointerCancel={(event) =>
-                                    stopResize(event.pointerId)
-                                }
                             >
+                                {/* Drag hitbox — overlaps adjacent panes for a comfortable grab area */}
                                 <div
-                                    aria-hidden="true"
-                                    className="absolute rounded-full"
+                                    role="separator"
+                                    aria-orientation={orientation}
+                                    aria-label={`Resize split ${node.id} sections ${index + 1} and ${index + 2}`}
+                                    className="group/resizer absolute"
                                     style={{
                                         left:
                                             node.direction === "row"
-                                                ? "50%"
+                                                ? -(
+                                                      RESIZER_HITBOX_SIZE -
+                                                      RESIZER_VISIBLE_SIZE
+                                                  ) / 2
                                                 : 0,
                                         top:
                                             node.direction === "column"
-                                                ? "50%"
+                                                ? -(
+                                                      RESIZER_HITBOX_SIZE -
+                                                      RESIZER_VISIBLE_SIZE
+                                                  ) / 2
                                                 : 0,
-                                        bottom:
-                                            node.direction === "row"
-                                                ? 0
-                                                : "auto",
-                                        right:
-                                            node.direction === "column"
-                                                ? 0
-                                                : "auto",
                                         width:
                                             node.direction === "row"
-                                                ? RESIZER_VISIBLE_SIZE
+                                                ? RESIZER_HITBOX_SIZE
                                                 : "100%",
                                         height:
                                             node.direction === "column"
-                                                ? RESIZER_VISIBLE_SIZE
+                                                ? RESIZER_HITBOX_SIZE
                                                 : "100%",
-                                        transform:
-                                            node.direction === "row"
-                                                ? "translateX(-50%)"
-                                                : "translateY(-50%)",
-                                        background:
-                                            "color-mix(in srgb, var(--border) 90%, transparent)",
+                                        cursor,
                                     }}
-                                />
+                                    onPointerDown={(event) =>
+                                        handleDividerPointerDown(index, event)
+                                    }
+                                    onPointerUp={(event) =>
+                                        stopResize(event.pointerId)
+                                    }
+                                    onPointerCancel={(event) =>
+                                        stopResize(event.pointerId)
+                                    }
+                                >
+                                    {/* Hover indicator */}
+                                    <div
+                                        aria-hidden="true"
+                                        className="absolute rounded-full opacity-0 transition-opacity duration-150 group-hover/resizer:opacity-100"
+                                        style={{
+                                            left:
+                                                node.direction === "row"
+                                                    ? "50%"
+                                                    : 0,
+                                            top:
+                                                node.direction === "column"
+                                                    ? "50%"
+                                                    : 0,
+                                            bottom:
+                                                node.direction === "row"
+                                                    ? 0
+                                                    : "auto",
+                                            right:
+                                                node.direction === "column"
+                                                    ? 0
+                                                    : "auto",
+                                            width:
+                                                node.direction === "row"
+                                                    ? 3
+                                                    : "100%",
+                                            height:
+                                                node.direction === "column"
+                                                    ? 3
+                                                    : "100%",
+                                            transform:
+                                                node.direction === "row"
+                                                    ? "translateX(-50%)"
+                                                    : "translateY(-50%)",
+                                            background:
+                                                "color-mix(in srgb, var(--accent) 40%, var(--border))",
+                                        }}
+                                    />
+                                </div>
                             </div>
                         ) : null}
                     </Fragment>
