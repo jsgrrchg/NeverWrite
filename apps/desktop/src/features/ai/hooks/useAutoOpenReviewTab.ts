@@ -26,6 +26,22 @@ function getVisibleTrackedFilesCountForSession(
     return count;
 }
 
+function ensureReviewTabsForSessions(
+    sessionsById: Record<string, AIChatSession | undefined>,
+    runtimes: ReturnType<typeof useChatStore.getState>["runtimes"],
+) {
+    for (const [sessionId, session] of Object.entries(sessionsById)) {
+        if (getVisibleTrackedFilesCountForSession(session) <= 0) {
+            continue;
+        }
+
+        useEditorStore.getState().openReview(sessionId, {
+            background: true,
+            title: getReviewTabTitle(session, runtimes),
+        });
+    }
+}
+
 export function useAutoOpenReviewTab() {
     const prevCountsRef = useRef<Map<string, number>>(new Map());
     const prevSessionsByIdRef = useRef(useChatStore.getState().sessionsById);
@@ -41,6 +57,10 @@ export function useAutoOpenReviewTab() {
             ),
         );
         prevSessionsByIdRef.current = initialState.sessionsById;
+        ensureReviewTabsForSessions(
+            initialState.sessionsById,
+            initialState.runtimes,
+        );
 
         const unsubscribe = useChatStore.subscribe((state) => {
             const prevSessionsById = prevSessionsByIdRef.current;
