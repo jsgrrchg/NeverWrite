@@ -600,7 +600,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
             <div
                 className="flex items-center justify-between gap-2 px-3 shrink-0"
                 style={{
-                    height: 34,
+                    height: 39,
                     borderBottom: "1px solid var(--border)",
                     backgroundColor: "var(--bg-secondary)",
                 }}

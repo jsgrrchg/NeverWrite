@@ -205,7 +205,11 @@ export function AIChatHeader({
             className={`flex items-center justify-between ${
                 isCompact ? "gap-1 px-1.5 py-1" : "gap-2 px-2 py-1"
             }`}
-            style={{ borderBottom: "1px solid var(--border)" }}
+            style={{
+                height: 39,
+                boxSizing: "border-box",
+                borderBottom: "1px solid var(--border)",
+            }}
         >
             {showTabs ? (
                 <AIChatTabs

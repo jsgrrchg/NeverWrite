@@ -1683,7 +1683,7 @@ export function FileTree() {
             basePadding: Math.round(8 * treeScale),
             smallIcon: Math.max(13, Math.round(13 * treeScale)),
             mediumIcon: Math.max(15, Math.round(15 * treeScale)),
-            toolbarHeight: Math.max(29, Math.round(29 * treeScale)),
+            toolbarHeight: Math.max(34, Math.round(34 * treeScale)),
             toolbarButton: Math.max(24, Math.round(24 * treeScale)),
             toolbarIconScale: treeScale,
             inputFontSize: Math.max(12, Math.round(12 * treeScale)),

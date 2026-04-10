@@ -21,7 +21,6 @@ import {
     selectLeafPaneIds,
     selectPaneCount,
     selectPaneNeighbor,
-    selectPaneState,
     useEditorStore,
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
@@ -53,13 +52,6 @@ import {
     buildTabFileDragDetail,
     isPointOverAiComposerDropZone,
 } from "./tabDragAttachments";
-import { getTabStripInsertIndex } from "./tabStrip";
-import {
-    CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
-    dispatchCrossPaneTabDropPreview,
-    type CrossPaneTabDropPreview,
-    resolvePaneDropPosition,
-} from "./workspaceTabDropPreview";
 
 function renderTabLeadingIcon(tab: Tab): ReactNode {
     if (tab.kind === "pdf") {
@@ -189,37 +181,6 @@ function getAppWindow() {
     return getCurrentWindow();
 }
 
-function isPointInsideRect(
-    clientX: number,
-    clientY: number,
-    rect: DOMRect | Pick<DOMRect, "left" | "right" | "top" | "bottom">,
-) {
-    return (
-        clientX >= rect.left &&
-        clientX <= rect.right &&
-        clientY >= rect.top &&
-        clientY <= rect.bottom
-    );
-}
-
-function getPaneTabStripDropIndex(strip: HTMLElement | null, clientX: number) {
-    if (!strip) {
-        return 0;
-    }
-
-    const tabRects = Array.from(
-        strip.querySelectorAll<HTMLElement>("[data-pane-tab-id]"),
-    ).map((tab) => {
-        const rect = tab.getBoundingClientRect();
-        return {
-            left: rect.left,
-            width: rect.width,
-        };
-    });
-
-    return getTabStripInsertIndex(clientX, tabRects);
-}
-
 export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const pane = useEditorStore((state) =>
         selectEditorPaneState(state, paneId),
@@ -240,9 +201,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const moveTabToNewSplit = useEditorStore(
         (state) => state.moveTabToNewSplit,
     );
-    const moveTabToPaneDropTarget = useEditorStore(
-        (state) => state.moveTabToPaneDropTarget,
-    );
     const moveTabToPane = useEditorStore((state) => state.moveTabToPane);
     const insertExternalTabInPane = useEditorStore(
         (state) => state.insertExternalTabInPane,
@@ -260,14 +218,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const [dragPreviewTabId, setDragPreviewTabId] = useState<string | null>(
         null,
     );
-    const [crossPaneDropPreview, setCrossPaneDropPreview] =
-        useState<CrossPaneTabDropPreview | null>(null);
     const dragPreviewNodeRef = useRef<HTMLDivElement | null>(null);
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
-    const crossPaneDropPreviewRef = useRef<CrossPaneTabDropPreview | null>(
-        null,
-    );
     const ghostRef = useRef<WebviewWindow | null>(null);
     const ghostCancelledRef = useRef(false);
     const windowMode = getWindowMode();
@@ -342,73 +295,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         },
         [pane.tabs],
     );
-    const updateCrossPaneDropPreview = useCallback(
-        (detail: CrossPaneTabDropPreview | null) => {
-            crossPaneDropPreviewRef.current = detail;
-            dispatchCrossPaneTabDropPreview(detail);
-        },
-        [],
-    );
-    const resolveCrossPaneDropTarget = useCallback(
-        (tabId: string, clientX: number, clientY: number) => {
-            const editorState = useEditorStore.getState();
-            const paneNodes = document.querySelectorAll<HTMLElement>(
-                "[data-editor-pane-id]",
-            );
-
-            for (const paneNode of paneNodes) {
-                const targetPaneId = paneNode.dataset.editorPaneId;
-                if (!targetPaneId || targetPaneId === paneId) {
-                    continue;
-                }
-
-                const paneRect = paneNode.getBoundingClientRect();
-                if (!isPointInsideRect(clientX, clientY, paneRect)) {
-                    continue;
-                }
-
-                const targetPane = selectPaneState(editorState, targetPaneId);
-                if (!targetPane) {
-                    continue;
-                }
-
-                const targetStrip = paneNode.querySelector<HTMLElement>(
-                    "[data-pane-tab-strip]",
-                );
-                const canCreateDropSplit =
-                    selectPaneCount(editorState) < MAX_EDITOR_PANES;
-                const position = canCreateDropSplit
-                    ? resolvePaneDropPosition(clientX, clientY, paneRect)
-                    : "center";
-                const insertIndex =
-                    position === "center" &&
-                    targetStrip &&
-                    isPointInsideRect(
-                        clientX,
-                        clientY,
-                        targetStrip.getBoundingClientRect(),
-                    )
-                        ? getPaneTabStripDropIndex(targetStrip, clientX)
-                        : position === "center"
-                          ? targetPane.tabs.length
-                          : null;
-
-                return {
-                    sourcePaneId: paneId,
-                    targetPaneId,
-                    position,
-                    insertIndex,
-                    tabId,
-                } satisfies CrossPaneTabDropPreview;
-            }
-
-            return null;
-        },
-        [paneId],
-    );
     const handleDetachStart = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
-            updateCrossPaneDropPreview(null);
             const currentTabs = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             );
@@ -434,7 +322,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 console.error("Failed to create ghost window:", error);
             }
         },
-        [updateCrossPaneDropPreview],
+        [],
     );
     const handleDetachMove = useCallback(
         (coords: { screenX: number; screenY: number }) => {
@@ -448,16 +336,14 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         [],
     );
     const handleDetachCancel = useCallback(() => {
-        updateCrossPaneDropPreview(null);
         ghostCancelledRef.current = true;
         if (ghostRef.current) {
             void destroyGhostWindow(ghostRef.current);
             ghostRef.current = null;
         }
-    }, [updateCrossPaneDropPreview]);
+    }, []);
     const handleDetachEnd = useCallback(
         async (tabId: string, coords: { screenX: number; screenY: number }) => {
-            updateCrossPaneDropPreview(null);
             ghostCancelledRef.current = true;
             if (ghostRef.current) {
                 await destroyGhostWindow(ghostRef.current);
@@ -514,7 +400,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
 
             closeTab(tabId, { reason: "detach" });
         },
-        [closeTab, updateCrossPaneDropPreview, vaultPath, windowMode],
+        [closeTab, vaultPath, windowMode],
     );
     const applyDragPreviewPosition = useCallback(() => {
         dragPreviewFrameRef.current = null;
@@ -553,19 +439,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     }, [applyDragPreviewPosition, dragPreviewTabId]);
 
     useEffect(() => {
-        const handleCrossPaneDropPreview = (event: Event) => {
-            const detail = (
-                event as CustomEvent<CrossPaneTabDropPreview | null>
-            ).detail;
-            crossPaneDropPreviewRef.current = detail;
-            setCrossPaneDropPreview(detail);
-        };
-
-        window.addEventListener(
-            CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
-            handleCrossPaneDropPreview,
-        );
-
         return () => {
             if (dragPreviewFrameRef.current !== null) {
                 window.cancelAnimationFrame(dragPreviewFrameRef.current);
@@ -575,10 +448,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 void destroyGhostWindow(ghostRef.current);
                 ghostRef.current = null;
             }
-            window.removeEventListener(
-                CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
-                handleCrossPaneDropPreview,
-            );
         };
     }, []);
 
@@ -601,20 +470,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         liveReorder: false,
         shouldDetach: isPointerOutsideCurrentWindow,
         shouldCommitDrag: (tabId, coords) => {
-            const crossPaneTarget = resolveCrossPaneDropTarget(
-                tabId,
-                coords.clientX,
-                coords.clientY,
-            );
-            if (
-                crossPaneTarget ??
-                (crossPaneDropPreviewRef.current?.tabId === tabId
-                    ? crossPaneDropPreviewRef.current
-                    : null)
-            ) {
-                return false;
-            }
-
             const tab =
                 pane.tabs.find((candidate) => candidate.id === tabId) ?? null;
             if (!tab) {
@@ -653,7 +508,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         onDetachCancel: handleDetachCancel,
         onDragStart: (tabId, coords) => {
             updateTabDragPreview(tabId, coords.clientX, coords.clientY);
-            updateCrossPaneDropPreview(null);
             emitTabDragDetail(tabId, "start", {
                 clientX: coords.clientX,
                 clientY: coords.clientY,
@@ -661,54 +515,20 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         },
         onDragMove: (tabId, coords) => {
             updateTabDragPreview(tabId, coords.clientX, coords.clientY);
-            updateCrossPaneDropPreview(
-                resolveCrossPaneDropTarget(
-                    tabId,
-                    coords.clientX,
-                    coords.clientY,
-                ),
-            );
             emitTabDragDetail(tabId, "move", {
                 clientX: coords.clientX,
                 clientY: coords.clientY,
             });
         },
         onDragEnd: (tabId, coords) => {
-            const crossPaneTarget =
-                resolveCrossPaneDropTarget(
-                    tabId,
-                    coords.clientX,
-                    coords.clientY,
-                ) ??
-                (crossPaneDropPreviewRef.current?.tabId === tabId
-                    ? crossPaneDropPreviewRef.current
-                    : null);
             emitTabDragDetail(tabId, "end", {
                 clientX: coords.clientX,
                 clientY: coords.clientY,
             });
-            if (crossPaneTarget) {
-                if (crossPaneTarget.position === "center") {
-                    moveTabToPane(
-                        tabId,
-                        crossPaneTarget.targetPaneId,
-                        crossPaneTarget.insertIndex ?? undefined,
-                    );
-                } else {
-                    moveTabToPaneDropTarget(
-                        tabId,
-                        crossPaneTarget.targetPaneId,
-                        crossPaneTarget.position,
-                        crossPaneTarget.insertIndex ?? undefined,
-                    );
-                }
-            }
-            updateCrossPaneDropPreview(null);
             setDragPreviewTabId(null);
         },
         onDragCancel: (tabId) => {
             emitTabDragDetail(tabId, "cancel");
-            updateCrossPaneDropPreview(null);
             setDragPreviewTabId(null);
         },
     });
@@ -719,23 +539,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const draggingOriginalIndex = draggingTabId
         ? pane.tabs.findIndex((tab) => tab.id === draggingTabId)
         : -1;
-    const externalInsertionIndicatorIndex =
-        crossPaneDropPreview?.targetPaneId === paneId &&
-        crossPaneDropPreview.position === "center"
-            ? crossPaneDropPreview.insertIndex
-            : null;
-    const suppressLocalInsertionIndicator =
-        crossPaneDropPreview?.sourcePaneId === paneId &&
-        crossPaneDropPreview.targetPaneId !== paneId;
     const insertionIndicatorIndex =
-        externalInsertionIndicatorIndex ??
-        (suppressLocalInsertionIndicator
+        draggingOriginalIndex === -1 || projectedDropIndex == null
             ? null
-            : draggingOriginalIndex === -1 || projectedDropIndex == null
-              ? null
-              : projectedDropIndex > draggingOriginalIndex
-                ? projectedDropIndex + 1
-                : projectedDropIndex);
+            : projectedDropIndex > draggingOriginalIndex
+              ? projectedDropIndex + 1
+              : projectedDropIndex;
     const handleTabPointerDownCapture = useCallback(
         (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
             if (event.button !== 0) return;
@@ -763,9 +572,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     borderBottom: "1px solid var(--border)",
                     background: isFocused
                         ? "color-mix(in srgb, var(--bg-secondary) 96%, var(--accent) 4%)"
-                        : crossPaneDropPreview?.targetPaneId === paneId
-                          ? "color-mix(in srgb, var(--bg-secondary) 92%, var(--accent) 8%)"
-                          : "var(--bg-secondary)",
+                        : "var(--bg-secondary)",
                 }}
             >
                 {insertionIndicatorIndex === 0 && (

@@ -36,8 +36,11 @@ import {
     isReviewTab,
     isFileTab,
     isPdfTab,
+    selectFocusedPaneId,
+    selectPaneCount,
     type Tab,
 } from "../../app/store/editorStore";
+import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { moveChatToSidebar } from "../ai/chatPaneMovement";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -412,6 +415,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const switchTab = useEditorStore((s) => s.switchTab);
     const closeTab = useEditorStore((s) => s.closeTab);
     const reorderTabs = useEditorStore((s) => s.reorderTabs);
+    const moveTabToPaneDropTarget = useEditorStore(
+        (s) => s.moveTabToPaneDropTarget,
+    );
     const goBack = useEditorStore((s) => s.goBack);
     const goForward = useEditorStore((s) => s.goForward);
     const navigateToHistoryIndex = useEditorStore(
@@ -453,6 +459,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const paneCount = useEditorStore(selectPaneCount);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
@@ -471,6 +479,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
     const internalDragActiveRef = useRef(false);
+    const canCreateSplit = paneCount < MAX_EDITOR_PANES;
 
     const handleMoveTabFileToTrash = useCallback(
         async (path: string, title: string) => {
@@ -2286,6 +2295,31 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         const tabIndex = tabs.findIndex(
                             (entry) => entry.id === tab.id,
                         );
+                        const splitEntries = focusedPaneId
+                            ? [
+                                  { type: "separator" as const },
+                                  {
+                                      label: "Open in New Left Pane",
+                                      action: () =>
+                                          moveTabToPaneDropTarget(
+                                              tab.id,
+                                              focusedPaneId,
+                                              "left",
+                                          ),
+                                      disabled: !canCreateSplit,
+                                  },
+                                  {
+                                      label: "Open in New Down Pane",
+                                      action: () =>
+                                          moveTabToPaneDropTarget(
+                                              tab.id,
+                                              focusedPaneId,
+                                              "down",
+                                          ),
+                                      disabled: !canCreateSplit,
+                                  },
+                              ]
+                            : [];
 
                         if (isChatTab(tab)) {
                             return [
@@ -2303,6 +2337,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     action: () => closeOtherTabs(tab.id),
                                     disabled: tabs.length <= 1,
                                 },
+                                ...splitEntries,
                             ];
                         }
 
@@ -2317,6 +2352,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     action: () => closeOtherTabs(tab.id),
                                     disabled: tabs.length <= 1,
                                 },
+                                ...splitEntries,
                             ];
                         }
 
@@ -2342,6 +2378,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 action: () => closeTabsToTheLeft(tab.id),
                                 disabled: tabIndex <= 0,
                             },
+                            ...splitEntries,
                             { type: "separator" as const },
                             ...(!isPdf && !isFile
                                 ? [

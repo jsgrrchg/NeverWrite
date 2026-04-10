@@ -1,6 +1,7 @@
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { useState } from "react";
+import userEvent from "@testing-library/user-event";
 import {
     renderComponent,
     flushPromises,
@@ -208,6 +209,106 @@ describe("UnifiedBar tab strip drop", () => {
 
         fireEvent.click(targetTab!);
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
+    });
+
+    it("opens a tab in a new left pane from the context menu when split view is inactive", async () => {
+        const user = userEvent.setup();
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+            ],
+            "tab-a",
+        );
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const targetTab = document.querySelector(
+            '[data-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(targetTab).not.toBeNull();
+
+        fireEvent.contextMenu(targetTab!);
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Open in New Left Pane",
+            }),
+        );
+
+        await waitFor(() => {
+            expect(
+                useEditorStore.getState().panes.map((pane) => pane.id),
+            ).toEqual(["pane-2", "primary"]);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
+        expect(state.panes[1]?.tabs.map((tab) => tab.id)).toEqual(["tab-b"]);
+    });
+
+    it("opens a tab in a new down pane from the context menu when split view is inactive", async () => {
+        const user = userEvent.setup();
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+            ],
+            "tab-a",
+        );
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const targetTab = document.querySelector(
+            '[data-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(targetTab).not.toBeNull();
+
+        fireEvent.contextMenu(targetTab!);
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Open in New Down Pane",
+            }),
+        );
+
+        await waitFor(() => {
+            expect(
+                useEditorStore.getState().panes.map((pane) => pane.id),
+            ).toEqual(["primary", "pane-2"]);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-b"]);
+        expect(state.panes[1]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
     });
 
     it("opens a file tree drag drop in the strip at the requested position", async () => {
