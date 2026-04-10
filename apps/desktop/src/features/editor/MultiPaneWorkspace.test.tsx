@@ -275,6 +275,18 @@ describe("MultiPaneWorkspace", () => {
         ).not.toBeNull();
     });
 
+    it("stretches pane containers to fill their split slots", () => {
+        renderComponent(<MultiPaneWorkspace />);
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]');
+
+        expect(primaryPane).not.toBeNull();
+        expect(primaryPane?.className).toContain("w-full");
+        expect(primaryPane?.className).toContain("flex-1");
+    });
+
     it("renders independent resize handles for each split branch", () => {
         renderComponent(<MultiPaneWorkspace />);
 

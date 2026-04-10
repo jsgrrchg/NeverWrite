@@ -851,6 +851,63 @@ function buildSplitPaneProjection(
     });
 }
 
+function removeEmptyPanesFromWorkspace(
+    workspace: Pick<EditorStore, "panes" | "focusedPaneId" | "layoutTree">,
+    options?: {
+        preferredFocusedPaneId?: string | null;
+    },
+) {
+    let nextPanes = workspace.panes;
+    let nextLayoutTree = workspace.layoutTree;
+    let nextFocusedPaneId = workspace.focusedPaneId;
+
+    for (const pane of [...nextPanes]) {
+        if (pane.tabs.length > 0) {
+            continue;
+        }
+
+        if (nextPanes.length === 1) {
+            nextPanes = [];
+            nextLayoutTree = createInitialLayout(INITIAL_EDITOR_PANE_ID);
+            nextFocusedPaneId = INITIAL_EDITOR_PANE_ID;
+            break;
+        }
+
+        const workspaceBeforeRemoval = {
+            panes: nextPanes,
+            focusedPaneId: nextFocusedPaneId,
+            layoutTree: nextLayoutTree,
+        };
+
+        if (nextFocusedPaneId === pane.id) {
+            nextFocusedPaneId =
+                getPaneRecipientIdForWorkspace(
+                    workspaceBeforeRemoval,
+                    pane.id,
+                ) ??
+                nextPanes.find((candidate) => candidate.id !== pane.id)?.id ??
+                INITIAL_EDITOR_PANE_ID;
+        }
+
+        nextPanes = nextPanes.filter((candidate) => candidate.id !== pane.id);
+        nextLayoutTree = closePaneAndCollapse(nextLayoutTree, pane.id);
+    }
+
+    const preferredFocusedPaneId = options?.preferredFocusedPaneId;
+    if (
+        preferredFocusedPaneId &&
+        nextPanes.some((pane) => pane.id === preferredFocusedPaneId)
+    ) {
+        nextFocusedPaneId = preferredFocusedPaneId;
+    }
+
+    return {
+        panes: nextPanes,
+        focusedPaneId: nextFocusedPaneId,
+        layoutTree: nextLayoutTree,
+    };
+}
+
 function findPaneContainingTab(
     panes: readonly EditorPaneState[],
     tabId: string,
@@ -1129,43 +1186,22 @@ function applyResourceDeleteAcrossWorkspace<
             : pane;
     });
 
-    let nextLayoutTree = workspace.layoutTree;
-    let nextFocusedPaneId = workspace.focusedPaneId;
-
-    for (const pane of [...nextPanes]) {
-        if (pane.tabs.length > 0 || nextPanes.length <= 1) {
-            continue;
-        }
-
-        const workspaceBeforeRemoval = {
-            panes: nextPanes,
-            focusedPaneId: nextFocusedPaneId,
-            layoutTree: nextLayoutTree,
-        };
-        if (nextFocusedPaneId === pane.id) {
-            nextFocusedPaneId =
-                getPaneRecipientIdForWorkspace(
-                    workspaceBeforeRemoval,
-                    pane.id,
-                ) ?? nextFocusedPaneId;
-        }
-
-        nextPanes = nextPanes.filter((candidate) => candidate.id !== pane.id);
-        nextLayoutTree = closePaneAndCollapse(nextLayoutTree, pane.id);
-    }
+    const compactedWorkspace = removeEmptyPanesFromWorkspace({
+        panes: nextPanes,
+        focusedPaneId: workspace.focusedPaneId,
+        layoutTree: workspace.layoutTree,
+    });
 
     const didChange =
-        nextLayoutTree !== workspace.layoutTree ||
-        nextFocusedPaneId !== workspace.focusedPaneId ||
-        nextPanes.length !== workspace.panes.length ||
-        nextPanes.some((pane, index) => pane !== workspace.panes[index]);
+        compactedWorkspace.layoutTree !== workspace.layoutTree ||
+        compactedWorkspace.focusedPaneId !== workspace.focusedPaneId ||
+        compactedWorkspace.panes.length !== workspace.panes.length ||
+        compactedWorkspace.panes.some(
+            (pane, index) => pane !== workspace.panes[index],
+        );
 
     return {
-        projection: buildFocusedPaneProjection({
-            panes: nextPanes,
-            focusedPaneId: nextFocusedPaneId,
-            layoutTree: nextLayoutTree,
-        }),
+        projection: buildFocusedPaneProjection(compactedWorkspace),
         didChange,
     };
 }
@@ -1798,29 +1834,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 targetPane.id,
                 removeTabFromWorkspaceState(targetPane, tabId),
             );
-            const shouldRemoveEmptyPane =
-                nextTargetPane.tabs.length === 0 && workspace.panes.length > 1;
-            const nextLayoutTree = shouldRemoveEmptyPane
-                ? closePaneAndCollapse(workspace.layoutTree, targetPane.id)
-                : workspace.layoutTree;
-            const nextPanes = shouldRemoveEmptyPane
-                ? workspace.panes.filter((pane) => pane.id !== targetPane.id)
-                : workspace.panes.map((pane) =>
-                      pane.id === targetPane.id ? nextTargetPane : pane,
-                  );
-            const focusedPaneId = shouldRemoveEmptyPane
-                ? workspace.focusedPaneId === targetPane.id
-                    ? (getPaneRecipientIdForWorkspace(
-                          workspace,
-                          targetPane.id,
-                      ) ?? workspace.focusedPaneId)
-                    : workspace.focusedPaneId
-                : workspace.focusedPaneId;
-            const projection = buildFocusedPaneProjection({
-                panes: nextPanes,
-                focusedPaneId,
-                layoutTree: nextLayoutTree,
-            });
+            const projection = buildFocusedPaneProjection(
+                removeEmptyPanesFromWorkspace({
+                    panes: workspace.panes.map((pane) =>
+                        pane.id === targetPane.id ? nextTargetPane : pane,
+                    ),
+                    focusedPaneId: workspace.focusedPaneId,
+                    layoutTree: workspace.layoutTree,
+                }),
+            );
 
             return {
                 ...projection,
@@ -2041,26 +2063,37 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 currentSourcePane.id,
                 removeTabFromWorkspaceState(currentSourcePane, tabId),
             );
-
-            return buildSplitPaneProjection(
+            const nextWorkspace = removeEmptyPanesFromWorkspace(
                 {
-                    ...currentWorkspace,
-                    panes: currentWorkspace.panes.map((pane) =>
-                        pane.id === currentSourcePane.id
-                            ? nextSourcePane
-                            : pane,
+                    panes: currentWorkspace.panes
+                        .map((pane) =>
+                            pane.id === currentSourcePane.id
+                                ? nextSourcePane
+                                : pane,
+                        )
+                        .concat(
+                            createEditorPaneState(
+                                nextPaneId,
+                                insertNormalizedTab(
+                                    createEditorPaneState(nextPaneId),
+                                    movingTab,
+                                ),
+                            ),
+                        ),
+                    focusedPaneId: nextPaneId,
+                    layoutTree: splitPane(
+                        currentWorkspace.layoutTree,
+                        currentSourcePane.id,
+                        direction,
+                        nextPaneId,
                     ),
                 },
-                currentSourcePane.id,
-                direction,
-                createEditorPaneState(
-                    nextPaneId,
-                    insertNormalizedTab(
-                        createEditorPaneState(nextPaneId),
-                        movingTab,
-                    ),
-                ),
+                {
+                    preferredFocusedPaneId: nextPaneId,
+                },
             );
+
+            return buildFocusedPaneProjection(nextWorkspace);
         });
 
         return nextPaneId;
@@ -2136,15 +2169,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 ],
             ] satisfies ReadonlyArray<[string, EditorPaneState]>);
 
-            return buildFocusedPaneProjection({
-                panes: getLayoutPaneIds(nextLayoutTree).map(
-                    (paneId) =>
-                        nextPaneMap.get(paneId) ??
-                        createEditorPaneState(paneId),
+            return buildFocusedPaneProjection(
+                removeEmptyPanesFromWorkspace(
+                    {
+                        panes: getLayoutPaneIds(nextLayoutTree).map(
+                            (paneId) =>
+                                nextPaneMap.get(paneId) ??
+                                createEditorPaneState(paneId),
+                        ),
+                        focusedPaneId: nextPaneId,
+                        layoutTree: nextLayoutTree,
+                    },
+                    {
+                        preferredFocusedPaneId: nextPaneId,
+                    },
                 ),
-                focusedPaneId: nextPaneId,
-                layoutTree: nextLayoutTree,
-            });
+            );
         });
 
         return nextPaneId;
@@ -2178,15 +2218,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 insertNormalizedTab(targetPane, movingTab, index),
             );
 
-            return buildFocusedPaneProjection({
-                panes: workspace.panes.map((pane) => {
-                    if (pane.id === sourcePane.id) return nextSourcePane;
-                    if (pane.id === targetPane.id) return nextTargetPane;
-                    return pane;
-                }),
-                focusedPaneId: targetPane.id,
-                layoutTree: workspace.layoutTree,
-            });
+            return buildFocusedPaneProjection(
+                removeEmptyPanesFromWorkspace(
+                    {
+                        panes: workspace.panes.map((pane) => {
+                            if (pane.id === sourcePane.id)
+                                return nextSourcePane;
+                            if (pane.id === targetPane.id)
+                                return nextTargetPane;
+                            return pane;
+                        }),
+                        focusedPaneId: targetPane.id,
+                        layoutTree: workspace.layoutTree,
+                    },
+                    {
+                        preferredFocusedPaneId: targetPane.id,
+                    },
+                ),
+            );
         });
     },
 

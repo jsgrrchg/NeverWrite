@@ -173,7 +173,7 @@ function WorkspacePane({
 
     return (
         <div
-            className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+            className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden"
             style={{
                 minWidth: MIN_PANE_WIDTH,
                 minHeight: MIN_PANE_HEIGHT,

@@ -2869,11 +2869,9 @@ describe("editorStore tab management", () => {
         expect(state.focusedPaneId).toBe("pane-3");
         expect(state.panes.map((pane) => pane.id)).toEqual([
             "primary",
-            "secondary",
             "pane-3",
         ]);
-        expect(state.panes[1]?.tabs).toHaveLength(0);
-        expect(state.panes[2]?.tabs[0]?.id).toBe("tab-b");
+        expect(state.panes[1]?.tabs[0]?.id).toBe("tab-b");
     });
 
     it("focuses adjacent panes through directional navigation", () => {
@@ -2942,7 +2940,7 @@ describe("editorStore tab management", () => {
         expect(nestedSplit.sizes[1]).toBeCloseTo(0.5, 3);
     });
 
-    it("moves tabs between panes and focuses the target pane", () => {
+    it("moves tabs between panes, focuses the target pane, and closes empty sources", () => {
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -2977,8 +2975,8 @@ describe("editorStore tab management", () => {
 
         const state = useEditorStore.getState();
         expect(state.focusedPaneId).toBe("secondary");
-        expect(state.panes[0]?.tabs).toHaveLength(0);
-        expect(state.panes[1]?.tabs.map((tab) => tab.id)).toEqual([
+        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
             "tab-b",
             "tab-a",
         ]);
@@ -3024,13 +3022,9 @@ describe("editorStore tab management", () => {
         expect(createdPaneId).toBe("pane-3");
         expect(state.focusedPaneId).toBe("pane-3");
         expect(state.panes.map((pane) => pane.id)).toEqual([
-            "primary",
             "pane-3",
             "secondary",
         ]);
-        expect(
-            state.panes.find((pane) => pane.id === "primary")?.tabs,
-        ).toHaveLength(0);
         expect(
             state.panes.find((pane) => pane.id === "pane-3")?.tabs[0]?.id,
         ).toBe("tab-a");
@@ -3040,7 +3034,6 @@ describe("editorStore tab management", () => {
         }
         expect(state.layoutTree.direction).toBe("row");
         expect(state.layoutTree.children.map((child) => child.id)).toEqual([
-            "primary",
             "pane-3",
             "secondary",
         ]);
