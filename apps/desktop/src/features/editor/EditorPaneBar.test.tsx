@@ -92,7 +92,7 @@ describe("EditorPaneBar", () => {
         });
 
         const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("tertiary");
+        expect(state.focusedPaneId).toBe("pane-3");
         expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
         expect(state.panes[2]?.tabs).toHaveLength(1);
         expect(state.panes[2]?.tabs[0]).toMatchObject({

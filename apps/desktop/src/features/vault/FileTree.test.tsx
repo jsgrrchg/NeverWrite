@@ -835,7 +835,7 @@ describe("FileTree", () => {
         });
 
         const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.focusedPaneId).toBe("pane-2");
         expect(state.panes[1]?.tabs[0]).toMatchObject({
             noteId: "notes/beta",
             content: "Beta body",

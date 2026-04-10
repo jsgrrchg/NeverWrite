@@ -16,6 +16,7 @@ import {
 import { useSettingsStore } from "./settingsStore";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
+import { MAX_EDITOR_PANES } from "./workspaceLayoutTree";
 
 function makeTab(overrides: {
     id: string;
@@ -2304,14 +2305,50 @@ describe("editorStore tab management", () => {
         });
 
         const state = useEditorStore.getState();
-        expect(paneId).toBe("secondary");
-        expect(state.focusedPaneId).toBe("secondary");
+        expect(paneId).toBe("pane-2");
+        expect(state.focusedPaneId).toBe("pane-2");
         expect(state.panes).toHaveLength(2);
         expect(state.panes[1]?.tabs[0]).toMatchObject({
             id: "tab-b",
             noteId: "notes/b",
         });
         expect(state.activeTabId).toBe("tab-b");
+    });
+
+    it("creates panes with dynamic ids until reaching the centralized cap", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            "tab-a",
+        );
+
+        const createdPaneIds = Array.from(
+            { length: MAX_EDITOR_PANES - 1 },
+            () => useEditorStore.getState().createEmptyPane(),
+        );
+
+        expect(createdPaneIds).toEqual([
+            "pane-2",
+            "pane-3",
+            "pane-4",
+            "pane-5",
+            "pane-6",
+        ]);
+        expect(useEditorStore.getState().createEmptyPane()).toBeNull();
+        expect(useEditorStore.getState().panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-2",
+            "pane-3",
+            "pane-4",
+            "pane-5",
+            "pane-6",
+        ]);
     });
 
     it("moves tabs between panes and focuses the target pane", () => {

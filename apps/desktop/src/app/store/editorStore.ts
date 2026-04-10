@@ -49,6 +49,10 @@ import {
 } from "./editorSession";
 import { useSettingsStore } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
+import {
+    DEFAULT_EDITOR_PANE_ID as INITIAL_EDITOR_PANE_ID,
+    getNextGeneratedPaneId,
+} from "./workspaceLayoutTree";
 
 export {
     fileViewerNeedsTextContent,
@@ -94,14 +98,6 @@ export type {
 export { markSessionReady, readPersistedSession } from "./editorSession";
 
 const MAX_RECENTLY_CLOSED_TABS = 20;
-export const PRIMARY_EDITOR_PANE_ID = "primary";
-export const SECONDARY_EDITOR_PANE_ID = "secondary";
-export const TERTIARY_EDITOR_PANE_ID = "tertiary";
-const EDITOR_PANE_ORDER = [
-    PRIMARY_EDITOR_PANE_ID,
-    SECONDARY_EDITOR_PANE_ID,
-    TERTIARY_EDITOR_PANE_ID,
-] as const;
 
 interface LegacyWorkspaceState {
     tabs: Tab[];
@@ -193,15 +189,11 @@ function getResolvedFocusedPaneId(
     if (focusedPaneId && panes.some((pane) => pane.id === focusedPaneId)) {
         return focusedPaneId;
     }
-    return panes[0]?.id ?? PRIMARY_EDITOR_PANE_ID;
+    return panes[0]?.id ?? INITIAL_EDITOR_PANE_ID;
 }
 
 function getNextEditorPaneId(panes: readonly EditorPaneState[]) {
-    return (
-        EDITOR_PANE_ORDER.find(
-            (paneId) => !panes.some((pane) => pane.id === paneId),
-        ) ?? null
-    );
+    return getNextGeneratedPaneId(panes.map((pane) => pane.id));
 }
 
 function getEffectivePaneWorkspace<
@@ -221,7 +213,7 @@ function getEffectivePaneWorkspace<
         const effectivePanes =
             panes.length > 0
                 ? panes
-                : [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)];
+                : [createEditorPaneState(INITIAL_EDITOR_PANE_ID)];
         return {
             panes: effectivePanes,
             focusedPaneId: getResolvedFocusedPaneId(
@@ -232,23 +224,23 @@ function getEffectivePaneWorkspace<
     }
 
     const singlePane =
-        panes[0] ?? createEditorPaneState(PRIMARY_EDITOR_PANE_ID);
-    const isPlaceholderPrimaryPane =
-        singlePane.id === PRIMARY_EDITOR_PANE_ID &&
+        panes[0] ?? createEditorPaneState(INITIAL_EDITOR_PANE_ID);
+    const isPlaceholderInitialPane =
+        singlePane.id === INITIAL_EDITOR_PANE_ID &&
         singlePane.tabs.length === 0 &&
         singlePane.activeTabId === null &&
         singlePane.activationHistory.length === 0 &&
         singlePane.tabNavigationHistory.length === 0 &&
         singlePane.tabNavigationIndex === -1;
 
-    if (!isPlaceholderPrimaryPane) {
+    if (!isPlaceholderInitialPane) {
         return {
             panes,
             focusedPaneId: getResolvedFocusedPaneId(panes, state.focusedPaneId),
         };
     }
 
-    const legacyPane = createEditorPaneState(PRIMARY_EDITOR_PANE_ID, {
+    const legacyPane = createEditorPaneState(INITIAL_EDITOR_PANE_ID, {
         tabs: state.tabs ?? [],
         activeTabId: state.activeTabId ?? null,
         activationHistory: state.activationHistory ?? [],
@@ -277,7 +269,7 @@ export function selectEditorPaneState<
     return (
         panes.find((pane) => pane.id === resolvedPaneId) ??
         panes[0] ??
-        createEditorPaneState(PRIMARY_EDITOR_PANE_ID)
+        createEditorPaneState(INITIAL_EDITOR_PANE_ID)
     );
 }
 
@@ -317,7 +309,7 @@ function buildFocusedPaneProjection(args: {
     const panes =
         args.panes.length > 0
             ? args.panes.map((pane) => createEditorPaneState(pane.id, pane))
-            : [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)];
+            : [createEditorPaneState(INITIAL_EDITOR_PANE_ID)];
     const focusedPaneId = getResolvedFocusedPaneId(panes, args.focusedPaneId);
     const focusedPane =
         panes.find((pane) => pane.id === focusedPaneId) ?? panes[0];
@@ -931,8 +923,8 @@ interface EditorStore {
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
-    panes: [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)],
-    focusedPaneId: PRIMARY_EDITOR_PANE_ID,
+    panes: [createEditorPaneState(INITIAL_EDITOR_PANE_ID)],
+    focusedPaneId: INITIAL_EDITOR_PANE_ID,
     tabs: [],
     activeTabId: null,
     recentlyClosedTabs: [],
@@ -1770,7 +1762,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 panes:
                     hydratedPanes.length > 0
                         ? hydratedPanes
-                        : [createEditorPaneState(PRIMARY_EDITOR_PANE_ID)],
+                        : [createEditorPaneState(INITIAL_EDITOR_PANE_ID)],
                 focusedPaneId,
             }),
             recentlyClosedTabs: [],
@@ -1799,7 +1791,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 : (hydratedTabs[0]?.id ?? null);
         set({
             panes: [
-                createEditorPaneState(PRIMARY_EDITOR_PANE_ID, {
+                createEditorPaneState(INITIAL_EDITOR_PANE_ID, {
                     tabs: hydratedTabs,
                     activeTabId: nextActiveTabId,
                     activationHistory: nextActiveTabId ? [nextActiveTabId] : [],
@@ -1809,7 +1801,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                     tabNavigationIndex: nextActiveTabId ? 0 : -1,
                 }),
             ],
-            focusedPaneId: PRIMARY_EDITOR_PANE_ID,
+            focusedPaneId: INITIAL_EDITOR_PANE_ID,
             tabs: hydratedTabs,
             activeTabId: nextActiveTabId,
             recentlyClosedTabs: [],
@@ -2137,7 +2129,7 @@ useEditorStore.subscribe((state) => {
                           : pane,
                   )
                 : [
-                      createEditorPaneState(PRIMARY_EDITOR_PANE_ID, {
+                      createEditorPaneState(INITIAL_EDITOR_PANE_ID, {
                           tabs: state.tabs,
                           activeTabId: state.activeTabId,
                           activationHistory: state.activationHistory,
