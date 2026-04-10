@@ -1585,7 +1585,7 @@ describe("editorStore tab management", () => {
         expect(state.panes[1]?.activeTabId).toBe("tab-b");
     });
 
-    it("closes a tab in a non-focused pane without collapsing that pane", () => {
+    it("closes a tab in a non-focused pane and removes the empty pane", () => {
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -1621,9 +1621,9 @@ describe("editorStore tab management", () => {
         const state = useEditorStore.getState();
         expect(state.focusedPaneId).toBe("primary");
         expect(state.activeTabId).toBe("tab-a");
-        expect(state.panes).toHaveLength(2);
-        expect(state.panes[1]?.tabs).toEqual([]);
-        expect(state.panes[1]?.activeTabId).toBeNull();
+        expect(state.panes).toHaveLength(1);
+        expect(state.panes[0]?.id).toBe("primary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
     });
 
     it("reuses and closes review tabs across panes", () => {
@@ -1693,10 +1693,11 @@ describe("editorStore tab management", () => {
 
         state = useEditorStore.getState();
         expect(state.focusedPaneId).toBe("primary");
-        expect(state.panes[1]?.tabs.some((tab) => isReviewTab(tab))).toBe(
+        expect(state.panes).toHaveLength(1);
+        expect(state.panes[0]?.id).toBe("primary");
+        expect(state.panes[0]?.tabs.some((tab) => isReviewTab(tab))).toBe(
             false,
         );
-        expect(state.panes[1]?.activeTabId).toBeNull();
     });
 
     it("tracks dirty tabs and clears them when the tab closes", () => {
@@ -2354,6 +2355,48 @@ describe("editorStore tab management", () => {
             "tab-a",
         ]);
         expect(state.activeTabId).toBe("tab-a");
+    });
+
+    it("reorders tabs within a pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().reorderPaneTabs("primary", 0, 2);
+
+        const state = useEditorStore.getState();
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-c",
+            "tab-a",
+        ]);
+        expect(state.activeTabId).toBe("tab-b");
     });
 
     it("closes a pane explicitly and merges its tabs into a neighboring pane", () => {

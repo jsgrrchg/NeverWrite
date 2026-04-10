@@ -387,7 +387,7 @@ describe("editorSession", () => {
         expect(restored?.activeTabId).toBe("file-1");
     });
 
-    it("restores empty panes from pane-aware workspace sessions", async () => {
+    it("drops empty panes from pane-aware workspace sessions when other panes have tabs", async () => {
         localStorage.setItem(
             getEditorSessionKey("/vaults/project-alpha"),
             JSON.stringify({
@@ -429,21 +429,23 @@ describe("editorSession", () => {
 
         const restored = await restorePersistedSession("/vaults/project-alpha");
 
-        expect(restored?.focusedPaneId).toBe("primary");
-        expect(restored?.paneSizes).toEqual([0.5, 0.5]);
+        expect(restored?.focusedPaneId).toBe("secondary");
+        expect(restored?.paneSizes).toEqual([1]);
         expect(restored?.panes).toEqual([
-            expect.objectContaining({
-                id: "primary",
-                tabs: [],
-                activeTabId: null,
-            }),
             expect.objectContaining({
                 id: "secondary",
                 activeTabId: "note-1",
             }),
         ]);
-        expect(restored?.tabs).toEqual([]);
-        expect(restored?.activeTabId).toBeNull();
+        expect(restored?.tabs).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    id: "note-1",
+                    kind: "note",
+                }),
+            ]),
+        );
+        expect(restored?.activeTabId).toBe("note-1");
     });
 
     it("restores legacy persisted sessions through the session module", async () => {

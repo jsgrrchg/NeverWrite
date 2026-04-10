@@ -203,7 +203,7 @@ function buildPersistedPanes(
             : undefined;
     }
 
-    return state.panes
+    const persistedPanes = state.panes
         .map((pane) => ({
             id: pane.id,
             tabs: normalizePersistedTabs(pane.tabs),
@@ -221,6 +221,20 @@ function buildPersistedPanes(
             tabNavigationIndex: pane.tabNavigationIndex,
         }))
         .filter((pane) => pane.id.trim().length > 0);
+
+    if (persistedPanes.some((pane) => pane.tabs.length > 0)) {
+        return persistedPanes.filter((pane) => pane.tabs.length > 0);
+    }
+
+    return persistedPanes.length > 0 ? [persistedPanes[0]] : undefined;
+}
+
+function compactRestoredPanes(panes: PersistedSessionPane[]) {
+    if (panes.some((pane) => pane.tabs.length > 0)) {
+        return panes.filter((pane) => pane.tabs.length > 0);
+    }
+
+    return panes.length > 0 ? [panes[0]] : [];
 }
 
 function normalizePaneSizesForPersistence(count: number, paneSizes?: number[]) {
@@ -685,13 +699,15 @@ export async function restorePersistedSession(
     }
 
     if (session?.panes?.length) {
-        const restoredPanes = restorePersistedPaneTabs(session.panes);
-        const focusedPaneId =
+        const restoredPanes = compactRestoredPanes(
+            restorePersistedPaneTabs(session.panes),
+        );
+        const requestedFocusedPaneId =
             typeof session.focusedPaneId === "string"
                 ? session.focusedPaneId
                 : (restoredPanes[0]?.id ?? null);
         const focusedPane =
-            restoredPanes.find((pane) => pane.id === focusedPaneId) ??
+            restoredPanes.find((pane) => pane.id === requestedFocusedPaneId) ??
             restoredPanes[0] ??
             null;
 
@@ -701,7 +717,7 @@ export async function restorePersistedSession(
 
         return {
             panes: restoredPanes,
-            focusedPaneId,
+            focusedPaneId: focusedPane.id,
             paneSizes: normalizePaneSizesForPersistence(
                 restoredPanes.length,
                 session.paneSizes,
