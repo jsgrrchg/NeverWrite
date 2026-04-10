@@ -1,9 +1,10 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { EditorPaneBar } from "./EditorPaneBar";
 
@@ -342,5 +343,52 @@ describe("EditorPaneBar", () => {
         });
 
         expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
+    });
+
+    it("creates a new note from the pane plus-button context menu in the current pane", async () => {
+        const createNote = vi.fn().mockResolvedValue({
+            id: "notes/from-menu.md",
+            path: "/vault/notes/from-menu.md",
+            title: "From Menu",
+            modified_at: 1,
+            created_at: 1,
+        });
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            createNote,
+        });
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const newTabButton = document.querySelector(
+            '[data-pane-tab-strip="primary"] [data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        fireEvent.click(
+            await screen.findByRole("button", { name: "New Note" }),
+        );
+
+        await waitFor(() => {
+            const primaryPane = useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "primary");
+            expect(
+                primaryPane?.tabs.some(
+                    (tab) =>
+                        tab.kind === "note" &&
+                        tab.noteId === "notes/from-menu.md",
+                ),
+            ).toBe(true);
+        });
+
+        expect(createNote).toHaveBeenCalledTimes(1);
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b"]);
     });
 });

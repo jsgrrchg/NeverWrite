@@ -66,6 +66,10 @@ import {
     isPointOverAiComposerDropZone,
 } from "./tabDragAttachments";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
+import {
+    buildNewTabContextMenuEntries,
+    openBlankDraftTabFromPlusButton,
+} from "./newTabMenuActions";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
@@ -424,6 +428,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         (s) => s.navigateToHistoryIndex,
     );
     const tabOpenBehavior = useSettingsStore((s) => s.tabOpenBehavior);
+    const developerModeEnabled = useSettingsStore(
+        (s) => s.developerModeEnabled,
+    );
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
@@ -467,6 +474,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         tabId: string;
     }> | null>(null);
     const [historyContextMenu, setHistoryContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
+    const [newTabContextMenu, setNewTabContextMenu] =
         useState<ContextMenuState<void> | null>(null);
     const [dragPreviewTabId, setDragPreviewTabId] = useState<string | null>(
         null,
@@ -1818,22 +1827,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     })}
 
                                     <button
+                                        data-new-tab-button="true"
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={() => {
-                                            if (
-                                                !useVaultStore.getState()
-                                                    .vaultPath
-                                            )
-                                                return;
-                                            useEditorStore
-                                                .getState()
-                                                .insertExternalTab({
-                                                    id: crypto.randomUUID(),
-                                                    kind: "note",
-                                                    noteId: "",
-                                                    title: "New Tab",
-                                                    content: "",
-                                                });
+                                            openBlankDraftTabFromPlusButton(
+                                                focusedPaneId ?? undefined,
+                                            );
+                                        }}
+                                        onContextMenu={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            setNewTabContextMenu({
+                                                x: event.clientX,
+                                                y: event.clientY,
+                                                payload: undefined,
+                                            });
                                         }}
                                         title="New tab"
                                         className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
@@ -2268,6 +2276,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         />
                     );
                 })()}
+            {newTabContextMenu && (
+                <ContextMenu
+                    menu={newTabContextMenu}
+                    onClose={() => setNewTabContextMenu(null)}
+                    entries={buildNewTabContextMenuEntries({
+                        paneId: focusedPaneId ?? undefined,
+                        developerModeEnabled,
+                    })}
+                />
+            )}
             {tabContextMenu && (
                 <ContextMenu
                     menu={tabContextMenu}

@@ -50,6 +50,10 @@ import {
     openDetachedNoteWindow,
 } from "../../app/detachedWindows";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
+import {
+    buildNewTabContextMenuEntries,
+    openBlankDraftTabFromPlusButton,
+} from "./newTabMenuActions";
 import { useTabDragReorder } from "./useTabDragReorder";
 import {
     buildTabFileDragDetail,
@@ -216,11 +220,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         (state) => state.moveTabToNewSplit,
     );
     const moveTabToPane = useEditorStore((state) => state.moveTabToPane);
-    const insertExternalTabInPane = useEditorStore(
-        (state) => state.insertExternalTabInPane,
-    );
     const fileTreeShowExtensions = useSettingsStore(
         (state) => state.fileTreeShowExtensions,
+    );
+    const developerModeEnabled = useSettingsStore(
+        (state) => state.developerModeEnabled,
     );
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
@@ -229,6 +233,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const [paneContextMenu, setPaneContextMenu] = useState<ContextMenuState<{
         paneId: string;
     }> | null>(null);
+    const [newTabContextMenu, setNewTabContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
     const [dragPreviewTabId, setDragPreviewTabId] = useState<string | null>(
         null,
     );
@@ -831,18 +837,16 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 {vaultPath && (
                     <button
                         type="button"
-                        onClick={() =>
-                            insertExternalTabInPane(
-                                {
-                                    id: crypto.randomUUID(),
-                                    kind: "note",
-                                    noteId: "",
-                                    title: "New Tab",
-                                    content: "",
-                                },
-                                paneId,
-                            )
-                        }
+                        data-new-tab-button="true"
+                        onClick={() => openBlankDraftTabFromPlusButton(paneId)}
+                        onContextMenu={(event) => {
+                            event.preventDefault();
+                            setNewTabContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                payload: undefined,
+                            });
+                        }}
                         className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
                         aria-label="New tab"
                         title="New tab"
@@ -966,6 +970,17 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
 
                         return entries;
                     })()}
+                />
+            )}
+
+            {newTabContextMenu && (
+                <ContextMenu
+                    menu={newTabContextMenu}
+                    onClose={() => setNewTabContextMenu(null)}
+                    entries={buildNewTabContextMenuEntries({
+                        paneId,
+                        developerModeEnabled,
+                    })}
                 />
             )}
 

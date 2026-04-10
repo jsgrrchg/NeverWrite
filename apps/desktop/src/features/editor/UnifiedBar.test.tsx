@@ -5,13 +5,16 @@ import userEvent from "@testing-library/user-event";
 import {
     renderComponent,
     flushPromises,
+    mockInvoke,
     setEditorTabs,
     setVaultEntries,
     setVaultNotes,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
+import { useChatStore } from "../ai/store/chatStore";
 import type { AIComposerPart } from "../ai/types";
 
 const innerPositionMock = vi.fn();
@@ -175,6 +178,33 @@ describe("UnifiedBar tab strip drop", () => {
         });
 
         useSettingsStore.setState({ fileTreeShowExtensions: false });
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: "codex-acp",
+                        name: "Codex ACP",
+                        description: "Codex provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description: "Claude provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            selectedRuntimeId: "codex-acp",
+        });
     });
 
     it("switches tabs when clicking another tab", async () => {
@@ -553,6 +583,179 @@ describe("UnifiedBar tab strip drop", () => {
         await flushPromises();
 
         expect(container.querySelector('button[title="New ACP"]')).toBeNull();
+    });
+
+    it("shows the plus-button context menu and hides blank files outside developer mode", async () => {
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+        setVaultEntries([]);
+        useSettingsStore.setState({ developerModeEnabled: false });
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const newTabButton = container.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+
+        expect(
+            await screen.findByRole("button", { name: "New Note" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "New Agent" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "New blank file" }),
+        ).toBeNull();
+    });
+
+    it("opens the New Agent submenu and creates a chat for the selected provider", async () => {
+        const user = userEvent.setup();
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+        setVaultEntries([]);
+        useChatStore.setState((state) => ({
+            ...state,
+            newSession: vi.fn(async (runtimeId?: string) => {
+                const sessionId = `session-${runtimeId ?? "default"}`;
+                useChatStore.setState((current) => ({
+                    ...current,
+                    sessionsById: {
+                        ...current.sessionsById,
+                        [sessionId]: {
+                            sessionId,
+                            historySessionId: sessionId,
+                            status: "idle",
+                            runtimeId: runtimeId ?? "codex-acp",
+                            modelId: "test-model",
+                            modeId: "default",
+                            models: [],
+                            modes: [],
+                            configOptions: [],
+                            messages: [],
+                            attachments: [],
+                        },
+                    },
+                    sessionOrder: [sessionId, ...current.sessionOrder],
+                    activeSessionId: sessionId,
+                }));
+            }),
+        }));
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const newTabButton = container.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        const newAgentButton = await screen.findByRole("button", {
+            name: "New Agent",
+        });
+        fireEvent.mouseEnter(newAgentButton);
+        await user.click(await screen.findByRole("button", { name: "Claude" }));
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.some((tab) => tab.kind === "ai-chat"),
+            ).toBe(true);
+        });
+
+        const chatSessionId = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) =>
+                    tab.kind === "ai-chat" &&
+                    tab.id === useEditorStore.getState().activeTabId,
+            );
+        expect(chatSessionId).not.toBeNull();
+        if (chatSessionId && chatSessionId.kind === "ai-chat") {
+            expect(
+                useChatStore.getState().sessionsById[chatSessionId.sessionId]
+                    ?.runtimeId,
+            ).toBe("claude-acp");
+        }
+    });
+
+    it("creates a blank file from the plus-button context menu in developer mode", async () => {
+        const user = userEvent.setup();
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+        setVaultEntries([]);
+        useSettingsStore.setState({ developerModeEnabled: true });
+        useVaultStore.setState({
+            refreshEntries: vi.fn().mockResolvedValue(undefined),
+        });
+        mockInvoke().mockResolvedValue({
+            relative_path: "untitled",
+            file_name: "untitled",
+            path: "/vault/untitled",
+            mime_type: "text/plain",
+            content: "",
+            size_bytes: 0,
+            content_truncated: false,
+        });
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const newTabButton = container.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "New blank file" }),
+        );
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.some(
+                        (tab) =>
+                            tab.kind === "file" && tab.title === "untitled",
+                    ),
+            ).toBe(true);
+        });
+
+        expect(mockInvoke()).toHaveBeenCalledWith("save_vault_file", {
+            vaultPath: "/vault",
+            relativePath: "untitled",
+            content: "",
+        });
     });
 
     it("shrinks editor tabs continuously and expands them again when space returns", async () => {
