@@ -2875,6 +2875,94 @@ describe("editorStore tab management", () => {
         expect(state.panes[1]?.tabs[0]?.id).toBe("tab-b");
     });
 
+    it("preserves a nested down split when moving a tab from the left pane of a side-by-side workspace", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-c",
+                },
+            ],
+            "primary",
+        );
+
+        const paneId = useEditorStore
+            .getState()
+            .moveTabToNewSplit("tab-b", "column");
+
+        const state = useEditorStore.getState();
+        expect(paneId).toBe("pane-3");
+        expect(state.focusedPaneId).toBe("pane-3");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-3",
+            "secondary",
+        ]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "primary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-a"]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "pane-3")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b"]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-c"]);
+        expect(state.layoutTree.type).toBe("split");
+        if (state.layoutTree.type !== "split") {
+            throw new Error("Expected root split layout");
+        }
+        expect(state.layoutTree.direction).toBe("row");
+        const nestedSplit = state.layoutTree.children[0];
+        expect(nestedSplit?.type).toBe("split");
+        if (!nestedSplit || nestedSplit.type !== "split") {
+            throw new Error("Expected nested split on the left branch");
+        }
+        expect(nestedSplit.direction).toBe("column");
+        expect(
+            nestedSplit.children.map((child) =>
+                child.type === "pane" ? child.paneId : child.id,
+            ),
+        ).toEqual(["primary", "pane-3"]);
+        const rightBranch = state.layoutTree.children[1];
+        expect(rightBranch?.type).toBe("pane");
+        if (!rightBranch || rightBranch.type !== "pane") {
+            throw new Error("Expected right branch to remain a pane");
+        }
+        expect(rightBranch.paneId).toBe("secondary");
+    });
+
     it("focuses adjacent panes through directional navigation", () => {
         useEditorStore.getState().hydrateWorkspace(
             [

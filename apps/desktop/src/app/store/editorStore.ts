@@ -196,6 +196,23 @@ function stringArraysEqual(left: readonly string[], right: readonly string[]) {
     );
 }
 
+function paneIdCollectionsEqual(
+    left: readonly string[],
+    right: readonly string[],
+) {
+    if (left.length !== right.length) {
+        return false;
+    }
+
+    const leftIds = new Set(left);
+    const rightIds = new Set(right);
+    if (leftIds.size !== left.length || rightIds.size !== right.length) {
+        return false;
+    }
+
+    return left.every((paneId) => rightIds.has(paneId));
+}
+
 function tabsShallowEqual(left: readonly Tab[], right: readonly Tab[]) {
     return (
         left.length === right.length &&
@@ -255,7 +272,7 @@ function resolveLayoutTreeFromState<
     if (state.layoutTree) {
         const normalizedTree = normalizeLayoutTree(state.layoutTree);
         const treePaneIds = getLayoutPaneIds(normalizedTree);
-        if (stringArraysEqual(treePaneIds, resolvedPaneIds)) {
+        if (paneIdCollectionsEqual(treePaneIds, resolvedPaneIds)) {
             return normalizedTree;
         }
     }
@@ -472,7 +489,7 @@ function buildFocusedPaneProjection(args: {
     const paneIds = paneStates.map((pane) => pane.id);
     const layoutTree =
         args.layoutTree &&
-        stringArraysEqual(
+        paneIdCollectionsEqual(
             getLayoutPaneIds(normalizeLayoutTree(args.layoutTree)),
             paneIds,
         )

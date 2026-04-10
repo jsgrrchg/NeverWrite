@@ -222,8 +222,8 @@ describe("EditorPaneBar", () => {
         const state = useEditorStore.getState();
         expect(state.focusedPaneId).toBe("pane-3");
         expect(state.panes.map((pane) => pane.id)).toEqual([
-            "secondary",
             "pane-3",
+            "secondary",
         ]);
         expect(
             state.panes.find((pane) => pane.id === "pane-3")?.tabs[0],
@@ -233,6 +233,99 @@ describe("EditorPaneBar", () => {
             title: "Alpha",
             content: "Alpha",
         });
+    });
+
+    it("moves a tab into a new down split under the current pane without flattening sibling panes", async () => {
+        const user = userEvent.setup();
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-a",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "Alpha",
+                        },
+                        {
+                            id: "tab-c",
+                            kind: "note",
+                            noteId: "notes/c",
+                            title: "Gamma",
+                            content: "Gamma",
+                        },
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "tab-b",
+                            kind: "note",
+                            noteId: "notes/b",
+                            title: "Beta",
+                            content: "Beta",
+                        },
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Move to New Down Split",
+            }),
+        );
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().panes).toHaveLength(3);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("pane-3");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-3",
+            "secondary",
+        ]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "primary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-a"]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "pane-3")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-c"]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b"]);
+        expect(state.layoutTree.type).toBe("split");
+        if (state.layoutTree.type !== "split") {
+            throw new Error("Expected root split layout");
+        }
+        expect(state.layoutTree.direction).toBe("row");
+        const nestedSplit = state.layoutTree.children[0];
+        expect(nestedSplit?.type).toBe("split");
+        if (!nestedSplit || nestedSplit.type !== "split") {
+            throw new Error("Expected nested split on the left branch");
+        }
+        expect(nestedSplit.direction).toBe("column");
     });
 
     it("disables creating a new split when the workspace already reached the cap", async () => {
