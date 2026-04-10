@@ -825,11 +825,11 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     return (
         <div
-            className="h-full flex flex-col"
+            className="h-full min-w-0 flex flex-col overflow-hidden"
             style={{ background: "var(--bg-primary)" }}
         >
             <div
-                className="flex items-center gap-2 px-3 shrink-0"
+                className="flex min-w-0 items-center gap-2 overflow-x-auto px-3 shrink-0"
                 style={{
                     height: 39,
                     borderBottom: "1px solid var(--border)",
@@ -954,7 +954,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
             <div
                 ref={registerContainerElement}
-                className={`flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
+                className={`min-w-0 flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
                 style={{
                     padding: 24,
                     background:
@@ -967,7 +967,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 {tab.viewMode === "continuous" ? (
                     <div
                         ref={contentRef}
-                        className="w-full"
+                        className="min-w-0 w-full"
                         style={{
                             filter: activeFilter.css,
                             position:
@@ -1009,7 +1009,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 ) : (
                     <div
                         ref={contentRef}
-                        className="w-full flex justify-center"
+                        className="min-w-0 w-full flex justify-center"
                         style={{
                             filter: activeFilter.css,
                         }}

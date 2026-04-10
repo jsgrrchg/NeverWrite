@@ -367,7 +367,7 @@ export function WorkspaceSplitContainer({
     return (
         <div
             ref={containerRef}
-            className={`flex h-full min-h-0 min-w-0 overflow-hidden ${
+            className={`flex h-full min-h-0 min-w-0 w-full flex-1 overflow-hidden ${
                 node.direction === "row" ? "flex-row" : "flex-col"
             }`}
             data-workspace-split-id={node.id}

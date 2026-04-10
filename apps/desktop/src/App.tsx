@@ -1825,7 +1825,7 @@ export default function App() {
                     }}
                     onOpenSettings={openSettings}
                 />
-                <div className="flex-1 overflow-hidden">
+                <div className="min-w-0 flex-1 overflow-hidden">
                     <AppLayout
                         left={<SidebarPanel view={sidebarView} />}
                         center={

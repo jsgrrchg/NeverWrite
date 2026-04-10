@@ -287,6 +287,18 @@ describe("MultiPaneWorkspace", () => {
         expect(primaryPane?.className).toContain("flex-1");
     });
 
+    it("stretches the root split container to fill the workspace width", () => {
+        renderComponent(<MultiPaneWorkspace />);
+
+        const rootSplit = document.querySelector(
+            `[data-workspace-split-id="${useEditorStore.getState().layoutTree.id}"]`,
+        );
+
+        expect(rootSplit).not.toBeNull();
+        expect(rootSplit?.className).toContain("w-full");
+        expect(rootSplit?.className).toContain("flex-1");
+    });
+
     it("renders independent resize handles for each split branch", () => {
         renderComponent(<MultiPaneWorkspace />);
 

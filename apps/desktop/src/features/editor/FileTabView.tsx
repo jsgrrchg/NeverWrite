@@ -79,7 +79,7 @@ export function FileTabView({ paneId }: FileTabViewProps) {
 function FileHeader({ tab, children }: { tab: FileTab; children?: ReactNode }) {
     return (
         <div
-            className="flex items-center justify-between gap-2 px-3 shrink-0"
+            className="flex min-w-0 items-center justify-between gap-2 px-3 shrink-0 overflow-x-auto"
             style={{
                 height: 39,
                 borderBottom: "1px solid var(--border)",
@@ -222,7 +222,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
     const zoomPercent = formatZoomPercentage(zoom);
 
     return (
-        <div className="h-full flex flex-col overflow-hidden">
+        <div className="h-full min-w-0 flex flex-col overflow-hidden">
             <FileHeader tab={tab}>
                 <button
                     type="button"
@@ -260,7 +260,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
 
             <div
                 ref={containerRef}
-                className="flex-1 overflow-auto"
+                className="min-w-0 flex-1 overflow-auto"
                 style={{
                     background:
                         "radial-gradient(circle at top, color-mix(in srgb, var(--bg-secondary) 92%, white) 0%, var(--bg-primary) 72%)",
@@ -295,7 +295,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                 )}
                 {isFit ? (
                     <div
-                        className="h-full w-full flex items-center justify-center p-6"
+                        className="h-full min-w-0 w-full flex items-center justify-center p-6"
                         style={{
                             display: status === "error" ? "none" : undefined,
                         }}
@@ -319,7 +319,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                     </div>
                 ) : (
                     <div
-                        className="inline-flex min-w-full min-h-full items-start justify-center p-6"
+                        className="flex min-w-full min-h-full items-start justify-center p-6"
                         style={{
                             display: status === "error" ? "none" : undefined,
                         }}
