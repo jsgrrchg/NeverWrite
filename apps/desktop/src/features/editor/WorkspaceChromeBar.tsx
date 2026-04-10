@@ -206,12 +206,7 @@ export function WorkspaceChromeBar() {
                     </button>
                 </div>
 
-                <div
-                    className="min-w-0 flex-1 truncate px-2 text-xs font-medium uppercase tracking-[0.14em]"
-                    style={{ color: "var(--text-secondary)" }}
-                >
-                    Multi-pane workspace
-                </div>
+                <div aria-hidden="true" className="min-w-0 flex-1" />
 
                 <div className="no-drag flex shrink-0 items-center gap-1">
                     <button
