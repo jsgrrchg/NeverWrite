@@ -6,6 +6,7 @@ import {
     useMemo,
     useDeferredValue,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useVaultStore,
@@ -84,7 +85,6 @@ function QuickSwitcherDialog() {
     const closeModal = useCommandStore((s) => s.closeModal);
     const notes = useVaultStore((s) => s.notes);
     const entries = useVaultStore((s) => s.entries);
-    const panes = useEditorStore((s) => s.panes);
     const openNote = useEditorStore((s) => s.openNote);
     const openPdf = useEditorStore((s) => s.openPdf);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
@@ -97,7 +97,7 @@ function QuickSwitcherDialog() {
         () => new Map(entries.map((entry) => [entry.path, entry])),
         [entries],
     );
-    const tabs = useMemo(() => panes.flatMap((pane) => pane.tabs), [panes]);
+    const tabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
 
     const buildNoteItem = useCallback(
         (note: NoteDto): QuickSwitcherItem => ({

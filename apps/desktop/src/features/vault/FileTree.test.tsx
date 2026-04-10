@@ -790,7 +790,7 @@ describe("FileTree", () => {
         ).toBe("Beta body");
     });
 
-    it("adds a note to a new pane from the context menu", async () => {
+    it("opens a note in a right split from the context menu", async () => {
         const user = userEvent.setup();
         vi.mocked(invoke).mockResolvedValue({ content: "Beta body" });
 
@@ -827,7 +827,7 @@ describe("FileTree", () => {
 
         fireEvent.contextMenu(getNoteRow("Beta"));
         await user.click(
-            await screen.findByRole("button", { name: "Add to New Pane" }),
+            await screen.findByRole("button", { name: "Open in Right Split" }),
         );
 
         await waitFor(() => {

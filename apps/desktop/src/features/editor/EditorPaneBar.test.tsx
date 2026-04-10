@@ -1,8 +1,9 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { renderComponent } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
+import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { EditorPaneBar } from "./EditorPaneBar";
 
 describe("EditorPaneBar", () => {
@@ -74,7 +75,7 @@ describe("EditorPaneBar", () => {
         ).toEqual(["tab-b", "tab-a"]);
     });
 
-    it("adds a duplicated tab to a new pane from the tab context menu", async () => {
+    it("moves a tab into a new right split from the tab context menu", async () => {
         const user = userEvent.setup();
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
@@ -84,7 +85,9 @@ describe("EditorPaneBar", () => {
         expect(tabButton).not.toBeNull();
         fireEvent.contextMenu(tabButton!);
         await user.click(
-            await screen.findByRole("button", { name: "Add to New Pane" }),
+            await screen.findByRole("button", {
+                name: "Move to New Right Split",
+            }),
         );
 
         await waitFor(() => {
@@ -93,21 +96,28 @@ describe("EditorPaneBar", () => {
 
         const state = useEditorStore.getState();
         expect(state.focusedPaneId).toBe("pane-3");
-        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
-        expect(state.panes[2]?.tabs).toHaveLength(1);
-        expect(state.panes[2]?.tabs[0]).toMatchObject({
+        expect(
+            state.panes.find((pane) => pane.id === "primary")?.tabs,
+        ).toHaveLength(0);
+        expect(
+            state.panes.find((pane) => pane.id === "pane-3")?.tabs[0],
+        ).toMatchObject({
             kind: "note",
             noteId: "notes/a",
             title: "Alpha",
             content: "Alpha",
         });
-        expect(state.panes[2]?.tabs[0]?.id).not.toBe("tab-a");
     });
 
-    it("disables add to new pane when the workspace already has three panes", async () => {
+    it("disables creating a new split when the workspace already reached the cap", async () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
-        useEditorStore.getState().createEmptyPane();
+        await act(async () => {
+            Array.from({ length: MAX_EDITOR_PANES - 2 }, () =>
+                useEditorStore.getState().createEmptyPane(),
+            );
+            await Promise.resolve();
+        });
 
         const tabButton = document.querySelector(
             '[data-pane-tab-id="tab-a"]',
@@ -116,8 +126,50 @@ describe("EditorPaneBar", () => {
         fireEvent.contextMenu(tabButton!);
 
         expect(
-            await screen.findByRole("button", { name: "Add to New Pane" }),
+            await screen.findByRole("button", {
+                name: "Move to New Right Split",
+            }),
         ).toBeDisabled();
+    });
+
+    it("splits the current pane down from the pane actions menu", async () => {
+        const user = userEvent.setup();
+        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
+
+        await user.click(
+            screen.getByRole("button", { name: "Pane 2 actions" }),
+        );
+        await user.click(
+            await screen.findByRole("button", { name: "Split Down" }),
+        );
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().panes).toHaveLength(3);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("pane-3");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "secondary",
+            "pane-3",
+        ]);
+    });
+
+    it("focuses a neighbor pane from the pane actions menu", async () => {
+        const user = userEvent.setup();
+        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
+
+        await user.click(
+            screen.getByRole("button", { name: "Pane 2 actions" }),
+        );
+        await user.click(
+            await screen.findByRole("button", { name: "Focus Pane Left" }),
+        );
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+        });
     });
 
     it("closes a pane explicitly from the pane actions menu", async () => {

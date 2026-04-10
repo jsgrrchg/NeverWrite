@@ -25,7 +25,10 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    selectFocusedPaneId,
+    useEditorStore,
+} from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -118,7 +121,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         applyIncomingContent: replaceEditorDocument,
     });
     const isPaneFocused = useEditorStore(
-        (state) => state.focusedPaneId === paneId,
+        (state) => selectFocusedPaneId(state) === paneId,
     );
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;

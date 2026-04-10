@@ -41,7 +41,7 @@ type BottomPanelView = (typeof BOTTOM_PANEL_VIEWS)[number];
 const DEFAULT_EDITOR_PANE_SIZES = [1];
 
 function normalizeEditorPaneSizesForCount(count: number, sizes?: number[]) {
-    const normalizedCount = Math.max(1, Math.min(3, Math.floor(count) || 1));
+    const normalizedCount = Math.max(1, Math.floor(count) || 1);
     const incoming = (sizes ?? []).filter(
         (value) => Number.isFinite(value) && value > 0,
     );

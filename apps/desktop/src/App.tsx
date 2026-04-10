@@ -58,8 +58,14 @@ import {
     isFileTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
+    selectFocusedPaneId,
     selectFocusedEditorTab,
+    selectLeafPaneIds,
+    selectPaneNeighbor,
+    selectPaneCount,
+    selectPaneState,
 } from "./app/store/editorStore";
+import { MAX_EDITOR_PANES } from "./app/store/workspaceLayoutTree";
 import {
     buildPersistedSession,
     isSessionReady,
@@ -392,8 +398,21 @@ function useRegisterCommands(
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             useEditorStore.getState().activeTabId !== null;
+        const canSplitPane = () =>
+            selectPaneCount(useEditorStore.getState()) < MAX_EDITOR_PANES;
+        const canClosePane = () =>
+            selectPaneCount(useEditorStore.getState()) > 1;
         const hasRecentlyClosedTab = () =>
             useEditorStore.getState().recentlyClosedTabs.length > 0;
+        const hasPaneNeighbor = (
+            direction: "left" | "right" | "up" | "down",
+        ) => {
+            const state = useEditorStore.getState();
+            const focusedPaneId = selectFocusedPaneId(state);
+            return focusedPaneId
+                ? selectPaneNeighbor(state, focusedPaneId, direction) !== null
+                : false;
+        };
         const developerModeEnabled = () =>
             developerCommandsEnabled &&
             useSettingsStore.getState().developerModeEnabled &&
@@ -588,6 +607,91 @@ function useRegisterCommands(
             shortcut: platform === "macos" ? "⌘-" : "Ctrl-",
             category: "Editor",
             execute: () => adjustEditorFontSize(-1),
+        });
+
+        register({
+            id: "workspace:split-right",
+            label: "Split Right",
+            category: "Workspace",
+            when: canSplitPane,
+            execute: () => {
+                useEditorStore.getState().splitEditorPane("row");
+            },
+        });
+
+        register({
+            id: "workspace:split-down",
+            label: "Split Down",
+            category: "Workspace",
+            when: canSplitPane,
+            execute: () => {
+                useEditorStore.getState().splitEditorPane("column");
+            },
+        });
+
+        register({
+            id: "workspace:focus-left",
+            label: "Focus Pane Left",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("left"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("left");
+            },
+        });
+
+        register({
+            id: "workspace:focus-right",
+            label: "Focus Pane Right",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("right"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("right");
+            },
+        });
+
+        register({
+            id: "workspace:focus-up",
+            label: "Focus Pane Up",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("up"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("up");
+            },
+        });
+
+        register({
+            id: "workspace:focus-down",
+            label: "Focus Pane Down",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("down"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("down");
+            },
+        });
+
+        register({
+            id: "workspace:balance-layout",
+            label: "Balance Layout",
+            category: "Workspace",
+            when: canClosePane,
+            execute: () => {
+                useEditorStore.getState().balancePaneLayout();
+            },
+        });
+
+        register({
+            id: "workspace:close-pane",
+            label: "Close Pane",
+            category: "Workspace",
+            when: canClosePane,
+            execute: () => {
+                const state = useEditorStore.getState();
+                const focusedPaneId = selectFocusedPaneId(state);
+                if (!focusedPaneId) {
+                    return;
+                }
+                state.closePane(focusedPaneId);
+            },
         });
 
         // Layout
@@ -973,7 +1077,7 @@ export default function App() {
     const developerTerminalEnabled = useSettingsStore(
         (s) => s.developerTerminalEnabled,
     );
-    const paneCount = useEditorStore((s) => s.panes.length);
+    const paneCount = useEditorStore(selectPaneCount);
     const windowMode = getWindowMode();
     const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
@@ -1160,7 +1264,11 @@ export default function App() {
         const paneCount = restored.panes?.length ?? 1;
         setEditorPaneSizes(paneCount, restored.paneSizes ?? []);
         if (restored.panes?.length) {
-            hydrateWorkspace(restored.panes, restored.focusedPaneId);
+            hydrateWorkspace(
+                restored.panes,
+                restored.focusedPaneId,
+                restored.layoutTree,
+            );
             return;
         }
         hydrateTabs(restored.tabs, restored.activeTabId);
@@ -1220,11 +1328,16 @@ export default function App() {
 
         const timer = window.setTimeout(() => {
             const editor = useEditorStore.getState();
+            const paneIds = selectLeafPaneIds(editor);
+            const focusedPaneId = selectFocusedPaneId(editor);
             writePersistedSession(
                 vaultPath,
                 buildPersistedSession({
-                    panes: editor.panes,
-                    focusedPaneId: editor.focusedPaneId,
+                    panes: paneIds.map((paneId) =>
+                        selectPaneState(editor, paneId),
+                    ),
+                    focusedPaneId,
+                    layoutTree: editor.layoutTree,
                     paneSizes: useLayoutStore.getState().editorPaneSizes,
                     tabs: editor.tabs,
                     activeTabId: editor.activeTabId,
@@ -1566,7 +1679,9 @@ export default function App() {
                     if (disposed) return;
                     const editor = useEditorStore.getState();
                     const targetPaneId =
-                        editor.focusedPaneId ?? editor.panes[0]?.id ?? null;
+                        selectFocusedPaneId(editor) ??
+                        selectLeafPaneIds(editor)[0] ??
+                        null;
 
                     if (targetPaneId) {
                         editor.insertExternalTabInPane(

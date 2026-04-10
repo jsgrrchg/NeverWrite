@@ -7,6 +7,7 @@ import {
     type TabInput,
 } from "../store/editorStore";
 import { inferFileViewer } from "../store/editorTabs";
+import type { WorkspaceSplitDirection } from "../store/workspaceLayoutTree";
 import { useVaultStore, type VaultEntryDto } from "../store/vaultStore";
 import { toVaultRelativePath } from "./vaultPaths";
 import { vaultInvoke } from "./vaultInvoke";
@@ -367,7 +368,11 @@ async function buildVaultEntryTab(
 export async function insertVaultEntryTab(
     entry: VaultEntryDto,
     index?: number,
-    options?: { paneId?: string; newPane?: boolean },
+    options?: {
+        paneId?: string;
+        newPane?: boolean;
+        splitDirection?: WorkspaceSplitDirection;
+    },
 ) {
     const nextTab = await buildVaultEntryTab(entry);
     if (!nextTab) {
@@ -375,8 +380,17 @@ export async function insertVaultEntryTab(
     }
 
     const store = useEditorStore.getState();
+    if (options?.splitDirection) {
+        return (
+            store.insertExternalTabInNewSplit(
+                nextTab,
+                options.splitDirection,
+                options.paneId,
+            ) !== null
+        );
+    }
     if (options?.newPane) {
-        return store.insertExternalTabInNewPane(nextTab) !== null;
+        return store.insertExternalTabInNewSplit(nextTab, "row") !== null;
     }
     if (options?.paneId) {
         store.insertExternalTabInPane(nextTab, options.paneId, index);
@@ -394,18 +408,39 @@ export function isExcalidrawVaultEntry(
 
 export async function openVaultFileEntry(
     entry: VaultEntryDto,
-    options?: { newTab?: boolean; paneId?: string; newPane?: boolean },
+    options?: {
+        newTab?: boolean;
+        paneId?: string;
+        newPane?: boolean;
+        splitDirection?: WorkspaceSplitDirection;
+    },
 ) {
     const store = useEditorStore.getState();
 
     if (isExcalidrawVaultEntry(entry)) {
+        if (options?.splitDirection) {
+            store.insertExternalTabInNewSplit(
+                {
+                    id: crypto.randomUUID(),
+                    kind: "map",
+                    relativePath: entry.relative_path,
+                    title: entry.title || entry.file_name,
+                },
+                options.splitDirection,
+                options.paneId,
+            );
+            return;
+        }
         if (options?.newPane) {
-            store.insertExternalTabInNewPane({
-                id: crypto.randomUUID(),
-                kind: "map",
-                relativePath: entry.relative_path,
-                title: entry.title || entry.file_name,
-            });
+            store.insertExternalTabInNewSplit(
+                {
+                    id: crypto.randomUUID(),
+                    kind: "map",
+                    relativePath: entry.relative_path,
+                    title: entry.title || entry.file_name,
+                },
+                "row",
+            );
             return;
         }
         if (options?.paneId) {
@@ -415,10 +450,16 @@ export async function openVaultFileEntry(
         return;
     }
 
-    if (options?.newTab || options?.newPane || options?.paneId) {
+    if (
+        options?.newTab ||
+        options?.newPane ||
+        options?.paneId ||
+        options?.splitDirection
+    ) {
         const inserted = await insertVaultEntryTab(entry, undefined, {
             paneId: options?.paneId,
             newPane: options?.newPane,
+            splitDirection: options?.splitDirection,
         });
         if (!inserted) {
             try {

@@ -68,4 +68,20 @@ describe("layoutStore bottom panel", () => {
             JSON.stringify([0.5, 0.25, 0.25]),
         );
     });
+
+    it("supports more than three persisted editor pane proportions", () => {
+        useLayoutStore.getState().setEditorPaneSizes(6, [3, 1, 1, 1, 1, 1]);
+
+        expect(useLayoutStore.getState().editorPaneSizes).toEqual([
+            3 / 8,
+            1 / 8,
+            1 / 8,
+            1 / 8,
+            1 / 8,
+            1 / 8,
+        ]);
+        expect(localStorage.getItem("neverwrite.editor-pane.sizes")).toBe(
+            JSON.stringify([3 / 8, 1 / 8, 1 / 8, 1 / 8, 1 / 8, 1 / 8]),
+        );
+    });
 });

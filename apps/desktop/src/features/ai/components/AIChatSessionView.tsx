@@ -17,6 +17,7 @@ import {
     isNoteTab,
     selectEditorPaneActiveTab,
     selectFocusedEditorTab,
+    selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -326,7 +327,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         if (!session || !sessionId) return;
         const title = getSessionTitle(session);
         const editorState = useEditorStore.getState();
-        const allTabs = editorState.panes.flatMap((p) => p.tabs);
+        const allTabs = selectEditorWorkspaceTabs(editorState);
         const chatTab = allTabs.find(
             (t) => isChatTab(t) && t.sessionId === sessionId,
         );

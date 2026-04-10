@@ -38,8 +38,10 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { findWikilinks } from "../../app/utils/wikilinks";
 import {
+    selectEditorWorkspaceTabs,
     useEditorStore,
     isNoteTab,
+    selectFocusedPaneId,
     selectEditorPaneState,
     type Tab,
     type NoteTab,
@@ -415,7 +417,7 @@ export function Editor({
     const activeTabId = paneState.activeTabId;
     const paneTabs = paneState.tabs;
     const isPaneFocused = useEditorStore((state) =>
-        paneId ? state.focusedPaneId === paneId : true,
+        paneId ? selectFocusedPaneId(state) === paneId : true,
     );
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
@@ -2942,11 +2944,9 @@ export function Editor({
             pruneNoteStateForOpenTabs(tabs);
         };
 
-        syncLiveNoteState(
-            useEditorStore.getState().panes.flatMap((pane) => pane.tabs),
-        );
+        syncLiveNoteState(selectEditorWorkspaceTabs(useEditorStore.getState()));
         const unsubscribe = useEditorStore.subscribe((state) => {
-            syncLiveNoteState(state.panes.flatMap((pane) => pane.tabs));
+            syncLiveNoteState(selectEditorWorkspaceTabs(state));
         });
         return unsubscribe;
     }, [pruneNoteStateForOpenTabs, getPaneSnapshot]);

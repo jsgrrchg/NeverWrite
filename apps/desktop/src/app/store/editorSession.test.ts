@@ -9,6 +9,7 @@ import { normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useLayoutStore } from "./layoutStore";
 import { useVaultStore } from "./vaultStore";
+import { createInitialLayout, splitPane } from "./workspaceLayoutTree";
 
 vi.mock("@tauri-apps/api/core", () => ({
     invoke: vi.fn(),
@@ -261,6 +262,12 @@ describe("editorSession", () => {
         useLayoutStore.setState({
             editorPaneSizes: [0.35, 0.65],
         });
+        const layoutTree = splitPane(
+            createInitialLayout("pane-1"),
+            "pane-1",
+            "row",
+            "pane-2",
+        );
         const session = buildPersistedSession({
             panes: [
                 {
@@ -321,6 +328,7 @@ describe("editorSession", () => {
                 },
             ],
             focusedPaneId: "pane-2",
+            layoutTree,
             tabs: [
                 {
                     id: "file-1",
@@ -359,6 +367,7 @@ describe("editorSession", () => {
             }),
         ]);
         expect(session.focusedPaneId).toBe("pane-2");
+        expect(session.layoutTree).toEqual(layoutTree);
         expect(session.paneSizes).toEqual([0.35, 0.65]);
 
         localStorage.setItem(
@@ -369,6 +378,7 @@ describe("editorSession", () => {
         const restored = await restorePersistedSession("/vaults/project-alpha");
 
         expect(restored?.focusedPaneId).toBe("pane-2");
+        expect(restored?.layoutTree).toEqual(layoutTree);
         expect(restored?.paneSizes).toEqual([0.35, 0.65]);
         expect(restored?.panes).toHaveLength(2);
         expect(restored?.panes?.[0]).toMatchObject({
@@ -385,6 +395,81 @@ describe("editorSession", () => {
             relativePath: "src/main.ts",
         });
         expect(restored?.activeTabId).toBe("file-1");
+    });
+
+    it("restores nested layout trees for mixed split workspaces", async () => {
+        const nestedLayoutTree = splitPane(
+            splitPane(
+                createInitialLayout("primary"),
+                "primary",
+                "row",
+                "secondary",
+            ),
+            "secondary",
+            "column",
+            "tertiary",
+        );
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify({
+                panes: [
+                    {
+                        id: "primary",
+                        tabs: [
+                            {
+                                id: "note-0",
+                                kind: "note",
+                                noteId: "notes/root",
+                                title: "Root",
+                                content: "Root body",
+                            },
+                        ],
+                        activeTabId: "note-0",
+                    },
+                    {
+                        id: "secondary",
+                        tabs: [
+                            {
+                                id: "note-1",
+                                kind: "note",
+                                noteId: "notes/a",
+                                title: "Note A",
+                                content: "Body A",
+                            },
+                        ],
+                        activeTabId: "note-1",
+                    },
+                    {
+                        id: "tertiary",
+                        tabs: [
+                            {
+                                id: "note-2",
+                                kind: "note",
+                                noteId: "notes/c",
+                                title: "Note C",
+                                content: "Body C",
+                            },
+                        ],
+                        activeTabId: "note-2",
+                    },
+                ],
+                focusedPaneId: "secondary",
+                layoutTree: nestedLayoutTree,
+                noteIds: [],
+                activeNoteId: null,
+            }),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.focusedPaneId).toBe("secondary");
+        expect(restored?.layoutTree).toEqual(nestedLayoutTree);
+        expect(restored?.panes?.map((pane) => pane.id)).toEqual([
+            "primary",
+            "secondary",
+            "tertiary",
+        ]);
     });
 
     it("drops empty panes from pane-aware workspace sessions when other panes have tabs", async () => {
@@ -446,6 +531,74 @@ describe("editorSession", () => {
             ]),
         );
         expect(restored?.activeTabId).toBe("note-1");
+    });
+
+    it("migrates legacy pane-aware sessions without layoutTree into a row tree", async () => {
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify({
+                panes: [
+                    {
+                        id: "primary",
+                        tabs: [
+                            {
+                                id: "note-1",
+                                kind: "note",
+                                noteId: "notes/a",
+                                title: "Note A",
+                                content: "Body A",
+                            },
+                        ],
+                        activeTabId: "note-1",
+                    },
+                    {
+                        id: "secondary",
+                        tabs: [
+                            {
+                                id: "note-2",
+                                kind: "note",
+                                noteId: "notes/b",
+                                title: "Note B",
+                                content: "Body B",
+                            },
+                        ],
+                        activeTabId: "note-2",
+                    },
+                    {
+                        id: "tertiary",
+                        tabs: [
+                            {
+                                id: "note-3",
+                                kind: "note",
+                                noteId: "notes/c",
+                                title: "Note C",
+                                content: "Body C",
+                            },
+                        ],
+                        activeTabId: "note-3",
+                    },
+                ],
+                focusedPaneId: "secondary",
+                paneSizes: [0.2, 0.3, 0.5],
+                noteIds: [],
+                activeNoteId: null,
+            }),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.layoutTree).toEqual({
+            type: "split",
+            id: "split-1",
+            direction: "row",
+            children: [
+                { type: "pane", id: "primary", paneId: "primary" },
+                { type: "pane", id: "secondary", paneId: "secondary" },
+                { type: "pane", id: "tertiary", paneId: "tertiary" },
+            ],
+            sizes: [0.2, 0.3, 0.5],
+        });
+        expect(restored?.paneSizes).toEqual([0.2, 0.3, 0.5]);
     });
 
     it("restores legacy persisted sessions through the session module", async () => {

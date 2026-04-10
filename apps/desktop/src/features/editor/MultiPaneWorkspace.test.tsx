@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { flushPromises, renderComponent } from "../../test/test-utils";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
 import { useEditorStore } from "../../app/store/editorStore";
-import { useLayoutStore } from "../../app/store/layoutStore";
+import {
+    createInitialLayout,
+    splitPane,
+} from "../../app/store/workspaceLayoutTree";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { MultiPaneWorkspace } from "./MultiPaneWorkspace";
+import { CROSS_PANE_TAB_DROP_PREVIEW_EVENT } from "./workspaceTabDropPreview";
 
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
@@ -66,6 +70,20 @@ vi.mock("./EditorPaneContent", () => ({
 }));
 
 describe("MultiPaneWorkspace", () => {
+    function createThreePaneLayout() {
+        return splitPane(
+            splitPane(
+                createInitialLayout("primary"),
+                "primary",
+                "row",
+                "secondary",
+            ),
+            "secondary",
+            "column",
+            "tertiary",
+        );
+    }
+
     beforeEach(() => {
         class MockResizeObserver {
             private readonly callback: ResizeObserverCallback;
@@ -124,6 +142,7 @@ describe("MultiPaneWorkspace", () => {
             }),
         });
 
+        const layoutTree = createThreePaneLayout();
         useEditorStore.setState({
             panes: [
                 {
@@ -152,9 +171,7 @@ describe("MultiPaneWorkspace", () => {
                 },
             ],
             focusedPaneId: "primary",
-        });
-        useLayoutStore.setState({
-            editorPaneSizes: [1 / 3, 1 / 3, 1 / 3],
+            layoutTree,
         });
         useVaultStore.setState((state) => ({
             ...state,
@@ -196,6 +213,11 @@ describe("MultiPaneWorkspace", () => {
         renderComponent(<MultiPaneWorkspace />);
 
         expect(screen.getAllByRole("separator")).toHaveLength(2);
+        expect(
+            screen
+                .getAllByRole("separator")
+                .map((separator) => separator.getAttribute("aria-orientation")),
+        ).toEqual(["vertical", "horizontal"]);
     });
 
     it("passes an explicit empty-state message to each pane content", () => {
@@ -223,5 +245,104 @@ describe("MultiPaneWorkspace", () => {
                 vaultPath: "/vaults/main",
             }),
         );
+    });
+
+    it("renders mixed layouts like A | (B over C)", () => {
+        renderComponent(<MultiPaneWorkspace />);
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]');
+        const secondaryPane = screen
+            .getByTestId("pane-content-secondary")
+            .closest('[data-editor-pane-id="secondary"]');
+        const tertiaryPane = screen
+            .getByTestId("pane-content-tertiary")
+            .closest('[data-editor-pane-id="tertiary"]');
+
+        expect(primaryPane).not.toBeNull();
+        expect(secondaryPane).not.toBeNull();
+        expect(tertiaryPane).not.toBeNull();
+        expect(
+            screen
+                .getByTestId("pane-bar-primary")
+                .closest('[data-workspace-split-direction="row"]'),
+        ).not.toBeNull();
+        expect(
+            screen
+                .getByTestId("pane-bar-secondary")
+                .closest('[data-workspace-split-direction="column"]'),
+        ).not.toBeNull();
+    });
+
+    it("renders independent resize handles for each split branch", () => {
+        renderComponent(<MultiPaneWorkspace />);
+
+        const separators = screen.getAllByRole("separator");
+        const verticalDivider = separators.find(
+            (separator) =>
+                separator.getAttribute("aria-orientation") === "vertical",
+        );
+        const horizontalDivider = separators.find(
+            (separator) =>
+                separator.getAttribute("aria-orientation") === "horizontal",
+        );
+
+        expect(verticalDivider).toBeDefined();
+        expect(horizontalDivider).toBeDefined();
+        expect(verticalDivider).toHaveAttribute(
+            "aria-label",
+            "Resize split split-1 sections 1 and 2",
+        );
+        expect(horizontalDivider).toHaveAttribute(
+            "aria-label",
+            "Resize split split-2 sections 1 and 2",
+        );
+    });
+
+    it("renders pane drop overlays for center and edge previews", () => {
+        renderComponent(<MultiPaneWorkspace />);
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(CROSS_PANE_TAB_DROP_PREVIEW_EVENT, {
+                    detail: {
+                        sourcePaneId: "primary",
+                        targetPaneId: "secondary",
+                        position: "center",
+                        insertIndex: 0,
+                        tabId: "tab-a",
+                    },
+                }),
+            );
+        });
+
+        expect(
+            screen
+                .getByTestId("pane-content-secondary")
+                .closest('[data-editor-pane-id="secondary"]')
+                ?.querySelector('[data-pane-drop-overlay-position="center"]'),
+        ).not.toBeNull();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(CROSS_PANE_TAB_DROP_PREVIEW_EVENT, {
+                    detail: {
+                        sourcePaneId: "primary",
+                        targetPaneId: "secondary",
+                        position: "left",
+                        insertIndex: null,
+                        tabId: "tab-a",
+                    },
+                }),
+            );
+        });
+
+        expect(
+            screen
+                .getByTestId("pane-content-secondary")
+                .closest('[data-editor-pane-id="secondary"]')
+                ?.querySelector('[data-pane-drop-overlay-position="left"]'),
+        ).not.toBeNull();
     });
 });

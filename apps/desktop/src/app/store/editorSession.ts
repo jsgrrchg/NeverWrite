@@ -19,6 +19,12 @@ import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useLayoutStore } from "./layoutStore";
+import {
+    createInitialLayout,
+    getLayoutPaneIds,
+    normalizeLayoutTree,
+    type WorkspaceLayoutNode,
+} from "./workspaceLayoutTree";
 
 const SESSION_KEY = "neverwrite.session.tabs";
 const SESSION_KEY_PREFIX = "neverwrite.session.tabs:";
@@ -35,6 +41,7 @@ export interface PersistedSessionPane {
 export interface PersistedSession {
     panes?: PersistedSessionPane[];
     focusedPaneId?: string | null;
+    layoutTree?: WorkspaceLayoutNode;
     paneSizes?: number[];
     tabs?: TabInput[];
     activeTabId?: string | null;
@@ -105,6 +112,7 @@ export interface EditorSessionState {
         tabNavigationIndex: number;
     }>;
     focusedPaneId?: string | null;
+    layoutTree?: WorkspaceLayoutNode;
     paneSizes?: number[];
     tabs: Tab[];
     activeTabId: string | null;
@@ -113,6 +121,7 @@ export interface EditorSessionState {
 export interface RestoredEditorSession {
     panes?: PersistedSessionPane[];
     focusedPaneId?: string | null;
+    layoutTree?: WorkspaceLayoutNode;
     paneSizes?: number[];
     tabs: TabInput[];
     activeTabId: string | null;
@@ -239,7 +248,7 @@ function compactRestoredPanes(panes: PersistedSessionPane[]) {
 }
 
 function normalizePaneSizesForPersistence(count: number, paneSizes?: number[]) {
-    const normalizedCount = Math.max(1, Math.min(3, Math.floor(count) || 1));
+    const normalizedCount = Math.max(1, Math.floor(count) || 1);
     const incoming = (paneSizes ?? []).filter(
         (value) => Number.isFinite(value) && value > 0,
     );
@@ -254,15 +263,73 @@ function normalizePaneSizesForPersistence(count: number, paneSizes?: number[]) {
     return Array.from({ length: normalizedCount }, () => 1 / normalizedCount);
 }
 
+function buildLegacyRowLayoutTree(
+    paneIds: readonly string[],
+    paneSizes?: readonly number[],
+): WorkspaceLayoutNode {
+    if (paneIds.length <= 1) {
+        return createInitialLayout(paneIds[0] ?? "primary");
+    }
+
+    return normalizeLayoutTree({
+        type: "split",
+        id: "split-1",
+        direction: "row",
+        children: paneIds.map((paneId) => ({
+            type: "pane" as const,
+            id: paneId,
+            paneId,
+        })),
+        sizes: normalizePaneSizesForPersistence(paneIds.length, [
+            ...(paneSizes ?? []),
+        ]),
+    });
+}
+
+function normalizeLayoutTreeForPersistence(
+    layoutTree: WorkspaceLayoutNode | undefined,
+    paneIds: readonly string[],
+    paneSizes?: readonly number[],
+) {
+    if (layoutTree) {
+        try {
+            const normalizedTree = normalizeLayoutTree(layoutTree);
+            if (
+                JSON.stringify(getLayoutPaneIds(normalizedTree)) ===
+                JSON.stringify(paneIds)
+            ) {
+                return normalizedTree;
+            }
+        } catch {
+            // Fall back to the legacy row migration when persisted tree data is invalid.
+        }
+    }
+
+    return buildLegacyRowLayoutTree(paneIds, paneSizes);
+}
+
+function getLayoutTreeSignature(tree: WorkspaceLayoutNode): string {
+    if (tree.type === "pane") {
+        return `pane:${tree.paneId}`;
+    }
+
+    return `split:${tree.id}:${tree.direction}:${tree.sizes
+        .map((size) => size.toFixed(6))
+        .join(
+            ",",
+        )}[${tree.children.map((child) => getLayoutTreeSignature(child)).join("|")}]`;
+}
+
 export function getEditorSessionSignature(state: EditorSessionState) {
     const panes = buildPersistedPanes(state);
     if (panes?.length) {
         let signature = state.focusedPaneId ?? "";
-        const paneSizes = normalizePaneSizesForPersistence(
-            panes.length,
+        const layoutTree = normalizeLayoutTreeForPersistence(
+            state.layoutTree,
+            panes.map((pane) => pane.id),
             state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
         );
-        signature += `|sizes:${paneSizes.map((value) => value.toFixed(6)).join(",")}`;
+        signature += `|layout:${getLayoutTreeSignature(layoutTree)}`;
         for (const pane of panes) {
             signature += `|pane:${pane.id}:${pane.activeTabId ?? ""}`;
             for (const tab of pane.tabs) {
@@ -310,6 +377,7 @@ export function buildPersistedSession(
     state: EditorSessionState,
 ): PersistedSession {
     const panes = buildPersistedPanes(state);
+    const persistedPaneIds = panes?.map((pane) => pane.id) ?? [];
     const allTabs =
         state.panes?.length && panes?.length
             ? panes.flatMap((pane) => pane.tabs)
@@ -354,16 +422,26 @@ export function buildPersistedSession(
         );
     }
 
-    const paneSizes = panes?.length
-        ? normalizePaneSizesForPersistence(
-              panes.length,
-              state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
-          )
-        : undefined;
+    const paneSizes =
+        panes?.length && persistedPaneIds.length > 1
+            ? normalizePaneSizesForPersistence(
+                  persistedPaneIds.length,
+                  state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
+              )
+            : undefined;
+    const layoutTree =
+        panes?.length && persistedPaneIds.length > 0
+            ? normalizeLayoutTreeForPersistence(
+                  state.layoutTree,
+                  persistedPaneIds,
+                  paneSizes,
+              )
+            : undefined;
 
     return {
         panes,
         focusedPaneId: state.focusedPaneId ?? panes?.[0]?.id ?? null,
+        layoutTree,
         paneSizes,
         activeTabId: activeTab?.id ?? null,
         noteIds,
@@ -703,6 +781,11 @@ export async function restorePersistedSession(
         const restoredPanes = compactRestoredPanes(
             restorePersistedPaneTabs(session.panes),
         );
+        const restoredLayoutTree = normalizeLayoutTreeForPersistence(
+            session.layoutTree,
+            restoredPanes.map((pane) => pane.id),
+            session.paneSizes,
+        );
         const requestedFocusedPaneId =
             typeof session.focusedPaneId === "string"
                 ? session.focusedPaneId
@@ -719,6 +802,7 @@ export async function restorePersistedSession(
         return {
             panes: restoredPanes,
             focusedPaneId: focusedPane.id,
+            layoutTree: restoredLayoutTree,
             paneSizes: normalizePaneSizesForPersistence(
                 restoredPanes.length,
                 session.paneSizes,

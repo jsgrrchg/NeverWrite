@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import {
     fileViewerNeedsTextContent,
     isFileTab,
+    selectEditorWorkspaceTabs,
     selectEditorPaneState,
     useEditorStore,
     type FileTab,
@@ -109,10 +110,10 @@ export function useEditableFileResource({
         };
 
         syncLiveFilePathState(
-            useEditorStore.getState().panes.flatMap((pane) => pane.tabs),
+            selectEditorWorkspaceTabs(useEditorStore.getState()),
         );
         const unsubscribe = useEditorStore.subscribe((state) => {
-            syncLiveFilePathState(state.panes.flatMap((pane) => pane.tabs));
+            syncLiveFilePathState(selectEditorWorkspaceTabs(state));
         });
         return unsubscribe;
     }, [pruneFilePathStateForOpenTabs]);
