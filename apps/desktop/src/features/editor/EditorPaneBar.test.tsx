@@ -4,7 +4,32 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { renderComponent } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
+import { useChatStore } from "../ai/store/chatStore";
 import { EditorPaneBar } from "./EditorPaneBar";
+
+function createChatSession(sessionId: string, title: string) {
+    return {
+        sessionId,
+        historySessionId: sessionId,
+        status: "idle" as const,
+        runtimeId: "codex-acp",
+        modelId: "test-model",
+        modeId: "default",
+        models: [],
+        modes: [],
+        configOptions: [],
+        messages: [
+            {
+                id: `${sessionId}-message`,
+                role: "user" as const,
+                kind: "text" as const,
+                content: title,
+                timestamp: 10,
+            },
+        ],
+        attachments: [],
+    };
+}
 
 describe("EditorPaneBar", () => {
     beforeEach(() => {
@@ -287,5 +312,35 @@ describe("EditorPaneBar", () => {
             expect(useEditorStore.getState().panes).toHaveLength(1);
         });
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+    });
+
+    it("renames workspace chat tabs with a double click on the title", async () => {
+        useChatStore.setState({
+            sessionsById: {
+                "session-a": createChatSession("session-a", "Workspace chat"),
+            },
+        });
+        useEditorStore.getState().openChat("session-a", {
+            title: "Stale title",
+            paneId: "primary",
+        });
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        fireEvent.doubleClick(screen.getByText("Workspace chat"));
+
+        const input = screen.getByDisplayValue("Workspace chat");
+        fireEvent.change(input, {
+            target: { value: "Renamed workspace chat" },
+        });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().sessionsById["session-a"]?.customTitle,
+            ).toBe("Renamed workspace chat");
+        });
+
+        expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
     });
 });

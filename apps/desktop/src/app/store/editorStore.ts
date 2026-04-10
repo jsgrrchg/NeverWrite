@@ -1058,12 +1058,66 @@ function updatePaneWithTabs(pane: EditorPaneState, tabs: readonly Tab[]) {
     });
 }
 
+function updateTabTitleInTabs(
+    tabs: readonly Tab[],
+    tabId: string,
+    title: string,
+) {
+    let didChange = false;
+    const nextTabs = tabs.map((tab) => {
+        if (tab.id !== tabId) {
+            return tab;
+        }
+
+        const nextTab = !isHistoryTab(tab)
+            ? tab.title === title
+                ? tab
+                : { ...tab, title }
+            : updateTabHistoryTitle(tab, title);
+
+        didChange ||= nextTab !== tab;
+        return nextTab;
+    });
+
+    return didChange ? nextTabs : tabs;
+}
+
+function applyResourceReloadToWorkspacePanes<K extends "note" | "file">(
+    workspace: ReturnType<typeof getEffectivePaneWorkspace>,
+    kind: K,
+    resourceId: string,
+    detail: ReloadedDetail,
+    options?: {
+        force?: boolean;
+        fallbackOrigin?: "unknown" | "system" | "external" | "agent";
+    },
+) {
+    const handler = getResourceHandler(kind);
+    return workspace.panes.map((pane) => {
+        const next = buildResourceReloadUpdate(
+            handler,
+            {
+                tabs: pane.tabs,
+                pendingForceReloads: new Set<string>(),
+                reloadVersions: {},
+                reloadMetadata: {},
+            },
+            resourceId,
+            detail,
+            options,
+        );
+
+        return updatePaneWithTabs(pane, next.tabs);
+    });
+}
+
 function applyResourceReloadAcrossWorkspace<
     TState extends Pick<
         EditorStore,
         | "panes"
         | "focusedPaneId"
         | "layoutTree"
+        | "tabs"
         | "_pendingForceReloads"
         | "_pendingForceFileReloads"
         | "_noteReloadVersions"
@@ -1082,23 +1136,22 @@ function applyResourceReloadAcrossWorkspace<
     },
 ) {
     const workspace = getEffectivePaneWorkspace(state);
-    const handler = getResourceHandler(kind);
-    const nextPanes = workspace.panes.map((pane) => {
-        const next = buildResourceReloadUpdate(
-            handler,
-            {
-                tabs: pane.tabs,
-                pendingForceReloads: new Set<string>(),
-                reloadVersions: {},
-                reloadMetadata: {},
-            },
-            resourceId,
-            detail,
-            options,
-        );
-
-        return updatePaneWithTabs(pane, next.tabs);
-    });
+    const nextPanes =
+        kind === "note"
+            ? applyResourceReloadToWorkspacePanes(
+                  workspace,
+                  "note",
+                  resourceId,
+                  detail,
+                  options,
+              )
+            : applyResourceReloadToWorkspacePanes(
+                  workspace,
+                  "file",
+                  resourceId,
+                  detail,
+                  options,
+              );
     const projection = buildFocusedPaneProjection({
         panes: nextPanes,
         focusedPaneId: workspace.focusedPaneId,
@@ -1110,7 +1163,7 @@ function applyResourceReloadAcrossWorkspace<
 
     if (kind === "note") {
         const nextMetadata = buildResourceReloadUpdate(
-            handler,
+            getResourceHandler("note"),
             {
                 tabs: state.tabs,
                 pendingForceReloads: state._pendingForceReloads,
@@ -1132,7 +1185,7 @@ function applyResourceReloadAcrossWorkspace<
     }
 
     const nextMetadata = buildResourceReloadUpdate(
-        handler,
+        getResourceHandler("file"),
         {
             tabs: state.tabs,
             pendingForceReloads: state._pendingForceFileReloads,
@@ -1157,23 +1210,39 @@ function applyResourceDeleteAcrossWorkspace<
     TState extends Pick<EditorStore, "panes" | "focusedPaneId" | "layoutTree">,
 >(state: TState, kind: "note" | "file", resourceId: string) {
     const workspace = getEffectivePaneWorkspace(state);
-    const handler = getResourceHandler(kind);
-    let nextPanes = workspace.panes.map((pane) => {
-        const next = buildResourceDeleteUpdate(
-            handler,
-            {
-                tabs: pane.tabs,
-                activeTabId: pane.activeTabId,
-                activationHistory: pane.activationHistory,
-                tabNavigationHistory: pane.tabNavigationHistory,
-                tabNavigationIndex: pane.tabNavigationIndex,
-                pendingForceReloads: new Set<string>(),
-                reloadVersions: {},
-                reloadMetadata: {},
-                externalConflicts: new Set<string>(),
-            },
-            resourceId,
-        );
+    const nextPanes = workspace.panes.map((pane) => {
+        const next =
+            kind === "note"
+                ? buildResourceDeleteUpdate(
+                      getResourceHandler("note"),
+                      {
+                          tabs: pane.tabs,
+                          activeTabId: pane.activeTabId,
+                          activationHistory: pane.activationHistory,
+                          tabNavigationHistory: pane.tabNavigationHistory,
+                          tabNavigationIndex: pane.tabNavigationIndex,
+                          pendingForceReloads: new Set<string>(),
+                          reloadVersions: {},
+                          reloadMetadata: {},
+                          externalConflicts: new Set<string>(),
+                      },
+                      resourceId,
+                  )
+                : buildResourceDeleteUpdate(
+                      getResourceHandler("file"),
+                      {
+                          tabs: pane.tabs,
+                          activeTabId: pane.activeTabId,
+                          activationHistory: pane.activationHistory,
+                          tabNavigationHistory: pane.tabNavigationHistory,
+                          tabNavigationIndex: pane.tabNavigationIndex,
+                          pendingForceReloads: new Set<string>(),
+                          reloadVersions: {},
+                          reloadMetadata: {},
+                          externalConflicts: new Set<string>(),
+                      },
+                      resourceId,
+                  );
 
         return next
             ? createEditorPaneState(pane.id, {
@@ -2152,22 +2221,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                           currentTargetPane.id,
                           position,
                       );
-            const nextPaneMap = new Map([
-                ...currentWorkspace.panes.map((pane) => [
+            const nextPaneEntries: Array<[string, EditorPaneState]> =
+                currentWorkspace.panes.map((pane) => [
                     pane.id,
                     pane.id === currentSourcePane.id ? nextSourcePane : pane,
-                ]),
-                [
+                ]);
+            nextPaneEntries.push([
+                nextPaneId,
+                createEditorPaneState(
                     nextPaneId,
-                    createEditorPaneState(
-                        nextPaneId,
-                        insertNormalizedTab(
-                            createEditorPaneState(nextPaneId),
-                            movingTab,
-                        ),
+                    insertNormalizedTab(
+                        createEditorPaneState(nextPaneId),
+                        movingTab,
                     ),
-                ],
-            ] satisfies ReadonlyArray<[string, EditorPaneState]>);
+                ),
+            ]);
+            const nextPaneMap = new Map<string, EditorPaneState>(
+                nextPaneEntries,
+            );
 
             return buildFocusedPaneProjection(
                 removeEmptyPanesFromWorkspace(
@@ -2360,15 +2431,30 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     },
 
     updateTabTitle: (tabId, title) => {
-        set((state) => ({
-            tabs: state.tabs.map((t) => {
-                if (t.id !== tabId) return t;
-                if (!isHistoryTab(t)) {
-                    return t.title === title ? t : { ...t, title };
-                }
-                return updateTabHistoryTitle(t, title);
-            }),
-        }));
+        set((state) => {
+            const workspace = getEffectivePaneWorkspace(state);
+            let didChange = false;
+            const nextPanes = workspace.panes.map((pane) => {
+                const nextTabs = updateTabTitleInTabs(pane.tabs, tabId, title);
+                didChange ||= nextTabs !== pane.tabs;
+                return nextTabs === pane.tabs
+                    ? pane
+                    : createEditorPaneState(pane.id, {
+                          ...pane,
+                          tabs: [...nextTabs],
+                      });
+            });
+
+            if (!didChange) {
+                return state;
+            }
+
+            return buildFocusedPaneProjection({
+                panes: nextPanes,
+                focusedPaneId: workspace.focusedPaneId,
+                layoutTree: workspace.layoutTree,
+            });
+        });
     },
 
     updateFileHistoryTitle: (tabId, relativePath, title) => {

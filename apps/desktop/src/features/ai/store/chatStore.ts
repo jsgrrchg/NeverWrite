@@ -35,7 +35,6 @@ import {
 import {
     isNoteTab,
     selectEditorWorkspaceTabs,
-    selectFocusedEditorTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
 import {
@@ -1708,44 +1707,6 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
-function hasManualAttachment(
-    attachments: AIChatAttachment[],
-    type: AIChatAttachment["type"],
-    noteId: string,
-) {
-    return attachments.some(
-        (attachment) =>
-            attachment.type === type && attachment.noteId === noteId,
-    );
-}
-
-function getAutoContextAttachments(baseAttachments: AIChatAttachment[]) {
-    if (!useChatStore.getState().autoContextEnabled) return [];
-
-    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
-    const activeNoteId =
-        activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
-    const notes = useVaultStore.getState().notes;
-    const activeNote = activeNoteId
-        ? (notes.find((note) => note.id === activeNoteId) ?? null)
-        : null;
-
-    const autoAttachments: AIChatAttachment[] = [];
-
-    if (
-        activeNote &&
-        !hasManualAttachment(baseAttachments, "current_note", activeNote.id) &&
-        !hasManualAttachment(baseAttachments, "note", activeNote.id)
-    ) {
-        autoAttachments.push({
-            ...createAttachment("current_note", activeNote),
-            id: `auto:current_note:${activeNote.id}`,
-        });
-    }
-
-    return autoAttachments;
-}
-
 function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     if (!session.resumeContextPending) {
         return prompt;
@@ -2125,7 +2086,6 @@ function buildQueuedMessage(
         ...selectionAttachments,
         ...screenshotAttachments,
         ...fileAttachments,
-        ...getAutoContextAttachments(session.attachments),
     ].map(cloneAttachment);
 
     return {

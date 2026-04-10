@@ -761,7 +761,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
     });
 
-    it("shows the active note auto-context without rendering a selection pill", () => {
+    it("does not render implicit note context when the active-note preference is enabled", () => {
         const session = createSession("session-a", "First conversation");
 
         useVaultStore.setState({
@@ -830,7 +830,7 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         renderComponent(<AIChatPanel />);
 
-        expect(screen.getByText("TAREAS")).toBeTruthy();
+        expect(screen.queryByText("TAREAS")).toBeNull();
         expect(screen.queryByText(/\(11:19\)/)).toBeNull();
     });
 

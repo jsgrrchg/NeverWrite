@@ -25,6 +25,9 @@ import {
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { moveChatToSidebar } from "../ai/chatPaneMovement";
+import { getSessionTitle } from "../ai/sessionPresentation";
+import { useChatStore } from "../ai/store/chatStore";
+import { useInlineRename } from "../ai/components/useInlineRename";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -164,7 +167,16 @@ function renderTabLeadingIcon(tab: Tab): ReactNode {
     );
 }
 
-function getTabLabel(tab: Tab, fileTreeShowExtensions: boolean) {
+function getTabLabel(
+    tab: Tab,
+    fileTreeShowExtensions: boolean,
+    chatSessionsById: ReturnType<typeof useChatStore.getState>["sessionsById"],
+) {
+    if (isChatTab(tab)) {
+        const session = chatSessionsById[tab.sessionId];
+        return session ? getSessionTitle(session) : tab.title;
+    }
+
     if (fileTreeShowExtensions && isNoteTab(tab)) {
         const baseName = tab.noteId.split("/").pop() || tab.title;
         return tab.noteId ? `${baseName}.md` : baseName;
@@ -185,6 +197,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const pane = useEditorStore((state) =>
         selectEditorPaneState(state, paneId),
     );
+    const chatSessionsById = useChatStore((state) => state.sessionsById);
+    const renameChatSession = useChatStore((state) => state.renameSession);
     const paneIds = useEditorStore(useShallow(selectLeafPaneIds));
     const paneCount = useEditorStore(selectPaneCount);
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
@@ -224,6 +238,15 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const ghostRef = useRef<WebviewWindow | null>(null);
     const ghostCancelledRef = useRef(false);
     const windowMode = getWindowMode();
+    const {
+        editingKey,
+        editValue,
+        inputRef,
+        setEditValue,
+        startEditing,
+        cancelEditing,
+        commitEditing,
+    } = useInlineRename<string>();
 
     const paneIndex = paneIds.indexOf(paneId);
     const canCreateSplit = paneCount < MAX_EDITOR_PANES;
@@ -555,10 +578,31 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     );
     const handleTabClick = useCallback(
         (tabId: string) => {
+            if (editingKey === tabId) return;
             if (consumeSuppressedClick(tabId)) return;
             switchTab(tabId);
         },
-        [consumeSuppressedClick, switchTab],
+        [consumeSuppressedClick, editingKey, switchTab],
+    );
+    const beginChatRename = useCallback(
+        (tab: Tab) => {
+            if (!isChatTab(tab)) return;
+            const session = chatSessionsById[tab.sessionId];
+            if (!session) return;
+            switchTab(tab.id);
+            startEditing(tab.id, getSessionTitle(session));
+        },
+        [chatSessionsById, startEditing, switchTab],
+    );
+    const commitChatRename = useCallback(
+        (tabId: string, value: string | null) => {
+            const tab = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((candidate) => candidate.id === tabId);
+            if (!tab || !isChatTab(tab)) return;
+            renameChatSession(tab.sessionId, value);
+        },
+        [renameChatSession],
     );
 
     return (
@@ -594,6 +638,13 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 {visualTabs.map((tab, index) => {
                     const isActive = tab.id === pane.activeTabId;
                     const isDragging = tab.id === draggingTabId;
+                    const isEditing = editingKey === tab.id;
+                    const canRename = isChatTab(tab);
+                    const tabLabel = getTabLabel(
+                        tab,
+                        fileTreeShowExtensions,
+                        chatSessionsById,
+                    );
                     return (
                         <Fragment key={tab.id}>
                             <div
@@ -604,35 +655,57 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 aria-selected={isActive}
                                 className="group inline-flex h-8 min-w-0 max-w-55 shrink-0 items-center gap-2 rounded-lg px-2.5 text-left"
                                 onPointerDownCapture={(event) =>
-                                    handleTabPointerDownCapture(tab.id, event)
+                                    isEditing
+                                        ? undefined
+                                        : handleTabPointerDownCapture(
+                                              tab.id,
+                                              event,
+                                          )
                                 }
                                 onPointerDown={(event) =>
-                                    handlePointerDown(tab.id, index, event)
+                                    isEditing
+                                        ? undefined
+                                        : handlePointerDown(
+                                              tab.id,
+                                              index,
+                                              event,
+                                          )
                                 }
                                 onPointerMove={(event) =>
-                                    handlePointerMove(tab.id, event)
+                                    isEditing
+                                        ? undefined
+                                        : handlePointerMove(tab.id, event)
                                 }
                                 onPointerUp={(event) =>
-                                    handlePointerUp(event.pointerId, {
-                                        clientX: event.clientX,
-                                        clientY: event.clientY,
-                                        screenX: event.screenX,
-                                        screenY: event.screenY,
-                                    })
+                                    isEditing
+                                        ? undefined
+                                        : handlePointerUp(event.pointerId, {
+                                              clientX: event.clientX,
+                                              clientY: event.clientY,
+                                              screenX: event.screenX,
+                                              screenY: event.screenY,
+                                          })
                                 }
                                 onPointerCancel={(event) =>
-                                    handlePointerUp(event.pointerId, {
-                                        clientX: event.clientX,
-                                        clientY: event.clientY,
-                                        screenX: event.screenX,
-                                        screenY: event.screenY,
-                                    })
+                                    isEditing
+                                        ? undefined
+                                        : handlePointerUp(event.pointerId, {
+                                              clientX: event.clientX,
+                                              clientY: event.clientY,
+                                              screenX: event.screenX,
+                                              screenY: event.screenY,
+                                          })
                                 }
                                 onLostPointerCapture={(event) =>
-                                    handleLostPointerCapture(event.pointerId)
+                                    isEditing
+                                        ? undefined
+                                        : handleLostPointerCapture(
+                                              event.pointerId,
+                                          )
                                 }
                                 onClick={() => handleTabClick(tab.id)}
                                 onContextMenu={(event) => {
+                                    if (isEditing) return;
                                     event.preventDefault();
                                     setTabContextMenu({
                                         x: event.clientX,
@@ -659,12 +732,59 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 }}
                             >
                                 {renderTabLeadingIcon(tab)}
-                                <span className="truncate text-[12px] font-medium">
-                                    {getTabLabel(tab, fileTreeShowExtensions)}
-                                </span>
+                                {isEditing ? (
+                                    <input
+                                        ref={inputRef}
+                                        value={editValue}
+                                        onChange={(event) =>
+                                            setEditValue(event.target.value)
+                                        }
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter") {
+                                                commitEditing(commitChatRename);
+                                            } else if (event.key === "Escape") {
+                                                cancelEditing();
+                                            }
+                                        }}
+                                        onBlur={() =>
+                                            commitEditing(commitChatRename)
+                                        }
+                                        onPointerDown={(event) =>
+                                            event.stopPropagation()
+                                        }
+                                        onClick={(event) =>
+                                            event.stopPropagation()
+                                        }
+                                        className="min-w-0 flex-1 truncate bg-transparent text-[12px] font-medium outline-none"
+                                        style={{
+                                            color: "var(--text-primary)",
+                                            border: "none",
+                                            padding: 0,
+                                            minHeight: 0,
+                                            boxSizing: "border-box",
+                                            boxShadow:
+                                                "inset 0 -1px 0 var(--accent)",
+                                        }}
+                                    />
+                                ) : (
+                                    <span
+                                        className="truncate text-[12px] font-medium"
+                                        onDoubleClick={() => {
+                                            if (!canRename) return;
+                                            beginChatRename(tab);
+                                        }}
+                                        title={
+                                            canRename
+                                                ? "Double-click to rename"
+                                                : undefined
+                                        }
+                                    >
+                                        {tabLabel}
+                                    </span>
+                                )}
                                 <button
                                     type="button"
-                                    title={`Close ${tab.title}`}
+                                    title={`Close ${tabLabel}`}
                                     onClick={(event) => {
                                         event.stopPropagation();
                                         if (isChatTab(tab)) {
@@ -808,6 +928,10 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
 
                         if (isChatTab(targetTab)) {
                             entries.push({
+                                label: "Rename chat",
+                                action: () => beginChatRename(targetTab),
+                            });
+                            entries.push({
                                 label: "Return to AI Panel",
                                 action: () =>
                                     moveChatToSidebar(targetTab.sessionId),
@@ -938,6 +1062,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               {getTabLabel(
                                   draggedPreviewTab,
                                   fileTreeShowExtensions,
+                                  chatSessionsById,
                               )}
                           </span>
                       </div>,

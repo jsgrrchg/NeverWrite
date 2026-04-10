@@ -14,9 +14,7 @@ import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 import {
     isChatTab,
-    isNoteTab,
     selectEditorPaneActiveTab,
-    selectFocusedEditorTab,
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
@@ -40,7 +38,6 @@ import {
     appendFileAttachmentPart,
     appendScreenshotPart,
     createEmptyComposerParts,
-    normalizeComposerParts,
 } from "../composerParts";
 import { getSessionTitle } from "../sessionPresentation";
 import { moveChatToSidebar } from "../chatPaneMovement";
@@ -132,8 +129,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     }, [session, activeRuntime]);
 
     // Settings
-    const autoContextEnabled = useChatStore((s) => s.autoContextEnabled);
-    const toggleAutoContext = useChatStore((s) => s.toggleAutoContext);
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
     const composerFontSize = useChatStore((s) => s.composerFontSize);
     const composerFontFamily = useChatStore((s) => s.composerFontFamily);
@@ -161,37 +156,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 })),
         [entries],
     );
-
-    // Active note for auto-context
-    const activeEditorNoteId = useEditorStore((state) => {
-        const tab = selectFocusedEditorTab(state);
-        return tab && isNoteTab(tab) ? tab.noteId : null;
-    });
-    const activeNote = activeEditorNoteId
-        ? (notes.find((n) => n.id === activeEditorNoteId) ?? null)
-        : null;
-    const autoContextAttachments = autoContextEnabled
-        ? ([
-              activeNote &&
-              !session?.attachments.some(
-                  (a) =>
-                      (a.type === "current_note" || a.type === "note") &&
-                      a.noteId === activeNote.id,
-              )
-                  ? {
-                        id: `auto:current_note:${activeNote.id}`,
-                        label: activeNote.title,
-                        path: activeNote.path,
-                        removable: false,
-                    }
-                  : null,
-          ].filter(Boolean) as Array<{
-              id: string;
-              label: string;
-              path: string;
-              removable: boolean;
-          }>)
-        : [];
 
     const runtimeLabel =
         activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
@@ -328,19 +292,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         const title = getSessionTitle(session);
         const editorState = useEditorStore.getState();
         const allTabs = selectEditorWorkspaceTabs(editorState);
-        const chatTab = allTabs.find(
+        const chatTabs = allTabs.filter(
             (t) => isChatTab(t) && t.sessionId === sessionId,
         );
-        if (chatTab && chatTab.title !== title) {
-            editorState.updateTabTitle(chatTab.id, title);
+        for (const chatTab of chatTabs) {
+            if (chatTab.title !== title) {
+                editorState.updateTabTitle(chatTab.id, title);
+            }
         }
-    }, [
-        session?.title,
-        session?.customTitle,
-        session?.persistedTitle,
-        session?.messages?.length,
-        sessionId,
-    ]);
+    }, [session, sessionId]);
 
     if (!sessionId) {
         return (
@@ -362,6 +322,8 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
             <div
                 className="flex items-center gap-2 px-3 py-1.5 text-xs shrink-0"
                 style={{
+                    height: 39,
+                    boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     color: "var(--text-secondary)",
                 }}
@@ -464,8 +426,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     status={session?.status ?? "idle"}
                     runtimeName={runtimeLabel}
                     runtimeId={session?.runtimeId}
-                    autoContextEnabled={autoContextEnabled}
-                    hasActiveNote={activeNote !== null}
                     requireCmdEnterToSend={requireCmdEnterToSend}
                     composerFontSize={composerFontSize}
                     composerFontFamily={composerFontFamily}
@@ -474,7 +434,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     hasPendingSubmitAfterStop={Boolean(
                         interruptedTurnState?.pendingManualSend,
                     )}
-                    onToggleAutoContext={toggleAutoContext}
                     expanded={composerExpanded}
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
                     disabled={
@@ -514,7 +473,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                                         status: attachment.status,
                                         errorMessage: attachment.errorMessage,
                                     })),
-                                ...autoContextAttachments,
                             ]}
                             onRemoveAttachment={handleRemoveAttachment}
                             onClearAll={handleClearAttachments}

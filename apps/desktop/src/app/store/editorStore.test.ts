@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    isChatTab,
     type FileViewerMode,
     isFileTab,
     isGraphTab,
@@ -2981,6 +2982,55 @@ describe("editorStore tab management", () => {
             "tab-a",
         ]);
         expect(state.activeTabId).toBe("tab-a");
+    });
+
+    it("updates chat tab titles even when the tab lives in a non-focused pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().openChat("session-a", {
+            title: "Initial chat",
+            paneId: "secondary",
+            background: true,
+        });
+
+        const before = useEditorStore
+            .getState()
+            .panes.find((pane) => pane.id === "secondary");
+        const chatTabId =
+            before?.tabs.find((tab) => isChatTab(tab))?.id ?? null;
+
+        expect(chatTabId).not.toBeNull();
+
+        useEditorStore.getState().updateTabTitle(chatTabId ?? "", "Renamed");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("primary");
+        expect(
+            state.panes
+                .find((pane) => pane.id === "secondary")
+                ?.tabs.find((tab) => tab.id === chatTabId)?.title,
+        ).toBe("Renamed");
     });
 
     it("moves a tab into a split relative to the target pane", () => {

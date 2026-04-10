@@ -98,19 +98,22 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
     const [gridHeight, setGridHeight] = useState(420);
 
     const getCurrentContent = useCallback(() => contentRef.current, []);
-    const applyIncomingContent = useCallback((nextContent: string) => {
-        const nextState = buildCsvEditorState(
-            nextContent,
-            getActiveCsvTabMetadata(paneId),
-            getCsvIdentitySnapshot(editorStateRef.current),
-        );
-        contentRef.current = nextState.rawContent;
-        editorStateRef.current = nextState;
-        setEditorState(nextState);
-        setViewMode((currentMode) =>
-            nextState.isTableAvailable ? currentMode : "raw",
-        );
-    }, []);
+    const applyIncomingContent = useCallback(
+        (nextContent: string) => {
+            const nextState = buildCsvEditorState(
+                nextContent,
+                getActiveCsvTabMetadata(paneId),
+                getCsvIdentitySnapshot(editorStateRef.current),
+            );
+            contentRef.current = nextState.rawContent;
+            editorStateRef.current = nextState;
+            setEditorState(nextState);
+            setViewMode((currentMode) =>
+                nextState.isTableAvailable ? currentMode : "raw",
+            );
+        },
+        [paneId],
+    );
 
     const {
         tab,
@@ -185,7 +188,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
             setEditorState(nextState);
             handleLocalContentChange(nextRawContent);
         },
-        [handleLocalContentChange],
+        [handleLocalContentChange, paneId],
     );
 
     const handleGridChange = useCallback(
