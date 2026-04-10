@@ -397,6 +397,30 @@ describe("EditorPaneBar", () => {
         ]);
     });
 
+    it("unifies all tabs into the current pane from the pane actions menu", async () => {
+        const user = userEvent.setup();
+        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
+
+        await user.click(
+            screen.getByRole("button", { name: "Pane 2 actions" }),
+        );
+        await user.click(
+            await screen.findByRole("button", { name: "Unify All Tabs Here" }),
+        );
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().panes).toHaveLength(1);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-a",
+        ]);
+    });
+
     it("focuses a neighbor pane from the pane actions menu", async () => {
         const user = userEvent.setup();
         renderComponent(<EditorPaneBar paneId="secondary" isFocused />);

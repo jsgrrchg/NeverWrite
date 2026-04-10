@@ -59,117 +59,7 @@ import {
     buildTabFileDragDetail,
     isPointOverAiComposerDropZone,
 } from "./tabDragAttachments";
-
-function renderTabLeadingIcon(tab: Tab): ReactNode {
-    if (tab.kind === "pdf") {
-        return (
-            <span
-                aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-                style={{
-                    background: "color-mix(in srgb, #e24b3b 12%, transparent)",
-                    color: "#e24b3b",
-                }}
-            >
-                PDF
-            </span>
-        );
-    }
-
-    if (tab.kind === "file") {
-        return (
-            <span
-                aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-                style={{
-                    background:
-                        "color-mix(in srgb, var(--text-secondary) 12%, transparent)",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                F
-            </span>
-        );
-    }
-
-    if (tab.kind === "ai-review") {
-        return (
-            <span
-                aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-                style={{
-                    background:
-                        "color-mix(in srgb, var(--accent) 12%, transparent)",
-                    color: "var(--accent)",
-                }}
-            >
-                AI
-            </span>
-        );
-    }
-
-    if (tab.kind === "ai-chat") {
-        return (
-            <span
-                aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-                style={{
-                    background:
-                        "color-mix(in srgb, var(--accent) 12%, transparent)",
-                    color: "var(--accent)",
-                }}
-            >
-                C
-            </span>
-        );
-    }
-
-    if (tab.kind === "map") {
-        return (
-            <span
-                aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-                style={{
-                    background:
-                        "color-mix(in srgb, var(--accent) 12%, transparent)",
-                    color: "var(--accent)",
-                }}
-            >
-                M
-            </span>
-        );
-    }
-
-    if (tab.kind === "graph") {
-        return (
-            <span
-                aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-                style={{
-                    background:
-                        "color-mix(in srgb, var(--accent) 12%, transparent)",
-                    color: "var(--accent)",
-                }}
-            >
-                G
-            </span>
-        );
-    }
-
-    return (
-        <span
-            aria-hidden="true"
-            className="inline-flex h-4 w-4 items-center justify-center rounded text-[8px] font-semibold"
-            style={{
-                background:
-                    "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
-                color: "var(--text-secondary)",
-            }}
-        >
-            N
-        </span>
-    );
-}
+import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 
 function getTabLabel(
     tab: Tab,
@@ -212,6 +102,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const splitEditorPane = useEditorStore((state) => state.splitEditorPane);
     const balancePaneLayout = useEditorStore(
         (state) => state.balancePaneLayout,
+    );
+    const unifyAllPanesInto = useEditorStore(
+        (state) => state.unifyAllPanesInto,
     );
     const focusPaneNeighbor = useEditorStore(
         (state) => state.focusPaneNeighbor,
@@ -743,7 +636,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                     cursor: isDragging ? "grabbing" : "pointer",
                                 }}
                             >
-                                {renderTabLeadingIcon(tab)}
+                                {renderEditorTabLeadingIcon(tab)}
                                 {isEditing ? (
                                     <input
                                         ref={inputRef}
@@ -1032,6 +925,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             action: () => balancePaneLayout(),
                             disabled: paneCount <= 1,
                         },
+                        {
+                            label: "Unify All Tabs Here",
+                            action: () => unifyAllPanesInto(paneId),
+                            disabled: paneCount <= 1,
+                        },
                         { type: "separator" },
                         {
                             label: `Close Pane ${paneIndex + 1}`,
@@ -1069,7 +967,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               willChange: "transform",
                           }}
                       >
-                          {renderTabLeadingIcon(draggedPreviewTab)}
+                          {renderEditorTabLeadingIcon(draggedPreviewTab)}
                           <span
                               style={{
                                   minWidth: 0,

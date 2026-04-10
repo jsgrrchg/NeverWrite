@@ -1433,6 +1433,7 @@ interface EditorStore {
         paneId?: string,
     ) => string | null;
     balancePaneLayout: (splitId?: string) => void;
+    unifyAllPanesInto: (paneId?: string) => void;
     createEmptyPane: () => string | null;
     insertExternalTabInPane: (
         tab: TabInput,
@@ -2051,6 +2052,36 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 panes: workspace.panes,
                 focusedPaneId: workspace.focusedPaneId,
                 layoutTree: balanceSplit(workspace.layoutTree, splitId),
+            });
+        }),
+
+    unifyAllPanesInto: (paneId) =>
+        set((state) => {
+            const workspace = getEffectivePaneWorkspace(state);
+            if (workspace.panes.length <= 1) {
+                return state;
+            }
+
+            const targetPaneId = getSplitAnchorPaneId(workspace, paneId);
+            const targetPane = workspace.panes.find(
+                (candidate) => candidate.id === targetPaneId,
+            );
+            if (!targetPane) {
+                return state;
+            }
+
+            const mergedPane = workspace.panes
+                .filter((candidate) => candidate.id !== targetPaneId)
+                .reduce(
+                    (currentPane, candidate) =>
+                        mergePaneStates(currentPane, candidate),
+                    targetPane,
+                );
+
+            return buildFocusedPaneProjection({
+                panes: [mergedPane],
+                focusedPaneId: targetPaneId,
+                layoutTree: createInitialLayout(targetPaneId),
             });
         }),
 

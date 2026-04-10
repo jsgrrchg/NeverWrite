@@ -3029,6 +3029,78 @@ describe("editorStore tab management", () => {
         expect(nestedSplit.sizes[1]).toBeCloseTo(0.5, 3);
     });
 
+    it("unifies all panes into the requested pane and resets the split layout", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+                {
+                    id: "pane-3",
+                    tabs: [
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-c",
+                },
+            ],
+            "secondary",
+            splitPane(
+                splitPane(
+                    createInitialLayout("primary"),
+                    "primary",
+                    "row",
+                    "secondary",
+                ),
+                "secondary",
+                "column",
+                "pane-3",
+            ),
+        );
+
+        useEditorStore.getState().unifyAllPanesInto("secondary");
+
+        const state = useEditorStore.getState();
+        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-a",
+            "tab-c",
+        ]);
+        expect(state.panes[0]?.activeTabId).toBe("tab-b");
+        expect(state.layoutTree.type).toBe("pane");
+        if (state.layoutTree.type !== "pane") {
+            throw new Error("Expected a single-pane layout");
+        }
+        expect(state.layoutTree.paneId).toBe("secondary");
+    });
+
     it("moves tabs between panes, focuses the target pane, and closes empty sources", () => {
         useEditorStore.getState().hydrateWorkspace(
             [
