@@ -142,6 +142,7 @@ describe("SearchPanel", () => {
         });
 
         fireEvent.click(screen.getByText("Copy Note Path"));
+        await flushPromises();
 
         expect(getClipboardMock().writeText).toHaveBeenCalledWith(
             "notes/roadmap",

@@ -21,6 +21,8 @@ export interface ContextMenuState<T = void> {
     payload: T;
 }
 
+const EMPTY_SUBMENU_DIRECTIONS: Readonly<Record<string, "left" | "right">> = {};
+
 export function ContextMenu<T>({
     menu,
     entries,
@@ -38,12 +40,6 @@ export function ContextMenu<T>({
 }) {
     const ref = useRef<HTMLDivElement>(null);
     const [position, setPosition] = useState({ x: menu.x, y: menu.y });
-    const [openSubmenuLabel, setOpenSubmenuLabel] = useState<string | null>(
-        null,
-    );
-    const [submenuDirectionByLabel, setSubmenuDirectionByLabel] = useState<
-        Record<string, "left" | "right">
-    >({});
     const closeAndRunAction = (action?: () => void) => {
         onClose();
         if (!action) return;
@@ -61,6 +57,42 @@ export function ContextMenu<T>({
             }`;
         })
         .join("|");
+    const submenuStateResetKey = `${menu.x}:${menu.y}:${entriesResetKey}`;
+    const [submenuState, setSubmenuState] = useState<{
+        resetKey: string;
+        openSubmenuLabel: string | null;
+        submenuDirectionByLabel: Record<string, "left" | "right">;
+    }>({
+        resetKey: submenuStateResetKey,
+        openSubmenuLabel: null,
+        submenuDirectionByLabel: {},
+    });
+    const currentSubmenuState =
+        submenuState.resetKey === submenuStateResetKey
+            ? submenuState
+            : {
+                  resetKey: submenuStateResetKey,
+                  openSubmenuLabel: null,
+                  submenuDirectionByLabel: EMPTY_SUBMENU_DIRECTIONS,
+              };
+    const updateSubmenuState = (
+        updater: (
+            current: typeof currentSubmenuState,
+        ) => typeof currentSubmenuState,
+    ) => {
+        setSubmenuState((current) => {
+            const base =
+                current.resetKey === submenuStateResetKey
+                    ? current
+                    : {
+                          resetKey: submenuStateResetKey,
+                          openSubmenuLabel: null,
+                          submenuDirectionByLabel: {},
+                      };
+            return updater(base);
+        });
+    };
+    const { openSubmenuLabel, submenuDirectionByLabel } = currentSubmenuState;
 
     useLayoutEffect(() => {
         const element = ref.current;
@@ -75,13 +107,6 @@ export function ContextMenu<T>({
             ),
         );
     }, [menu.x, menu.y, entries.length]);
-
-    useEffect(() => {
-        setOpenSubmenuLabel(null);
-        setSubmenuDirectionByLabel((current) =>
-            Object.keys(current).length > 0 ? {} : current,
-        );
-    }, [menu.x, menu.y, entriesResetKey]);
 
     useEffect(() => {
         const handleDown = (event: MouseEvent) => {
@@ -170,27 +195,42 @@ export function ContextMenu<T>({
                         style={{ position: "relative" }}
                         onMouseEnter={(event) => {
                             if (!hasChildren || entry.disabled) {
-                                setOpenSubmenuLabel(null);
+                                updateSubmenuState((current) =>
+                                    current.openSubmenuLabel === null
+                                        ? current
+                                        : {
+                                              ...current,
+                                              openSubmenuLabel: null,
+                                          },
+                                );
                                 return;
                             }
                             const rect = (
                                 event.currentTarget as HTMLDivElement
                             ).getBoundingClientRect();
                             const submenuWidth = minWidth;
-                            setSubmenuDirectionByLabel((current) => ({
+                            updateSubmenuState((current) => ({
                                 ...current,
-                                [entry.label]:
-                                    rect.right + submenuWidth + 8 >
-                                    window.innerWidth
-                                        ? "left"
-                                        : "right",
+                                openSubmenuLabel: entry.label,
+                                submenuDirectionByLabel: {
+                                    ...current.submenuDirectionByLabel,
+                                    [entry.label]:
+                                        rect.right + submenuWidth + 8 >
+                                        window.innerWidth
+                                            ? "left"
+                                            : "right",
+                                },
                             }));
-                            setOpenSubmenuLabel(entry.label);
                         }}
                         onMouseLeave={() => {
                             if (!hasChildren) return;
-                            setOpenSubmenuLabel((current) =>
-                                current === entry.label ? null : current,
+                            updateSubmenuState((current) =>
+                                current.openSubmenuLabel === entry.label
+                                    ? {
+                                          ...current,
+                                          openSubmenuLabel: null,
+                                      }
+                                    : current,
                             );
                         }}
                     >
@@ -200,11 +240,14 @@ export function ContextMenu<T>({
                             onClick={() => {
                                 if (entry.disabled) return;
                                 if (hasChildren) {
-                                    setOpenSubmenuLabel((current) =>
-                                        current === entry.label
-                                            ? null
-                                            : entry.label,
-                                    );
+                                    updateSubmenuState((current) => ({
+                                        ...current,
+                                        openSubmenuLabel:
+                                            current.openSubmenuLabel ===
+                                            entry.label
+                                                ? null
+                                                : entry.label,
+                                    }));
                                     return;
                                 }
                                 closeAndRunAction(entry.action);

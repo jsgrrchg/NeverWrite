@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import {
     useEditorStore,
     isChatTab,
@@ -11,7 +11,6 @@ import {
     selectEditorPaneActiveTab,
     selectEditorPaneState,
 } from "../../app/store/editorStore";
-import { perfCount } from "../../app/utils/perfInstrumentation";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
@@ -49,7 +48,6 @@ const LazyAIChatSessionView = React.lazy(() =>
     })),
 );
 
-const GRAPH_KEEP_ALIVE_MS = 15 * 60 * 1000;
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
 function UnsupportedMapView() {
@@ -150,35 +148,7 @@ export function EditorPaneContent({
     );
     const hasGraphTab = paneTabs.some((tab) => isGraphTab(tab));
     const isGraphActive = view === "graph";
-    const [keepAlive, setKeepAlive] = useState(false);
-    const [prevIsGraphActive, setPrevIsGraphActive] = useState(isGraphActive);
-    const [prevHasGraphTab, setPrevHasGraphTab] = useState(hasGraphTab);
-
-    if (
-        prevIsGraphActive !== isGraphActive ||
-        prevHasGraphTab !== hasGraphTab
-    ) {
-        setPrevIsGraphActive(isGraphActive);
-        setPrevHasGraphTab(hasGraphTab);
-        if (!hasGraphTab) {
-            if (keepAlive) setKeepAlive(false);
-        } else if (prevIsGraphActive && !isGraphActive) {
-            if (!keepAlive) setKeepAlive(true);
-        } else if (isGraphActive && keepAlive) {
-            setKeepAlive(false);
-        }
-    }
-
-    useEffect(() => {
-        if (!keepAlive) return;
-        const timeoutId = window.setTimeout(() => {
-            perfCount("graph.lifecycle.keepAliveExpired");
-            setKeepAlive(false);
-        }, GRAPH_KEEP_ALIVE_MS);
-        return () => window.clearTimeout(timeoutId);
-    }, [keepAlive]);
-
-    const keepGraphMounted = hasGraphTab && (isGraphActive || keepAlive);
+    const keepGraphMounted = hasGraphTab;
 
     return (
         <div className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden">
