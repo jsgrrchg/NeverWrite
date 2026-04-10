@@ -1,9 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
-import { renderComponent } from "../../test/test-utils";
+import { flushPromises, renderComponent } from "../../test/test-utils";
+import { publishWindowTabDropZone } from "../../app/detachedWindows";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { MultiPaneWorkspace } from "./MultiPaneWorkspace";
+
+const innerPositionMock = vi.fn();
+const scaleFactorMock = vi.fn();
+
+vi.mock("@tauri-apps/api/window", () => ({
+    getCurrentWindow: () => ({
+        listen: vi.fn(),
+        once: vi.fn(),
+        onCloseRequested: vi.fn(),
+        onMoved: vi.fn().mockResolvedValue(vi.fn()),
+        onResized: vi.fn().mockResolvedValue(vi.fn()),
+        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+        innerPosition: innerPositionMock,
+        scaleFactor: scaleFactorMock,
+        setFocus: vi.fn(),
+        startDragging: vi.fn(),
+        emitTo: vi.fn(),
+        close: vi.fn(),
+        label: "main",
+    }),
+}));
+
+vi.mock("../../app/detachedWindows", () => ({
+    getCurrentWindowLabel: vi.fn(() => "main"),
+    publishWindowTabDropZone: vi.fn(),
+}));
 
 vi.mock("./EditorPaneBar", () => ({
     EditorPaneBar: ({
@@ -128,6 +156,27 @@ describe("MultiPaneWorkspace", () => {
         useLayoutStore.setState({
             editorPaneSizes: [1 / 3, 1 / 3, 1 / 3],
         });
+        useVaultStore.setState((state) => ({
+            ...state,
+            vaultPath: "/vaults/main",
+        }));
+        Object.defineProperty(window, "screenX", {
+            value: 900,
+            configurable: true,
+        });
+        Object.defineProperty(window, "screenY", {
+            value: 700,
+            configurable: true,
+        });
+        scaleFactorMock.mockResolvedValue(2);
+        innerPositionMock.mockResolvedValue({
+            x: 240,
+            y: 80,
+            toLogical: () => ({
+                x: 120,
+                y: 40,
+            }),
+        });
     });
 
     it("focuses the clicked pane", () => {
@@ -157,5 +206,22 @@ describe("MultiPaneWorkspace", () => {
                 content.includes("This pane is empty. Open a note here"),
             ),
         ).toHaveLength(3);
+    });
+
+    it("publishes a drop zone for detached tab reattachment in split view", async () => {
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        expect(vi.mocked(publishWindowTabDropZone)).toHaveBeenCalledWith(
+            "main",
+            expect.objectContaining({
+                left: 120,
+                top: 40,
+                right: 1020,
+                bottom: 640,
+                vaultPath: "/vaults/main",
+            }),
+        );
     });
 });

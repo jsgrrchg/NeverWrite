@@ -179,10 +179,15 @@ describe("App web clipper routing", () => {
         string,
         (event: { payload: unknown }) => void
     >();
+    const windowEventHandlers = new Map<
+        string,
+        (event: { payload: unknown }) => void
+    >();
 
     beforeEach(() => {
         window.history.replaceState({}, "", "/?vault=%2Fvaults%2Fa");
         eventHandlers.clear();
+        windowEventHandlers.clear();
         vi.clearAllMocks();
 
         vi.mocked(listen).mockImplementation(async (eventName, handler) => {
@@ -192,7 +197,15 @@ describe("App web clipper routing", () => {
             );
             return vi.fn();
         });
-        vi.mocked(getCurrentWindow().listen).mockResolvedValue(vi.fn());
+        vi.mocked(getCurrentWindow().listen).mockImplementation(
+            async (eventName, handler) => {
+                windowEventHandlers.set(
+                    eventName as string,
+                    handler as (event: { payload: unknown }) => void,
+                );
+                return vi.fn();
+            },
+        );
 
         vi.mocked(readWindowSessionSnapshot).mockReturnValue([]);
         vi.mocked(getAllWebviewWindows).mockResolvedValue([
@@ -243,6 +256,72 @@ describe("App web clipper routing", () => {
         expect(invoke).toHaveBeenCalledWith("unregister_window_vault_route", {
             label: "main",
         });
+    });
+
+    it("re-attaches an external tab into the focused pane when split view is active", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-a",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "Alpha",
+                        },
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "tab-b",
+                            kind: "note",
+                            noteId: "notes/b",
+                            title: "Beta",
+                            content: "Beta",
+                        },
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "secondary",
+        );
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        const handler = windowEventHandlers.get(
+            "neverwrite:attach-external-tab",
+        );
+        expect(handler).toBeDefined();
+
+        await act(async () => {
+            handler?.({
+                payload: {
+                    tab: {
+                        id: "tab-c",
+                        kind: "note",
+                        noteId: "notes/c",
+                        title: "Gamma",
+                        content: "Gamma",
+                    },
+                },
+            });
+            await Promise.resolve();
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
+        expect(state.panes[1]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-c",
+        ]);
+        expect(state.panes[1]?.activeTabId).toBe("tab-c");
     });
 
     it("restores a persisted multipane workspace and reapplies pane sizes", async () => {

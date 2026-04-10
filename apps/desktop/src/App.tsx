@@ -955,7 +955,6 @@ export default function App() {
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
-    const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
@@ -1556,7 +1555,19 @@ export default function App() {
                 ATTACH_EXTERNAL_TAB_EVENT,
                 (event) => {
                     if (disposed) return;
-                    insertExternalTab(event.payload.tab);
+                    const editor = useEditorStore.getState();
+                    const targetPaneId =
+                        editor.focusedPaneId ?? editor.panes[0]?.id ?? null;
+
+                    if (targetPaneId) {
+                        editor.insertExternalTabInPane(
+                            event.payload.tab,
+                            targetPaneId,
+                        );
+                        return;
+                    }
+
+                    editor.insertExternalTab(event.payload.tab);
                 },
             ),
             {
@@ -1571,7 +1582,7 @@ export default function App() {
             disposed = true;
             unlisten?.();
         };
-    }, [insertExternalTab]);
+    }, []);
 
     useEffect(() => {
         if (windowMode !== "main") return;

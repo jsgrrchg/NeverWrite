@@ -7,6 +7,18 @@ import { EditorPaneBar } from "./EditorPaneBar";
 
 describe("EditorPaneBar", () => {
     beforeEach(() => {
+        Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+            configurable: true,
+            value: () => {},
+        });
+        Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+            configurable: true,
+            value: () => {},
+        });
+        Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+            configurable: true,
+            value: () => false,
+        });
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -60,6 +72,52 @@ describe("EditorPaneBar", () => {
         expect(
             useEditorStore.getState().panes[1]?.tabs.map((tab) => tab.id),
         ).toEqual(["tab-b", "tab-a"]);
+    });
+
+    it("adds a duplicated tab to a new pane from the tab context menu", async () => {
+        const user = userEvent.setup();
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "Add to New Pane" }),
+        );
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().panes).toHaveLength(3);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("tertiary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
+        expect(state.panes[2]?.tabs).toHaveLength(1);
+        expect(state.panes[2]?.tabs[0]).toMatchObject({
+            kind: "note",
+            noteId: "notes/a",
+            title: "Alpha",
+            content: "Alpha",
+        });
+        expect(state.panes[2]?.tabs[0]?.id).not.toBe("tab-a");
+    });
+
+    it("disables add to new pane when the workspace already has three panes", async () => {
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        useEditorStore.getState().createEmptyPane();
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+
+        expect(
+            await screen.findByRole("button", { name: "Add to New Pane" }),
+        ).toBeDisabled();
     });
 
     it("closes a pane explicitly from the pane actions menu", async () => {
