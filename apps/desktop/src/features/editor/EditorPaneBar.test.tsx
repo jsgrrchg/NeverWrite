@@ -328,6 +328,28 @@ describe("EditorPaneBar", () => {
         expect(nestedSplit.direction).toBe("column");
     });
 
+    it("scrolls the pane tab strip horizontally with the mouse wheel", () => {
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabStrip = document.querySelector(
+            '[data-pane-tab-strip="primary"]',
+        ) as HTMLDivElement | null;
+        expect(tabStrip).not.toBeNull();
+
+        let scrollLeft = 12;
+        Object.defineProperty(tabStrip!, "scrollLeft", {
+            configurable: true,
+            get: () => scrollLeft,
+            set: (value: number) => {
+                scrollLeft = value;
+            },
+        });
+
+        fireEvent.wheel(tabStrip!, { deltaY: 28 });
+
+        expect(scrollLeft).toBe(40);
+    });
+
     it("disables creating a new split when the workspace already reached the cap", async () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 

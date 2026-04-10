@@ -626,6 +626,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         ? "color-mix(in srgb, var(--bg-secondary) 96%, var(--accent) 4%)"
                         : "var(--bg-secondary)",
                 }}
+                onWheel={(event) => {
+                    if (event.deltaY !== 0) {
+                        event.currentTarget.scrollLeft += event.deltaY;
+                        event.preventDefault();
+                    }
+                }}
             >
                 {insertionIndicatorIndex === 0 && (
                     <div
