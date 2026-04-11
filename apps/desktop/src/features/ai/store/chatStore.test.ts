@@ -9157,6 +9157,264 @@ describe("chatStore", () => {
         ).toBeUndefined();
     });
 
+    it("drops deleted persisted history metadata from the in-memory cache", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-deleted",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        title: "Deleted title",
+                        preview: "Deleted preview",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session") {
+                return {
+                    ...sessionPayload,
+                    session_id:
+                        (args as { sessionId?: string } | undefined)
+                            ?.sessionId ?? "replacement-session",
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id:
+                        (args as { sessionId?: string } | undefined)
+                            ?.sessionId ?? "history-deleted",
+                    total_messages: 0,
+                    start_index: 0,
+                    end_index: 0,
+                    messages: [],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles("deleted-session", []),
+                historySessionId: "history-deleted",
+                runtimeId: "codex-acp",
+                runtimeState: "live",
+                modelId: "test-model",
+                modeId: "default",
+            },
+            true,
+        );
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs([
+            {
+                id: "tab-deleted",
+                sessionId: "deleted-session",
+                historySessionId: "history-deleted",
+                runtimeId: "codex-acp",
+            },
+        ]);
+
+        expect(
+            useChatStore.getState().sessionsById["deleted-session"],
+        ).toMatchObject({
+            persistedTitle: "Deleted title",
+            models: [
+                expect.objectContaining({
+                    id: "test-model",
+                }),
+            ],
+        });
+
+        await useChatStore.getState().deleteSession("deleted-session");
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles("replacement-session", []),
+                historySessionId: "history-deleted",
+                runtimeId: "codex-acp",
+                runtimeState: "live",
+                modelId: "test-model",
+                modeId: "default",
+            },
+            true,
+        );
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs([
+            {
+                id: "tab-replacement",
+                sessionId: "replacement-session",
+                historySessionId: "history-deleted",
+                runtimeId: "codex-acp",
+            },
+        ]);
+
+        expect(
+            useChatStore.getState().sessionsById["replacement-session"],
+        ).toMatchObject({
+            persistedTitle: null,
+            persistedPreview: null,
+        });
+    });
+
+    it("clears persisted history metadata cache for the active vault on deleteAllSessions", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-cleared",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        title: "Cleared title",
+                        preview: "Cleared preview",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session") {
+                return {
+                    ...sessionPayload,
+                    session_id:
+                        (args as { sessionId?: string } | undefined)
+                            ?.sessionId ?? "after-clear-session",
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id:
+                        (args as { sessionId?: string } | undefined)
+                            ?.sessionId ?? "history-cleared",
+                    total_messages: 0,
+                    start_index: 0,
+                    end_index: 0,
+                    messages: [],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles("before-clear-session", []),
+                historySessionId: "history-cleared",
+                runtimeId: "codex-acp",
+                runtimeState: "live",
+                modelId: "test-model",
+                modeId: "default",
+            },
+            true,
+        );
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs([
+            {
+                id: "tab-before-clear",
+                sessionId: "before-clear-session",
+                historySessionId: "history-cleared",
+                runtimeId: "codex-acp",
+            },
+        ]);
+
+        expect(
+            useChatStore.getState().sessionsById["before-clear-session"],
+        ).toMatchObject({
+            persistedTitle: "Cleared title",
+            models: [
+                expect.objectContaining({
+                    id: "test-model",
+                }),
+            ],
+        });
+
+        await useChatStore.getState().deleteAllSessions();
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles("after-clear-session", []),
+                historySessionId: "history-cleared",
+                runtimeId: "codex-acp",
+                runtimeState: "live",
+                modelId: "test-model",
+                modeId: "default",
+            },
+            true,
+        );
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs([
+            {
+                id: "tab-after-clear",
+                sessionId: "after-clear-session",
+                historySessionId: "history-cleared",
+                runtimeId: "codex-acp",
+            },
+        ]);
+
+        expect(
+            useChatStore.getState().sessionsById["after-clear-session"],
+        ).toMatchObject({
+            persistedTitle: null,
+            persistedPreview: null,
+        });
+    });
+
     it("applies agent changes while the session is busy", async () => {
         await useChatStore.getState().initialize();
 
