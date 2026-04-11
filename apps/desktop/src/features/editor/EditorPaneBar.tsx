@@ -59,6 +59,7 @@ import {
     isPointOverAiComposerDropZone,
 } from "./tabDragAttachments";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
+import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 
 function getTabLabel(
     tab: Tab,
@@ -453,6 +454,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             setDragPreviewTabId(null);
         },
     });
+    const tabLayout = useResponsiveEditorTabLayout({
+        stripRef: tabStripRef,
+        tabCount: visualTabs.length,
+        freeze: draggingTabId !== null,
+    });
     const draggedPreviewTab =
         dragPreviewTabId === null
             ? null
@@ -506,9 +512,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     return (
         <>
             <div
-                ref={tabStripRef}
-                data-pane-tab-strip={paneId}
-                className="flex items-center gap-1 px-2 py-0.5 shrink-0 overflow-x-auto scrollbar-hidden"
+                className="flex items-center gap-1 px-2 py-0.5 shrink-0"
                 style={{
                     height: 38,
                     minHeight: 38,
@@ -525,212 +529,278 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     }
                 }}
             >
-                {insertionIndicatorIndex === 0 && (
+                <div className="relative flex min-w-0 flex-1 overflow-hidden">
                     <div
-                        aria-hidden="true"
-                        className="shrink-0 rounded-full"
+                        ref={tabStripRef}
+                        data-pane-tab-strip={paneId}
+                        data-pane-tab-density={tabLayout.density}
+                        data-pane-tab-overflowing={
+                            tabLayout.overflow || undefined
+                        }
+                        className="flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
                         style={{
-                            width: 3,
-                            height: 20,
-                            marginRight: 4,
-                            backgroundColor: "var(--accent)",
-                            boxShadow:
-                                "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                            gap: tabLayout.stripGap,
+                            padding: `0 ${tabLayout.stripPaddingX}px`,
                         }}
-                    />
-                )}
-                {visualTabs.map((tab, index) => {
-                    const isActive = tab.id === pane.activeTabId;
-                    const isDragging = tab.id === draggingTabId;
-                    const isEditing = editingKey === tab.id;
-                    const canRename = isChatTab(tab);
-                    const tabLabel = getTabLabel(
-                        tab,
-                        fileTreeShowExtensions,
-                        chatSessionsById,
-                    );
-                    return (
-                        <Fragment key={tab.id}>
+                        onWheel={(event) => {
+                            if (event.deltaY !== 0) {
+                                event.currentTarget.scrollLeft += event.deltaY;
+                                event.preventDefault();
+                            }
+                        }}
+                    >
+                        {insertionIndicatorIndex === 0 && (
                             <div
-                                ref={(node) => registerTabNode(tab.id, node)}
-                                data-pane-tab-id={tab.id}
-                                role="tab"
-                                tabIndex={0}
-                                aria-selected={isActive}
-                                className="group inline-flex h-8 min-w-0 max-w-55 shrink-0 items-center gap-2 rounded-lg px-2.5 text-left"
-                                onPointerDownCapture={(event) =>
-                                    isEditing
-                                        ? undefined
-                                        : handleTabPointerDownCapture(
-                                              tab.id,
-                                              event,
-                                          )
-                                }
-                                onPointerDown={(event) =>
-                                    isEditing
-                                        ? undefined
-                                        : handlePointerDown(
-                                              tab.id,
-                                              index,
-                                              event,
-                                          )
-                                }
-                                onPointerMove={(event) =>
-                                    isEditing
-                                        ? undefined
-                                        : handlePointerMove(tab.id, event)
-                                }
-                                onPointerUp={(event) =>
-                                    isEditing
-                                        ? undefined
-                                        : handlePointerUp(event.pointerId, {
-                                              clientX: event.clientX,
-                                              clientY: event.clientY,
-                                              screenX: event.screenX,
-                                              screenY: event.screenY,
-                                          })
-                                }
-                                onPointerCancel={(event) =>
-                                    isEditing
-                                        ? undefined
-                                        : handlePointerUp(event.pointerId, {
-                                              clientX: event.clientX,
-                                              clientY: event.clientY,
-                                              screenX: event.screenX,
-                                              screenY: event.screenY,
-                                          })
-                                }
-                                onLostPointerCapture={(event) =>
-                                    isEditing
-                                        ? undefined
-                                        : handleLostPointerCapture(
-                                              event.pointerId,
-                                          )
-                                }
-                                onClick={() => handleTabClick(tab.id)}
-                                onContextMenu={(event) => {
-                                    if (isEditing) return;
-                                    event.preventDefault();
-                                    setTabContextMenu({
-                                        x: event.clientX,
-                                        y: event.clientY,
-                                        payload: { tabId: tab.id },
-                                    });
-                                }}
+                                aria-hidden="true"
+                                className="shrink-0 rounded-full"
                                 style={{
-                                    boxSizing: "border-box",
-                                    border: isActive
-                                        ? "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))"
-                                        : "1px solid color-mix(in srgb, var(--border) 46%, transparent)",
-                                    background: isActive
-                                        ? "var(--bg-primary)"
-                                        : "color-mix(in srgb, var(--bg-primary) 38%, transparent)",
-                                    color: isActive
-                                        ? "var(--text-primary)"
-                                        : "var(--text-secondary)",
-                                    boxShadow: isActive
-                                        ? "0 10px 24px rgba(15, 23, 42, 0.08)"
-                                        : "none",
-                                    opacity: isDragging ? 0.72 : 1,
-                                    cursor: isDragging ? "grabbing" : "pointer",
+                                    width: 3,
+                                    height: 20,
+                                    backgroundColor: "var(--accent)",
+                                    boxShadow:
+                                        "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
                                 }}
-                            >
-                                {renderEditorTabLeadingIcon(tab)}
-                                {isEditing ? (
-                                    <input
-                                        ref={inputRef}
-                                        value={editValue}
-                                        onChange={(event) =>
-                                            setEditValue(event.target.value)
+                            />
+                        )}
+                        {visualTabs.map((tab, index) => {
+                            const isActive = tab.id === pane.activeTabId;
+                            const isDragging = tab.id === draggingTabId;
+                            const isEditing = editingKey === tab.id;
+                            const canRename = isChatTab(tab);
+                            const tabLabel = getTabLabel(
+                                tab,
+                                fileTreeShowExtensions,
+                                chatSessionsById,
+                            );
+                            return (
+                                <Fragment key={tab.id}>
+                                    <div
+                                        ref={(node) =>
+                                            registerTabNode(tab.id, node)
                                         }
-                                        onKeyDown={(event) => {
-                                            if (event.key === "Enter") {
-                                                commitEditing(commitChatRename);
-                                            } else if (event.key === "Escape") {
-                                                cancelEditing();
-                                            }
-                                        }}
-                                        onBlur={() =>
-                                            commitEditing(commitChatRename)
+                                        data-pane-tab-id={tab.id}
+                                        role="tab"
+                                        tabIndex={0}
+                                        aria-selected={isActive}
+                                        className="group inline-flex h-8 shrink-0 items-center rounded-lg text-left"
+                                        onPointerDownCapture={(event) =>
+                                            isEditing
+                                                ? undefined
+                                                : handleTabPointerDownCapture(
+                                                      tab.id,
+                                                      event,
+                                                  )
                                         }
                                         onPointerDown={(event) =>
-                                            event.stopPropagation()
+                                            isEditing
+                                                ? undefined
+                                                : handlePointerDown(
+                                                      tab.id,
+                                                      index,
+                                                      event,
+                                                  )
                                         }
-                                        onClick={(event) =>
-                                            event.stopPropagation()
+                                        onPointerMove={(event) =>
+                                            isEditing
+                                                ? undefined
+                                                : handlePointerMove(
+                                                      tab.id,
+                                                      event,
+                                                  )
                                         }
-                                        className="min-w-0 flex-1 truncate bg-transparent text-[12px] font-medium outline-none"
+                                        onPointerUp={(event) =>
+                                            isEditing
+                                                ? undefined
+                                                : handlePointerUp(
+                                                      event.pointerId,
+                                                      {
+                                                          clientX:
+                                                              event.clientX,
+                                                          clientY:
+                                                              event.clientY,
+                                                          screenX:
+                                                              event.screenX,
+                                                          screenY:
+                                                              event.screenY,
+                                                      },
+                                                  )
+                                        }
+                                        onPointerCancel={(event) =>
+                                            isEditing
+                                                ? undefined
+                                                : handlePointerUp(
+                                                      event.pointerId,
+                                                      {
+                                                          clientX:
+                                                              event.clientX,
+                                                          clientY:
+                                                              event.clientY,
+                                                          screenX:
+                                                              event.screenX,
+                                                          screenY:
+                                                              event.screenY,
+                                                      },
+                                                  )
+                                        }
+                                        onLostPointerCapture={(event) =>
+                                            isEditing
+                                                ? undefined
+                                                : handleLostPointerCapture(
+                                                      event.pointerId,
+                                                  )
+                                        }
+                                        onClick={() => handleTabClick(tab.id)}
+                                        onContextMenu={(event) => {
+                                            if (isEditing) return;
+                                            event.preventDefault();
+                                            setTabContextMenu({
+                                                x: event.clientX,
+                                                y: event.clientY,
+                                                payload: { tabId: tab.id },
+                                            });
+                                        }}
                                         style={{
-                                            color: "var(--text-primary)",
-                                            border: "none",
-                                            padding: 0,
-                                            minHeight: 0,
+                                            width: tabLayout.tabWidth,
+                                            minWidth: tabLayout.tabWidth,
                                             boxSizing: "border-box",
-                                            boxShadow:
-                                                "inset 0 -1px 0 var(--accent)",
+                                            gap: tabLayout.tabGap,
+                                            padding: `0 ${tabLayout.tabPaddingX}px`,
+                                            border: isActive
+                                                ? "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))"
+                                                : "1px solid color-mix(in srgb, var(--border) 46%, transparent)",
+                                            background: isActive
+                                                ? "var(--bg-primary)"
+                                                : "color-mix(in srgb, var(--bg-primary) 38%, transparent)",
+                                            color: isActive
+                                                ? "var(--text-primary)"
+                                                : "var(--text-secondary)",
+                                            boxShadow: isActive
+                                                ? "0 10px 24px rgba(15, 23, 42, 0.08)"
+                                                : "none",
+                                            opacity: isDragging ? 0.72 : 1,
+                                            cursor: isDragging
+                                                ? "grabbing"
+                                                : "pointer",
                                         }}
-                                    />
-                                ) : (
-                                    <span
-                                        className="truncate text-[12px] font-medium"
-                                        onDoubleClick={() => {
-                                            if (!canRename) return;
-                                            beginChatRename(tab);
-                                        }}
-                                        title={
-                                            canRename
-                                                ? "Double-click to rename"
-                                                : undefined
-                                        }
                                     >
-                                        {tabLabel}
-                                    </span>
-                                )}
-                                <button
-                                    type="button"
-                                    title={`Close ${tabLabel}`}
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (isChatTab(tab)) {
-                                            moveChatToSidebar(tab.sessionId);
-                                        } else {
-                                            closeTab(tab.id);
-                                        }
-                                    }}
-                                    className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded opacity-45 transition group-hover:opacity-100"
-                                    style={{ color: "inherit" }}
-                                >
-                                    <svg
-                                        width="10"
-                                        height="10"
-                                        viewBox="0 0 16 16"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="1.8"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                    >
-                                        <path d="M4 4l8 8M4 12l8-8" />
-                                    </svg>
-                                </button>
-                            </div>
-                            {insertionIndicatorIndex === index + 1 && (
-                                <div
-                                    aria-hidden="true"
-                                    className="shrink-0 rounded-full"
-                                    style={{
-                                        width: 3,
-                                        height: 20,
-                                        marginLeft: 4,
-                                        backgroundColor: "var(--accent)",
-                                        boxShadow:
-                                            "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
-                                    }}
-                                />
-                            )}
-                        </Fragment>
-                    );
-                })}
+                                        {renderEditorTabLeadingIcon(tab)}
+                                        {isEditing ? (
+                                            <input
+                                                ref={inputRef}
+                                                value={editValue}
+                                                onChange={(event) =>
+                                                    setEditValue(
+                                                        event.target.value,
+                                                    )
+                                                }
+                                                onKeyDown={(event) => {
+                                                    if (event.key === "Enter") {
+                                                        commitEditing(
+                                                            commitChatRename,
+                                                        );
+                                                    } else if (
+                                                        event.key === "Escape"
+                                                    ) {
+                                                        cancelEditing();
+                                                    }
+                                                }}
+                                                onBlur={() =>
+                                                    commitEditing(
+                                                        commitChatRename,
+                                                    )
+                                                }
+                                                onPointerDown={(event) =>
+                                                    event.stopPropagation()
+                                                }
+                                                onClick={(event) =>
+                                                    event.stopPropagation()
+                                                }
+                                                className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none"
+                                                style={{
+                                                    fontSize:
+                                                        tabLayout.titleFontSize,
+                                                    color: "var(--text-primary)",
+                                                    border: "none",
+                                                    padding: 0,
+                                                    minHeight: 0,
+                                                    boxSizing: "border-box",
+                                                    boxShadow:
+                                                        "inset 0 -1px 0 var(--accent)",
+                                                }}
+                                            />
+                                        ) : (
+                                            <span
+                                                className="min-w-0 flex-1 truncate font-medium"
+                                                onDoubleClick={() => {
+                                                    if (!canRename) return;
+                                                    beginChatRename(tab);
+                                                }}
+                                                title={
+                                                    canRename
+                                                        ? "Double-click to rename"
+                                                        : undefined
+                                                }
+                                                style={{
+                                                    fontSize:
+                                                        tabLayout.titleFontSize,
+                                                }}
+                                            >
+                                                {tabLabel}
+                                            </span>
+                                        )}
+                                        <button
+                                            type="button"
+                                            title={`Close ${tabLabel}`}
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (isChatTab(tab)) {
+                                                    moveChatToSidebar(
+                                                        tab.sessionId,
+                                                    );
+                                                } else {
+                                                    closeTab(tab.id);
+                                                }
+                                            }}
+                                            className="inline-flex shrink-0 items-center justify-center rounded opacity-45 transition group-hover:opacity-100"
+                                            style={{
+                                                width: tabLayout.closeButtonSize,
+                                                height: tabLayout.closeButtonSize,
+                                                color: "inherit",
+                                            }}
+                                        >
+                                            <svg
+                                                width={tabLayout.closeIconSize}
+                                                height={tabLayout.closeIconSize}
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                strokeWidth="1.8"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            >
+                                                <path d="M4 4l8 8M4 12l8-8" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    {insertionIndicatorIndex === index + 1 && (
+                                        <div
+                                            aria-hidden="true"
+                                            className="shrink-0 rounded-full"
+                                            style={{
+                                                width: 3,
+                                                height: 20,
+                                                backgroundColor:
+                                                    "var(--accent)",
+                                                boxShadow:
+                                                    "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                            }}
+                                        />
+                                    )}
+                                </Fragment>
+                            );
+                        })}
+                    </div>
+                </div>
 
                 {vaultPath && (
                     <button
@@ -950,11 +1020,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               top: 0,
                               display: "flex",
                               alignItems: "center",
-                              gap: 8,
-                              minWidth: 140,
-                              maxWidth: 220,
+                              gap: tabLayout.tabGap,
+                              width: tabLayout.tabWidth,
+                              minWidth: tabLayout.tabWidth,
                               height: 34,
-                              padding: "0 12px",
+                              padding: `0 ${tabLayout.tabPaddingX}px`,
                               borderRadius: 10,
                               border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
                               background:
@@ -969,11 +1039,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                           {renderEditorTabLeadingIcon(draggedPreviewTab)}
                           <span
                               style={{
+                                  flex: 1,
                                   minWidth: 0,
                                   overflow: "hidden",
                                   textOverflow: "ellipsis",
                                   whiteSpace: "nowrap",
-                                  fontSize: 12,
+                                  fontSize: tabLayout.titleFontSize,
                                   fontWeight: 600,
                               }}
                           >

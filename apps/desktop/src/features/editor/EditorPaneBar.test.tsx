@@ -8,6 +8,54 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { EditorPaneBar } from "./EditorPaneBar";
 
+function rect({
+    left,
+    top,
+    width,
+    height,
+}: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}) {
+    return {
+        x: left,
+        y: top,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        toJSON: () => ({}),
+    } as DOMRect;
+}
+
+function defineElementMetric<T extends keyof HTMLElement>(
+    element: HTMLElement,
+    property: T,
+    value: HTMLElement[T],
+) {
+    Object.defineProperty(element, property, {
+        configurable: true,
+        value,
+    });
+}
+
+function resizeObserverEntry(
+    target: Element,
+    contentRect: DOMRectReadOnly,
+): ResizeObserverEntry {
+    return {
+        target,
+        contentRect,
+        borderBoxSize: [],
+        contentBoxSize: [],
+        devicePixelContentBoxSize: [],
+    } as ResizeObserverEntry;
+}
+
 function createChatSession(sessionId: string, title: string) {
     return {
         sessionId,
@@ -350,6 +398,137 @@ describe("EditorPaneBar", () => {
         expect(scrollLeft).toBe(40);
     });
 
+    it("uses the unified bar responsive tab sizing logic in split view", async () => {
+        const resizeCallbacks: ResizeObserverCallback[] = [];
+        const originalResizeObserver = globalThis.ResizeObserver;
+
+        class MockResizeObserver {
+            constructor(callback: ResizeObserverCallback) {
+                resizeCallbacks.push(callback);
+            }
+
+            observe() {}
+
+            disconnect() {}
+        }
+
+        Object.defineProperty(globalThis, "ResizeObserver", {
+            configurable: true,
+            writable: true,
+            value: MockResizeObserver,
+        });
+
+        try {
+            useEditorStore.getState().hydrateWorkspace(
+                [
+                    {
+                        id: "primary",
+                        tabs: [
+                            {
+                                id: "tab-a",
+                                kind: "note",
+                                noteId: "notes/a",
+                                title: "Alpha",
+                                content: "Alpha",
+                            },
+                            {
+                                id: "tab-b",
+                                kind: "note",
+                                noteId: "notes/b",
+                                title: "Beta",
+                                content: "Beta",
+                            },
+                            {
+                                id: "tab-c",
+                                kind: "note",
+                                noteId: "notes/c",
+                                title: "Gamma",
+                                content: "Gamma",
+                            },
+                        ],
+                        activeTabId: "tab-a",
+                    },
+                ],
+                "primary",
+            );
+
+            renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+            const strip = document.querySelector(
+                '[data-pane-tab-strip="primary"]',
+            ) as HTMLElement | null;
+            const firstTab = document.querySelector(
+                '[data-pane-tab-id="tab-a"]',
+            ) as HTMLElement | null;
+
+            expect(strip).not.toBeNull();
+            expect(firstTab).not.toBeNull();
+
+            defineElementMetric(strip!, "clientWidth", 420);
+            defineElementMetric(strip!, "scrollWidth", 420);
+
+            await act(async () => {
+                for (const resizeCallback of resizeCallbacks) {
+                    resizeCallback(
+                        [
+                            resizeObserverEntry(
+                                strip!,
+                                rect({
+                                    left: 0,
+                                    top: 0,
+                                    width: 420,
+                                    height: 38,
+                                }),
+                            ),
+                        ],
+                        {} as ResizeObserver,
+                    );
+                }
+                await Promise.resolve();
+            });
+
+            expect(strip).toHaveAttribute("data-pane-tab-density", "compact");
+            expect(strip).not.toHaveAttribute("data-pane-tab-overflowing");
+            expect(parseFloat(firstTab!.style.width)).toBeGreaterThan(128);
+            expect(parseFloat(firstTab!.style.width)).toBeLessThan(160);
+
+            defineElementMetric(strip!, "clientWidth", 560);
+            defineElementMetric(strip!, "scrollWidth", 560);
+
+            await act(async () => {
+                for (const resizeCallback of resizeCallbacks) {
+                    resizeCallback(
+                        [
+                            resizeObserverEntry(
+                                strip!,
+                                rect({
+                                    left: 0,
+                                    top: 0,
+                                    width: 560,
+                                    height: 38,
+                                }),
+                            ),
+                        ],
+                        {} as ResizeObserver,
+                    );
+                }
+                await Promise.resolve();
+            });
+
+            expect(strip).toHaveAttribute(
+                "data-pane-tab-density",
+                "comfortable",
+            );
+            expect(parseFloat(firstTab!.style.width)).toBe(160);
+        } finally {
+            Object.defineProperty(globalThis, "ResizeObserver", {
+                configurable: true,
+                writable: true,
+                value: originalResizeObserver,
+            });
+        }
+    });
+
     it("disables creating a new split when the workspace already reached the cap", async () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
@@ -500,7 +679,7 @@ describe("EditorPaneBar", () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
         const newTabButton = document.querySelector(
-            '[data-pane-tab-strip="primary"] [data-new-tab-button="true"]',
+            '[data-new-tab-button="true"]',
         ) as HTMLElement | null;
         expect(newTabButton).not.toBeNull();
 
