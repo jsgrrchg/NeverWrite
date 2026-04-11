@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     useEditorStore,
     isReviewTab,
+    selectEditorPaneActiveTab,
     type ReviewTab,
 } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
@@ -174,11 +175,13 @@ function StatChips({
 /*  Root                                                               */
 /* ------------------------------------------------------------------ */
 
-export function AIReviewView() {
+interface AIReviewViewProps {
+    paneId?: string;
+}
+
+export function AIReviewView({ paneId }: AIReviewViewProps) {
     const tab = useEditorStore((state) => {
-        const current = state.tabs.find(
-            (candidate) => candidate.id === state.activeTabId,
-        );
+        const current = selectEditorPaneActiveTab(state, paneId);
         return current && isReviewTab(current) ? current : null;
     });
 

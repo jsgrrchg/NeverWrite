@@ -9,6 +9,7 @@ import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useEditorStore,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -150,10 +151,9 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
         }
 
         const { id, title } = result;
-        const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find(
-            (t): t is NoteTab => isNoteTab(t) && t.noteId === id,
-        );
+        const existing = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === id);
         if (existing) {
             openNote(id, title, existing.content);
             return;
@@ -181,8 +181,9 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
         }
 
         try {
-            const tabs = useEditorStore.getState().tabs;
-            const existing = tabs.find(
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find(
                 (tab): tab is NoteTab =>
                     isNoteTab(tab) && tab.noteId === result.id,
             );
@@ -268,9 +269,11 @@ export function SearchPanel({ autoFocus }: { autoFocus?: boolean }) {
                 </div>
                 <button
                     onClick={() => {
-                        const { tabs, insertExternalTab, openNote } =
+                        const { insertExternalTab, openNote } =
                             useEditorStore.getState();
-                        const existing = tabs.find(
+                        const existing = selectEditorWorkspaceTabs(
+                            useEditorStore.getState(),
+                        ).find(
                             (t): t is NoteTab =>
                                 isNoteTab(t) && t.noteId === "__search__",
                         );

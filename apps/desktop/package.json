@@ -9,6 +9,7 @@
         "lint": "eslint .",
         "test": "vitest run",
         "test:watch": "vitest",
+        "test:split-grid-baseline": "vitest run src/app/store/workspaceLayoutTree.test.ts src/app/store/workspaceLayoutNavigation.test.ts src/app/store/editorStore.test.ts src/app/store/editorSession.test.ts src/app/store/layoutStore.test.ts src/features/editor/MultiPaneWorkspace.test.tsx src/features/editor/EditorPaneBar.test.tsx src/features/editor/workspaceTabDropPreview.test.ts src/features/editor/UnifiedBar.test.tsx src/features/vault/FileTree.test.tsx src/features/ai/hooks/useAutoOpenReviewTab.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/components/AIReviewView.test.tsx",
         "preview": "vite preview",
         "tauri": "node scripts/run-tauri.mjs"
     },

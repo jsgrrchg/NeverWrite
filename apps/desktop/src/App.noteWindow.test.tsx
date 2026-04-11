@@ -177,4 +177,29 @@ describe("App note window", () => {
         expect(useEditorStore.getState().tabs).toHaveLength(0);
         expect(useEditorStore.getState().activeTabId).toBeNull();
     });
+
+    it("registers workspace split and focus commands", async () => {
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            useCommandStore.getState().execute("workspace:split-right");
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        expect(useEditorStore.getState().panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-2",
+        ]);
+        expect(useEditorStore.getState().focusedPaneId).toBe("pane-2");
+
+        await act(async () => {
+            useCommandStore.getState().execute("workspace:focus-left");
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+    });
 });

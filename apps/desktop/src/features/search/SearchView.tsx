@@ -3,6 +3,7 @@ import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     useEditorStore,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -158,10 +159,9 @@ export function SearchView() {
             await openVaultFileEntry(entry);
             return;
         }
-        const tabs = useEditorStore.getState().tabs;
-        const existing = tabs.find(
-            (t): t is NoteTab => isNoteTab(t) && t.noteId === result.id,
-        );
+        const existing = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === result.id);
         if (existing) {
             openNote(result.id, result.title, existing.content);
             return;
@@ -188,10 +188,9 @@ export function SearchView() {
             return;
         }
         try {
-            const tabs = useEditorStore.getState().tabs;
-            const existing = tabs.find(
-                (t): t is NoteTab => isNoteTab(t) && t.noteId === result.id,
-            );
+            const existing = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === result.id);
             const content =
                 existing?.content ??
                 (
@@ -520,7 +519,7 @@ export function SearchView() {
                                                     "var(--bg-secondary)")
                                             }
                                         >
-                                            <span className="truncate max-w-[200px]">
+                                            <span className="max-w-50 truncate">
                                                 {h}
                                             </span>
                                             <span
@@ -531,7 +530,7 @@ export function SearchView() {
                                                         getSearchHistory(),
                                                     );
                                                 }}
-                                                className="opacity-0 group-hover:opacity-60 hover:!opacity-100 ml-0.5"
+                                                className="ml-0.5 opacity-0 group-hover:opacity-60 hover:opacity-100!"
                                             >
                                                 <svg
                                                     width="10"
@@ -723,7 +722,7 @@ export function SearchView() {
                                             void handleOpenInNewTab(r)
                                         }
                                         title="Open in new tab"
-                                        className="shrink-0 px-2.5 py-2.5 opacity-0 group-hover:opacity-60 hover:!opacity-100"
+                                        className="shrink-0 px-2.5 py-2.5 opacity-0 group-hover:opacity-60 hover:opacity-100!"
                                         style={{
                                             color: "var(--text-secondary)",
                                         }}

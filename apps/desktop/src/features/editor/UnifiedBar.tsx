@@ -5,7 +5,6 @@ import {
     useLayoutEffect,
     useRef,
     useState,
-    type ReactNode,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -31,12 +30,16 @@ import {
 } from "../../app/detachedWindows";
 import {
     useEditorStore,
+    isChatTab,
     isNoteTab,
     isReviewTab,
     isFileTab,
     isPdfTab,
-    type Tab,
+    selectFocusedPaneId,
+    selectPaneCount,
 } from "../../app/store/editorStore";
+import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
+import { moveChatToSidebar } from "../ai/chatPaneMovement";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -61,11 +64,16 @@ import {
     isPointOverAiComposerDropZone,
 } from "./tabDragAttachments";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
+import {
+    buildNewTabContextMenuEntries,
+    openBlankDraftTabFromPlusButton,
+} from "./newTabMenuActions";
 import { useTabDragReorder } from "./useTabDragReorder";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
+import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 
 const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
 const TAB_STRIP_FADE_WIDTH = 18;
@@ -156,229 +164,6 @@ const controlsGroupStyle: CSSProperties = {
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
 };
 
-function renderTabLeadingIcon(tab: Tab): ReactNode {
-    if (tab.kind === "pdf") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                className="shrink-0 opacity-65"
-            >
-                <path
-                    d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                    stroke="#e24b3b"
-                    strokeWidth="1"
-                />
-                <path
-                    d="M9.5 1.5V5H13"
-                    stroke="#e24b3b"
-                    strokeWidth="0.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-                <text
-                    x="5"
-                    y="12"
-                    fontSize="4.5"
-                    fontWeight="700"
-                    fill="#e24b3b"
-                    fontFamily="sans-serif"
-                >
-                    PDF
-                </text>
-            </svg>
-        );
-    }
-
-    if (tab.kind === "file") {
-        if (tab.mimeType?.startsWith("image/")) {
-            return (
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    className="shrink-0 opacity-55"
-                >
-                    <rect
-                        x="2"
-                        y="2.5"
-                        width="12"
-                        height="11"
-                        rx="1.5"
-                        stroke="currentColor"
-                        strokeWidth="1"
-                    />
-                    <circle
-                        cx="5.5"
-                        cy="5.8"
-                        r="1.2"
-                        stroke="currentColor"
-                        strokeWidth="0.8"
-                    />
-                    <path
-                        d="M2.5 11l3-3.5 2.5 2.5 1.5-1.5 4 3.5"
-                        stroke="currentColor"
-                        strokeWidth="0.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    />
-                </svg>
-            );
-        }
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                className="shrink-0 opacity-55"
-            >
-                <path
-                    d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                    stroke="currentColor"
-                    strokeWidth="1"
-                />
-                <path
-                    d="M9.5 1.5V5H13"
-                    stroke="currentColor"
-                    strokeWidth="0.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        );
-    }
-
-    if (tab.kind === "ai-review") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="shrink-0 opacity-60"
-            >
-                <path d="M3 8h10M6 4l-4 4 4 4M10 4l4 4-4 4" />
-            </svg>
-        );
-    }
-
-    if (tab.kind === "map") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                className="shrink-0 opacity-55"
-            >
-                <rect
-                    x="2"
-                    y="2"
-                    width="12"
-                    height="12"
-                    rx="1.5"
-                    stroke="currentColor"
-                    strokeWidth="1"
-                />
-                <circle cx="8" cy="5.5" r="1.3" fill="currentColor" />
-                <circle cx="5" cy="10.5" r="1.3" fill="currentColor" />
-                <circle cx="11" cy="10.5" r="1.3" fill="currentColor" />
-                <path
-                    d="M7.15 6.65 5.7 9.3M8.85 6.65l1.45 2.65"
-                    stroke="currentColor"
-                    strokeWidth="0.85"
-                    strokeLinecap="round"
-                />
-            </svg>
-        );
-    }
-
-    if (tab.kind === "graph") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                className="shrink-0 opacity-55"
-            >
-                <circle
-                    cx="8"
-                    cy="8"
-                    r="2"
-                    stroke="currentColor"
-                    strokeWidth="1"
-                />
-                <circle
-                    cx="3"
-                    cy="4"
-                    r="1.5"
-                    stroke="currentColor"
-                    strokeWidth="0.8"
-                />
-                <circle
-                    cx="13"
-                    cy="4"
-                    r="1.5"
-                    stroke="currentColor"
-                    strokeWidth="0.8"
-                />
-                <circle
-                    cx="4"
-                    cy="13"
-                    r="1.5"
-                    stroke="currentColor"
-                    strokeWidth="0.8"
-                />
-                <circle
-                    cx="12"
-                    cy="12"
-                    r="1.5"
-                    stroke="currentColor"
-                    strokeWidth="0.8"
-                />
-                <path
-                    d="M6.3 6.8l-2-1.8M9.7 6.8l2-1.8M6.5 9.5l-1.5 2.5M9.5 9.5l1.5 1.5"
-                    stroke="currentColor"
-                    strokeWidth="0.7"
-                    strokeLinecap="round"
-                />
-            </svg>
-        );
-    }
-
-    // Note tab (kind is "note" or undefined) — document with text lines
-    return (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            className="shrink-0 opacity-50"
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <path
-                d="M6 8h4M6 10.5h3"
-                stroke="currentColor"
-                strokeWidth="0.8"
-                strokeLinecap="round"
-            />
-        </svg>
-    );
-}
-
 interface UnifiedBarProps {
     windowMode: "main" | "note";
 }
@@ -392,12 +177,18 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const switchTab = useEditorStore((s) => s.switchTab);
     const closeTab = useEditorStore((s) => s.closeTab);
     const reorderTabs = useEditorStore((s) => s.reorderTabs);
+    const moveTabToPaneDropTarget = useEditorStore(
+        (s) => s.moveTabToPaneDropTarget,
+    );
     const goBack = useEditorStore((s) => s.goBack);
     const goForward = useEditorStore((s) => s.goForward);
     const navigateToHistoryIndex = useEditorStore(
         (s) => s.navigateToHistoryIndex,
     );
     const tabOpenBehavior = useSettingsStore((s) => s.tabOpenBehavior);
+    const developerModeEnabled = useSettingsStore(
+        (s) => s.developerModeEnabled,
+    );
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
@@ -433,12 +224,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const paneCount = useEditorStore(selectPaneCount);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
         tabId: string;
     }> | null>(null);
     const [historyContextMenu, setHistoryContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
+    const [newTabContextMenu, setNewTabContextMenu] =
         useState<ContextMenuState<void> | null>(null);
     const [dragPreviewTabId, setDragPreviewTabId] = useState<string | null>(
         null,
@@ -451,6 +246,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
     const dragPreviewFrameRef = useRef<number | null>(null);
     const internalDragActiveRef = useRef(false);
+    const canCreateSplit = paneCount < MAX_EDITOR_PANES;
 
     const handleMoveTabFileToTrash = useCallback(
         async (path: string, title: string) => {
@@ -873,6 +669,15 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         async (tabId: string) => {
             const { tabs: currentTabs, activeTabId } =
                 useEditorStore.getState();
+
+            // ChatTab close returns the session to the sidebar
+            const chatTab = currentTabs.find(
+                (t) => t.id === tabId && isChatTab(t),
+            );
+            if (chatTab && isChatTab(chatTab)) {
+                moveChatToSidebar(chatTab.sessionId);
+                return;
+            }
 
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
@@ -1701,7 +1506,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                             : undefined,
                                                     }}
                                                 >
-                                                    {renderTabLeadingIcon(tab)}
+                                                    {renderEditorTabLeadingIcon(
+                                                        tab,
+                                                    )}
                                                     <span
                                                         className="flex-1 truncate font-medium"
                                                         style={{
@@ -1780,22 +1587,21 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     })}
 
                                     <button
+                                        data-new-tab-button="true"
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={() => {
-                                            if (
-                                                !useVaultStore.getState()
-                                                    .vaultPath
-                                            )
-                                                return;
-                                            useEditorStore
-                                                .getState()
-                                                .insertExternalTab({
-                                                    id: crypto.randomUUID(),
-                                                    kind: "note",
-                                                    noteId: "",
-                                                    title: "New Tab",
-                                                    content: "",
-                                                });
+                                            openBlankDraftTabFromPlusButton(
+                                                focusedPaneId ?? undefined,
+                                            );
+                                        }}
+                                        onContextMenu={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            setNewTabContextMenu({
+                                                x: event.clientX,
+                                                y: event.clientY,
+                                                payload: undefined,
+                                            });
                                         }}
                                         title="New tab"
                                         className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
@@ -1879,7 +1685,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                           willChange: "transform",
                                       }}
                                   >
-                                      {renderTabLeadingIcon(draggedPreviewTab)}
+                                      {renderEditorTabLeadingIcon(
+                                          draggedPreviewTab,
+                                      )}
                                       <span
                                           style={{
                                               flex: 1,
@@ -2230,6 +2038,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         />
                     );
                 })()}
+            {newTabContextMenu && (
+                <ContextMenu
+                    menu={newTabContextMenu}
+                    onClose={() => setNewTabContextMenu(null)}
+                    entries={buildNewTabContextMenuEntries({
+                        paneId: focusedPaneId ?? undefined,
+                        developerModeEnabled,
+                    })}
+                />
+            )}
             {tabContextMenu && (
                 <ContextMenu
                     menu={tabContextMenu}
@@ -2257,6 +2075,51 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         const tabIndex = tabs.findIndex(
                             (entry) => entry.id === tab.id,
                         );
+                        const splitEntries = focusedPaneId
+                            ? [
+                                  { type: "separator" as const },
+                                  {
+                                      label: "Open in New Left Pane",
+                                      action: () =>
+                                          moveTabToPaneDropTarget(
+                                              tab.id,
+                                              focusedPaneId,
+                                              "left",
+                                          ),
+                                      disabled: !canCreateSplit,
+                                  },
+                                  {
+                                      label: "Open in New Down Pane",
+                                      action: () =>
+                                          moveTabToPaneDropTarget(
+                                              tab.id,
+                                              focusedPaneId,
+                                              "down",
+                                          ),
+                                      disabled: !canCreateSplit,
+                                  },
+                              ]
+                            : [];
+
+                        if (isChatTab(tab)) {
+                            return [
+                                {
+                                    label: "Return to AI Panel",
+                                    action: () =>
+                                        moveChatToSidebar(tab.sessionId),
+                                },
+                                {
+                                    label: "Close",
+                                    action: () => void handleCloseTab(tab.id),
+                                },
+                                {
+                                    label: "Close Others",
+                                    action: () => closeOtherTabs(tab.id),
+                                    disabled: tabs.length <= 1,
+                                },
+                                ...splitEntries,
+                            ];
+                        }
 
                         if (isReview || tab.kind === "graph") {
                             return [
@@ -2269,6 +2132,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                     action: () => closeOtherTabs(tab.id),
                                     disabled: tabs.length <= 1,
                                 },
+                                ...splitEntries,
                             ];
                         }
 
@@ -2294,6 +2158,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 action: () => closeTabsToTheLeft(tab.id),
                                 disabled: tabIndex <= 0,
                             },
+                            ...splitEntries,
                             { type: "separator" as const },
                             ...(!isPdf && !isFile
                                 ? [

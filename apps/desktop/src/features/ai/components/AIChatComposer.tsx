@@ -62,8 +62,6 @@ interface AIChatComposerProps {
     runtimeName: string;
     runtimeId?: string;
     disabled?: boolean;
-    autoContextEnabled?: boolean;
-    hasActiveNote?: boolean;
     requireCmdEnterToSend?: boolean;
     composerFontSize?: number;
     composerFontFamily?: EditorFontFamily;
@@ -77,7 +75,6 @@ interface AIChatComposerProps {
     onMentionAttach: (note: AIChatNoteSummary) => void;
     onFileMentionAttach?: (file: AIChatFileSummary) => void;
     onFolderAttach: (folderPath: string, name: string) => void;
-    onToggleAutoContext?: () => void;
     onToggleExpanded?: () => void;
     onAttachFile?: () => void;
     onPasteImage?: (file: File) => void;
@@ -922,8 +919,6 @@ export function AIChatComposer({
     runtimeName,
     runtimeId,
     disabled = false,
-    autoContextEnabled = true,
-    hasActiveNote = false,
     requireCmdEnterToSend = false,
     composerFontSize = 14,
     composerFontFamily = "system",
@@ -937,7 +932,6 @@ export function AIChatComposer({
     onMentionAttach,
     onFileMentionAttach,
     onFolderAttach,
-    onToggleAutoContext,
     onToggleExpanded,
     onAttachFile,
     onPasteImage,
@@ -2106,72 +2100,6 @@ export function AIChatComposer({
                                 </>
                             )}
                         </div>
-                    )}
-                    {hasActiveNote && (
-                        <button
-                            type="button"
-                            tabIndex={-1}
-                            onClick={onToggleAutoContext}
-                            onMouseDown={(e) => e.preventDefault()}
-                            className="flex shrink-0 items-center justify-center rounded-md"
-                            style={{
-                                width: 28,
-                                height: 28,
-                                color: autoContextEnabled
-                                    ? "var(--accent)"
-                                    : "var(--text-secondary)",
-                                backgroundColor: autoContextEnabled
-                                    ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                                    : "transparent",
-                                border: "none",
-                                transition: "all 0.15s ease",
-                                outline: "none",
-                                appearance: "none",
-                                WebkitAppearance: "none",
-                            }}
-                            title={
-                                autoContextEnabled
-                                    ? "Active note included as context"
-                                    : "Active note not included as context"
-                            }
-                            aria-label="Toggle active note context"
-                        >
-                            {autoContextEnabled ? (
-                                <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 16 16"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <path d="M4 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z" />
-                                    <path d="M5 6h6M5 8.5h6M5 11h3" />
-                                </svg>
-                            ) : (
-                                <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 16 16"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <rect
-                                        x="2"
-                                        y="2"
-                                        width="12"
-                                        height="12"
-                                        rx="2"
-                                    />
-                                    <path d="M5 11L11 5" />
-                                </svg>
-                            )}
-                        </button>
                     )}
                     <button
                         type="button"

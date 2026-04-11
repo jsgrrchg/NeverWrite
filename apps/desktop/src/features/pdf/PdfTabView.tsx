@@ -17,15 +17,12 @@ import {
 import {
     useEditorStore,
     isPdfTab,
+    selectEditorPaneActiveTab,
     type PdfTab,
 } from "../../app/store/editorStore";
-import {
-    isWheelZoomGesture,
-    useWheelZoomModifier,
-} from "../../app/hooks/useWheelZoomModifier";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePreviewUrl";
-import { formatZoomPercentage, persistWheelZoom } from "../../app/utils/zoom";
+import { formatZoomPercentage } from "../../app/utils/zoom";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -33,10 +30,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 4;
-const WHEEL_ZOOM_SENSITIVITY = 0.0025;
-const WHEEL_ZOOM_COMMIT_DELAY = 150;
 const CONTINUOUS_PAGE_GAP = 20;
 const CONTINUOUS_OVERSCAN_PX = 1200;
 const CONTINUOUS_MAX_RENDERED_PAGES = 15;
@@ -62,10 +55,6 @@ const PDF_DOCUMENT_OPTIONS = {
     verbosity: pdfjsLib.VerbosityLevel.ERRORS,
 };
 
-function clampScrollOffset(offset: number) {
-    return Number.isFinite(offset) ? Math.max(0, offset) : 0;
-}
-
 function getPixelRatio() {
     if (typeof window === "undefined") return 1;
     return window.devicePixelRatio || 1;
@@ -87,6 +76,12 @@ function clampZoom(zoom: number, direction: "in" | "out"): number {
     }
     return ZOOM_STEPS[ZOOM_STEPS.length - 1];
 }
+
+const PINCH_GESTURE_EVENTS = [
+    "gesturestart",
+    "gesturechange",
+    "gestureend",
+] as const;
 
 function classifyPdfError(raw: string): string {
     const lower = raw.toLowerCase();
@@ -231,11 +226,13 @@ function clampContinuousWindow(
     return layouts.slice(nextStart, nextEnd);
 }
 
-export function PdfTabView() {
+interface PdfTabViewProps {
+    paneId?: string;
+}
+
+export function PdfTabView({ paneId }: PdfTabViewProps) {
     const tab = useEditorStore((s) => {
-        const current = s.tabs.find(
-            (candidate) => candidate.id === s.activeTabId,
-        );
+        const current = selectEditorPaneActiveTab(s, paneId);
         return current && isPdfTab(current) ? current : null;
     });
 
@@ -260,8 +257,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const previousViewModeRef = useRef(tab.viewMode);
     const pendingProgrammaticPageRef = useRef<number | null>(null);
-    const wheelZoomTimerRef = useRef(0);
-    const wheelZoomModifierRef = useWheelZoomModifier();
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         pageNumber: number;
         selectedText: string;
@@ -275,7 +270,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         null,
     );
     const [retryCount, setRetryCount] = useState(0);
-    const [liveZoom, setLiveZoom] = useState<number | null>(null);
     const [scrollTop, setScrollTop] = useState(0);
     const [scrollContainer, setScrollContainer] =
         useState<HTMLDivElement | null>(null);
@@ -302,8 +296,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const loading = !error && !activePdf;
     const pdf = activePdf?.pdf ?? null;
     const numPages = activePdf?.numPages ?? 0;
-    const effectiveZoom = liveZoom ?? tab.zoom;
-    const effectiveZoomRef = useRef(effectiveZoom);
+    const effectiveZoom = tab.zoom;
     const continuousLayouts = useMemo(
         () => (pageMetrics ? buildPageLayouts(pageMetrics, effectiveZoom) : []),
         [effectiveZoom, pageMetrics],
@@ -398,28 +391,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     useEffect(() => {
         pageRefs.current = {};
     }, [effectiveZoom, retryCount, tab.path, tab.viewMode]);
-
-    useEffect(() => {
-        effectiveZoomRef.current = effectiveZoom;
-    }, [effectiveZoom]);
-
-    useEffect(() => {
-        if (liveZoom === null) return;
-        if (Math.abs(tab.zoom - liveZoom) > 0.0001) return;
-        setLiveZoom(null);
-    }, [liveZoom, tab.zoom]);
-
-    useEffect(() => {
-        return () => {
-            window.clearTimeout(wheelZoomTimerRef.current);
-        };
-    }, []);
-
-    useEffect(() => {
-        window.clearTimeout(wheelZoomTimerRef.current);
-        setLiveZoom(null);
-        effectiveZoomRef.current = tab.zoom;
-    }, [tab.id, tab.path]);
 
     useEffect(() => {
         queueMicrotask(() => setPageMetrics(null));
@@ -637,14 +608,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }, [numPages, scrollToPage, tab.id, tab.page, tab.viewMode, updatePdfPage]);
 
     const zoomIn = useCallback(() => {
-        window.clearTimeout(wheelZoomTimerRef.current);
-        setLiveZoom(null);
         updatePdfZoom(tab.id, clampZoom(effectiveZoom, "in"));
     }, [effectiveZoom, tab.id, updatePdfZoom]);
 
     const zoomOut = useCallback(() => {
-        window.clearTimeout(wheelZoomTimerRef.current);
-        setLiveZoom(null);
         updatePdfZoom(tab.id, clampZoom(effectiveZoom, "out"));
     }, [effectiveZoom, tab.id, updatePdfZoom]);
 
@@ -707,55 +674,32 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (!scrollContainer) return;
 
         function handleWheel(event: WheelEvent) {
-            if (!scrollContainer) return;
-            if (!isWheelZoomGesture(event, wheelZoomModifierRef)) return;
+            if (!event.metaKey && !event.ctrlKey) return;
             event.preventDefault();
-
-            const prev = effectiveZoomRef.current;
-            const next = Math.min(
-                MAX_ZOOM,
-                Math.max(
-                    MIN_ZOOM,
-                    prev * (1 - event.deltaY * WHEEL_ZOOM_SENSITIVITY),
-                ),
-            );
-            if (Math.abs(next - prev) < 0.0001) return;
-
-            const containerRect = scrollContainer.getBoundingClientRect();
-            const pointerOffsetX = event.clientX - containerRect.left;
-            const pointerOffsetY = event.clientY - containerRect.top;
-            const scrollScaleRatio = next / prev;
-            const nextScrollLeft = clampScrollOffset(
-                (scrollContainer.scrollLeft + pointerOffsetX) *
-                    scrollScaleRatio -
-                    pointerOffsetX,
-            );
-            const nextScrollTop = clampScrollOffset(
-                (scrollContainer.scrollTop + pointerOffsetY) *
-                    scrollScaleRatio -
-                    pointerOffsetY,
-            );
-
-            setLiveZoom(next);
-            effectiveZoomRef.current = next;
-            scrollContainer.scrollLeft = nextScrollLeft;
-            scrollContainer.scrollTop = nextScrollTop;
-            setScrollTop(nextScrollTop);
-
-            window.clearTimeout(wheelZoomTimerRef.current);
-            wheelZoomTimerRef.current = window.setTimeout(() => {
-                updatePdfZoom(tab.id, persistWheelZoom(next));
-            }, WHEEL_ZOOM_COMMIT_DELAY);
         }
+
+        const suppressPinchGesture = (event: Event) => {
+            event.preventDefault();
+        };
 
         scrollContainer.addEventListener("wheel", handleWheel, {
             passive: false,
         });
+        for (const eventName of PINCH_GESTURE_EVENTS) {
+            scrollContainer.addEventListener(eventName, suppressPinchGesture, {
+                passive: false,
+            });
+        }
         return () => {
             scrollContainer.removeEventListener("wheel", handleWheel);
-            window.clearTimeout(wheelZoomTimerRef.current);
+            for (const eventName of PINCH_GESTURE_EVENTS) {
+                scrollContainer.removeEventListener(
+                    eventName,
+                    suppressPinchGesture,
+                );
+            }
         };
-    }, [scrollContainer, tab.id, updatePdfZoom, wheelZoomModifierRef]);
+    }, [scrollContainer]);
 
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
@@ -881,13 +825,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     return (
         <div
-            className="h-full flex flex-col"
+            className="h-full min-w-0 flex flex-col overflow-hidden"
             style={{ background: "var(--bg-primary)" }}
         >
             <div
-                className="flex items-center gap-2 px-3 shrink-0"
+                className="flex min-w-0 items-center gap-2 overflow-x-auto px-3 shrink-0"
                 style={{
-                    height: 34,
+                    height: 39,
                     borderBottom: "1px solid var(--border)",
                     background: "var(--bg-secondary)",
                     color: "var(--text-secondary)",
@@ -1010,18 +954,20 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
             <div
                 ref={registerContainerElement}
-                className={`flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
+                className={`min-w-0 flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
                 style={{
                     padding: 24,
                     background:
                         "color-mix(in srgb, var(--bg-primary) 92%, #000)",
-                    touchAction: "pan-x pan-y pinch-zoom",
+                    // Preserve native panning in both axes while requiring
+                    // explicit toolbar controls for zoom changes.
+                    touchAction: "pan-x pan-y",
                 }}
             >
                 {tab.viewMode === "continuous" ? (
                     <div
                         ref={contentRef}
-                        className="w-full"
+                        className="min-w-0 w-full"
                         style={{
                             filter: activeFilter.css,
                             position:
@@ -1063,7 +1009,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 ) : (
                     <div
                         ref={contentRef}
-                        className="w-full flex justify-center"
+                        className="min-w-0 w-full flex justify-center"
                         style={{
                             filter: activeFilter.css,
                         }}

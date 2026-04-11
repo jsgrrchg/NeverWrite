@@ -152,6 +152,13 @@ export interface ReviewTab {
     title: string;
 }
 
+export interface ChatTab {
+    id: string;
+    kind: "ai-chat";
+    sessionId: string;
+    title: string;
+}
+
 export interface MapTab {
     id: string;
     kind: "map";
@@ -167,7 +174,14 @@ export interface GraphTab {
     title: string;
 }
 
-export type Tab = NoteTab | PdfTab | FileTab | ReviewTab | MapTab | GraphTab;
+export type Tab =
+    | NoteTab
+    | PdfTab
+    | FileTab
+    | ReviewTab
+    | ChatTab
+    | MapTab
+    | GraphTab;
 
 export type NoteTabInput = Omit<
     NoteTab,
@@ -220,6 +234,7 @@ export type TabInput =
     | PdfTabInput
     | FileTabInput
     | ReviewTab
+    | ChatTab
     | MapTabInput
     | GraphTab;
 
@@ -234,7 +249,7 @@ export type NavigableHistoryTabInput =
     | NoteTabInput
     | PdfTabInput
     | FileTabInput;
-export type TransientTab = ReviewTab | GraphTab;
+export type TransientTab = ReviewTab | ChatTab | GraphTab;
 export type ResourceBackedTab = NoteTab | FileTab;
 export type TabCloseReason =
     | "user"
@@ -310,6 +325,14 @@ export function isReviewTab(
     return inferTabKind(tab) === "ai-review";
 }
 
+export function isChatTab(tab: Tab | null | undefined): tab is ChatTab;
+export function isChatTab(tab: TabInput | null | undefined): tab is ChatTab;
+export function isChatTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is ChatTab {
+    return inferTabKind(tab) === "ai-chat";
+}
+
 export function isMapTab(tab: Tab | null | undefined): tab is MapTab;
 export function isMapTab(tab: TabInput | null | undefined): tab is MapTabInput;
 export function isMapTab(
@@ -362,7 +385,7 @@ export function isTransientTab(
     tab: Tab | TabInput | null | undefined,
 ): tab is TransientTab {
     const kind = inferTabKind(tab);
-    return kind === "ai-review" || kind === "graph";
+    return kind === "ai-review" || kind === "ai-chat" || kind === "graph";
 }
 
 export function isResourceBackedTab(
@@ -712,6 +735,15 @@ export function createGraphTab(): GraphTab {
         id: crypto.randomUUID(),
         kind: "graph",
         title: "Graph View",
+    };
+}
+
+export function createChatTab(sessionId: string, title: string): ChatTab {
+    return {
+        id: crypto.randomUUID(),
+        kind: "ai-chat",
+        sessionId,
+        title,
     };
 }
 

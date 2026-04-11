@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
     useEditorStore,
     isNoteTab,
+    selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -44,8 +45,7 @@ function findNoteByReference(reference: string) {
 }
 
 async function readNoteContent(noteId: string) {
-    const { tabs } = useEditorStore.getState();
-    const existing = tabs.find(
+    const existing = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
         (tab): tab is NoteTab => isNoteTab(tab) && tab.noteId === noteId,
     );
     if (existing) {

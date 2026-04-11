@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
-import { perfCount } from "./app/utils/perfInstrumentation";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ActivityBar, type SidebarView } from "./components/layout/ActivityBar";
@@ -17,16 +16,11 @@ import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
-import {
-    Editor,
-    REQUEST_CLOSE_ACTIVE_TAB_EVENT,
-} from "./features/editor/Editor";
-import { FileTabView } from "./features/editor/FileTabView";
-import { AIReviewView } from "./features/ai/components/AIReviewView";
+import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
-import { NewTabView } from "./features/editor/NewTabView";
-import { SearchView } from "./features/search/SearchView";
-import { PdfTabView } from "./features/pdf/PdfTabView";
+import { EditorPaneContent } from "./features/editor/EditorPaneContent";
+import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
+import { WorkspaceChromeBar } from "./features/editor/WorkspaceChromeBar";
 import { MapsPanel } from "./features/maps/MapsPanel";
 import { BookmarksPanel } from "./features/bookmarks/BookmarksPanel";
 import { useBookmarkStore } from "./app/store/bookmarkStore";
@@ -62,13 +56,20 @@ import {
     fileViewerNeedsTextContent,
     useEditorStore,
     isFileTab,
-    isGraphTab,
-    isMapTab,
     isNoteTab,
-    isPdfTab,
-    isReviewTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedPaneId,
+    selectFocusedEditorTab,
+    selectLeafPaneIds,
+    selectPaneNeighbor,
+    selectPaneCount,
+    selectPaneState,
 } from "./app/store/editorStore";
+import { MAX_EDITOR_PANES } from "./app/store/workspaceLayoutTree";
 import {
+    buildPersistedSession,
+    isSessionReady,
+    writePersistedSession,
     markSessionReady,
     restorePersistedSession,
 } from "./app/store/editorSession";
@@ -126,6 +127,7 @@ const WEB_CLIPPER_ROUTE_POLL_MS = 100;
 const WEB_CLIPPER_ROUTE_TIMEOUT_MS = 10_000;
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
+const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
 function waitForWindowRoute(ms: number) {
     return new Promise<void>((resolve) => {
@@ -189,13 +191,22 @@ function adjustEditorFontSize(delta: number) {
 
 function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
-    if (rightPanelView === "chat") {
-        return <AIChatPanel />;
-    }
-    if (rightPanelView === "outline") {
-        return <OutlineRightPanel />;
-    }
-    return <LinksPanel />;
+    return (
+        <>
+            {/* Always mount AIChatPanel so its Tauri event listeners stay
+                bound even when a ChatTab lives in the editor workspace and
+                the sidebar is switched to outline/links. */}
+            <div
+                style={{
+                    display: rightPanelView === "chat" ? "contents" : "none",
+                }}
+            >
+                <AIChatPanel />
+            </div>
+            {rightPanelView === "outline" && <OutlineRightPanel />}
+            {rightPanelView === "links" && <LinksPanel />}
+        </>
+    );
 }
 
 function VaultOpeningOverlay() {
@@ -317,12 +328,12 @@ function VaultOpeningOverlay() {
 }
 
 function OutlineRightPanel() {
-    const activeNoteId = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    const activeNoteId = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         return tab && isNoteTab(tab) ? tab.noteId : null;
     });
-    const activeContent = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    const activeContent = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         return tab && isNoteTab(tab) ? tab.content : null;
     });
     const queueSelectionReveal = useEditorStore((s) => s.queueSelectionReveal);
@@ -387,8 +398,21 @@ function useRegisterCommands(
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             useEditorStore.getState().activeTabId !== null;
+        const canSplitPane = () =>
+            selectPaneCount(useEditorStore.getState()) < MAX_EDITOR_PANES;
+        const canClosePane = () =>
+            selectPaneCount(useEditorStore.getState()) > 1;
         const hasRecentlyClosedTab = () =>
             useEditorStore.getState().recentlyClosedTabs.length > 0;
+        const hasPaneNeighbor = (
+            direction: "left" | "right" | "up" | "down",
+        ) => {
+            const state = useEditorStore.getState();
+            const focusedPaneId = selectFocusedPaneId(state);
+            return focusedPaneId
+                ? selectPaneNeighbor(state, focusedPaneId, direction) !== null
+                : false;
+        };
         const developerModeEnabled = () =>
             developerCommandsEnabled &&
             useSettingsStore.getState().developerModeEnabled &&
@@ -583,6 +607,91 @@ function useRegisterCommands(
             shortcut: platform === "macos" ? "⌘-" : "Ctrl-",
             category: "Editor",
             execute: () => adjustEditorFontSize(-1),
+        });
+
+        register({
+            id: "workspace:split-right",
+            label: "Split Right",
+            category: "Workspace",
+            when: canSplitPane,
+            execute: () => {
+                useEditorStore.getState().splitEditorPane("row");
+            },
+        });
+
+        register({
+            id: "workspace:split-down",
+            label: "Split Down",
+            category: "Workspace",
+            when: canSplitPane,
+            execute: () => {
+                useEditorStore.getState().splitEditorPane("column");
+            },
+        });
+
+        register({
+            id: "workspace:focus-left",
+            label: "Focus Pane Left",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("left"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("left");
+            },
+        });
+
+        register({
+            id: "workspace:focus-right",
+            label: "Focus Pane Right",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("right"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("right");
+            },
+        });
+
+        register({
+            id: "workspace:focus-up",
+            label: "Focus Pane Up",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("up"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("up");
+            },
+        });
+
+        register({
+            id: "workspace:focus-down",
+            label: "Focus Pane Down",
+            category: "Workspace",
+            when: () => hasPaneNeighbor("down"),
+            execute: () => {
+                useEditorStore.getState().focusPaneNeighbor("down");
+            },
+        });
+
+        register({
+            id: "workspace:balance-layout",
+            label: "Balance Layout",
+            category: "Workspace",
+            when: canClosePane,
+            execute: () => {
+                useEditorStore.getState().balancePaneLayout();
+            },
+        });
+
+        register({
+            id: "workspace:close-pane",
+            label: "Close Pane",
+            category: "Workspace",
+            when: canClosePane,
+            execute: () => {
+                const state = useEditorStore.getState();
+                const focusedPaneId = selectFocusedPaneId(state);
+                if (!focusedPaneId) {
+                    return;
+                }
+                state.closePane(focusedPaneId);
+            },
         });
 
         // Layout
@@ -947,173 +1056,18 @@ function useDynamicScrollbars() {
     }, []);
 }
 
-type EditorPanelView =
-    | "pdf"
-    | "file"
-    | "new"
-    | "search"
-    | "ai-review"
-    | "editor"
-    | "map"
-    | "graph";
-
-const LazyExcalidrawTabView = React.lazy(() =>
-    import("./features/maps/ExcalidrawTabView").then((m) => ({
-        default: m.ExcalidrawTabView,
-    })),
-);
-
-const LazyGraphTabView = React.lazy(() =>
-    import("./features/graph/GraphTabView").then((m) => ({
-        default: m.GraphTabView,
-    })),
-);
-
-const GRAPH_KEEP_ALIVE_MS = 15 * 60 * 1000;
-const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
-
-function UnsupportedMapView() {
-    return (
-        <div
-            className="h-full flex items-center justify-center p-6"
-            style={{ color: "var(--text-secondary)" }}
-        >
-            <div
-                className="max-w-xl rounded-xl p-5"
-                style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-secondary)",
-                }}
-            >
-                <div
-                    className="text-sm font-semibold"
-                    style={{ color: "var(--text-primary)" }}
-                >
-                    Map view is unavailable in this hardened build
-                </div>
-                <div className="mt-2 text-sm leading-6">
-                    The current release disables dynamic code execution required
-                    by Excalidraw. Existing map tabs are preserved in session
-                    data, but they are not restored automatically and cannot be
-                    rendered until a CSP-compatible runtime is wired in.
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function renderEditorPanelView(
-    view: EditorPanelView,
-    emptyStateMessage?: string,
-) {
-    switch (view) {
-        case "pdf":
-            return <PdfTabView />;
-        case "file":
-            return <FileTabView />;
-        case "ai-review":
-            return <AIReviewView />;
-        case "map":
-            if (!EXCALIDRAW_RUNTIME_SUPPORTED) {
-                return <UnsupportedMapView />;
-            }
-            return (
-                <React.Suspense fallback={null}>
-                    <LazyExcalidrawTabView />
-                </React.Suspense>
-            );
-        case "new":
-            return <NewTabView />;
-        case "search":
-            return <SearchView />;
-        case "graph":
-            return null;
-        default:
-            return <Editor emptyStateMessage={emptyStateMessage} />;
-    }
-}
-
-function EditorPanel({ emptyStateMessage }: { emptyStateMessage?: string }) {
-    const view = useEditorStore((s): EditorPanelView => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        if (!tab) return "editor";
-        if (isPdfTab(tab)) return "pdf";
-        if (isFileTab(tab)) return "file";
-        if (isReviewTab(tab)) return "ai-review";
-        if (isMapTab(tab)) return "map";
-        if (isGraphTab(tab)) return "graph";
-        if (!isNoteTab(tab)) return "editor";
-        if (tab.noteId === "") return "new";
-        if (tab.noteId === "__search__") return "search";
-        return "editor";
-    });
-    const hasGraphTab = useEditorStore((s) =>
-        s.tabs.some((tab) => isGraphTab(tab)),
-    );
-    const isGraphActive = view === "graph";
-    const [keepAlive, setKeepAlive] = useState(false);
-    const [prevIsGraphActive, setPrevIsGraphActive] = useState(isGraphActive);
-    const [prevHasGraphTab, setPrevHasGraphTab] = useState(hasGraphTab);
-
-    // Adjust keep-alive based on prop changes (setState during render pattern)
-    if (
-        prevIsGraphActive !== isGraphActive ||
-        prevHasGraphTab !== hasGraphTab
-    ) {
-        setPrevIsGraphActive(isGraphActive);
-        setPrevHasGraphTab(hasGraphTab);
-        if (!hasGraphTab) {
-            if (keepAlive) setKeepAlive(false);
-        } else if (prevIsGraphActive && !isGraphActive) {
-            if (!keepAlive) setKeepAlive(true);
-        } else if (isGraphActive && keepAlive) {
-            setKeepAlive(false);
-        }
-    }
-
-    // Timer to expire keep-alive (setState only in async callback)
-    useEffect(() => {
-        if (!keepAlive) return;
-        const timeoutId = window.setTimeout(() => {
-            perfCount("graph.lifecycle.keepAliveExpired");
-            setKeepAlive(false);
-        }, GRAPH_KEEP_ALIVE_MS);
-        return () => window.clearTimeout(timeoutId);
-    }, [keepAlive]);
-
-    const keepGraphMounted = hasGraphTab && (isGraphActive || keepAlive);
-
-    return (
-        <div className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden">
-            {keepGraphMounted && (
-                <div
-                    style={{
-                        position: "absolute",
-                        inset: 0,
-                        visibility: isGraphActive ? "visible" : "hidden",
-                        pointerEvents: isGraphActive ? "auto" : "none",
-                    }}
-                >
-                    <React.Suspense fallback={null}>
-                        <LazyGraphTabView isVisible={isGraphActive} />
-                    </React.Suspense>
-                </div>
-            )}
-            {!isGraphActive && renderEditorPanelView(view, emptyStateMessage)}
-        </div>
-    );
-}
-
 export default function App() {
     const sidebarView = useLayoutStore((s) => s.sidebarView);
+    const editorPaneSizes = useLayoutStore((s) => s.editorPaneSizes);
     const setSidebarView = useLayoutStore((s) => s.setSidebarView);
+    const setEditorPaneSizes = useLayoutStore((s) => s.setEditorPaneSizes);
     const bottomPanelView = useLayoutStore((s) => s.bottomPanelView);
     const restoreVault = useVaultStore((s) => s.restoreVault);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
+    const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
-    const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const tabs = useEditorStore((s) => s.tabs);
     const activeTabId = useEditorStore((s) => s.activeTabId);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
@@ -1123,6 +1077,7 @@ export default function App() {
     const developerTerminalEnabled = useSettingsStore(
         (s) => s.developerTerminalEnabled,
     );
+    const paneCount = useEditorStore(selectPaneCount);
     const windowMode = getWindowMode();
     const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
@@ -1302,9 +1257,22 @@ export default function App() {
         const restored = await restorePersistedSession(vaultPath, {
             includeMaps: EXCALIDRAW_RUNTIME_SUPPORTED,
         });
-        if (!restored) return;
+        if (!restored) {
+            setEditorPaneSizes(1, []);
+            return;
+        }
+        const paneCount = restored.panes?.length ?? 1;
+        setEditorPaneSizes(paneCount, restored.paneSizes ?? []);
+        if (restored.panes?.length) {
+            hydrateWorkspace(
+                restored.panes,
+                restored.focusedPaneId,
+                restored.layoutTree,
+            );
+            return;
+        }
         hydrateTabs(restored.tabs, restored.activeTabId);
-    }, [hydrateTabs]);
+    }, [hydrateTabs, hydrateWorkspace, setEditorPaneSizes]);
 
     useEffect(() => {
         const blockNativeContextMenu = (event: MouseEvent) => {
@@ -1353,6 +1321,32 @@ export default function App() {
             window.clearInterval(interval);
         };
     }, [activeTabId, tabs, vaultPath, windowMode, windowSessionReady]);
+
+    useEffect(() => {
+        if (!isSessionReady()) return;
+        if (!vaultPath) return;
+
+        const timer = window.setTimeout(() => {
+            const editor = useEditorStore.getState();
+            const paneIds = selectLeafPaneIds(editor);
+            const focusedPaneId = selectFocusedPaneId(editor);
+            writePersistedSession(
+                vaultPath,
+                buildPersistedSession({
+                    panes: paneIds.map((paneId) =>
+                        selectPaneState(editor, paneId),
+                    ),
+                    focusedPaneId,
+                    layoutTree: editor.layoutTree,
+                    paneSizes: useLayoutStore.getState().editorPaneSizes,
+                    tabs: editor.tabs,
+                    activeTabId: editor.activeTabId,
+                }),
+            );
+        }, 250);
+
+        return () => window.clearTimeout(timer);
+    }, [editorPaneSizes, vaultPath]);
 
     useEffect(() => {
         if (windowMode === "settings") return;
@@ -1536,9 +1530,9 @@ export default function App() {
                 if (change.kind === "upsert" && change.note) {
                     invalidateLivePreviewNoteCache(change.note.id);
                     const noteId = change.note.id;
-                    const openTab = useEditorStore
-                        .getState()
-                        .tabs.find((t) => isNoteTab(t) && t.noteId === noteId);
+                    const openTab = selectEditorWorkspaceTabs(
+                        useEditorStore.getState(),
+                    ).find((t) => isNoteTab(t) && t.noteId === noteId);
                     if (openTab) {
                         const previousTimer =
                             pendingNoteReloads.get(noteId) ?? null;
@@ -1586,14 +1580,14 @@ export default function App() {
                     change.relative_path
                 ) {
                     const relativePath = change.relative_path;
-                    const openTab = useEditorStore
-                        .getState()
-                        .tabs.find(
-                            (t) =>
-                                isFileTab(t) &&
-                                fileViewerNeedsTextContent(t.viewer) &&
-                                t.relativePath === relativePath,
-                        );
+                    const openTab = selectEditorWorkspaceTabs(
+                        useEditorStore.getState(),
+                    ).find(
+                        (t) =>
+                            isFileTab(t) &&
+                            fileViewerNeedsTextContent(t.viewer) &&
+                            t.relativePath === relativePath,
+                    );
                     if (openTab) {
                         const previousTimer =
                             pendingFileReloads.get(relativePath) ?? null;
@@ -1683,7 +1677,21 @@ export default function App() {
                 ATTACH_EXTERNAL_TAB_EVENT,
                 (event) => {
                     if (disposed) return;
-                    insertExternalTab(event.payload.tab);
+                    const editor = useEditorStore.getState();
+                    const targetPaneId =
+                        selectFocusedPaneId(editor) ??
+                        selectLeafPaneIds(editor)[0] ??
+                        null;
+
+                    if (targetPaneId) {
+                        editor.insertExternalTabInPane(
+                            event.payload.tab,
+                            targetPaneId,
+                        );
+                        return;
+                    }
+
+                    editor.insertExternalTab(event.payload.tab);
                 },
             ),
             {
@@ -1698,7 +1706,7 @@ export default function App() {
             disposed = true;
             unlisten?.();
         };
-    }, [insertExternalTab]);
+    }, []);
 
     useEffect(() => {
         if (windowMode !== "main") return;
@@ -1791,7 +1799,7 @@ export default function App() {
             <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
-                    <EditorPanel emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
+                    <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
                 </div>
                 <YouTubeModalHost />
                 <CommandPalette />
@@ -1802,7 +1810,11 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            <UnifiedBar windowMode="main" />
+            {paneCount > 1 ? (
+                <WorkspaceChromeBar />
+            ) : (
+                <UnifiedBar windowMode="main" />
+            )}
 
             <div className="relative flex-1 flex overflow-hidden">
                 <ActivityBar
@@ -1813,10 +1825,16 @@ export default function App() {
                     }}
                     onOpenSettings={openSettings}
                 />
-                <div className="flex-1 overflow-hidden">
+                <div className="min-w-0 flex-1 overflow-hidden">
                     <AppLayout
                         left={<SidebarPanel view={sidebarView} />}
-                        center={<EditorPanel />}
+                        center={
+                            paneCount > 1 ? (
+                                <MultiPaneWorkspace />
+                            ) : (
+                                <EditorPaneContent />
+                            )
+                        }
                         right={<RightPanel />}
                         bottom={
                             developerModeEnabled &&

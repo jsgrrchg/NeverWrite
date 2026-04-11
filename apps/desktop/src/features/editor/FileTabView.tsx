@@ -11,6 +11,7 @@ import {
     fileViewerNeedsTextContent,
     useEditorStore,
     isFileTab,
+    selectEditorPaneActiveTab,
     type FileTab,
 } from "../../app/store/editorStore";
 import {
@@ -32,11 +33,13 @@ function clampScrollOffset(offset: number) {
     return Number.isFinite(offset) ? Math.max(0, offset) : 0;
 }
 
-export function FileTabView() {
+interface FileTabViewProps {
+    paneId?: string;
+}
+
+export function FileTabView({ paneId }: FileTabViewProps) {
     const tab = useEditorStore((state) => {
-        const current = state.tabs.find(
-            (candidate) => candidate.id === state.activeTabId,
-        );
+        const current = selectEditorPaneActiveTab(state, paneId);
         return current && isFileTab(current) ? current : null;
     });
 
@@ -56,11 +59,11 @@ export function FileTabView() {
     }
 
     if (tab.viewer === "csv") {
-        return <CsvFileTabView key={tab.id} />;
+        return <CsvFileTabView key={tab.id} paneId={paneId} />;
     }
 
     if (fileViewerNeedsTextContent(tab.viewer)) {
-        return <FileTextTabView key={tab.id} />;
+        return <FileTextTabView key={tab.id} paneId={paneId} />;
     }
 
     return (
@@ -76,9 +79,9 @@ export function FileTabView() {
 function FileHeader({ tab, children }: { tab: FileTab; children?: ReactNode }) {
     return (
         <div
-            className="flex items-center justify-between gap-2 px-3 shrink-0"
+            className="flex min-w-0 items-center justify-between gap-2 px-3 shrink-0 overflow-x-auto"
             style={{
-                height: 34,
+                height: 39,
                 borderBottom: "1px solid var(--border)",
                 backgroundColor: "var(--bg-secondary)",
             }}
@@ -219,7 +222,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
     const zoomPercent = formatZoomPercentage(zoom);
 
     return (
-        <div className="h-full flex flex-col overflow-hidden">
+        <div className="h-full min-w-0 flex flex-col overflow-hidden">
             <FileHeader tab={tab}>
                 <button
                     type="button"
@@ -257,7 +260,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
 
             <div
                 ref={containerRef}
-                className="flex-1 overflow-auto"
+                className="min-w-0 flex-1 overflow-auto"
                 style={{
                     background:
                         "radial-gradient(circle at top, color-mix(in srgb, var(--bg-secondary) 92%, white) 0%, var(--bg-primary) 72%)",
@@ -292,7 +295,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                 )}
                 {isFit ? (
                     <div
-                        className="h-full w-full flex items-center justify-center p-6"
+                        className="h-full min-w-0 w-full flex items-center justify-center p-6"
                         style={{
                             display: status === "error" ? "none" : undefined,
                         }}
@@ -316,7 +319,7 @@ function ImageFileViewer({ tab }: { tab: FileTab }) {
                     </div>
                 ) : (
                     <div
-                        className="inline-flex min-w-full min-h-full items-start justify-center p-6"
+                        className="flex min-w-full min-h-full items-start justify-center p-6"
                         style={{
                             display: status === "error" ? "none" : undefined,
                         }}

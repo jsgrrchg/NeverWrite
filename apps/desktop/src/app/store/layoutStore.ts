@@ -23,6 +23,7 @@ export const MAX_BOTTOM_PANEL_HEIGHT_RATIO = 0.45;
 const BOTTOM_PANEL_HEIGHT_KEY = "neverwrite.bottompanel.height";
 const BOTTOM_PANEL_COLLAPSED_KEY = "neverwrite.bottompanel.collapsed";
 const BOTTOM_PANEL_VIEW_KEY = "neverwrite.bottompanel.view";
+const EDITOR_PANE_SIZES_KEY = "neverwrite.editor-pane.sizes";
 
 const SIDEBAR_VIEWS: SidebarView[] = [
     "files",
@@ -36,6 +37,24 @@ const BOTTOM_PANEL_VIEWS = ["terminal"] as const;
 
 type RightPanelView = (typeof RIGHT_PANEL_VIEWS)[number];
 type BottomPanelView = (typeof BOTTOM_PANEL_VIEWS)[number];
+
+const DEFAULT_EDITOR_PANE_SIZES = [1];
+
+function normalizeEditorPaneSizesForCount(count: number, sizes?: number[]) {
+    const normalizedCount = Math.max(1, Math.floor(count) || 1);
+    const incoming = (sizes ?? []).filter(
+        (value) => Number.isFinite(value) && value > 0,
+    );
+
+    if (incoming.length === normalizedCount) {
+        const total = incoming.reduce((sum, value) => sum + value, 0);
+        if (total > 0) {
+            return incoming.map((value) => value / total);
+        }
+    }
+
+    return Array.from({ length: normalizedCount }, () => 1 / normalizedCount);
+}
 
 interface LayoutStore {
     sidebarCollapsed: boolean;
@@ -61,10 +80,13 @@ interface LayoutStore {
     bottomPanelCollapsed: boolean;
     bottomPanelHeight: number;
     bottomPanelView: BottomPanelView;
+    editorPaneSizes: number[];
     toggleBottomPanel: () => void;
     showBottomPanelAtHeight: (height: number) => void;
     collapseBottomPanelToHeight: (height: number) => void;
     activateBottomView: (view: BottomPanelView) => void;
+    ensureEditorPaneSizeCount: (count: number) => void;
+    setEditorPaneSizes: (count: number, sizes: number[]) => void;
 }
 
 type LayoutSnapshot = Pick<
@@ -78,6 +100,7 @@ type LayoutSnapshot = Pick<
     | "bottomPanelCollapsed"
     | "bottomPanelHeight"
     | "bottomPanelView"
+    | "editorPaneSizes"
 >;
 
 function clampSidebarWidth(width: number) {
@@ -162,6 +185,18 @@ function readHydratedLayoutSnapshot(): LayoutSnapshot {
         )
             ? (bottomPanelViewRaw as BottomPanelView)
             : "terminal",
+        editorPaneSizes: (() => {
+            try {
+                const raw = safeStorageGetItem(EDITOR_PANE_SIZES_KEY);
+                if (!raw) return DEFAULT_EDITOR_PANE_SIZES;
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed)
+                    ? normalizeEditorPaneSizesForCount(parsed.length, parsed)
+                    : DEFAULT_EDITOR_PANE_SIZES;
+            } catch {
+                return DEFAULT_EDITOR_PANE_SIZES;
+            }
+        })(),
     };
 }
 
@@ -171,6 +206,10 @@ function persistBoolean(key: string, value: boolean) {
 
 function persistNumber(key: string, value: number) {
     safeStorageSetItem(key, String(value));
+}
+
+function persistEditorPaneSizes(value: number[]) {
+    safeStorageSetItem(EDITOR_PANE_SIZES_KEY, JSON.stringify(value));
 }
 
 function createDefaultState(): LayoutSnapshot {
@@ -184,6 +223,7 @@ function createDefaultState(): LayoutSnapshot {
         bottomPanelCollapsed: true,
         bottomPanelHeight: DEFAULT_BOTTOM_PANEL_HEIGHT,
         bottomPanelView: "terminal",
+        editorPaneSizes: DEFAULT_EDITOR_PANE_SIZES,
     };
 }
 
@@ -319,6 +359,28 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
             bottomPanelView: view,
             bottomPanelCollapsed: false,
         });
+    },
+    ensureEditorPaneSizeCount: (count) =>
+        set((state) => {
+            const nextSizes = normalizeEditorPaneSizesForCount(
+                count,
+                state.editorPaneSizes,
+            );
+            const unchanged =
+                nextSizes.length === state.editorPaneSizes.length &&
+                nextSizes.every(
+                    (value, index) => value === state.editorPaneSizes[index],
+                );
+            if (unchanged) {
+                return state;
+            }
+            persistEditorPaneSizes(nextSizes);
+            return { editorPaneSizes: nextSizes };
+        }),
+    setEditorPaneSizes: (count, sizes) => {
+        const nextSizes = normalizeEditorPaneSizesForCount(count, sizes);
+        persistEditorPaneSizes(nextSizes);
+        set({ editorPaneSizes: nextSizes });
     },
 }));
 

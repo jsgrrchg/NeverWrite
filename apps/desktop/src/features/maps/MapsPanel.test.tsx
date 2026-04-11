@@ -4,10 +4,13 @@ import { describe, expect, it } from "vitest";
 import { isMapTab, useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
+    createInitialLayout,
+    splitPane,
+} from "../../app/store/workspaceLayoutTree";
+import {
     flushPromises,
     mockInvoke,
     renderComponent,
-    setEditorTabs,
 } from "../../test/test-utils";
 import { MapsPanel } from "./MapsPanel";
 
@@ -36,25 +39,74 @@ function buildMovedMapEntry(relativePath: string, title: string) {
     };
 }
 
+function setFocusedPrimaryWorkspaceWithMapInSecondary() {
+    const homeTab = {
+        id: "note-1",
+        kind: "note" as const,
+        noteId: "notes/home",
+        title: "Home",
+        content: "# Home",
+        history: [
+            {
+                kind: "note" as const,
+                noteId: "notes/home",
+                title: "Home",
+                content: "# Home",
+            },
+        ],
+        historyIndex: 0,
+    };
+    const mapTab = {
+        id: "map-1",
+        kind: "map" as const,
+        title: "Map 2026-04-05",
+        relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
+        history: [],
+        historyIndex: -1,
+    };
+    const layoutTree = splitPane(
+        createInitialLayout("primary"),
+        "primary",
+        "row",
+        "secondary",
+    );
+
+    useEditorStore.setState({
+        panes: [
+            {
+                id: "primary",
+                tabs: [homeTab],
+                activeTabId: homeTab.id,
+                activationHistory: [homeTab.id],
+                tabNavigationHistory: [homeTab.id],
+                tabNavigationIndex: 0,
+            },
+            {
+                id: "secondary",
+                tabs: [mapTab],
+                activeTabId: mapTab.id,
+                activationHistory: [mapTab.id],
+                tabNavigationHistory: [mapTab.id],
+                tabNavigationIndex: 0,
+            },
+        ],
+        focusedPaneId: "primary",
+        layoutTree,
+        tabs: [homeTab],
+        activeTabId: homeTab.id,
+        activationHistory: [homeTab.id],
+        tabNavigationHistory: [homeTab.id],
+        tabNavigationIndex: 0,
+    });
+}
+
 describe("MapsPanel", () => {
-    it("renames a map from the context menu while preserving the map tab linkage", async () => {
+    it("renames a map from the context menu while preserving the map tab linkage in another pane", async () => {
         const user = userEvent.setup();
         const invokeMock = mockInvoke();
 
         useVaultStore.setState({ vaultPath: "/vault" });
-        setEditorTabs(
-            [
-                {
-                    id: "map-1",
-                    kind: "map",
-                    title: "Map 2026-04-05",
-                    relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
-                    history: [],
-                    historyIndex: -1,
-                },
-            ],
-            "map-1",
-        );
+        setFocusedPrimaryWorkspaceWithMapInSecondary();
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "list_maps") {
@@ -105,32 +157,22 @@ describe("MapsPanel", () => {
         expect(await screen.findByText("Architecture")).toBeInTheDocument();
         const mapTabs = useEditorStore
             .getState()
-            .tabs.filter((tab) => isMapTab(tab));
+            .panes.flatMap((pane) => pane.tabs)
+            .filter((tab) => isMapTab(tab));
         expect(mapTabs).toHaveLength(1);
         expect(mapTabs[0]).toMatchObject({
             relativePath: "Excalidraw/Architecture.excalidraw",
             title: "Architecture",
         });
+        expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 
-    it("deletes a map from the context menu and closes its open tab", async () => {
+    it("deletes a map from the context menu and closes its open tab in another pane", async () => {
         const user = userEvent.setup();
         const invokeMock = mockInvoke();
 
         useVaultStore.setState({ vaultPath: "/vault" });
-        setEditorTabs(
-            [
-                {
-                    id: "map-1",
-                    kind: "map",
-                    title: "Map 2026-04-05",
-                    relativePath: "Excalidraw/Map 2026-04-05.excalidraw",
-                    history: [],
-                    historyIndex: -1,
-                },
-            ],
-            "map-1",
-        );
+        setFocusedPrimaryWorkspaceWithMapInSecondary();
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "list_maps") {
@@ -174,7 +216,11 @@ describe("MapsPanel", () => {
             ).not.toBeInTheDocument();
         });
         expect(
-            useEditorStore.getState().tabs.some((tab) => isMapTab(tab)),
+            useEditorStore
+                .getState()
+                .panes.flatMap((pane) => pane.tabs)
+                .some((tab) => isMapTab(tab)),
         ).toBe(false);
+        expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 });

@@ -7,6 +7,7 @@ import {
     isNoteTab,
     normalizeFileViewer,
     isPdfTab,
+    isChatTab,
     isReviewTab,
     type FileViewerMode,
     type PdfViewMode,
@@ -17,11 +18,31 @@ import { getHistoryTabHandler, normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
+import { useLayoutStore } from "./layoutStore";
+import {
+    createInitialLayout,
+    getLayoutPaneIds,
+    normalizeLayoutTree,
+    type WorkspaceLayoutNode,
+} from "./workspaceLayoutTree";
 
 const SESSION_KEY = "neverwrite.session.tabs";
 const SESSION_KEY_PREFIX = "neverwrite.session.tabs:";
 
+export interface PersistedSessionPane {
+    id: string;
+    tabs: TabInput[];
+    activeTabId: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
+}
+
 export interface PersistedSession {
+    panes?: PersistedSessionPane[];
+    focusedPaneId?: string | null;
+    layoutTree?: WorkspaceLayoutNode;
+    paneSizes?: number[];
     tabs?: TabInput[];
     activeTabId?: string | null;
     noteIds: Array<{
@@ -82,11 +103,26 @@ export interface PersistedSession {
 }
 
 export interface EditorSessionState {
+    panes?: Array<{
+        id: string;
+        tabs: Tab[];
+        activeTabId: string | null;
+        activationHistory: string[];
+        tabNavigationHistory: string[];
+        tabNavigationIndex: number;
+    }>;
+    focusedPaneId?: string | null;
+    layoutTree?: WorkspaceLayoutNode;
+    paneSizes?: number[];
     tabs: Tab[];
     activeTabId: string | null;
 }
 
 export interface RestoredEditorSession {
+    panes?: PersistedSessionPane[];
+    focusedPaneId?: string | null;
+    layoutTree?: WorkspaceLayoutNode;
+    paneSizes?: number[];
     tabs: TabInput[];
     activeTabId: string | null;
 }
@@ -132,7 +168,8 @@ export function hasPersistedSessionData(
 ) {
     return Boolean(
         session &&
-        (session.noteIds.length ||
+        (session.panes?.length ||
+            session.noteIds.length ||
             session.tabs?.length ||
             session.pdfTabs?.length ||
             session.fileTabs?.length ||
@@ -141,10 +178,182 @@ export function hasPersistedSessionData(
     );
 }
 
+function normalizePersistedTabs(tabs: Tab[]) {
+    return tabs.flatMap((tab): TabInput[] => {
+        if (!isHistoryTab(tab)) {
+            return isGraphTab(tab) || isMapTab(tab) ? [tab] : [];
+        }
+
+        const normalized = normalizeHistoryTab(tab);
+        return normalized ? [normalized] : [];
+    });
+}
+
+function buildPersistedPanes(
+    state: EditorSessionState,
+): PersistedSessionPane[] | undefined {
+    if (!state.panes?.length) {
+        const tabs = normalizePersistedTabs(state.tabs);
+        const activeTabId =
+            state.activeTabId &&
+            tabs.some((tab) => tab.id === state.activeTabId)
+                ? state.activeTabId
+                : null;
+        return tabs.length > 0 || activeTabId
+            ? [
+                  {
+                      id: "primary",
+                      tabs,
+                      activeTabId,
+                      activationHistory: activeTabId ? [activeTabId] : [],
+                      tabNavigationHistory: activeTabId ? [activeTabId] : [],
+                      tabNavigationIndex: activeTabId ? 0 : -1,
+                  },
+              ]
+            : undefined;
+    }
+
+    const persistedPanes = state.panes
+        .map((pane) => ({
+            id: pane.id,
+            tabs: normalizePersistedTabs(pane.tabs),
+            activeTabId:
+                pane.activeTabId &&
+                pane.tabs.some((tab) => tab.id === pane.activeTabId)
+                    ? pane.activeTabId
+                    : null,
+            activationHistory: pane.activationHistory.filter((tabId) =>
+                pane.tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationHistory: pane.tabNavigationHistory.filter((tabId) =>
+                pane.tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationIndex: pane.tabNavigationIndex,
+        }))
+        .filter((pane) => pane.id.trim().length > 0);
+
+    if (persistedPanes.some((pane) => pane.tabs.length > 0)) {
+        return persistedPanes.filter((pane) => pane.tabs.length > 0);
+    }
+
+    return persistedPanes.length > 0 ? [persistedPanes[0]] : undefined;
+}
+
+function compactRestoredPanes(panes: PersistedSessionPane[]) {
+    if (panes.some((pane) => pane.tabs.length > 0)) {
+        return panes.filter((pane) => pane.tabs.length > 0);
+    }
+
+    return panes.length > 0 ? [panes[0]] : [];
+}
+
+function normalizePaneSizesForPersistence(count: number, paneSizes?: number[]) {
+    const normalizedCount = Math.max(1, Math.floor(count) || 1);
+    const incoming = (paneSizes ?? []).filter(
+        (value) => Number.isFinite(value) && value > 0,
+    );
+
+    if (incoming.length === normalizedCount) {
+        const total = incoming.reduce((sum, value) => sum + value, 0);
+        if (total > 0) {
+            return incoming.map((value) => value / total);
+        }
+    }
+
+    return Array.from({ length: normalizedCount }, () => 1 / normalizedCount);
+}
+
+function buildLegacyRowLayoutTree(
+    paneIds: readonly string[],
+    paneSizes?: readonly number[],
+): WorkspaceLayoutNode {
+    if (paneIds.length <= 1) {
+        return createInitialLayout(paneIds[0] ?? "primary");
+    }
+
+    return normalizeLayoutTree({
+        type: "split",
+        id: "split-1",
+        direction: "row",
+        children: paneIds.map((paneId) => ({
+            type: "pane" as const,
+            id: paneId,
+            paneId,
+        })),
+        sizes: normalizePaneSizesForPersistence(paneIds.length, [
+            ...(paneSizes ?? []),
+        ]),
+    });
+}
+
+function normalizeLayoutTreeForPersistence(
+    layoutTree: WorkspaceLayoutNode | undefined,
+    paneIds: readonly string[],
+    paneSizes?: readonly number[],
+) {
+    if (layoutTree) {
+        try {
+            const normalizedTree = normalizeLayoutTree(layoutTree);
+            if (
+                JSON.stringify(getLayoutPaneIds(normalizedTree)) ===
+                JSON.stringify(paneIds)
+            ) {
+                return normalizedTree;
+            }
+        } catch {
+            // Fall back to the legacy row migration when persisted tree data is invalid.
+        }
+    }
+
+    return buildLegacyRowLayoutTree(paneIds, paneSizes);
+}
+
+function getLayoutTreeSignature(tree: WorkspaceLayoutNode): string {
+    if (tree.type === "pane") {
+        return `pane:${tree.paneId}`;
+    }
+
+    return `split:${tree.id}:${tree.direction}:${tree.sizes
+        .map((size) => size.toFixed(6))
+        .join(
+            ",",
+        )}[${tree.children.map((child) => getLayoutTreeSignature(child)).join("|")}]`;
+}
+
 export function getEditorSessionSignature(state: EditorSessionState) {
+    const panes = buildPersistedPanes(state);
+    if (panes?.length) {
+        let signature = state.focusedPaneId ?? "";
+        const layoutTree = normalizeLayoutTreeForPersistence(
+            state.layoutTree,
+            panes.map((pane) => pane.id),
+            state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
+        );
+        signature += `|layout:${getLayoutTreeSignature(layoutTree)}`;
+        for (const pane of panes) {
+            signature += `|pane:${pane.id}:${pane.activeTabId ?? ""}`;
+            for (const tab of pane.tabs) {
+                if (isGraphTab(tab)) {
+                    signature += "|graph";
+                    continue;
+                }
+                if (isHistoryTab(tab)) {
+                    const normalized = normalizeHistoryTab(tab);
+                    if (!normalized) {
+                        continue;
+                    }
+                    signature += getHistoryTabHandler(
+                        normalized.kind,
+                    ).fingerprint(normalized as never);
+                }
+            }
+        }
+        return signature;
+    }
+
     let signature = state.activeTabId ?? "";
     for (const tab of state.tabs) {
-        if (isReviewTab(tab)) {
+        if (isReviewTab(tab) || isChatTab(tab)) {
             continue;
         }
         if (isGraphTab(tab)) {
@@ -167,9 +376,15 @@ export function getEditorSessionSignature(state: EditorSessionState) {
 export function buildPersistedSession(
     state: EditorSessionState,
 ): PersistedSession {
+    const panes = buildPersistedPanes(state);
+    const persistedPaneIds = panes?.map((pane) => pane.id) ?? [];
+    const allTabs =
+        state.panes?.length && panes?.length
+            ? panes.flatMap((pane) => pane.tabs)
+            : state.tabs;
     const activeTab =
         state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
-    const normalizedTabs = state.tabs.flatMap((tab) => {
+    const normalizedTabs = allTabs.flatMap((tab) => {
         if (!isHistoryTab(tab)) {
             return [];
         }
@@ -207,13 +422,33 @@ export function buildPersistedSession(
         );
     }
 
+    const paneSizes =
+        panes?.length && persistedPaneIds.length > 1
+            ? normalizePaneSizesForPersistence(
+                  persistedPaneIds.length,
+                  state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
+              )
+            : undefined;
+    const layoutTree =
+        panes?.length && persistedPaneIds.length > 0
+            ? normalizeLayoutTreeForPersistence(
+                  state.layoutTree,
+                  persistedPaneIds,
+                  paneSizes,
+              )
+            : undefined;
+
     return {
+        panes,
+        focusedPaneId: state.focusedPaneId ?? panes?.[0]?.id ?? null,
+        layoutTree,
+        paneSizes,
         activeTabId: activeTab?.id ?? null,
         noteIds,
         pdfTabs,
         fileTabs,
         mapTabs,
-        hasGraphTab: state.tabs.some((tab) => isGraphTab(tab)),
+        hasGraphTab: allTabs.some((tab) => isGraphTab(tab)),
         activeNoteId:
             activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
         activePdfEntryId:
@@ -224,6 +459,19 @@ export function buildPersistedSession(
             activeTab && isMapTab(activeTab) ? activeTab.relativePath : null,
         activeGraphTab: activeTab ? isGraphTab(activeTab) : false,
     };
+}
+
+function normalizeRestoredTabInput(tab: TabInput): TabInput | null {
+    if (isReviewTab(tab) || isChatTab(tab)) {
+        return null;
+    }
+    if (isHistoryTab(tab)) {
+        return normalizeHistoryTab(tab);
+    }
+    if (isGraphTab(tab) || isMapTab(tab)) {
+        return tab;
+    }
+    return null;
 }
 
 async function restoreLegacyNoteTabs(session: PersistedSession) {
@@ -261,6 +509,50 @@ async function restoreLegacyNoteTabs(session: PersistedSession) {
         }
     }
     return restoredTabs;
+}
+
+function restorePersistedPaneTabs(
+    panes: PersistedSessionPane[],
+): PersistedSessionPane[] {
+    const seenGraph = new Set<string>();
+
+    return panes.map((pane, index) => {
+        const tabs = pane.tabs.flatMap((tab): TabInput[] => {
+            const normalized = normalizeRestoredTabInput(tab);
+            if (!normalized) {
+                return [];
+            }
+            if (isGraphTab(normalized)) {
+                if (seenGraph.size > 0) {
+                    return [];
+                }
+                seenGraph.add(normalized.id);
+            }
+            return [normalized];
+        });
+        const activeTabId =
+            pane.activeTabId && tabs.some((tab) => tab.id === pane.activeTabId)
+                ? pane.activeTabId
+                : (tabs[0]?.id ?? null);
+
+        return {
+            id: pane.id || `pane-${index + 1}`,
+            tabs,
+            activeTabId,
+            activationHistory: (pane.activationHistory ?? []).filter((tabId) =>
+                tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationHistory: (pane.tabNavigationHistory ?? []).filter(
+                (tabId) => tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationIndex:
+                typeof pane.tabNavigationIndex === "number"
+                    ? pane.tabNavigationIndex
+                    : activeTabId
+                      ? 0
+                      : -1,
+        };
+    });
 }
 
 function restoreLegacyPdfTabs(session: PersistedSession) {
@@ -485,6 +777,41 @@ export async function restorePersistedSession(
         return null;
     }
 
+    if (session?.panes?.length) {
+        const restoredPanes = compactRestoredPanes(
+            restorePersistedPaneTabs(session.panes),
+        );
+        const restoredLayoutTree = normalizeLayoutTreeForPersistence(
+            session.layoutTree,
+            restoredPanes.map((pane) => pane.id),
+            session.paneSizes,
+        );
+        const requestedFocusedPaneId =
+            typeof session.focusedPaneId === "string"
+                ? session.focusedPaneId
+                : (restoredPanes[0]?.id ?? null);
+        const focusedPane =
+            restoredPanes.find((pane) => pane.id === requestedFocusedPaneId) ??
+            restoredPanes[0] ??
+            null;
+
+        if (!focusedPane) {
+            return null;
+        }
+
+        return {
+            panes: restoredPanes,
+            focusedPaneId: focusedPane.id,
+            layoutTree: restoredLayoutTree,
+            paneSizes: normalizePaneSizesForPersistence(
+                restoredPanes.length,
+                session.paneSizes,
+            ),
+            tabs: focusedPane.tabs,
+            activeTabId: focusedPane.activeTabId,
+        };
+    }
+
     const restoredTabs: TabInput[] = [];
     if (session?.tabs?.length) {
         restoredTabs.push(...session.tabs);
@@ -513,6 +840,7 @@ export async function restorePersistedSession(
     }
 
     return {
+        paneSizes: normalizePaneSizesForPersistence(1, session?.paneSizes),
         tabs: restoredTabs,
         activeTabId: session
             ? resolveRestoredActiveTabId(session, restoredTabs, vaultPath)

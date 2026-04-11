@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatSession, AIRuntimeOption } from "../types";
@@ -136,7 +136,7 @@ describe("AIChatTabs", () => {
         expect(screen.queryByText("Codex")).toBeNull();
     });
 
-    it("opens a context menu and exports the selected session", () => {
+    it("opens a context menu and exports the selected session", async () => {
         const onExportSession = vi.fn();
 
         renderComponent(
@@ -161,10 +161,12 @@ describe("AIChatTabs", () => {
         });
         fireEvent.click(screen.getByText("Export chat to Markdown"));
 
-        expect(onExportSession).toHaveBeenCalledWith("session-a");
+        await waitFor(() => {
+            expect(onExportSession).toHaveBeenCalledWith("session-a");
+        });
     });
 
-    it("renames a tab session from the context menu and cancels with Escape", () => {
+    it("renames a tab session from the context menu and cancels with Escape", async () => {
         const onRenameSession = vi.fn();
 
         renderComponent(
@@ -189,7 +191,7 @@ describe("AIChatTabs", () => {
         });
         fireEvent.click(screen.getByText("Rename chat"));
 
-        const input = screen.getByDisplayValue("First tab");
+        const input = await screen.findByDisplayValue("First tab");
         fireEvent.change(input, { target: { value: "Renamed tab" } });
         fireEvent.keyDown(input, { key: "Escape" });
         fireEvent.blur(input);
@@ -202,14 +204,16 @@ describe("AIChatTabs", () => {
         });
         fireEvent.click(screen.getByText("Rename chat"));
 
-        const secondInput = screen.getByDisplayValue("First tab");
+        const secondInput = await screen.findByDisplayValue("First tab");
         fireEvent.change(secondInput, { target: { value: "Renamed tab" } });
         fireEvent.keyDown(secondInput, { key: "Enter" });
 
-        expect(onRenameSession).toHaveBeenCalledWith(
-            "session-a",
-            "Renamed tab",
-        );
+        await waitFor(() => {
+            expect(onRenameSession).toHaveBeenCalledWith(
+                "session-a",
+                "Renamed tab",
+            );
+        });
     });
 
     it("uses the tab runtime as fallback metadata for restored tabs", () => {

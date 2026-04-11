@@ -128,6 +128,82 @@ describe("useAutoOpenReviewTab", () => {
         ]);
     });
 
+    it("reopens existing review tabs on mount without stealing focus", () => {
+        const session = createSession("session-mounted-late", ["/vault/a.ts"]);
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "note-tab",
+                            kind: "note",
+                            noteId: "notes/current",
+                            title: "Current",
+                            content: "body",
+                            history: [
+                                {
+                                    kind: "note",
+                                    noteId: "notes/current",
+                                    title: "Current",
+                                    content: "body",
+                                },
+                            ],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "note-tab",
+                    activationHistory: ["note-tab"],
+                    tabNavigationHistory: ["note-tab"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                {
+                    id: "note-tab",
+                    kind: "note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "body",
+                    history: [
+                        {
+                            kind: "note",
+                            noteId: "notes/current",
+                            title: "Current",
+                            content: "body",
+                        },
+                    ],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "note-tab",
+            activationHistory: ["note-tab"],
+            tabNavigationHistory: ["note-tab"],
+            tabNavigationIndex: 0,
+        });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        }));
+
+        renderComponent(<AutoOpenReviewHarness />);
+
+        const state = useEditorStore.getState();
+        const reviewTab = state.tabs.find(
+            (tab) =>
+                isReviewTab(tab) && tab.sessionId === "session-mounted-late",
+        );
+
+        expect(reviewTab).toBeDefined();
+        expect(state.activeTabId).toBe("note-tab");
+        expect(state.focusedPaneId).toBe("primary");
+    });
+
     it("does not create duplicate review tabs for the same session", () => {
         renderComponent(<AutoOpenReviewHarness />);
 

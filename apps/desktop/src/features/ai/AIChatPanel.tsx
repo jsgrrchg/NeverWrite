@@ -8,7 +8,7 @@ import {
 } from "react";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
-import { useEditorStore, isNoteTab } from "../../app/store/editorStore";
+import { useEditorStore } from "../../app/store/editorStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -252,10 +252,6 @@ export function AIChatPanel() {
         [chatActions, refreshEntries],
     );
 
-    const autoContextEnabled = useChatStore(
-        (state) => state.autoContextEnabled,
-    );
-    const toggleAutoContext = useChatStore((state) => state.toggleAutoContext);
     const requireCmdEnterToSend = useChatStore(
         (state) => state.requireCmdEnterToSend,
     );
@@ -265,7 +261,12 @@ export function AIChatPanel() {
     );
     const chatFontSize = useChatStore((state) => state.chatFontSize);
     const chatFontFamily = useChatStore((state) => state.chatFontFamily);
-    const tabs = useChatTabsStore((state) => state.tabs);
+    const allChatTabs = useChatTabsStore((state) => state.tabs);
+    // Only show sidebar tabs — workspace tabs are rendered by AIChatSessionView
+    const tabs = useMemo(
+        () => allChatTabs.filter((tab) => tab.location !== "workspace"),
+        [allChatTabs],
+    );
     const activeTabId = useChatTabsStore((state) => state.activeTabId);
     const tabsReady = useChatTabsStore((state) => state.isReady);
     const ensureSessionTab = useChatTabsStore(
@@ -277,12 +278,6 @@ export function AIChatPanel() {
     const entries = useVaultStore((state) => state.entries);
     const createNote = useVaultStore((state) => state.createNote);
     const openNote = useEditorStore((state) => state.openNote);
-    const activeEditorNoteId = useEditorStore((state) => {
-        const tab = state.tabs.find(
-            (candidate) => candidate.id === state.activeTabId,
-        );
-        return tab && isNoteTab(tab) ? tab.noteId : null;
-    });
     const activeTab = activeTabId
         ? (tabs.find((tab) => tab.id === activeTabId) ?? null)
         : null;
@@ -414,29 +409,6 @@ export function AIChatPanel() {
         title: note.title,
         path: note.path,
     }));
-    const activeNote = activeEditorNoteId
-        ? (notes.find((note) => note.id === activeEditorNoteId) ?? null)
-        : null;
-    const autoContextAttachments = autoContextEnabled
-        ? [
-              activeNote &&
-              !currentSession?.attachments.some(
-                  (attachment) =>
-                      (attachment.type === "current_note" ||
-                          attachment.type === "note") &&
-                      attachment.noteId === activeNote.id,
-              )
-                  ? {
-                        id: `auto:current_note:${activeNote.id}`,
-                        label: activeNote.title,
-                        path: activeNote.path,
-                        removable: false,
-                    }
-                  : null,
-          ].filter((attachment): attachment is NonNullable<typeof attachment> =>
-              Boolean(attachment),
-          )
-        : [];
     const selectedSetupStatus = useChatStore((state) =>
         selectedRuntimeId
             ? (state.setupStatusByRuntimeId[selectedRuntimeId] ?? null)
@@ -711,22 +683,30 @@ export function AIChatPanel() {
             return;
         }
 
-        const activeSessionHasTab = tabs.some(
+        const activeSessionSidebarTabId =
+            tabs.find((tab) => tab.sessionId === activeSessionId)?.id ?? null;
+        const activeSessionHasAnyTab = allChatTabs.some(
             (tab) => tab.sessionId === activeSessionId,
         );
-        if (!activeSessionHasTab || !activeTabId) {
+        if (!activeSessionHasAnyTab) {
             const tabId = ensureSessionTab(
                 activeSessionId,
                 activeSession?.historySessionId ?? null,
                 activeSession?.runtimeId ?? null,
             );
             setActiveTab(tabId);
+            return;
+        }
+
+        if (!activeTabId && activeSessionSidebarTabId) {
+            setActiveTab(activeSessionSidebarTabId);
         }
     }, [
         activeSessionId,
         activeSession,
         activeTabId,
         activeTabSessionId,
+        allChatTabs,
         currentSession,
         ensureSessionTab,
         setActiveTab,
@@ -813,6 +793,20 @@ export function AIChatPanel() {
         shouldFocusSelectedRuntime,
         tabsReady,
     ]);
+
+    // When the active sidebar tab moves to workspace, switch to the next sidebar tab
+    useEffect(() => {
+        if (!activeTabId) return;
+        const activeTab = allChatTabs.find((t) => t.id === activeTabId);
+        if (activeTab?.location === "workspace") {
+            const nextSidebarTab = allChatTabs.find(
+                (t) => t.id !== activeTabId && t.location !== "workspace",
+            );
+            if (nextSidebarTab) {
+                setActiveTab(nextSidebarTab.id);
+            }
+        }
+    }, [activeTabId, allChatTabs, setActiveTab]);
 
     if (historyViewOpen) {
         return <ChatHistoryView />;
@@ -932,8 +926,6 @@ export function AIChatPanel() {
                     status={currentSession?.status ?? "idle"}
                     runtimeName={composerRuntimeLabel}
                     runtimeId={currentSession?.runtimeId}
-                    autoContextEnabled={autoContextEnabled}
-                    hasActiveNote={activeNote !== null}
                     requireCmdEnterToSend={requireCmdEnterToSend}
                     composerFontSize={composerFontSize}
                     composerFontFamily={composerFontFamily}
@@ -944,7 +936,6 @@ export function AIChatPanel() {
                     hasPendingSubmitAfterStop={Boolean(
                         composerInterruptedTurnState?.pendingManualSend,
                     )}
-                    onToggleAutoContext={toggleAutoContext}
                     expanded={composerExpanded}
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
                     disabled={
@@ -986,7 +977,6 @@ export function AIChatPanel() {
                                         status: attachment.status,
                                         errorMessage: attachment.errorMessage,
                                     })),
-                                ...autoContextAttachments,
                             ]}
                             onRemoveAttachment={(attachmentId) => {
                                 if (!composerSessionId) return;

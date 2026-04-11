@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef } from "react";
 import {
     fileViewerNeedsTextContent,
     isFileTab,
+    selectEditorWorkspaceTabs,
+    selectEditorPaneState,
     useEditorStore,
     type FileTab,
     type Tab,
@@ -34,6 +36,7 @@ type FileReloadMetadata = {
 type EditableFileTab = NonNullable<ReturnType<typeof getActiveEditableFileTab>>;
 
 interface UseEditableFileResourceOptions {
+    paneId?: string;
     getCurrentContent: () => string | null;
     applyIncomingContent: (nextContent: string) => void;
     acceptTab?: (tab: FileTab) => boolean;
@@ -43,6 +46,7 @@ interface UseEditableFileResourceOptions {
 // Shared file-editing orchestration so multiple viewers can reuse the same
 // autosave, reload and external-conflict behavior without diverging.
 export function useEditableFileResource({
+    paneId,
     getCurrentContent,
     applyIncomingContent,
     acceptTab = defaultAcceptEditableFileTab,
@@ -60,7 +64,7 @@ export function useEditableFileResource({
     const lastVaultPathRef = useRef<string | null>(vaultPath);
 
     const tab = useEditorStore((state) =>
-        getActiveEditableFileTab(state, acceptTab),
+        getActiveEditableFileTab(state, paneId, acceptTab),
     );
     const hasExternalConflict = useEditorStore((state) => {
         const relativePath = tab?.relativePath;
@@ -105,9 +109,11 @@ export function useEditableFileResource({
             pruneFilePathStateForOpenTabs(tabs);
         };
 
-        syncLiveFilePathState(useEditorStore.getState().tabs);
+        syncLiveFilePathState(
+            selectEditorWorkspaceTabs(useEditorStore.getState()),
+        );
         const unsubscribe = useEditorStore.subscribe((state) => {
-            syncLiveFilePathState(state.tabs);
+            syncLiveFilePathState(selectEditorWorkspaceTabs(state));
         });
         return unsubscribe;
     }, [pruneFilePathStateForOpenTabs]);
@@ -291,13 +297,15 @@ export function useEditableFileResource({
 
     useEffect(() => {
         const unsubscribe = useEditorStore.subscribe((state, prev) => {
-            const activeTabId = state.activeTabId;
+            const paneState = selectEditorPaneState(state, paneId);
+            const previousPaneState = selectEditorPaneState(prev, paneId);
+            const activeTabId = paneState.activeTabId;
             if (!activeTabId) return;
 
-            const currentTab = state.tabs.find(
+            const currentTab = paneState.tabs.find(
                 (candidate) => candidate.id === activeTabId,
             );
-            const previousTab = prev.tabs.find(
+            const previousTab = previousPaneState.tabs.find(
                 (candidate) => candidate.id === activeTabId,
             );
             if (!currentTab || !previousTab) return;
@@ -418,7 +426,7 @@ export function useEditableFileResource({
         });
 
         return unsubscribe;
-    }, [acceptTab, applyIncomingContent, getCurrentContent]);
+    }, [acceptTab, applyIncomingContent, getCurrentContent, paneId]);
 
     useEffect(() => {
         return () => {
@@ -485,10 +493,12 @@ function defaultAcceptEditableFileTab(tab: FileTab) {
 
 function getActiveEditableFileTab(
     state: ReturnType<typeof useEditorStore.getState>,
+    paneId: string | undefined,
     acceptTab: (tab: FileTab) => boolean,
 ) {
-    const current = state.tabs.find(
-        (candidate) => candidate.id === state.activeTabId,
+    const pane = selectEditorPaneState(state, paneId);
+    const current = pane.tabs.find(
+        (candidate) => candidate.id === pane.activeTabId,
     );
 
     return current && isFileTab(current) && acceptTab(current) ? current : null;

@@ -9,6 +9,8 @@ import {
     isNoteTab,
     isPdfTab,
     isFileTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import {
@@ -237,12 +239,12 @@ export function BookmarksPanel() {
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
 
     // Active tab info for highlight
-    const activeNoteId = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t?.id === s.activeTabId);
+    const activeNoteId = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         return isNoteTab(tab) ? tab.noteId : null;
     });
-    const activeEntryPath = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t?.id === s.activeTabId);
+    const activeEntryPath = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         return isPdfTab(tab) || isFileTab(tab) ? tab.path : null;
     });
 
@@ -331,8 +333,9 @@ export function BookmarksPanel() {
             if (item.kind === "note" && item.noteId) {
                 const note = resolveNote(item.noteId);
                 if (!note) return;
-                const { tabs } = useEditorStore.getState();
-                const existing = tabs.find(
+                const existing = selectEditorWorkspaceTabs(
+                    useEditorStore.getState(),
+                ).find(
                     (t): t is NoteTab =>
                         isNoteTab(t) && t.noteId === item.noteId,
                 );
@@ -368,8 +371,9 @@ export function BookmarksPanel() {
                 const note = resolveNote(item.noteId);
                 if (!note) return;
                 try {
-                    const { tabs } = useEditorStore.getState();
-                    const existing = tabs.find(
+                    const existing = selectEditorWorkspaceTabs(
+                        useEditorStore.getState(),
+                    ).find(
                         (t): t is NoteTab =>
                             isNoteTab(t) && t.noteId === item.noteId,
                     );
@@ -420,8 +424,9 @@ export function BookmarksPanel() {
             const note = resolveNote(item.noteId);
             if (!note || !vaultPath) return;
             try {
-                const { tabs } = useEditorStore.getState();
-                const existing = tabs.find(
+                const existing = selectEditorWorkspaceTabs(
+                    useEditorStore.getState(),
+                ).find(
                     (t): t is NoteTab =>
                         isNoteTab(t) && t.noteId === item.noteId,
                 );

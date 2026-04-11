@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    isChatTab,
     type FileViewerMode,
     isFileTab,
     isGraphTab,
@@ -9,6 +10,11 @@ import {
     isReviewTab,
     markSessionReady,
     readPersistedSession,
+    selectFocusedPaneId,
+    selectLeafPaneIds,
+    selectPaneCount,
+    selectPaneNeighbor,
+    selectPaneState,
     useEditorStore,
     type MapTab,
     type MapTabInput,
@@ -16,6 +22,11 @@ import {
 import { useSettingsStore } from "./settingsStore";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
+import {
+    MAX_EDITOR_PANES,
+    createInitialLayout,
+    splitPane,
+} from "./workspaceLayoutTree";
 
 function makeTab(overrides: {
     id: string;
@@ -116,6 +127,17 @@ beforeEach(() => {
     safeStorageClear();
     localStorage.clear();
     useEditorStore.setState({
+        panes: [
+            {
+                id: "primary",
+                tabs: [],
+                activeTabId: null,
+                activationHistory: [],
+                tabNavigationHistory: [],
+                tabNavigationIndex: -1,
+            },
+        ],
+        focusedPaneId: "primary",
         tabs: [],
         activeTabId: null,
         recentlyClosedTabs: [],
@@ -143,6 +165,252 @@ afterEach(() => {
     vi.restoreAllMocks();
     safeStorageClear();
     localStorage.clear();
+});
+
+describe("editorStore pane selector contract", () => {
+    it("derives pane ids, pane count, focused pane and neighbors from the flat workspace", () => {
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+                {
+                    id: "pane-3",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+            ],
+            focusedPaneId: "pane-2",
+        });
+
+        const state = useEditorStore.getState();
+        expect(selectLeafPaneIds(state)).toEqual([
+            "primary",
+            "pane-2",
+            "pane-3",
+        ]);
+        expect(selectPaneCount(state)).toBe(3);
+        expect(selectFocusedPaneId(state)).toBe("pane-2");
+        expect(selectPaneNeighbor(state, "pane-2", "left")).toBe("primary");
+        expect(selectPaneNeighbor(state, "pane-2", "right")).toBe("pane-3");
+        expect(selectPaneNeighbor(state, "pane-2", "up")).toBeNull();
+        expect(selectPaneNeighbor(state, "pane-2", "down")).toBeNull();
+    });
+
+    it("keeps legacy single-pane fallbacks behind the selector contract", () => {
+        const legacyTab = makeTab({
+            id: "legacy-tab",
+            noteId: "notes/legacy",
+            title: "Legacy",
+            content: "legacy content",
+        });
+
+        const state = {
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+            ],
+            focusedPaneId: null,
+            tabs: [legacyTab],
+            activeTabId: legacyTab.id,
+            activationHistory: [legacyTab.id],
+            tabNavigationHistory: [legacyTab.id],
+            tabNavigationIndex: 0,
+        };
+
+        expect(selectLeafPaneIds(state)).toEqual(["primary"]);
+        expect(selectFocusedPaneId(state)).toBe("primary");
+        expect(selectPaneCount(state)).toBe(1);
+        expect(selectPaneState(state).tabs.map((tab) => tab.id)).toEqual([
+            "legacy-tab",
+        ]);
+    });
+
+    it("derives pane order from the layout tree when the workspace cache is aligned", () => {
+        const layoutTree = splitPane(
+            splitPane(
+                createInitialLayout("primary"),
+                "primary",
+                "row",
+                "pane-2",
+            ),
+            "pane-2",
+            "column",
+            "pane-3",
+        );
+
+        const state = {
+            layoutTree,
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+                {
+                    id: "pane-3",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+            ],
+            focusedPaneId: "pane-3",
+            tabs: [],
+            activeTabId: null,
+            activationHistory: [],
+            tabNavigationHistory: [],
+            tabNavigationIndex: -1,
+        };
+
+        expect(selectLeafPaneIds(state)).toEqual([
+            "primary",
+            "pane-2",
+            "pane-3",
+        ]);
+        expect(selectFocusedPaneId(state)).toBe("pane-3");
+        expect(selectPaneState(state, "pane-2").id).toBe("pane-2");
+    });
+
+    it("derives geometric up and down neighbors from the layout tree", () => {
+        const layoutTree = splitPane(
+            splitPane(
+                createInitialLayout("primary"),
+                "primary",
+                "row",
+                "pane-2",
+            ),
+            "pane-2",
+            "column",
+            "pane-3",
+        );
+
+        const state = {
+            layoutTree,
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+                {
+                    id: "pane-3",
+                    tabs: [],
+                    activeTabId: null,
+                    activationHistory: [],
+                    tabNavigationHistory: [],
+                    tabNavigationIndex: -1,
+                },
+            ],
+            focusedPaneId: "pane-3",
+            tabs: [],
+            activeTabId: null,
+            activationHistory: [],
+            tabNavigationHistory: [],
+            tabNavigationIndex: -1,
+        };
+
+        expect(selectPaneNeighbor(state, "pane-3", "up")).toBe("pane-2");
+        expect(selectPaneNeighbor(state, "pane-2", "down")).toBe("pane-3");
+    });
+
+    it("resizes only the targeted split branch in tree-backed workspaces", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "pane-3",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        const layoutTree = splitPane(
+            splitPane(
+                createInitialLayout("primary"),
+                "primary",
+                "row",
+                "pane-2",
+            ),
+            "pane-2",
+            "column",
+            "pane-3",
+        );
+
+        useEditorStore.setState({ layoutTree });
+        useEditorStore.getState().resizePaneSplit("split-2", [0.7, 0.3]);
+
+        const nextLayoutTree = useEditorStore.getState().layoutTree;
+        expect(nextLayoutTree.type).toBe("split");
+        if (nextLayoutTree.type !== "split") {
+            throw new Error("Expected root split layout");
+        }
+        expect(nextLayoutTree.sizes).toEqual([0.5, 0.5]);
+
+        const nestedSplit = nextLayoutTree.children[1];
+        expect(nestedSplit?.type).toBe("split");
+        if (!nestedSplit || nestedSplit.type !== "split") {
+            throw new Error("Expected nested column split");
+        }
+        expect(nestedSplit.sizes[0]).toBeCloseTo(0.7, 3);
+        expect(nestedSplit.sizes[1]).toBeCloseTo(0.3, 3);
+    });
 });
 
 describe("editorStore session persistence", () => {
@@ -1205,6 +1473,140 @@ describe("editorStore tab history mode", () => {
         });
     });
 
+    it("handleMapDeleted closes matching map tabs across panes and collapses empty panes", () => {
+        const noteTab = makeTab({
+            id: "note-a",
+            noteId: "notes/a",
+            title: "A",
+            content: "Alpha",
+        });
+        const mapTab = makeMapTab({
+            id: "map-a",
+            relativePath: "Excalidraw/Board.excalidraw",
+            title: "Board",
+        });
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [noteTab],
+                    activeTabId: noteTab.id,
+                    activationHistory: [noteTab.id],
+                    tabNavigationHistory: [noteTab.id],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [mapTab],
+                    activeTabId: mapTab.id,
+                    activationHistory: [mapTab.id],
+                    tabNavigationHistory: [mapTab.id],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            layoutTree,
+            tabs: [noteTab],
+            activeTabId: noteTab.id,
+            activationHistory: [noteTab.id],
+            tabNavigationHistory: [noteTab.id],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore
+            .getState()
+            .handleMapDeleted("Excalidraw/Board.excalidraw");
+
+        const state = useEditorStore.getState();
+        expect(selectLeafPaneIds(state)).toEqual(["primary"]);
+        expect(state.panes).toHaveLength(1);
+        expect(
+            state.panes
+                .flatMap((pane) => pane.tabs)
+                .some((tab) => isMapTab(tab)),
+        ).toBe(false);
+        expect(state.tabs[0]).toMatchObject({
+            id: noteTab.id,
+            kind: "note",
+        });
+    });
+
+    it("handleMapRenamed updates matching map tabs across panes without changing focus", () => {
+        const noteTab = makeTab({
+            id: "note-a",
+            noteId: "notes/a",
+            title: "A",
+            content: "Alpha",
+        });
+        const mapTab = makeMapTab({
+            id: "map-a",
+            relativePath: "Excalidraw/Board.excalidraw",
+            title: "Board",
+        });
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [noteTab],
+                    activeTabId: noteTab.id,
+                    activationHistory: [noteTab.id],
+                    tabNavigationHistory: [noteTab.id],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [mapTab],
+                    activeTabId: mapTab.id,
+                    activationHistory: [mapTab.id],
+                    tabNavigationHistory: [mapTab.id],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            layoutTree,
+            tabs: [noteTab],
+            activeTabId: noteTab.id,
+            activationHistory: [noteTab.id],
+            tabNavigationHistory: [noteTab.id],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore
+            .getState()
+            .handleMapRenamed(
+                "Excalidraw/Board.excalidraw",
+                "Excalidraw/Architecture.excalidraw",
+                "Architecture",
+            );
+
+        const state = useEditorStore.getState();
+        const secondaryPane = selectPaneState(state, "secondary");
+        expect(state.focusedPaneId).toBe("primary");
+        expect(secondaryPane?.tabs[0]).toMatchObject({
+            kind: "map",
+            relativePath: "Excalidraw/Architecture.excalidraw",
+            title: "Architecture",
+        });
+        expect(state.tabs[0]).toMatchObject({
+            id: noteTab.id,
+            kind: "note",
+        });
+    });
+
     it("handleNoteDeleted removes reload and conflict state even when the note is not open", () => {
         useEditorStore.setState({
             tabs: [
@@ -1534,6 +1936,161 @@ describe("editorStore tab management", () => {
         expect(state.activeTabId).toBe("tab-a");
     });
 
+    it("switches to a tab in another pane and focuses that pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().switchTab("tab-b");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.activeTabId).toBe("tab-b");
+        expect(state.panes[0]?.activeTabId).toBe("tab-a");
+        expect(state.panes[1]?.activeTabId).toBe("tab-b");
+    });
+
+    it("closes a tab in a non-focused pane and removes the empty pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().closeTab("tab-b");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("primary");
+        expect(state.activeTabId).toBe("tab-a");
+        expect(state.panes).toHaveLength(1);
+        expect(state.panes[0]?.id).toBe("primary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
+    });
+
+    it("reuses and closes review tabs across panes", () => {
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                    activationHistory: ["tab-a"],
+                    tabNavigationHistory: ["tab-a"],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "review-1",
+                            kind: "ai-review",
+                            sessionId: "session-1",
+                            title: "Initial review",
+                        },
+                    ],
+                    activeTabId: "review-1",
+                    activationHistory: ["review-1"],
+                    tabNavigationHistory: ["review-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            activeTabId: "tab-a",
+            activationHistory: ["tab-a"],
+            tabNavigationHistory: ["tab-a"],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore.getState().openReview("session-1", {
+            title: "Updated review",
+        });
+
+        let state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.activeTabId).toBe("review-1");
+        expect(
+            state.panes[1]?.tabs.find((tab) => isReviewTab(tab)),
+        ).toMatchObject({
+            title: "Updated review",
+        });
+
+        useEditorStore.getState().focusPane("primary");
+        useEditorStore.getState().closeReview("session-1");
+
+        state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("primary");
+        expect(state.panes).toHaveLength(1);
+        expect(state.panes[0]?.id).toBe("primary");
+        expect(state.panes[0]?.tabs.some((tab) => isReviewTab(tab))).toBe(
+            false,
+        );
+    });
+
     it("tracks dirty tabs and clears them when the tab closes", () => {
         useEditorStore.setState({
             tabs: [
@@ -1814,6 +2371,69 @@ describe("editorStore tab management", () => {
         });
     });
 
+    it("reloads the same note across multiple panes without changing pane focus", () => {
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "note-a-primary",
+                            noteId: "notes/a",
+                            title: "Old title",
+                            content: "Old body",
+                        }),
+                    ],
+                    activeTabId: "note-a-primary",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "note-a-secondary",
+                            noteId: "notes/a",
+                            title: "Old title",
+                            content: "Old body",
+                        }),
+                    ],
+                    activeTabId: "note-a-secondary",
+                },
+            ],
+            "secondary",
+            layoutTree,
+        );
+
+        useEditorStore.getState().reloadNoteContent("notes/a", {
+            title: "New title",
+            content: "New body",
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(
+            state.panes.map((pane) =>
+                pane.tabs.find(
+                    (tab) => isNoteTab(tab) && tab.noteId === "notes/a",
+                ),
+            ),
+        ).toEqual([
+            expect.objectContaining({
+                title: "New title",
+                content: "New body",
+            }),
+            expect.objectContaining({
+                title: "New title",
+                content: "New body",
+            }),
+        ]);
+    });
+
     it("tracks logical reloads even when content stays the same", () => {
         useEditorStore.setState({
             tabs: [
@@ -1932,6 +2552,133 @@ describe("editorStore tab management", () => {
             revision: 7,
             opId: "external-7",
         });
+    });
+
+    it("force reloads matching file tabs across panes", () => {
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeFileTab({
+                            id: "file-a-primary",
+                            relativePath: "src/a.ts",
+                            title: "a.ts",
+                            path: "/vault/src/a.ts",
+                            content: "before",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        }),
+                    ],
+                    activeTabId: "file-a-primary",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeFileTab({
+                            id: "file-a-secondary",
+                            relativePath: "src/a.ts",
+                            title: "a.ts",
+                            path: "/vault/src/a.ts",
+                            content: "before",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        }),
+                    ],
+                    activeTabId: "file-a-secondary",
+                },
+            ],
+            "primary",
+            layoutTree,
+        );
+
+        useEditorStore.getState().forceReloadFileContent("src/a.ts", {
+            title: "a.ts",
+            content: "after",
+            origin: "agent",
+            revision: 9,
+            opId: "agent-9",
+        });
+
+        const state = useEditorStore.getState();
+        expect(state._pendingForceFileReloads.has("src/a.ts")).toBe(true);
+        expect(
+            state.panes.flatMap((pane) =>
+                pane.tabs.filter(
+                    (tab) => isFileTab(tab) && tab.relativePath === "src/a.ts",
+                ),
+            ),
+        ).toEqual([
+            expect.objectContaining({ content: "after" }),
+            expect.objectContaining({ content: "after" }),
+        ]);
+    });
+
+    it("removes deleted note tabs from every pane and collapses emptied panes", () => {
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "note-a-primary",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "body a",
+                        }),
+                    ],
+                    activeTabId: "note-a-primary",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "note-a-secondary",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "body a",
+                        }),
+                        makeTab({
+                            id: "note-b-secondary",
+                            noteId: "notes/b",
+                            title: "Beta",
+                            content: "body b",
+                        }),
+                    ],
+                    activeTabId: "note-b-secondary",
+                },
+            ],
+            "primary",
+            layoutTree,
+        );
+
+        useEditorStore.getState().handleNoteDeleted("notes/a");
+
+        const state = useEditorStore.getState();
+        expect(selectLeafPaneIds(state)).toEqual(["secondary"]);
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(
+            state.panes[0]?.tabs.some(
+                (tab) => isNoteTab(tab) && tab.noteId === "notes/a",
+            ),
+        ).toBe(false);
+        expect(
+            state.panes[0]?.tabs.find(
+                (tab) => isNoteTab(tab) && tab.noteId === "notes/b",
+            ),
+        ).toBeDefined();
     });
 
     it("force reloads a note target through the shared target API", () => {
@@ -2060,5 +2807,663 @@ describe("editorStore tab management", () => {
             zoom: 1.75,
             viewMode: "single",
         });
+    });
+
+    it("hydrates pane workspaces while mirroring the focused pane into legacy fields", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "pane-1",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                    activationHistory: ["tab-a"],
+                    tabNavigationHistory: ["tab-a"],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "pane-2",
+                    tabs: [
+                        makeFileTab({
+                            id: "file-b",
+                            relativePath: "src/main.ts",
+                            title: "main.ts",
+                            path: "/vault/src/main.ts",
+                            content: "console.log('ok')",
+                            mimeType: "text/typescript",
+                            viewer: "text",
+                        }),
+                    ],
+                    activeTabId: "file-b",
+                    activationHistory: ["file-b"],
+                    tabNavigationHistory: ["file-b"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            "pane-2",
+        );
+
+        const state = useEditorStore.getState();
+
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes).toHaveLength(2);
+        expect(state.panes[0]?.activeTabId).toBe("tab-a");
+        expect(state.panes[1]?.activeTabId).toBe("file-b");
+        expect(state.tabs[0]).toMatchObject({
+            id: "file-b",
+            kind: "file",
+            relativePath: "src/main.ts",
+        });
+        expect(state.activeTabId).toBe("file-b");
+    });
+
+    it("creates a new pane with an external tab and focuses it", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            "tab-a",
+        );
+
+        const paneId = useEditorStore.getState().insertExternalTabInNewPane({
+            id: "tab-b",
+            kind: "note",
+            noteId: "notes/b",
+            title: "B",
+            content: "Beta",
+        });
+
+        const state = useEditorStore.getState();
+        expect(paneId).toBe("pane-2");
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes).toHaveLength(2);
+        expect(state.panes[1]?.tabs[0]).toMatchObject({
+            id: "tab-b",
+            noteId: "notes/b",
+        });
+        expect(state.activeTabId).toBe("tab-b");
+    });
+
+    it("creates panes with dynamic ids until reaching the centralized cap", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            "tab-a",
+        );
+
+        const createdPaneIds = Array.from(
+            { length: MAX_EDITOR_PANES - 1 },
+            () => useEditorStore.getState().createEmptyPane(),
+        );
+
+        expect(createdPaneIds).toEqual([
+            "pane-2",
+            "pane-3",
+            "pane-4",
+            "pane-5",
+            "pane-6",
+        ]);
+        expect(useEditorStore.getState().createEmptyPane()).toBeNull();
+        expect(useEditorStore.getState().panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-2",
+            "pane-3",
+            "pane-4",
+            "pane-5",
+            "pane-6",
+        ]);
+    });
+
+    it("splits the focused pane to the right and focuses the new pane", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+            ],
+            "tab-a",
+        );
+
+        const paneId = useEditorStore.getState().splitEditorPane("row");
+
+        const state = useEditorStore.getState();
+        expect(paneId).toBe("pane-2");
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-2",
+        ]);
+        expect(state.layoutTree.type).toBe("split");
+        if (state.layoutTree.type !== "split") {
+            throw new Error("Expected split layout");
+        }
+        expect(state.layoutTree.direction).toBe("row");
+        expect(state.layoutTree.children.map((child) => child.id)).toEqual([
+            "primary",
+            "pane-2",
+        ]);
+    });
+
+    it("moves a tab into a new down split without destroying the source pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        const paneId = useEditorStore
+            .getState()
+            .moveTabToNewSplit("tab-b", "column");
+
+        const state = useEditorStore.getState();
+        expect(paneId).toBe("pane-3");
+        expect(state.focusedPaneId).toBe("pane-3");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-3",
+        ]);
+        expect(state.panes[1]?.tabs[0]?.id).toBe("tab-b");
+    });
+
+    it("preserves a nested down split when moving a tab from the left pane of a side-by-side workspace", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-c",
+                },
+            ],
+            "primary",
+        );
+
+        const paneId = useEditorStore
+            .getState()
+            .moveTabToNewSplit("tab-b", "column");
+
+        const state = useEditorStore.getState();
+        expect(paneId).toBe("pane-3");
+        expect(state.focusedPaneId).toBe("pane-3");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "pane-3",
+            "secondary",
+        ]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "primary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-a"]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "pane-3")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b"]);
+        expect(
+            state.panes
+                .find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-c"]);
+        expect(state.layoutTree.type).toBe("split");
+        if (state.layoutTree.type !== "split") {
+            throw new Error("Expected root split layout");
+        }
+        expect(state.layoutTree.direction).toBe("row");
+        const nestedSplit = state.layoutTree.children[0];
+        expect(nestedSplit?.type).toBe("split");
+        if (!nestedSplit || nestedSplit.type !== "split") {
+            throw new Error("Expected nested split on the left branch");
+        }
+        expect(nestedSplit.direction).toBe("column");
+        expect(
+            nestedSplit.children.map((child) =>
+                child.type === "pane" ? child.paneId : child.id,
+            ),
+        ).toEqual(["primary", "pane-3"]);
+        const rightBranch = state.layoutTree.children[1];
+        expect(rightBranch?.type).toBe("pane");
+        if (!rightBranch || rightBranch.type !== "pane") {
+            throw new Error("Expected right branch to remain a pane");
+        }
+        expect(rightBranch.paneId).toBe("secondary");
+    });
+
+    it("focuses adjacent panes through directional navigation", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().splitEditorPane("column", "secondary");
+        useEditorStore.getState().focusPane("pane-3");
+        useEditorStore.getState().focusPaneNeighbor("up");
+        expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+
+        useEditorStore.getState().focusPaneNeighbor("left");
+        expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+    });
+
+    it("balances the workspace layout without changing pane order", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().splitEditorPane("column", "secondary");
+        useEditorStore.getState().resizePaneSplit("split-2", [0.7, 0.3]);
+        useEditorStore.getState().balancePaneLayout();
+
+        const state = useEditorStore.getState();
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "primary",
+            "secondary",
+            "pane-3",
+        ]);
+        expect(state.layoutTree.type).toBe("split");
+        if (state.layoutTree.type !== "split") {
+            throw new Error("Expected root split layout");
+        }
+        const nestedSplit = state.layoutTree.children[1];
+        expect(nestedSplit?.type).toBe("split");
+        if (!nestedSplit || nestedSplit.type !== "split") {
+            throw new Error("Expected nested split");
+        }
+        expect(nestedSplit.sizes[0]).toBeCloseTo(0.5, 3);
+        expect(nestedSplit.sizes[1]).toBeCloseTo(0.5, 3);
+    });
+
+    it("unifies all panes into the requested pane and resets the split layout", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+                {
+                    id: "pane-3",
+                    tabs: [
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-c",
+                },
+            ],
+            "secondary",
+            splitPane(
+                splitPane(
+                    createInitialLayout("primary"),
+                    "primary",
+                    "row",
+                    "secondary",
+                ),
+                "secondary",
+                "column",
+                "pane-3",
+            ),
+        );
+
+        useEditorStore.getState().unifyAllPanesInto("secondary");
+
+        const state = useEditorStore.getState();
+        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-a",
+            "tab-c",
+        ]);
+        expect(state.panes[0]?.activeTabId).toBe("tab-b");
+        expect(state.layoutTree.type).toBe("pane");
+        if (state.layoutTree.type !== "pane") {
+            throw new Error("Expected a single-pane layout");
+        }
+        expect(state.layoutTree.paneId).toBe("secondary");
+    });
+
+    it("moves tabs between panes, focuses the target pane, and closes empty sources", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().moveTabToPane("tab-a", "secondary");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("secondary");
+        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-a",
+        ]);
+        expect(state.activeTabId).toBe("tab-a");
+    });
+
+    it("updates chat tab titles even when the tab lives in a non-focused pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().openChat("session-a", {
+            title: "Initial chat",
+            paneId: "secondary",
+            background: true,
+        });
+
+        const before = useEditorStore
+            .getState()
+            .panes.find((pane) => pane.id === "secondary");
+        const chatTabId =
+            before?.tabs.find((tab) => isChatTab(tab))?.id ?? null;
+
+        expect(chatTabId).not.toBeNull();
+
+        useEditorStore.getState().updateTabTitle(chatTabId ?? "", "Renamed");
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("primary");
+        expect(
+            state.panes
+                .find((pane) => pane.id === "secondary")
+                ?.tabs.find((tab) => tab.id === chatTabId)?.title,
+        ).toBe("Renamed");
+    });
+
+    it("moves a tab into a split relative to the target pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        const createdPaneId = useEditorStore
+            .getState()
+            .moveTabToPaneDropTarget("tab-a", "secondary", "left");
+
+        const state = useEditorStore.getState();
+        expect(createdPaneId).toBe("pane-3");
+        expect(state.focusedPaneId).toBe("pane-3");
+        expect(state.panes.map((pane) => pane.id)).toEqual([
+            "pane-3",
+            "secondary",
+        ]);
+        expect(
+            state.panes.find((pane) => pane.id === "pane-3")?.tabs[0]?.id,
+        ).toBe("tab-a");
+        expect(state.layoutTree.type).toBe("split");
+        if (state.layoutTree.type !== "split") {
+            throw new Error("Expected root split layout");
+        }
+        expect(state.layoutTree.direction).toBe("row");
+        expect(state.layoutTree.children.map((child) => child.id)).toEqual([
+            "pane-3",
+            "secondary",
+        ]);
+    });
+
+    it("reorders tabs within a pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().reorderPaneTabs("primary", 0, 2);
+
+        const state = useEditorStore.getState();
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-b",
+            "tab-c",
+            "tab-a",
+        ]);
+        expect(state.activeTabId).toBe("tab-b");
+    });
+
+    it("closes a pane explicitly and merges its tabs into a neighboring pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "secondary",
+        );
+
+        useEditorStore.getState().closePane("secondary");
+
+        const state = useEditorStore.getState();
+        expect(state.panes).toHaveLength(1);
+        expect(state.focusedPaneId).toBe("primary");
+        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
     });
 });

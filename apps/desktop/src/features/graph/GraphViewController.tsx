@@ -9,6 +9,8 @@ import {
 import {
     useEditorStore,
     isNoteTab,
+    selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useThemeStore } from "../../app/store/themeStore";
@@ -111,8 +113,8 @@ export function GraphViewController({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isVisible]);
 
-    const activeNoteId = useEditorStore((s) => {
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    const activeNoteId = useEditorStore((state) => {
+        const tab = selectFocusedEditorTab(state);
         return tab && isNoteTab(tab) ? tab.noteId : null;
     });
     const vaultPath = useVaultStore((s) => s.vaultPath);
@@ -371,10 +373,10 @@ export function GraphViewController({
     );
 
     const openNoteById = useCallback(async (noteId: string, title: string) => {
-        const { openNote, tabs } = useEditorStore.getState();
-        const existing = tabs.find(
-            (t): t is NoteTab => isNoteTab(t) && t.noteId === noteId,
-        );
+        const { openNote } = useEditorStore.getState();
+        const existing = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === noteId);
         if (existing) {
             openNote(noteId, title, existing.content);
             return;

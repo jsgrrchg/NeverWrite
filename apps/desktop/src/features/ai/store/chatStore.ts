@@ -32,7 +32,11 @@ import {
     aiUpdateSetup,
     aiRegisterFileBaseline,
 } from "../api";
-import { isNoteTab, useEditorStore } from "../../../app/store/editorStore";
+import {
+    isNoteTab,
+    selectEditorWorkspaceTabs,
+    useEditorStore,
+} from "../../../app/store/editorStore";
 import {
     useVaultStore,
     type VaultNoteChange,
@@ -1703,45 +1707,6 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
-function hasManualAttachment(
-    attachments: AIChatAttachment[],
-    type: AIChatAttachment["type"],
-    noteId: string,
-) {
-    return attachments.some(
-        (attachment) =>
-            attachment.type === type && attachment.noteId === noteId,
-    );
-}
-
-function getAutoContextAttachments(baseAttachments: AIChatAttachment[]) {
-    if (!useChatStore.getState().autoContextEnabled) return [];
-
-    const { tabs, activeTabId } = useEditorStore.getState();
-    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
-    const activeNoteId =
-        activeTab && isNoteTab(activeTab) ? activeTab.noteId : null;
-    const notes = useVaultStore.getState().notes;
-    const activeNote = activeNoteId
-        ? (notes.find((note) => note.id === activeNoteId) ?? null)
-        : null;
-
-    const autoAttachments: AIChatAttachment[] = [];
-
-    if (
-        activeNote &&
-        !hasManualAttachment(baseAttachments, "current_note", activeNote.id) &&
-        !hasManualAttachment(baseAttachments, "note", activeNote.id)
-    ) {
-        autoAttachments.push({
-            ...createAttachment("current_note", activeNote),
-            id: `auto:current_note:${activeNote.id}`,
-        });
-    }
-
-    return autoAttachments;
-}
-
 function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     if (!session.resumeContextPending) {
         return prompt;
@@ -2045,7 +2010,7 @@ function migrateSessionLocalState(
 }
 
 function registerOpenEditorBaselines(sessionId: string) {
-    const tabs = useEditorStore.getState().tabs;
+    const tabs = selectEditorWorkspaceTabs(useEditorStore.getState());
     for (const tab of tabs) {
         if (isNoteTab(tab) && tab.content != null) {
             aiRegisterFileBaseline(
@@ -2121,7 +2086,6 @@ function buildQueuedMessage(
         ...selectionAttachments,
         ...screenshotAttachments,
         ...fileAttachments,
-        ...getAutoContextAttachments(session.attachments),
     ].map(cloneAttachment);
 
     return {
@@ -2646,12 +2610,11 @@ function finalizeSessionStopping(sessionId: string) {
 
 function clearInterruptedTurnState(sessionId: string) {
     useChatStore.setState((state) => ({
-        interruptedTurnStateBySessionId:
-            cleanupInterruptedTurnStateBySessionId(
-                state.interruptedTurnStateBySessionId,
-                sessionId,
-                null,
-            ),
+        interruptedTurnStateBySessionId: cleanupInterruptedTurnStateBySessionId(
+            state.interruptedTurnStateBySessionId,
+            sessionId,
+            null,
+        ),
     }));
 }
 
@@ -5034,9 +4997,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (get().pausedQueueBySessionId[sessionId]) {
             releasePausedQueueForManualSend(sessionId);
-            const nextQueuedMessageId = (
-                get().queuedMessagesBySessionId[sessionId] ?? []
-            )[0]?.id;
+            const nextQueuedMessageId = (get().queuedMessagesBySessionId[
+                sessionId
+            ] ?? [])[0]?.id;
             if (
                 nextQueuedMessageId &&
                 !get().activeQueuedMessageBySessionId[sessionId]
@@ -7137,9 +7100,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (queued) {
                         void pendingStop.finally(() => {
-                            void flushPendingInterruptedSend(
-                                resolvedSessionId,
-                            );
+                            void flushPendingInterruptedSend(resolvedSessionId);
                         });
                     }
                     return;
@@ -8325,6 +8286,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
             }
             useEditorStore.getState().closeReview(sessionId);
+            useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
             _queueDrainLocks.delete(sessionId);
             clearChatRowUiSession(sessionId);
@@ -8411,10 +8373,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (vaultPath) {
                 await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
             }
-            // Close all review tabs before clearing sessions
+            // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {
                 editor.closeReview(sessionId);
+                editor.closeChat(sessionId);
             }
             useChatTabsStore.getState().reset();
             _queueDrainLocks.clear();

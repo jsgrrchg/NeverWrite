@@ -18,6 +18,7 @@ import {
 import Papa, { type ParseError } from "papaparse";
 import {
     isFileTab,
+    selectEditorPaneState,
     useEditorStore,
     type FileTab,
 } from "../../app/store/editorStore";
@@ -82,7 +83,11 @@ const csvTextColumn = createTextColumn<string>({
     deletedValue: "",
 });
 
-export function CsvFileTabView() {
+interface CsvFileTabViewProps {
+    paneId?: string;
+}
+
+export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
     const initialEditorState = buildCsvEditorState("", null);
     const contentRef = useRef(initialEditorState.rawContent);
     const editorStateRef = useRef<CsvEditorState>(initialEditorState);
@@ -93,19 +98,22 @@ export function CsvFileTabView() {
     const [gridHeight, setGridHeight] = useState(420);
 
     const getCurrentContent = useCallback(() => contentRef.current, []);
-    const applyIncomingContent = useCallback((nextContent: string) => {
-        const nextState = buildCsvEditorState(
-            nextContent,
-            getActiveCsvTabMetadata(),
-            getCsvIdentitySnapshot(editorStateRef.current),
-        );
-        contentRef.current = nextState.rawContent;
-        editorStateRef.current = nextState;
-        setEditorState(nextState);
-        setViewMode((currentMode) =>
-            nextState.isTableAvailable ? currentMode : "raw",
-        );
-    }, []);
+    const applyIncomingContent = useCallback(
+        (nextContent: string) => {
+            const nextState = buildCsvEditorState(
+                nextContent,
+                getActiveCsvTabMetadata(paneId),
+                getCsvIdentitySnapshot(editorStateRef.current),
+            );
+            contentRef.current = nextState.rawContent;
+            editorStateRef.current = nextState;
+            setEditorState(nextState);
+            setViewMode((currentMode) =>
+                nextState.isTableAvailable ? currentMode : "raw",
+            );
+        },
+        [paneId],
+    );
 
     const {
         tab,
@@ -114,6 +122,7 @@ export function CsvFileTabView() {
         reloadFileFromDisk,
         keepLocalFileVersion,
     } = useEditableFileResource({
+        paneId,
         getCurrentContent,
         applyIncomingContent,
         acceptTab: (candidate) => candidate.viewer === "csv",
@@ -164,7 +173,7 @@ export function CsvFileTabView() {
             const nextState = buildCsvEditorState(
                 nextRawContent,
                 {
-                    ...getActiveCsvTabMetadata(),
+                    ...getActiveCsvTabMetadata(paneId),
                     sizeBytes: getContentByteLength(nextRawContent),
                     contentTruncated: false,
                 },
@@ -179,7 +188,7 @@ export function CsvFileTabView() {
             setEditorState(nextState);
             handleLocalContentChange(nextRawContent);
         },
-        [handleLocalContentChange],
+        [handleLocalContentChange, paneId],
     );
 
     const handleGridChange = useCallback(
@@ -888,10 +897,11 @@ function createCsvEntityId(prefix: "column" | "row") {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function getActiveCsvTabMetadata() {
+function getActiveCsvTabMetadata(paneId?: string) {
     const state = useEditorStore.getState();
-    const activeTab = state.tabs.find(
-        (candidate) => candidate.id === state.activeTabId,
+    const pane = selectEditorPaneState(state, paneId);
+    const activeTab = pane.tabs.find(
+        (candidate) => candidate.id === pane.activeTabId,
     );
     if (!activeTab || !isFileTab(activeTab) || activeTab.viewer !== "csv") {
         return null;

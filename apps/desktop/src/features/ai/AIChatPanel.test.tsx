@@ -530,6 +530,69 @@ describe("AIChatPanel tabs lifecycle", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("does not recreate a sidebar tab when the active session already lives in workspace", async () => {
+        const sessionA = createSession(
+            "session-a",
+            "Workspace conversation",
+            "idle",
+            {
+                runtimeId: "claude-acp",
+            },
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            sessionsById: {
+                [sessionA.sessionId]: sessionA,
+            },
+            sessionOrder: [sessionA.sessionId],
+            activeSessionId: sessionA.sessionId,
+            selectedRuntimeId: "claude-acp",
+            composerPartsBySessionId: {
+                [sessionA.sessionId]: [],
+            },
+            setupStatusByRuntimeId: {
+                "claude-acp": {
+                    runtimeId: "claude-acp",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+            runtimeConnectionByRuntimeId: {
+                "claude-acp": { status: "ready", message: null },
+            },
+        }));
+        useChatTabsStore.setState({
+            tabs: [
+                {
+                    id: "workspace-tab-a",
+                    sessionId: sessionA.sessionId,
+                    runtimeId: "claude-acp",
+                    location: "workspace",
+                },
+            ],
+            activeTabId: null,
+        });
+
+        renderComponent(<AIChatPanel />);
+
+        await waitFor(() => {
+            expect(useChatTabsStore.getState().tabs).toEqual([
+                {
+                    id: "workspace-tab-a",
+                    sessionId: sessionA.sessionId,
+                    runtimeId: "claude-acp",
+                    location: "workspace",
+                },
+            ]);
+        });
+        expect(useChatTabsStore.getState().activeTabId).toBeNull();
+    });
+
     it("switches to the nearest remaining session when closing the active tab", async () => {
         const sessionA = createSession("session-a", "First conversation");
         const sessionB = createSession("session-b", "Second conversation");
@@ -761,7 +824,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         });
     });
 
-    it("shows the active note auto-context without rendering a selection pill", () => {
+    it("does not render implicit note context when the active-note preference is enabled", () => {
         const session = createSession("session-a", "First conversation");
 
         useVaultStore.setState({
@@ -830,7 +893,7 @@ describe("AIChatPanel tabs lifecycle", () => {
 
         renderComponent(<AIChatPanel />);
 
-        expect(screen.getByText("TAREAS")).toBeTruthy();
+        expect(screen.queryByText("TAREAS")).toBeNull();
         expect(screen.queryByText(/\(11:19\)/)).toBeNull();
     });
 

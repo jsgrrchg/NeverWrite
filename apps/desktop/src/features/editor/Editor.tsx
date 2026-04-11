@@ -38,8 +38,11 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { findWikilinks } from "../../app/utils/wikilinks";
 import {
+    selectEditorWorkspaceTabs,
     useEditorStore,
     isNoteTab,
+    selectFocusedPaneId,
+    selectEditorPaneState,
     type Tab,
     type NoteTab,
 } from "../../app/store/editorStore";
@@ -203,6 +206,7 @@ type TabScrollPosition = {
 };
 type EditorMode = "source" | "preview";
 interface EditorProps {
+    paneId?: string;
     emptyStateMessage?: string;
 }
 
@@ -274,6 +278,7 @@ function isNativeScrollbarMouseDown(view: EditorView, event: MouseEvent) {
 }
 
 export function Editor({
+    paneId,
     emptyStateMessage = "Open a note from the left panel",
 }: EditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -406,7 +411,14 @@ export function Editor({
         [syncFrontmatterFromContent],
     );
 
-    const activeTabId = useEditorStore((s) => s.activeTabId);
+    const paneState = useEditorStore(
+        useShallow((state) => selectEditorPaneState(state, paneId)),
+    );
+    const activeTabId = paneState.activeTabId;
+    const paneTabs = paneState.tabs;
+    const isPaneFocused = useEditorStore((state) =>
+        paneId ? selectFocusedPaneId(state) === paneId : true,
+    );
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const pendingSelectionReveal = useEditorStore(
@@ -448,11 +460,19 @@ export function Editor({
     const touchContent = useVaultStore((s) => s.touchContent);
     const openVault = useVaultStore((s) => s.openVault);
     const lastVaultPathRef = useRef<string | null>(vaultPath);
+    const getPaneSnapshot = useCallback(
+        () => selectEditorPaneState(useEditorStore.getState(), paneId),
+        [paneId],
+    );
 
     // Only re-renders when the active tab identity changes, not on content updates
     const activeTabInfo = useEditorStore(
-        useShallow((s) => {
-            const tab = s.tabs.find((t) => t.id === s.activeTabId) ?? null;
+        useShallow((state) => {
+            const pane = selectEditorPaneState(state, paneId);
+            const tab =
+                pane.tabs.find(
+                    (candidate) => candidate.id === pane.activeTabId,
+                ) ?? null;
             if (!tab || !isNoteTab(tab)) return null;
             return {
                 id: tab.id,
@@ -463,9 +483,7 @@ export function Editor({
     );
     const activeTab = ((): NoteTab | null => {
         if (activeTabId === null) return null;
-        const t = useEditorStore
-            .getState()
-            .tabs.find((t) => t.id === activeTabId);
+        const t = paneTabs.find((candidate) => candidate.id === activeTabId);
         return t && isNoteTab(t) ? t : null;
     })();
     activeTabRef.current = activeTab;
@@ -651,7 +669,8 @@ export function Editor({
     );
 
     const closeActiveTabWithSave = useCallback(() => {
-        const { tabs, activeTabId, closeTab } = useEditorStore.getState();
+        const { tabs, activeTabId } = getPaneSnapshot();
+        const { closeTab } = useEditorStore.getState();
         if (!activeTabId) return;
 
         const tab = tabs.find((item) => item.id === activeTabId);
@@ -676,7 +695,7 @@ export function Editor({
             deleteNoteStateForIds(noteIdsToClean);
             closeTab(activeTabId, { reason: "user" });
         })();
-    }, [deleteNoteStateForIds, saveNow]);
+    }, [deleteNoteStateForIds, getPaneSnapshot, saveNow]);
 
     const reloadNoteFromDisk = useCallback(async () => {
         const tab = activeTabRef.current;
@@ -2731,7 +2750,7 @@ export function Editor({
 
         const previousContent = currentView.state.doc.toString();
         const previousTab = prevTabId
-            ? (useEditorStore.getState().tabs.find((t) => t.id === prevTabId) ??
+            ? (getPaneSnapshot().tabs.find((tab) => tab.id === prevTabId) ??
               null)
             : null;
 
@@ -2925,12 +2944,12 @@ export function Editor({
             pruneNoteStateForOpenTabs(tabs);
         };
 
-        syncLiveNoteState(useEditorStore.getState().tabs);
+        syncLiveNoteState(selectEditorWorkspaceTabs(useEditorStore.getState()));
         const unsubscribe = useEditorStore.subscribe((state) => {
-            syncLiveNoteState(state.tabs);
+            syncLiveNoteState(selectEditorWorkspaceTabs(state));
         });
         return unsubscribe;
-    }, [pruneNoteStateForOpenTabs]);
+    }, [pruneNoteStateForOpenTabs, getPaneSnapshot]);
 
     useEffect(() => {
         if (activeTabInfo) return;
@@ -3078,11 +3097,15 @@ export function Editor({
         const unsub = useEditorStore.subscribe((state, prev) => {
             const view = viewRef.current;
             if (!view) return;
-            const tabId = state.activeTabId;
+            const pane = selectEditorPaneState(state, paneId);
+            const previousPane = selectEditorPaneState(prev, paneId);
+            const tabId = pane.activeTabId;
             if (!tabId) return;
 
-            const tab = state.tabs.find((t) => t.id === tabId);
-            const prevTab = prev.tabs.find((t) => t.id === tabId);
+            const tab = pane.tabs.find((candidate) => candidate.id === tabId);
+            const prevTab = previousPane.tabs.find(
+                (candidate) => candidate.id === tabId,
+            );
             if (!tab || !prevTab) return;
             if (!isNoteTab(tab) || !isNoteTab(prevTab)) return;
 
@@ -3203,9 +3226,9 @@ export function Editor({
                 externalReloadTimerRef.current = null;
 
                 const liveView = viewRef.current;
-                const liveTab = useEditorStore
-                    .getState()
-                    .tabs.find((candidate) => candidate.id === tabId);
+                const liveTab = getPaneSnapshot().tabs.find(
+                    (candidate) => candidate.id === tabId,
+                );
                 if (
                     !liveView ||
                     !liveTab ||
@@ -3277,7 +3300,9 @@ export function Editor({
         return unsub;
     }, [
         createEditorState,
+        getPaneSnapshot,
         markTabSaved,
+        paneId,
         replaceEditorView,
         scheduleMergeViewSync,
         serializePersistedContent,
@@ -3355,10 +3380,11 @@ export function Editor({
 
     // Keyboard shortcuts
     useEffect(() => {
+        if (!isPaneFocused) return;
         const handler = (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
             const platform = getDesktopPlatform();
-            const { tabs, activeTabId } = useEditorStore.getState();
+            const { tabs, activeTabId } = getPaneSnapshot();
 
             // Cmd+W / Ctrl+W: close active tab
             if (matchesShortcutAction(e, "close_tab", platform)) {
@@ -3417,9 +3443,10 @@ export function Editor({
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [closeActiveTabWithSave, saveNow]);
+    }, [closeActiveTabWithSave, getPaneSnapshot, isPaneFocused, saveNow]);
 
     useEffect(() => {
+        if (!isPaneFocused) return;
         const handleCloseRequest = () => {
             closeActiveTabWithSave();
         };
@@ -3433,7 +3460,7 @@ export function Editor({
                 REQUEST_CLOSE_ACTIVE_TAB_EVENT,
                 handleCloseRequest,
             );
-    }, [closeActiveTabWithSave]);
+    }, [closeActiveTabWithSave, isPaneFocused]);
 
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,

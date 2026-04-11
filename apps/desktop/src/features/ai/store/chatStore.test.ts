@@ -827,7 +827,7 @@ describe("chatStore", () => {
         });
     });
 
-    it("keeps active note auto-context without auto-attaching the current selection", async () => {
+    it("does not synthesize legacy auto-context attachments when sending a plain composer message", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [
@@ -888,23 +888,7 @@ describe("chatStore", () => {
                 activeSessionId
             ]?.[0];
 
-        expect(queuedMessage).toMatchObject({
-            attachments: [
-                expect.objectContaining({
-                    type: "current_note",
-                    noteId: "notes/current",
-                    label: "Current",
-                }),
-            ],
-        });
-        expect(queuedMessage).not.toMatchObject({
-            attachments: expect.arrayContaining([
-                expect.objectContaining({
-                    type: "selection",
-                    noteId: "notes/current",
-                }),
-            ]),
-        });
+        expect(queuedMessage?.attachments).toEqual([]);
     });
 
     it("keeps the previous visible work cycle while its permission buffer is unresolved", async () => {
@@ -8226,7 +8210,8 @@ describe("chatStore", () => {
                     sessionId: "claude-session-2",
                     attachments: [
                         expect.objectContaining({
-                            filePath: "/home/user/projects/NeverWrite/README.md",
+                            filePath:
+                                "/home/user/projects/NeverWrite/README.md",
                         }),
                     ],
                 });

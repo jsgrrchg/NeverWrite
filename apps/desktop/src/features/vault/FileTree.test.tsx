@@ -790,6 +790,58 @@ describe("FileTree", () => {
         ).toBe("Beta body");
     });
 
+    it("opens a note in a right split from the context menu", async () => {
+        const user = userEvent.setup();
+        vi.mocked(invoke).mockResolvedValue({ content: "Beta body" });
+
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/beta",
+                path: "/vault/notes/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "notes/alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+
+        fireEvent.contextMenu(getNoteRow("Beta"));
+        await user.click(
+            await screen.findByRole("button", { name: "Open in Right Split" }),
+        );
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().panes).toHaveLength(2);
+        });
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("pane-2");
+        expect(state.panes[1]?.tabs[0]).toMatchObject({
+            noteId: "notes/beta",
+            content: "Beta body",
+        });
+    });
+
     it("opens a file in a new tab on middle click", async () => {
         const user = userEvent.setup();
         vi.mocked(invoke).mockImplementation(async (command, args) => {
