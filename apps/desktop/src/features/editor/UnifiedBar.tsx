@@ -5,7 +5,6 @@ import {
     useLayoutEffect,
     useRef,
     useState,
-    type CSSProperties,
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -74,6 +73,11 @@ import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
+import {
+    chromeControlsGroupStyle,
+    getChromeIconButtonStyle,
+    getChromeNavigationButtonStyle,
+} from "./workspaceChromeControls";
 
 const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
 const TAB_STRIP_FADE_WIDTH = 18;
@@ -135,34 +139,6 @@ async function getWindowContentScreenOrigin() {
         return { x: window.screenX, y: window.screenY };
     }
 }
-
-function getChromeButtonStyle(active = false): CSSProperties {
-    return {
-        width: 30,
-        height: 30,
-        borderRadius: 9,
-        border: active
-            ? "1px solid color-mix(in srgb, var(--accent) 20%, var(--border))"
-            : "1px solid transparent",
-        backgroundColor: active
-            ? "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))"
-            : "transparent",
-        color: active ? "var(--text-primary)" : "var(--text-secondary)",
-        boxShadow: active ? "0 8px 20px rgba(15, 23, 42, 0.08)" : "none",
-        opacity: active ? 1 : 0.78,
-    };
-}
-
-const controlsGroupStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: 4,
-    padding: "0 3px",
-    borderRadius: 12,
-    border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
-    background: "color-mix(in srgb, var(--bg-primary) 52%, var(--bg-tertiary))",
-    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
-};
 
 interface UnifiedBarProps {
     windowMode: "main" | "note";
@@ -1241,17 +1217,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{
                                 alignSelf: "center",
                                 marginRight: 0,
-                                width: 30,
-                                height: 30,
-                                borderRadius: "9px 0 0 9px",
-                                border: "1px solid var(--border)",
-                                borderRight: "none",
-                                backgroundColor: "var(--bg-secondary)",
-                                boxShadow:
-                                    "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
-                                color: "var(--text-secondary)",
-                                opacity: canGoBack ? 0.85 : 0.35,
-                                cursor: canGoBack ? "pointer" : "default",
+                                ...getChromeNavigationButtonStyle(
+                                    "leading",
+                                    canGoBack,
+                                ),
                             }}
                         >
                             <svg
@@ -1276,16 +1245,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{
                                 alignSelf: "center",
                                 marginRight: 4,
-                                width: 30,
-                                height: 30,
-                                borderRadius: "0 9px 9px 0",
-                                border: "1px solid var(--border)",
-                                backgroundColor: "var(--bg-secondary)",
-                                boxShadow:
-                                    "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
-                                color: "var(--text-secondary)",
-                                opacity: canGoForward ? 0.85 : 0.35,
-                                cursor: canGoForward ? "pointer" : "default",
+                                ...getChromeNavigationButtonStyle(
+                                    "trailing",
+                                    canGoForward,
+                                ),
                             }}
                         >
                             <svg
@@ -1611,7 +1574,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             alignSelf: "center",
                                             marginLeft: 4,
                                             flexShrink: 0,
-                                            ...getChromeButtonStyle(false),
+                                            ...getChromeIconButtonStyle(false),
                                         }}
                                     >
                                         +
@@ -1712,7 +1675,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             className="flex items-center justify-end shrink-0"
                             style={{ width: trailingDragZoneWidth }}
                         >
-                            <div style={controlsGroupStyle}>
+                            <div style={chromeControlsGroupStyle}>
                                 {windowMode === "main" && (
                                     <>
                                         <button
@@ -1730,7 +1693,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         "chat") ||
                                                 undefined
                                             }
-                                            style={getChromeButtonStyle(
+                                            style={getChromeIconButtonStyle(
                                                 !rightPanelCollapsed &&
                                                     rightPanelView === "chat",
                                             )}
@@ -1763,7 +1726,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         "outline") ||
                                                 undefined
                                             }
-                                            style={getChromeButtonStyle(
+                                            style={getChromeIconButtonStyle(
                                                 !rightPanelCollapsed &&
                                                     rightPanelView ===
                                                         "outline",
@@ -1801,7 +1764,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         "links") ||
                                                 undefined
                                             }
-                                            style={getChromeButtonStyle(
+                                            style={getChromeIconButtonStyle(
                                                 !rightPanelCollapsed &&
                                                     rightPanelView === "links",
                                             )}
@@ -1878,7 +1841,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{ width: trailingDragZoneWidth }}
                         >
                             {windowMode === "main" && (
-                                <div style={controlsGroupStyle}>
+                                <div style={chromeControlsGroupStyle}>
                                     <button
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={() =>
@@ -1891,7 +1854,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 rightPanelView === "chat") ||
                                             undefined
                                         }
-                                        style={getChromeButtonStyle(
+                                        style={getChromeIconButtonStyle(
                                             !rightPanelCollapsed &&
                                                 rightPanelView === "chat",
                                         )}
@@ -1921,7 +1884,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 rightPanelView === "outline") ||
                                             undefined
                                         }
-                                        style={getChromeButtonStyle(
+                                        style={getChromeIconButtonStyle(
                                             !rightPanelCollapsed &&
                                                 rightPanelView === "outline",
                                         )}
@@ -1955,7 +1918,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 rightPanelView === "links") ||
                                             undefined
                                         }
-                                        style={getChromeButtonStyle(
+                                        style={getChromeIconButtonStyle(
                                             !rightPanelCollapsed &&
                                                 rightPanelView === "links",
                                         )}

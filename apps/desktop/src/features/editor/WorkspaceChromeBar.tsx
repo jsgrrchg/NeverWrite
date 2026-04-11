@@ -1,8 +1,4 @@
-import {
-    useCallback,
-    type CSSProperties,
-    type MouseEvent as ReactMouseEvent,
-} from "react";
+import { useCallback, type MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import {
@@ -15,6 +11,10 @@ import {
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import {
+    getChromeIconButtonStyle,
+    getChromeNavigationButtonStyle,
+} from "./workspaceChromeControls";
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -33,27 +33,6 @@ function toggleWindowMaximize() {
     const appWindow = getAppWindow();
     if (typeof appWindow.toggleMaximize !== "function") return;
     void appWindow.toggleMaximize().catch(() => {});
-}
-
-function getIconButtonStyle(active = false): CSSProperties {
-    return {
-        width: 30,
-        height: 30,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-        cursor: "pointer",
-        borderRadius: 9,
-        border: active
-            ? "1px solid color-mix(in srgb, var(--accent) 20%, var(--border))"
-            : "1px solid transparent",
-        backgroundColor: active
-            ? "color-mix(in srgb, var(--accent) 12%, var(--bg-primary))"
-            : "transparent",
-        color: active ? "var(--text-primary)" : "var(--text-secondary)",
-        opacity: active ? 1 : 0.82,
-    };
 }
 
 export function WorkspaceChromeBar() {
@@ -131,7 +110,7 @@ export function WorkspaceChromeBar() {
                     title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
                     className="no-drag flex items-center justify-center shrink-0"
                     style={{
-                        ...getIconButtonStyle(!sidebarCollapsed),
+                        ...getChromeIconButtonStyle(!sidebarCollapsed),
                         marginLeft: 10,
                         marginRight: 2,
                     }}
@@ -160,9 +139,10 @@ export function WorkspaceChromeBar() {
                         title="Go back"
                         className="no-drag flex items-center justify-center shrink-0"
                         style={{
-                            ...getIconButtonStyle(false),
-                            borderRadius: "9px 0 0 9px",
-                            opacity: canGoBack ? 0.82 : 0.34,
+                            ...getChromeNavigationButtonStyle(
+                                "leading",
+                                canGoBack,
+                            ),
                         }}
                     >
                         <svg
@@ -186,9 +166,10 @@ export function WorkspaceChromeBar() {
                         title="Go forward"
                         className="no-drag flex items-center justify-center shrink-0"
                         style={{
-                            ...getIconButtonStyle(false),
-                            borderRadius: "0 9px 9px 0",
-                            opacity: canGoForward ? 0.82 : 0.34,
+                            ...getChromeNavigationButtonStyle(
+                                "trailing",
+                                canGoForward,
+                            ),
                         }}
                     >
                         <svg
@@ -215,7 +196,7 @@ export function WorkspaceChromeBar() {
                         onClick={() => activateRightView("chat")}
                         title="AI Chat"
                         className="no-drag"
-                        style={getIconButtonStyle(
+                        style={getChromeIconButtonStyle(
                             !rightPanelCollapsed && rightPanelView === "chat",
                         )}
                     >
@@ -238,7 +219,7 @@ export function WorkspaceChromeBar() {
                         onClick={() => activateRightView("outline")}
                         title="Outline"
                         className="no-drag"
-                        style={getIconButtonStyle(
+                        style={getChromeIconButtonStyle(
                             !rightPanelCollapsed &&
                                 rightPanelView === "outline",
                         )}
@@ -266,7 +247,7 @@ export function WorkspaceChromeBar() {
                         onClick={() => activateRightView("links")}
                         title="Links"
                         className="no-drag"
-                        style={getIconButtonStyle(
+                        style={getChromeIconButtonStyle(
                             !rightPanelCollapsed && rightPanelView === "links",
                         )}
                     >
