@@ -1,3 +1,4 @@
+import "@testing-library/jest-dom/vitest";
 import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderComponent, setEditorTabs } from "../../test/test-utils";

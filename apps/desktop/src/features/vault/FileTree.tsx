@@ -116,6 +116,7 @@ const TREE_ROW_BOX_STYLE = {
     boxSizing: "border-box" as const,
 };
 const TREE_LABEL_CLASSNAME = "shrink-0 whitespace-nowrap";
+const TREE_GUIDE_COLOR = "color-mix(in srgb, var(--border) 82%, transparent)";
 
 // --- Tree building ---
 
@@ -576,6 +577,52 @@ function ImageFileIcon({ size = 13 }: { size?: number }) {
     );
 }
 
+function TreeIndentGuides({
+    depth,
+    metrics,
+}: {
+    depth: number;
+    metrics: TreeMetrics;
+}) {
+    if (depth <= 0) {
+        return null;
+    }
+
+    return (
+        <span
+            aria-hidden="true"
+            data-tree-indent-guides="true"
+            style={{
+                position: "absolute",
+                inset: 0,
+                pointerEvents: "none",
+            }}
+        >
+            {Array.from({ length: depth }, (_, level) => {
+                const guideX =
+                    metrics.basePadding +
+                    Math.round(
+                        level * metrics.indentStep + metrics.indentStep / 2,
+                    );
+                return (
+                    <span
+                        key={level}
+                        data-tree-guide-line="true"
+                        style={{
+                            position: "absolute",
+                            left: guideX,
+                            top: 0,
+                            bottom: 0,
+                            width: 1,
+                            backgroundColor: TREE_GUIDE_COLOR,
+                        }}
+                    />
+                );
+            })}
+        </span>
+    );
+}
+
 // --- Toolbar button ---
 
 function ToolbarBtn({
@@ -886,12 +933,14 @@ const FlatTreeRowView = memo(
                     <div
                         className="flex items-center gap-1.5 py-0.5"
                         style={{
+                            position: "relative",
                             paddingLeft,
                             fontSize: metrics.fontSize,
                             minHeight: metrics.rowHeight,
                             ...TREE_ROW_BOX_STYLE,
                         }}
                     >
+                        <TreeIndentGuides depth={row.depth} metrics={metrics} />
                         <ChevronIcon
                             open={!!isExpanded}
                             size={metrics.smallIcon}
@@ -954,6 +1003,7 @@ const FlatTreeRowView = memo(
                     }
                     className="file-tree-row flex items-center gap-1.5 text-left text-xs rounded"
                     style={{
+                        position: "relative",
                         paddingLeft,
                         color: "var(--text-secondary)",
                         height: metrics.rowHeight,
@@ -981,6 +1031,7 @@ const FlatTreeRowView = memo(
                         }),
                     }}
                 >
+                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
                     <FolderIcon
                         open={!!isExpanded || isDragOver}
@@ -997,12 +1048,14 @@ const FlatTreeRowView = memo(
                 <div
                     className="flex items-center gap-1.5 py-0.5"
                     style={{
+                        position: "relative",
                         paddingLeft: paddingLeft + createOffset,
                         fontSize: metrics.fontSize,
                         minHeight: metrics.rowHeight,
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
+                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     {row.mode === "folder" ? (
                         <FolderIcon open={false} size={metrics.mediumIcon} />
                     ) : (
@@ -1066,6 +1119,7 @@ const FlatTreeRowView = memo(
                     }}
                     className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                     style={{
+                        position: "relative",
                         paddingLeft: paddingLeft + noteOffset,
                         ...(isSelected
                             ? {
@@ -1082,6 +1136,7 @@ const FlatTreeRowView = memo(
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
+                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     <PdfIcon size={metrics.smallIcon} />
                     <span className={TREE_LABEL_CLASSNAME}>
                         {getVaultEntryDisplayName(entry, showExtensions)}
@@ -1100,12 +1155,14 @@ const FlatTreeRowView = memo(
                     <div
                         className="flex items-center gap-1.5 py-0.5"
                         style={{
+                            position: "relative",
                             paddingLeft: paddingLeft + noteOffset,
                             fontSize: metrics.fontSize,
                             minHeight: metrics.rowHeight,
                             ...TREE_ROW_BOX_STYLE,
                         }}
                     >
+                        <TreeIndentGuides depth={row.depth} metrics={metrics} />
                         {entry.extension.toLowerCase() === "excalidraw" ? (
                             <MapFileIcon size={metrics.smallIcon} />
                         ) : isImageLikeVaultEntry(entry) ? (
@@ -1179,6 +1236,7 @@ const FlatTreeRowView = memo(
                     }}
                     className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                     style={{
+                        position: "relative",
                         paddingLeft: paddingLeft + noteOffset,
                         ...(isSelected
                             ? {
@@ -1195,6 +1253,7 @@ const FlatTreeRowView = memo(
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
+                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     {entry.extension.toLowerCase() === "excalidraw" ? (
                         <MapFileIcon size={metrics.smallIcon} />
                     ) : isImageLikeVaultEntry(entry) ? (
@@ -1219,12 +1278,14 @@ const FlatTreeRowView = memo(
                 <div
                     className="flex items-center gap-1.5 py-0.5"
                     style={{
+                        position: "relative",
                         paddingLeft: paddingLeft + noteOffset,
                         fontSize: metrics.fontSize,
                         minHeight: metrics.rowHeight,
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
+                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     <NoteIcon size={metrics.smallIcon} />
                     <input
                         ref={renameInputRef}
@@ -1285,6 +1346,7 @@ const FlatTreeRowView = memo(
                 }}
                 className="file-tree-row flex items-center gap-1.5 text-left py-1 text-xs rounded cursor-pointer"
                 style={{
+                    position: "relative",
                     paddingLeft: paddingLeft + noteOffset,
                     ...(isSelected
                         ? {
@@ -1302,6 +1364,7 @@ const FlatTreeRowView = memo(
                     ...TREE_ROW_BOX_STYLE,
                 }}
             >
+                <TreeIndentGuides depth={row.depth} metrics={metrics} />
                 <NoteIcon size={metrics.smallIcon} />
                 <span className={TREE_LABEL_CLASSNAME}>
                     {getNoteDisplayName(note, showExtensions)}

@@ -213,6 +213,47 @@ describe("FileTree", () => {
         ).not.toContain("translateX");
     });
 
+    it("renders indent guides for nested rows without affecting root rows", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "root/folder/alpha",
+                path: "/vault/root/folder/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "root");
+        await expandFolder(user, "folder");
+
+        const rootRow = getFolderRow("root");
+        const nestedFolderRow = getFolderRow("folder");
+        const noteRow = getNoteRow("Alpha");
+        const noteGuides = noteRow.querySelector(
+            '[data-tree-indent-guides="true"]',
+        );
+
+        expect(
+            rootRow.querySelector('[data-tree-indent-guides="true"]'),
+        ).toBeNull();
+        expect(
+            nestedFolderRow.querySelectorAll('[data-tree-guide-line="true"]'),
+        ).toHaveLength(1);
+        expect(noteRow).toHaveStyle({ position: "relative" });
+        expect(noteGuides).not.toBeNull();
+        expect(noteGuides).toHaveStyle({
+            position: "absolute",
+            pointerEvents: "none",
+        });
+        expect(
+            noteRow.querySelectorAll('[data-tree-guide-line="true"]'),
+        ).toHaveLength(2);
+    });
+
     it("clamps scroll state safely when the viewport becomes much taller than the content", async () => {
         const user = userEvent.setup();
 
