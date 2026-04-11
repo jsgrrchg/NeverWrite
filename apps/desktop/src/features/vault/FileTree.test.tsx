@@ -201,6 +201,11 @@ describe("FileTree", () => {
             .getByText("root")
             .closest("button");
         expect(stickyRootFolder).not.toBeNull();
+        expect(stickyRootFolder).toHaveStyle({
+            backgroundColor: "var(--bg-elevated)",
+            boxShadow:
+                "inset 0 -1px 0 color-mix(in srgb, var(--border) 88%, transparent), 0 3px 8px rgba(0,0,0,0.08)",
+        });
         expect(stickyRootFolder?.parentElement).toHaveStyle({
             left: "-4px",
             width: "calc(100% + 8px)",

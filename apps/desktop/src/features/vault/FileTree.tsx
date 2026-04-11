@@ -115,6 +115,10 @@ const TREE_ROW_BOX_STYLE = {
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
+const TREE_STICKY_ROW_BACKGROUND = "var(--bg-secondary)";
+// Drop shadow applied only to the deepest sticky folder wrapper,
+// not to individual rows — avoids stacking noise.
+const TREE_STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
 const TREE_LABEL_CLASSNAME = "shrink-0 whitespace-nowrap";
 const TREE_GUIDE_COLOR = "color-mix(in srgb, var(--border) 82%, transparent)";
 
@@ -1020,15 +1024,15 @@ const FlatTreeRowView = memo(
                                         "color-mix(in srgb, var(--accent) 22%, transparent)",
                                 }
                               : stickyTop != null
-                                ? { backgroundColor: "var(--bg-secondary)" }
+                                ? {
+                                      backgroundColor:
+                                          TREE_STICKY_ROW_BACKGROUND,
+                                  }
                                 : {}),
                         outline: isDragOver
                             ? "1px solid var(--accent)"
                             : "none",
                         opacity: isDraggingFolder ? 0.4 : 1,
-                        ...(stickyTop != null && {
-                            boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
                     }}
                 >
                     <TreeIndentGuides depth={row.depth} metrics={metrics} />
@@ -4355,7 +4359,7 @@ export function FileTree() {
                                     boxSizing: "border-box",
                                 }}
                             >
-                                {stickyFolders.map(({ row, top }) => (
+                                {stickyFolders.map(({ row, top }, i) => (
                                     <div
                                         key={`sticky:${row.path}`}
                                         style={{
@@ -4363,6 +4367,12 @@ export function FileTree() {
                                             top,
                                             ...TREE_STICKY_CHROME_STYLE,
                                             zIndex: 20 - row.depth,
+                                            // Only the deepest sticky folder casts a shadow
+                                            ...(i ===
+                                                stickyFolders.length - 1 && {
+                                                boxShadow:
+                                                    TREE_STICKY_EDGE_SHADOW,
+                                            }),
                                         }}
                                     >
                                         <FlatTreeRowView
