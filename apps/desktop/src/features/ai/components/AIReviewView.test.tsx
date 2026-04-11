@@ -15,6 +15,10 @@ import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
 import { AIReviewView } from "./AIReviewView";
 import { readPersistedReviewViewState } from "./reviewTabPersistence";
 
+vi.mock("../../editor/useCodeLanguageSupport", () => ({
+    useCodeLanguageSupport: () => null,
+}));
+
 const DEFAULT_WORK_CYCLE = "default-wc";
 const defaultChatActions = {
     rejectEditedFile: useChatStore.getState().rejectEditedFile,
