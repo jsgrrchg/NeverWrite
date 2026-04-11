@@ -42,4 +42,43 @@ describe("WorkspaceChromeBar", () => {
             boxShadow: "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
         });
     });
+
+    it("uses the shared trailing panel controls chrome in split view", () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+            ],
+            "tab-a",
+        );
+
+        renderComponent(<WorkspaceChromeBar />);
+
+        const chatButton = screen.getByTitle("AI Chat");
+        const outlineButton = screen.getByTitle("Outline panel");
+        const linksButton = screen.getByTitle("Links panel");
+        const group = chatButton.parentElement;
+
+        expect(group).not.toBeNull();
+        expect(group).toHaveStyle({
+            display: "flex",
+            alignItems: "center",
+            borderRadius: "12px",
+            padding: "0 3px",
+        });
+        expect(chatButton).toHaveClass(
+            "ub-chrome-btn",
+            "flex",
+            "items-center",
+            "justify-center",
+            "shrink-0",
+        );
+        expect(outlineButton).toHaveClass("ub-chrome-btn");
+        expect(linksButton).toHaveClass("ub-chrome-btn");
+    });
 });

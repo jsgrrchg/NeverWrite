@@ -15,6 +15,7 @@ import {
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
 } from "./workspaceChromeControls";
+import { WorkspacePanelControls } from "./WorkspacePanelControls";
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -189,108 +190,12 @@ export function WorkspaceChromeBar() {
 
                 <div aria-hidden="true" className="min-w-0 flex-1" />
 
-                <div className="no-drag flex shrink-0 items-center gap-1">
-                    <button
-                        type="button"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={() => activateRightView("chat")}
-                        title="AI Chat"
-                        className="no-drag"
-                        style={getChromeIconButtonStyle(
-                            !rightPanelCollapsed && rightPanelView === "chat",
-                        )}
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M14 10a2 2 0 0 1-2 2H5l-3 3V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={() => activateRightView("outline")}
-                        title="Outline"
-                        className="no-drag"
-                        style={getChromeIconButtonStyle(
-                            !rightPanelCollapsed &&
-                                rightPanelView === "outline",
-                        )}
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M3 3.5h10" />
-                            <path d="M5.5 8h7.5" />
-                            <path d="M8 12.5h5" />
-                            <path d="M3 8h.01" />
-                            <path d="M5.5 12.5h.01" />
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={() => activateRightView("links")}
-                        title="Links"
-                        className="no-drag"
-                        style={getChromeIconButtonStyle(
-                            !rightPanelCollapsed && rightPanelView === "links",
-                        )}
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                        >
-                            <rect
-                                x="11"
-                                y="2"
-                                width="4"
-                                height="12"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                            <rect
-                                x="1"
-                                y="2"
-                                width="8"
-                                height="2"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                            <rect
-                                x="1"
-                                y="7"
-                                width="8"
-                                height="2"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                            <rect
-                                x="1"
-                                y="12"
-                                width="8"
-                                height="2"
-                                rx="1"
-                                fill="currentColor"
-                            />
-                        </svg>
-                    </button>
+                <div className="no-drag flex shrink-0 items-center">
+                    <WorkspacePanelControls
+                        rightPanelCollapsed={rightPanelCollapsed}
+                        rightPanelView={rightPanelView}
+                        activateRightView={activateRightView}
+                    />
                 </div>
             </div>
         </WindowChrome>
