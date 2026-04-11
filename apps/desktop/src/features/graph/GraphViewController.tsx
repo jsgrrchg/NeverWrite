@@ -25,7 +25,8 @@ import { GraphRenderer3D } from "./GraphRenderer3D";
 import { GraphRenderer2D } from "./GraphRenderer2D";
 import { GraphSettingsPanel } from "./GraphSettingsPanel";
 import {
-    buildGraphLayoutKey,
+    buildGraphLayoutCacheKey,
+    buildGraphPreparedSnapshotKey,
     saveGraphLayoutSnapshot,
     type GraphNodePosition,
 } from "./graphLayoutCache";
@@ -247,9 +248,11 @@ export function GraphViewController({
         };
     }, [graphSnapshot, hiddenLinkCount, hiddenNodeCount]);
 
-    const layoutKey = useMemo(() => {
+    const trimmedSearchFilter = searchFilter.trim();
+
+    const layoutCacheKey = useMemo(() => {
         if (!vaultPath || !graphSnapshot) return null;
-        return buildGraphLayoutKey({
+        return buildGraphLayoutCacheKey({
             vaultPath,
             graphVersion: graphSnapshot.version,
             graphMode,
@@ -259,7 +262,6 @@ export function GraphViewController({
             showTagNodes,
             showAttachmentNodes,
             showOrphans,
-            searchFilter: searchFilter.trim(),
             layoutStrategy,
         });
     }, [
@@ -269,10 +271,39 @@ export function GraphViewController({
         layoutStrategy,
         localDepth,
         graphSnapshot,
-        searchFilter,
         showAttachmentNodes,
         showOrphans,
         showTagNodes,
+        vaultPath,
+    ]);
+
+    const preparedSnapshotKey = useMemo(() => {
+        if (!layoutCacheKey || !vaultPath || !graphSnapshot) return null;
+        return buildGraphPreparedSnapshotKey({
+            vaultPath,
+            graphVersion: graphSnapshot.version,
+            graphMode,
+            rendererMode,
+            localDepth,
+            rootNoteId: graphMode === "local" ? activeNoteId : null,
+            showTagNodes,
+            showAttachmentNodes,
+            showOrphans,
+            searchFilter: trimmedSearchFilter,
+            layoutStrategy,
+        });
+    }, [
+        activeNoteId,
+        graphMode,
+        graphSnapshot,
+        layoutCacheKey,
+        layoutStrategy,
+        localDepth,
+        rendererMode,
+        showAttachmentNodes,
+        showOrphans,
+        showTagNodes,
+        trimmedSearchFilter,
         vaultPath,
     ]);
 
@@ -282,19 +313,22 @@ export function GraphViewController({
         error: preparedPipelineError,
     } = usePreparedGraphSnapshot({
         graphSnapshot,
-        layoutKey,
+        preparedSnapshotKey,
+        layoutCacheKey,
         layoutStrategy,
         isVisible,
     });
 
     const preparedSnapshot =
-        prepared && prepared.layoutKey === layoutKey ? prepared.snapshot : null;
+        prepared && prepared.preparedKey === preparedSnapshotKey
+            ? prepared.snapshot
+            : null;
     const restoredFromCache =
-        prepared && prepared.layoutKey === layoutKey
+        prepared && prepared.preparedKey === preparedSnapshotKey
             ? prepared.restoredFromCache
             : false;
     const neighborIndex =
-        prepared && prepared.layoutKey === layoutKey
+        prepared && prepared.preparedKey === preparedSnapshotKey
             ? prepared.neighborIndex
             : EMPTY_NEIGHBOR_INDEX;
 
@@ -366,10 +400,13 @@ export function GraphViewController({
 
     const persistPositions = useCallback(
         (positions: Record<string, GraphPosition>) => {
-            if (!layoutKey) return;
-            saveGraphLayoutSnapshot(layoutKey, toGraphNodePositions(positions));
+            if (!layoutCacheKey || trimmedSearchFilter.length > 0) return;
+            saveGraphLayoutSnapshot(
+                layoutCacheKey,
+                toGraphNodePositions(positions),
+            );
         },
-        [layoutKey],
+        [layoutCacheKey, trimmedSearchFilter],
     );
 
     const openNoteById = useCallback(async (noteId: string, title: string) => {
@@ -555,7 +592,9 @@ export function GraphViewController({
     );
 
     const rendererSurfaceKey =
-        preparedSnapshot && layoutKey ? `${rendererMode}:${layoutKey}` : null;
+        preparedSnapshot && preparedSnapshotKey
+            ? `${rendererMode}:${preparedSnapshotKey}`
+            : null;
     const [mountedRendererSurfaceKey, setMountedRendererSurfaceKey] = useState<
         string | null
     >(null);
@@ -662,7 +701,7 @@ export function GraphViewController({
         </button>
     );
 
-    if (!layoutKey || !shouldRenderRenderer) {
+    if (!layoutCacheKey || !shouldRenderRenderer) {
         let message = "Loading graph…";
         if (graphMode === "local" && !activeNoteId) {
             message = "Open a note to see its local graph";
@@ -736,7 +775,7 @@ export function GraphViewController({
                         glowIntensity={glowIntensity}
                         showTitles={showTitles}
                         textFadeThreshold={textFadeThreshold}
-                        layoutKey={layoutKey}
+                        layoutKey={layoutCacheKey}
                         restoredFromCache={restoredFromCache}
                         shouldRunSimulation={effectiveShouldRunSimulation}
                         cooldownTicks={effectiveCooldownTicks}
@@ -762,7 +801,7 @@ export function GraphViewController({
                         glowIntensity={glowIntensity}
                         showTitles={showTitles}
                         textFadeThreshold={textFadeThreshold}
-                        layoutKey={layoutKey}
+                        layoutKey={layoutCacheKey}
                         restoredFromCache={restoredFromCache}
                         shouldRunSimulation={effectiveShouldRunSimulation}
                         cooldownTicks={effectiveCooldownTicks}

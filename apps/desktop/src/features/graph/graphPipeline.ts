@@ -6,14 +6,10 @@ import {
 import { prepareGraphLayoutWithCachedPositions } from "./graphLayout";
 import type { GraphNodePosition } from "./graphLayoutCache";
 import type { GraphLayoutStrategy } from "./graphSettingsStore";
-import type {
-    GraphData,
-    GraphNodeDto,
-    GraphSnapshotDto,
-} from "./useGraphData";
+import type { GraphData, GraphNodeDto, GraphSnapshotDto } from "./useGraphData";
 
 export interface GraphPreparedPipeline {
-    layoutKey: string;
+    preparedKey: string;
     snapshot: GraphRenderSnapshot;
     restoredFromCache: boolean;
     neighborIndex: Record<string, string[]>;
@@ -21,7 +17,7 @@ export interface GraphPreparedPipeline {
 
 export interface GraphPipelineWorkerRequest {
     requestId: number;
-    layoutKey: string;
+    preparedKey: string;
     snapshot: GraphSnapshotDto;
     layoutStrategy: GraphLayoutStrategy;
     cachedPositions: Record<string, GraphNodePosition> | null;
@@ -79,7 +75,7 @@ export function runGraphPipeline(
     }
 
     return {
-        layoutKey: request.layoutKey,
+        preparedKey: request.preparedKey,
         snapshot: preparedLayout.snapshot,
         restoredFromCache: preparedLayout.restoredFromCache,
         neighborIndex,
