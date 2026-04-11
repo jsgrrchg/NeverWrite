@@ -9,7 +9,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-use neverwrite_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID};
+use neverwrite_ai::{CLAUDE_RUNTIME_ID, GEMINI_RUNTIME_ID, KILO_RUNTIME_ID};
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
 };
@@ -22,6 +22,7 @@ use super::claude::{
 use super::gemini::{
     save_setup_config as save_gemini_setup_config, GeminiRuntime, GeminiSetupInput,
 };
+use super::kilo::{save_setup_config as save_kilo_setup_config, KiloRuntime, KiloSetupInput};
 
 const DEFAULT_COLS: u16 = 100;
 const DEFAULT_ROWS: u16 = 28;
@@ -105,6 +106,17 @@ struct TerminalLaunchConfig {
     args: Vec<String>,
     display_name: String,
     cwd: PathBuf,
+}
+
+type SaveCustomBinaryPathFn = fn(&AppHandle, String) -> Result<(), String>;
+type ResolveBinaryCommandFn = fn(&AppHandle) -> Result<(String, Vec<String>), String>;
+
+struct IntegratedTerminalAuthSpec {
+    runtime_id: &'static str,
+    display_name: &'static str,
+    extra_args: &'static [&'static str],
+    save_custom_binary_path: SaveCustomBinaryPathFn,
+    resolve_binary_command: ResolveBinaryCommandFn,
 }
 
 struct SessionHandle {
@@ -584,81 +596,134 @@ fn resolve_auth_terminal_launch_config(
     app: &AppHandle,
     input: &AiAuthTerminalStartInput,
 ) -> Result<TerminalLaunchConfig, String> {
-    match input.runtime_id.as_str() {
-        CLAUDE_RUNTIME_ID => resolve_claude_launch_config(app, input),
-        GEMINI_RUNTIME_ID => resolve_gemini_launch_config(app, input),
-        other => Err(format!(
-            "Integrated auth terminal is not supported for runtime: {other}"
-        )),
+    let spec = integrated_terminal_auth_spec(input.runtime_id.as_str()).ok_or_else(|| {
+        format!(
+            "Integrated auth terminal is not supported for runtime: {}",
+            input.runtime_id
+        )
+    })?;
+
+    resolve_integrated_terminal_launch_config(app, input, spec)
+}
+
+fn integrated_terminal_auth_spec(runtime_id: &str) -> Option<IntegratedTerminalAuthSpec> {
+    match runtime_id {
+        CLAUDE_RUNTIME_ID => Some(IntegratedTerminalAuthSpec {
+            runtime_id: CLAUDE_RUNTIME_ID,
+            display_name: "Claude sign-in",
+            extra_args: &["--cli"],
+            save_custom_binary_path: save_claude_custom_binary_path,
+            resolve_binary_command: resolve_claude_binary_command,
+        }),
+        GEMINI_RUNTIME_ID => Some(IntegratedTerminalAuthSpec {
+            runtime_id: GEMINI_RUNTIME_ID,
+            display_name: "Gemini sign-in",
+            extra_args: &[],
+            save_custom_binary_path: save_gemini_custom_binary_path,
+            resolve_binary_command: resolve_gemini_binary_command,
+        }),
+        KILO_RUNTIME_ID => Some(IntegratedTerminalAuthSpec {
+            runtime_id: KILO_RUNTIME_ID,
+            display_name: "Kilo sign-in",
+            extra_args: &["auth", "login"],
+            save_custom_binary_path: save_kilo_custom_binary_path,
+            resolve_binary_command: resolve_kilo_binary_command,
+        }),
+        _ => None,
     }
 }
 
-fn resolve_claude_launch_config(
+fn resolve_integrated_terminal_launch_config(
     app: &AppHandle,
     input: &AiAuthTerminalStartInput,
+    spec: IntegratedTerminalAuthSpec,
 ) -> Result<TerminalLaunchConfig, String> {
     if let Some(custom_binary_path) = input.custom_binary_path.clone() {
-        let _ = save_claude_setup_config(
-            app,
-            ClaudeSetupInput {
-                custom_binary_path: Some(custom_binary_path),
-                anthropic_base_url: None,
-                anthropic_custom_headers: super::secret_store::SecretValuePatch::Unchanged,
-                anthropic_auth_token: super::secret_store::SecretValuePatch::Unchanged,
-            },
-        )?;
+        (spec.save_custom_binary_path)(app, custom_binary_path)?;
     }
 
+    let (program, mut args) = (spec.resolve_binary_command)(app)?;
+    args.extend(spec.extra_args.iter().map(|arg| (*arg).to_string()));
+
+    Ok(TerminalLaunchConfig {
+        runtime_id: spec.runtime_id.to_string(),
+        program,
+        args,
+        display_name: spec.display_name.to_string(),
+        cwd: resolve_terminal_cwd(input.vault_path.as_deref())?,
+    })
+}
+
+fn save_claude_custom_binary_path(
+    app: &AppHandle,
+    custom_binary_path: String,
+) -> Result<(), String> {
+    let _ = save_claude_setup_config(
+        app,
+        ClaudeSetupInput {
+            custom_binary_path: Some(custom_binary_path),
+            anthropic_base_url: None,
+            anthropic_custom_headers: super::secret_store::SecretValuePatch::Unchanged,
+            anthropic_auth_token: super::secret_store::SecretValuePatch::Unchanged,
+        },
+    )?;
+    Ok(())
+}
+
+fn resolve_claude_binary_command(app: &AppHandle) -> Result<(String, Vec<String>), String> {
     let runtime = ClaudeRuntime::default();
     let resolved = runtime.resolved_binary(app)?;
     let program = resolved
         .program
         .ok_or_else(|| "Claude runtime binary is not configured.".to_string())?;
-    let mut args = resolved.args;
-    args.push("--cli".to_string());
-
-    Ok(TerminalLaunchConfig {
-        runtime_id: CLAUDE_RUNTIME_ID.to_string(),
-        program,
-        args,
-        display_name: "Claude sign-in".to_string(),
-        cwd: resolve_terminal_cwd(input.vault_path.as_deref())?,
-    })
+    Ok((program, resolved.args))
 }
 
-fn resolve_gemini_launch_config(
+fn save_gemini_custom_binary_path(
     app: &AppHandle,
-    input: &AiAuthTerminalStartInput,
-) -> Result<TerminalLaunchConfig, String> {
-    if let Some(custom_binary_path) = input.custom_binary_path.clone() {
-        let _ = save_gemini_setup_config(
-            app,
-            GeminiSetupInput {
-                custom_binary_path: Some(custom_binary_path),
-                gemini_api_key: super::secret_store::SecretValuePatch::Unchanged,
-                google_api_key: super::secret_store::SecretValuePatch::Unchanged,
-                google_cloud_project: None,
-                google_cloud_location: None,
-                gateway_base_url: None,
-                gateway_headers: super::secret_store::SecretValuePatch::Unchanged,
-            },
-        )?;
-    }
+    custom_binary_path: String,
+) -> Result<(), String> {
+    let _ = save_gemini_setup_config(
+        app,
+        GeminiSetupInput {
+            custom_binary_path: Some(custom_binary_path),
+            gemini_api_key: super::secret_store::SecretValuePatch::Unchanged,
+            google_api_key: super::secret_store::SecretValuePatch::Unchanged,
+            google_cloud_project: None,
+            google_cloud_location: None,
+            gateway_base_url: None,
+            gateway_headers: super::secret_store::SecretValuePatch::Unchanged,
+        },
+    )?;
+    Ok(())
+}
 
+fn resolve_gemini_binary_command(app: &AppHandle) -> Result<(String, Vec<String>), String> {
     let runtime = GeminiRuntime::default();
     let resolved = runtime.resolved_binary(app)?;
     let program = resolved
         .program
         .ok_or_else(|| "Gemini CLI is not configured.".to_string())?;
-    let args = resolved.args;
+    Ok((program, resolved.args))
+}
 
-    Ok(TerminalLaunchConfig {
-        runtime_id: GEMINI_RUNTIME_ID.to_string(),
-        program,
-        args,
-        display_name: "Gemini sign-in".to_string(),
-        cwd: resolve_terminal_cwd(input.vault_path.as_deref())?,
-    })
+fn save_kilo_custom_binary_path(app: &AppHandle, custom_binary_path: String) -> Result<(), String> {
+    let _ = save_kilo_setup_config(
+        app,
+        KiloSetupInput {
+            custom_binary_path: Some(custom_binary_path),
+        },
+    )?;
+    Ok(())
+}
+
+fn resolve_kilo_binary_command(app: &AppHandle) -> Result<(String, Vec<String>), String> {
+    let runtime = KiloRuntime::default();
+    let resolved = runtime.resolved_binary(app)?;
+    let program = resolved
+        .program
+        .ok_or_else(|| "Kilo CLI is not configured.".to_string())?;
+    Ok((program, resolved.args))
 }
 
 fn resolve_terminal_cwd(requested_cwd: Option<&str>) -> Result<PathBuf, String> {

@@ -27,6 +27,17 @@ const runtimes: AIRuntimeDescriptor[] = [
         modes: [],
         configOptions: [],
     },
+    {
+        runtime: {
+            id: "kilo-acp",
+            name: "Kilo ACP",
+            description: "Kilo runtime",
+            capabilities: [],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
 ];
 
 function MultiSessionReviewHarness() {
@@ -324,5 +335,75 @@ describe("multi-session review integration", () => {
         expect(diffPreview).toHaveStyle({
             overflowX: "auto",
         });
+    });
+
+    it("keeps runtime-specific review tabs distinct when one session uses Kilo", async () => {
+        setVaultEntries([
+            {
+                id: "notes/codex.md",
+                path: "/vault/notes/codex.md",
+                relative_path: "notes/codex.md",
+                title: "codex.md",
+                file_name: "codex.md",
+                extension: "md",
+                kind: "note",
+                modified_at: 0,
+                created_at: 0,
+                size: 10,
+                mime_type: "text/markdown",
+            },
+            {
+                id: "notes/kilo.md",
+                path: "/vault/notes/kilo.md",
+                relative_path: "notes/kilo.md",
+                title: "kilo.md",
+                file_name: "kilo.md",
+                extension: "md",
+                kind: "note",
+                modified_at: 0,
+                created_at: 0,
+                size: 10,
+                mime_type: "text/markdown",
+            },
+        ]);
+
+        const sessionA = createSession("session-codex", [
+            createTrackedFile("/vault/notes/codex.md", 10),
+        ]);
+        const sessionB = createSession(
+            "session-kilo",
+            [createTrackedFile("/vault/notes/kilo.md", 20)],
+            "kilo-acp",
+        );
+
+        renderComponent(<MultiSessionReviewHarness />);
+
+        await act(async () => {
+            useChatStore.setState((state) => ({
+                ...state,
+                runtimes,
+                activeSessionId: sessionA.sessionId,
+                sessionsById: {
+                    [sessionA.sessionId]: sessionA,
+                    [sessionB.sessionId]: sessionB,
+                },
+            }));
+        });
+
+        const reviewTabs = useEditorStore
+            .getState()
+            .tabs.filter((tab) => isReviewTab(tab));
+        expect(reviewTabs).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    sessionId: "session-codex",
+                    title: "Review Codex",
+                }),
+                expect.objectContaining({
+                    sessionId: "session-kilo",
+                    title: "Review Kilo",
+                }),
+            ]),
+        );
     });
 });

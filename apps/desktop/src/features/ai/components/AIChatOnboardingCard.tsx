@@ -6,7 +6,9 @@ import type {
     AISecretPatch,
 } from "../types";
 import { APP_BRAND_NAME } from "../../../app/utils/branding";
+import { isIntegratedTerminalAuthMethodId } from "../utils/authMethods";
 import { getClaudeGatewayUrlValidationMessage } from "../utils/claudeGatewayUrl";
+import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 
 interface AIChatOnboardingCardProps {
     runtime?: AIRuntimeOption | null;
@@ -114,7 +116,10 @@ export function AIChatOnboardingCard({
         setupStatus.authMethods.find(
             (method) => method.id === selectedMethodId,
         ) ?? null;
-    const runtimeName = runtime?.name ?? getRuntimeDisplayName(setupStatus);
+    const runtimeName = getRuntimeDisplayName(
+        setupStatus.runtimeId,
+        runtime?.name,
+    );
     const isOpenAiApiKeyMethod = selectedMethod?.id === "openai-api-key";
     const isCodexApiKeyMethod = selectedMethod?.id === "codex-api-key";
     const isGeminiApiKeyMethod = selectedMethod?.id === "use_gemini";
@@ -680,19 +685,6 @@ export function AIChatOnboardingCard({
     );
 }
 
-function getRuntimeDisplayName(setupStatus: AIRuntimeSetupStatus) {
-    if (setupStatus.runtimeId === "claude-acp") {
-        return "Claude";
-    }
-    if (setupStatus.runtimeId === "codex-acp") {
-        return "Codex";
-    }
-    if (setupStatus.runtimeId === "gemini-acp") {
-        return "Gemini";
-    }
-    return setupStatus.runtimeId;
-}
-
 function getApiKeyPlaceholder(methodId?: string) {
     if (methodId === "codex-api-key") {
         return "Codex API key";
@@ -722,6 +714,9 @@ function getAuthMethodHelpText(methodId: string, runtimeName: string) {
     if (methodId === "login_with_google") {
         return `${APP_BRAND_NAME} will open a Gemini sign-in terminal inside the app.`;
     }
+    if (methodId === "kilo-login") {
+        return `${APP_BRAND_NAME} will open a limited Kilo sign-in terminal inside the app.`;
+    }
     if (methodId === "gateway") {
         return `Configure a custom ${runtimeName} gateway for this app only. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.`;
     }
@@ -741,14 +736,7 @@ function getContinueLabel(methodId?: string) {
     if (methodId === "chatgpt") {
         return "Continue with ChatGPT";
     }
-    if (
-        methodId === "claude-login" ||
-        methodId === "claude-ai-login" ||
-        methodId === "console-login"
-    ) {
-        return "Open sign-in terminal";
-    }
-    if (methodId === "login_with_google") {
+    if (isIntegratedTerminalAuthMethodId(methodId)) {
         return "Open sign-in terminal";
     }
     return "Continue";

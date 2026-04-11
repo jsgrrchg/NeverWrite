@@ -51,6 +51,45 @@ describe("AIChatOnboardingCard", () => {
         ).toBeInTheDocument();
     });
 
+    it("shows the integrated terminal CTA for Kilo login", () => {
+        renderComponent(
+            <AIChatOnboardingCard
+                runtime={{
+                    id: "kilo-acp",
+                    name: "Kilo",
+                    description: "",
+                    capabilities: [],
+                }}
+                setupStatus={{
+                    runtimeId: "kilo-acp",
+                    binaryReady: true,
+                    binarySource: "env",
+                    authReady: false,
+                    authMethods: [
+                        {
+                            id: "kilo-login",
+                            name: "Kilo login",
+                            description:
+                                "Open a terminal-based Kilo login flow.",
+                        },
+                    ],
+                    onboardingRequired: true,
+                }}
+                onSaveSetup={vi.fn()}
+                onAuthenticate={vi.fn()}
+            />,
+        );
+
+        expect(
+            screen.getByText(
+                "NeverWrite will open a limited Kilo sign-in terminal inside the app.",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Open sign-in terminal" }),
+        ).toBeInTheDocument();
+    });
+
     it("can clear a broken custom binary override", () => {
         const onSaveSetup = vi.fn();
 

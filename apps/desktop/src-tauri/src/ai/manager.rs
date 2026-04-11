@@ -7,9 +7,7 @@ use serde::Deserialize;
 use tauri::AppHandle;
 
 use super::{
-    claude::ClaudeRuntimeAdapter,
-    codex::CodexRuntimeAdapter,
-    gemini::GeminiRuntimeAdapter,
+    catalog::default_runtime_adapters,
     runtime::{merge_runtime_capabilities, AiRuntimeAdapter, AiRuntimeSetupInput},
 };
 
@@ -161,9 +159,9 @@ pub struct AiManager {
 impl AiManager {
     pub fn new() -> Self {
         let mut manager = Self::default();
-        manager.register_runtime(Box::new(CodexRuntimeAdapter::default()));
-        manager.register_runtime(Box::new(ClaudeRuntimeAdapter::default()));
-        manager.register_runtime(Box::new(GeminiRuntimeAdapter::default()));
+        for runtime in default_runtime_adapters() {
+            manager.register_runtime(runtime);
+        }
         manager
     }
 
@@ -520,7 +518,7 @@ impl AiManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use neverwrite_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus};
+    use neverwrite_ai::{AiModeOption, AiRuntimeOption, AiSessionStatus, KILO_RUNTIME_ID};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -707,6 +705,16 @@ mod tests {
             .capabilities
             .iter()
             .any(|capability| capability == "user_input"));
+    }
+
+    #[test]
+    fn manager_registers_kilo_runtime_by_default() {
+        let manager = AiManager::new();
+
+        assert!(manager
+            .list_runtimes()
+            .iter()
+            .any(|descriptor| descriptor.runtime.id == KILO_RUNTIME_ID));
     }
 
     #[test]

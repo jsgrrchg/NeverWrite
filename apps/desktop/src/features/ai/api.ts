@@ -29,67 +29,10 @@ import type {
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
 } from "./types";
+import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
 
-const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] = [
-    {
-        runtime: {
-            id: "codex-acp",
-            name: "Codex ACP",
-            description: "Codex runtime embedded as an ACP sidecar.",
-            capabilities: [
-                "attachments",
-                "permissions",
-                "reasoning",
-                "terminal_output",
-                "create_session",
-                "list_sessions",
-                "user_input",
-            ],
-        },
-        models: [],
-        modes: [],
-        configOptions: [],
-    },
-    {
-        runtime: {
-            id: "claude-acp",
-            name: "Claude ACP",
-            description:
-                "Claude runtime exposed through the upstream ACP adapter.",
-            capabilities: [
-                "attachments",
-                "permissions",
-                "plans",
-                "terminal_output",
-                "create_session",
-                "fork_session",
-                "resume_session",
-                "list_sessions",
-                "prompt_queueing",
-            ],
-        },
-        models: [],
-        modes: [],
-        configOptions: [],
-    },
-    {
-        runtime: {
-            id: "gemini-acp",
-            name: "Gemini ACP",
-            description: "Gemini CLI running as a native ACP agent.",
-            capabilities: [
-                "attachments",
-                "permissions",
-                "plans",
-                "create_session",
-                "resume_session",
-            ],
-        },
-        models: [],
-        modes: [],
-        configOptions: [],
-    },
-];
+const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] =
+    buildFallbackRuntimeDescriptors();
 
 export const AI_SESSION_CREATED_EVENT = "ai://session-created";
 export const AI_SESSION_UPDATED_EVENT = "ai://session-updated";
