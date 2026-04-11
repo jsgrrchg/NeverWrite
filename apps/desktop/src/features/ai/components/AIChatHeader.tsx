@@ -238,9 +238,7 @@ export function AIChatHeader({
                     {editingKey !== null ? (
                         <input
                             ref={inputRef}
-                            className={`min-w-0 flex-1 rounded bg-transparent font-medium outline-none ${
-                                isCompact ? "text-[11px]" : "text-xs"
-                            }`}
+                            className="min-w-0 flex-1 rounded bg-transparent font-medium text-xs outline-none"
                             style={{
                                 color: "var(--text-primary)",
                                 border: "none",
@@ -260,9 +258,7 @@ export function AIChatHeader({
                         />
                     ) : (
                         <span
-                            className={`cursor-default truncate font-medium ${
-                                isCompact ? "text-[11px]" : "text-xs"
-                            }`}
+                            className="cursor-default truncate font-medium text-xs"
                             onDoubleClick={startTitleEdit}
                             title="Double-click to rename"
                         >
