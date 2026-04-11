@@ -6,6 +6,8 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::Duration,
 };
 
 const CLAUDE_VENDOR_DIR: &str = "../../../vendor/Claude-agent-acp-upstream";
@@ -562,22 +564,37 @@ fn change_install_name(path: &Path, old: &str, new: &str) {
 }
 
 fn run_install_name_tool<const N: usize>(args: [&str; N], path: &Path) {
-    let status = Command::new("install_name_tool")
-        .args(args)
-        .arg(path)
-        .status()
-        .unwrap_or_else(|error| {
-            panic!(
-                "failed to run install_name_tool for {}: {error}",
-                path.display()
-            )
-        });
+    const MAX_ATTEMPTS: usize = 3;
 
-    if !status.success() {
+    for attempt in 1..=MAX_ATTEMPTS {
+        let output = Command::new("install_name_tool")
+            .args(args)
+            .arg(path)
+            .output()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to run install_name_tool for {}: {error}",
+                    path.display()
+                )
+            });
+
+        if output.status.success() {
+            return;
+        }
+
+        if attempt < MAX_ATTEMPTS {
+            // `install_name_tool` can sporadically fail on freshly copied Mach-O files
+            // during staging, so give the filesystem a moment and retry.
+            thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
         panic!(
-            "install_name_tool failed for {} with status {}",
+            "install_name_tool failed for {} with status {}: {}",
             path.display(),
-            status
+            output.status,
+            stderr.trim()
         );
     }
 }
