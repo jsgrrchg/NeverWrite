@@ -1,5 +1,5 @@
 import { act, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { type Mock, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import { AIAuthTerminalModal } from "./AIAuthTerminalModal";
 
@@ -117,10 +117,10 @@ describe("AIAuthTerminalModal", () => {
     });
 
     it("cleans up listeners that resolve after the modal unmounts", async () => {
-        const startedDeferred = createDeferred<() => void>();
-        const outputDeferred = createDeferred<() => void>();
-        const exitedDeferred = createDeferred<() => void>();
-        const errorDeferred = createDeferred<() => void>();
+        const startedDeferred = createDeferred<Mock>();
+        const outputDeferred = createDeferred<Mock>();
+        const exitedDeferred = createDeferred<Mock>();
+        const errorDeferred = createDeferred<Mock>();
 
         const startedUnlisten = vi.fn();
         const outputUnlisten = vi.fn();

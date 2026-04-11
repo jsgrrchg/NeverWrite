@@ -14,7 +14,8 @@ import type { GraphSnapshotDto } from "./useGraphData";
 
 interface UsePreparedGraphSnapshotOptions {
     graphSnapshot: GraphSnapshotDto | null;
-    layoutKey: string | null;
+    preparedSnapshotKey: string | null;
+    layoutCacheKey: string | null;
     layoutStrategy: GraphLayoutStrategy;
     isVisible: boolean;
 }
@@ -27,7 +28,8 @@ interface UsePreparedGraphSnapshotResult {
 
 export function usePreparedGraphSnapshot({
     graphSnapshot,
-    layoutKey,
+    preparedSnapshotKey,
+    layoutCacheKey,
     layoutStrategy,
     isVisible,
 }: UsePreparedGraphSnapshotOptions): UsePreparedGraphSnapshotResult {
@@ -40,23 +42,23 @@ export function usePreparedGraphSnapshot({
             {
                 startMs: number;
                 snapshot: GraphSnapshotDto;
-                layoutKey: string;
+                preparedKey: string;
                 restoredFromCache: boolean;
             }
         >
     >(new Map());
-    const [prepared, setPrepared] = useState<GraphPreparedPipeline | null>(
-        null,
-    );
+    const [prepared, setPrepared] = useState<
+        (GraphPreparedPipeline & { sourceSnapshot: GraphSnapshotDto }) | null
+    >(null);
     const [isPreparing, setIsPreparing] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const cachedPositions = useMemo(
         () =>
-            layoutKey
-                ? (loadGraphLayoutSnapshot(layoutKey)?.positions ?? null)
+            layoutCacheKey
+                ? (loadGraphLayoutSnapshot(layoutCacheKey)?.positions ?? null)
                 : null,
-        [layoutKey],
+        [layoutCacheKey],
     );
 
     useEffect(() => {
@@ -113,7 +115,14 @@ export function usePreparedGraphSnapshot({
 
             setError(null);
             startTransition(() => {
-                setPrepared(response.result ?? null);
+                setPrepared(
+                    response.result
+                        ? {
+                              ...response.result,
+                              sourceSnapshot: meta.snapshot,
+                          }
+                        : null,
+                );
             });
         };
 
@@ -135,9 +144,14 @@ export function usePreparedGraphSnapshot({
     }, []);
 
     useEffect(() => {
-        if (!graphSnapshot || !layoutKey) return;
+        if (!graphSnapshot || !preparedSnapshotKey) return;
         if (!isVisible) return;
-        if (prepared?.layoutKey === layoutKey) return;
+        if (
+            prepared?.preparedKey === preparedSnapshotKey &&
+            prepared.sourceSnapshot === graphSnapshot
+        ) {
+            return;
+        }
 
         const worker = workerRef.current;
         if (!worker) return;
@@ -148,7 +162,7 @@ export function usePreparedGraphSnapshot({
         requestMetaRef.current.set(requestId, {
             startMs: performance.now(),
             snapshot: graphSnapshot,
-            layoutKey,
+            preparedKey: preparedSnapshotKey,
             restoredFromCache: cachedPositions != null,
         });
 
@@ -159,7 +173,7 @@ export function usePreparedGraphSnapshot({
 
         worker.postMessage({
             requestId,
-            layoutKey,
+            preparedKey: preparedSnapshotKey,
             snapshot: graphSnapshot,
             layoutStrategy,
             cachedPositions,
@@ -168,14 +182,22 @@ export function usePreparedGraphSnapshot({
         cachedPositions,
         graphSnapshot,
         isVisible,
-        layoutKey,
+        preparedSnapshotKey,
         layoutStrategy,
         prepared,
     ]);
 
+    const currentPrepared =
+        graphSnapshot &&
+        preparedSnapshotKey &&
+        prepared?.sourceSnapshot === graphSnapshot &&
+        prepared.preparedKey === preparedSnapshotKey
+            ? prepared
+            : null;
+
     return {
-        prepared: graphSnapshot && layoutKey ? prepared : null,
-        isPreparing: graphSnapshot && layoutKey ? isPreparing : false,
-        error: graphSnapshot && layoutKey ? error : null,
+        prepared: currentPrepared,
+        isPreparing: graphSnapshot && preparedSnapshotKey ? isPreparing : false,
+        error: graphSnapshot && preparedSnapshotKey ? error : null,
     };
 }

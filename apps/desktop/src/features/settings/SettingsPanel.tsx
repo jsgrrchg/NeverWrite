@@ -42,8 +42,9 @@ import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { AIProvidersSettings } from "./AIProvidersSettings";
 import { useAppUpdateStore } from "../updates/store";
 import {
-    collectSensitiveUpdateState,
-    listLiveWindowOperationalStates,
+    isWindowOperationalStateStorageKey,
+    readSensitiveUpdateState,
+    readSettledSensitiveUpdateState,
     type SensitiveUpdateState,
 } from "../updates/sensitiveState";
 
@@ -1875,16 +1876,17 @@ function UpdatesSettings() {
         let cancelled = false;
 
         const refreshSensitiveState = async () => {
-            const next = collectSensitiveUpdateState(
-                await listLiveWindowOperationalStates(),
-            );
+            const next = await readSensitiveUpdateState();
             if (!cancelled) {
                 setSensitiveState(next);
             }
         };
 
         void refreshSensitiveState();
-        const unsubscribeStorage = subscribeSafeStorage(() => {
+        const unsubscribeStorage = subscribeSafeStorage(({ key }) => {
+            if (key !== null && !isWindowOperationalStateStorageKey(key)) {
+                return;
+            }
             void refreshSensitiveState();
         });
         const onFocus = () => {
@@ -2015,14 +2017,19 @@ function UpdatesSettings() {
                         type="button"
                         disabled={anyBusy}
                         onClick={() => {
-                            if (
-                                sensitiveState.requiresConfirmation &&
-                                !showConfirmInstall
-                            ) {
-                                setConfirmInstall(true);
-                                return;
-                            }
-                            void installAvailableUpdate().catch(() => {});
+                            void (async () => {
+                                const nextSensitiveState =
+                                    await readSettledSensitiveUpdateState();
+                                setSensitiveState(nextSensitiveState);
+                                if (
+                                    nextSensitiveState.requiresConfirmation &&
+                                    !showConfirmInstall
+                                ) {
+                                    setConfirmInstall(true);
+                                    return;
+                                }
+                                await installAvailableUpdate().catch(() => {});
+                            })();
                         }}
                         style={{
                             borderRadius: 6,
@@ -2105,7 +2112,14 @@ function UpdatesSettings() {
                             type="button"
                             disabled={installing}
                             onClick={() => {
-                                void installAvailableUpdate().catch(() => {});
+                                void (async () => {
+                                    const nextSensitiveState =
+                                        await readSensitiveUpdateState();
+                                    setSensitiveState(nextSensitiveState);
+                                    await installAvailableUpdate().catch(
+                                        () => {},
+                                    );
+                                })();
                             }}
                             style={{
                                 borderRadius: 6,

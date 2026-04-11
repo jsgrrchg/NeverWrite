@@ -101,6 +101,7 @@ import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
 import { useAppUpdateStore } from "./features/updates/store";
 import {
     buildWindowOperationalState,
+    WINDOW_OPERATIONAL_STATE_PUBLISH_DEBOUNCE_MS,
     writeWindowOperationalState,
 } from "./features/updates/sensitiveState";
 
@@ -1125,7 +1126,10 @@ export default function App() {
         }
 
         const label = getCurrentWindowLabel();
-        const publish = () => {
+        let publishTimer: number | null = null;
+
+        const publishNow = () => {
+            publishTimer = null;
             const editor = useEditorStore.getState();
             const chat = useChatStore.getState();
             writeWindowOperationalState(
@@ -1141,11 +1145,24 @@ export default function App() {
             );
         };
 
-        publish();
-        const unsubscribeEditor = useEditorStore.subscribe(publish);
-        const unsubscribeChat = useChatStore.subscribe(publish);
+        const schedulePublish = () => {
+            if (publishTimer !== null) {
+                window.clearTimeout(publishTimer);
+            }
+            publishTimer = window.setTimeout(
+                publishNow,
+                WINDOW_OPERATIONAL_STATE_PUBLISH_DEBOUNCE_MS,
+            );
+        };
+
+        publishNow();
+        const unsubscribeEditor = useEditorStore.subscribe(schedulePublish);
+        const unsubscribeChat = useChatStore.subscribe(schedulePublish);
 
         return () => {
+            if (publishTimer !== null) {
+                window.clearTimeout(publishTimer);
+            }
             unsubscribeEditor();
             unsubscribeChat();
             writeWindowOperationalState(label, null);

@@ -141,10 +141,11 @@ import { logDebug, logError, logWarn } from "../../../app/utils/runtimeLog";
 
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
+type PersistedSessionHistorySummary = Omit<PersistedSessionHistory, "messages">;
 let _persistedHistoryCacheVaultPath: string | null = null;
 let _persistedHistoryCacheBySessionId = new Map<
     string,
-    PersistedSessionHistory
+    PersistedSessionHistorySummary
 >();
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
@@ -363,7 +364,10 @@ function setPersistedHistoryCache(
 ) {
     _persistedHistoryCacheVaultPath = vaultPath ?? null;
     _persistedHistoryCacheBySessionId = new Map(
-        histories.map((history) => [history.session_id, history]),
+        histories.map((history) => [
+            history.session_id,
+            summarizePersistedHistory(history),
+        ]),
     );
 }
 
@@ -371,12 +375,36 @@ function upsertPersistedHistoryCache(
     vaultPath: string | null,
     history: PersistedSessionHistory,
 ) {
+    const summary = summarizePersistedHistory(history);
     if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
         setPersistedHistoryCache(vaultPath, [history]);
         return;
     }
 
-    _persistedHistoryCacheBySessionId.set(history.session_id, history);
+    _persistedHistoryCacheBySessionId.set(summary.session_id, summary);
+}
+
+function deletePersistedHistoryCacheEntry(
+    vaultPath: string | null,
+    historySessionId: string | null | undefined,
+) {
+    if (!historySessionId) {
+        return;
+    }
+
+    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+        return;
+    }
+
+    _persistedHistoryCacheBySessionId.delete(historySessionId);
+}
+
+function clearPersistedHistoryCache(vaultPath: string | null) {
+    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+        return;
+    }
+
+    _persistedHistoryCacheBySessionId.clear();
 }
 
 function getPersistedHistoryFromCache(
@@ -392,6 +420,13 @@ function getPersistedHistoryFromCache(
     }
 
     return _persistedHistoryCacheBySessionId.get(historySessionId) ?? null;
+}
+
+function summarizePersistedHistory(
+    history: PersistedSessionHistory,
+): PersistedSessionHistorySummary {
+    const { messages: _messages, ...summary } = history;
+    return summary;
 }
 
 function hasRuntimeCatalog(snapshot: AIRuntimeCatalogSnapshot) {
@@ -3372,8 +3407,13 @@ function applyUserEditToTrackedFileInSession(
     });
 }
 
-function getPersistedHistoryMessageCount(history: PersistedSessionHistory) {
-    return history.message_count ?? history.messages.length;
+function getPersistedHistoryMessageCount(
+    history: PersistedSessionHistory | PersistedSessionHistorySummary,
+) {
+    return (
+        history.message_count ??
+        ("messages" in history ? history.messages.length : 0)
+    );
 }
 
 function getSessionPersistedMessageCount(session: AIChatSession) {
@@ -3439,7 +3479,7 @@ function ensurePersistedTranscriptWindowAnchor(session: AIChatSession) {
 
 function applyPersistedHistoryMetadata(
     session: AIChatSession,
-    history: PersistedSessionHistory,
+    history: PersistedSessionHistorySummary,
 ) {
     const persistedCatalog = getPersistedHistoryCatalogSnapshot(history);
     if (hasRuntimeCatalog(persistedCatalog)) {
@@ -8288,6 +8328,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     () => {},
                 );
             }
+            deletePersistedHistoryCacheEntry(vaultPath, historySessionId);
             useEditorStore.getState().closeReview(sessionId);
             useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
@@ -8376,6 +8417,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (vaultPath) {
                 await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
             }
+            clearPersistedHistoryCache(vaultPath);
             // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {
