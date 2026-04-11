@@ -79,6 +79,12 @@ vi.mock("./features/ai/hooks/useAutoOpenReviewTab", () => ({
     useAutoOpenReviewTab: () => {},
 }));
 
+vi.mock("./features/ai/AIChatDetachedWindowHost", () => ({
+    AIChatDetachedWindowHost: () => (
+        <div data-testid="ai-chat-detached-window-host" />
+    ),
+}));
+
 vi.mock("./features/devtools/DeveloperPanel", () => ({
     DEVELOPER_PANEL_NEW_TAB_EVENT: "developer-panel:new-tab",
     DEVELOPER_PANEL_RESTART_EVENT: "developer-panel:restart",
@@ -127,6 +133,9 @@ describe("App note window", () => {
         renderComponent(<App />);
         await flushPromises();
 
+        expect(
+            screen.getByTestId("ai-chat-detached-window-host"),
+        ).toBeInTheDocument();
         expect(screen.getByTestId("unified-bar")).toHaveAttribute(
             "data-window-mode",
             "note",

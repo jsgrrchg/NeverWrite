@@ -1,8 +1,8 @@
 /**
  * AIChatSessionView — renders a single chat session inside an editor workspace pane.
  *
- * Unlike AIChatPanel (the sidebar host), this component:
- * - Does NOT bind Tauri event listeners (AIChatPanel owns those for ALL sessions).
+ * Unlike the window-level chat host, this component:
+ * - Does NOT bind Tauri event listeners itself.
  * - Does NOT manage tabs or history — the workspace pane handles that.
  * - Derives its sessionId from the active ChatTab in the pane via editorStore.
  *
@@ -18,6 +18,7 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
+import { getWindowMode } from "../../../app/detachedWindows";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
@@ -55,6 +56,7 @@ interface AIChatSessionViewProps {
 
 export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
+    const canReturnToPanel = getWindowMode() === "main";
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -334,18 +336,20 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 >
                     {session ? getSessionTitle(session) : "Chat"}
                 </span>
-                <button
-                    className="shrink-0 rounded px-2 py-0.5 text-[11px] hover:opacity-80"
-                    style={{
-                        background:
-                            "color-mix(in srgb, var(--accent) 10%, transparent)",
-                        color: "var(--accent)",
-                    }}
-                    onClick={() => moveChatToSidebar(sessionId)}
-                    title="Return to AI Panel"
-                >
-                    Return to Panel
-                </button>
+                {canReturnToPanel ? (
+                    <button
+                        className="shrink-0 rounded px-2 py-0.5 text-[11px] hover:opacity-80"
+                        style={{
+                            background:
+                                "color-mix(in srgb, var(--accent) 10%, transparent)",
+                            color: "var(--accent)",
+                        }}
+                        onClick={() => moveChatToSidebar(sessionId)}
+                        title="Return to AI Panel"
+                    >
+                        Return to Panel
+                    </button>
+                ) : null}
             </div>
 
             <AIChatRuntimeBanner

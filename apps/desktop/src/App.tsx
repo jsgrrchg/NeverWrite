@@ -15,6 +15,7 @@ import { SearchPanel } from "./features/search/SearchPanel";
 import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
+import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
@@ -1797,6 +1798,7 @@ export default function App() {
     if (windowMode === "note") {
         return (
             <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
+                <AIChatDetachedWindowHost />
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
                     <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />

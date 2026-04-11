@@ -1026,7 +1026,7 @@ interface ChatStore {
     activeQueuedMessageBySessionId: Record<string, DeferredQueuedMessage>;
     pausedQueueBySessionId: Record<string, PausedQueueState>;
     interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
-    initialize: () => Promise<void>;
+    initialize: (options?: { createDefaultSession?: boolean }) => Promise<void>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
             id: string;
@@ -5055,8 +5055,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set({ selectedRuntimeId: runtimeId });
         },
 
-        initialize: async () => {
+        initialize: async (options) => {
             if (get().isInitializing) return;
+
+            const shouldCreateDefaultSession =
+                options?.createDefaultSession ?? true;
 
             set({ isInitializing: true });
 
@@ -5266,7 +5269,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
-                if (!get().activeSessionId) {
+                if (!get().activeSessionId && shouldCreateDefaultSession) {
                     const runtimeId = defaultRuntimeId;
                     const setupStatus = getSetupStatusForRuntime(
                         setupStatusByRuntimeId,

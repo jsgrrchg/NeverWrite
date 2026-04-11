@@ -751,7 +751,7 @@ describe("editorStore hydration and external insertion", () => {
         useVaultStore.setState({ vaultPath: "/vaults/project-alpha" });
     });
 
-    it("hydrates mixed persisted tabs, drops review tabs, and keeps the requested active tab", () => {
+    it("hydrates mixed persisted tabs, drops review tabs, keeps chat tabs, and keeps the requested active tab", () => {
         useEditorStore.getState().hydrateTabs(
             [
                 {
@@ -812,18 +812,25 @@ describe("editorStore hydration and external insertion", () => {
                     title: "Review",
                 },
                 {
+                    id: "chat-1",
+                    kind: "ai-chat",
+                    sessionId: "session-chat",
+                    title: "Chat",
+                },
+                {
                     id: "graph-1",
                     kind: "graph",
                     title: "Graph View",
                 },
             ],
-            "graph-1",
+            "chat-1",
         );
 
         const state = useEditorStore.getState();
-        expect(state.tabs).toHaveLength(5);
+        expect(state.tabs).toHaveLength(6);
         expect(state.tabs.some((tab) => isReviewTab(tab))).toBe(false);
-        expect(state.activeTabId).toBe("graph-1");
+        expect(state.tabs.some((tab) => isChatTab(tab))).toBe(true);
+        expect(state.activeTabId).toBe("chat-1");
         expect(state.tabs.find((tab) => tab.id === "note-1")).toMatchObject({
             kind: "note",
             historyIndex: 0,

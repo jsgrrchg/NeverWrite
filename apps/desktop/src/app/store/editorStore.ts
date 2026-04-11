@@ -651,6 +651,9 @@ function normalizeHydratedTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
+    if (isChatTab(tab)) {
+        return tab;
+    }
     if (isGraphTab(tab)) {
         return tab;
     }

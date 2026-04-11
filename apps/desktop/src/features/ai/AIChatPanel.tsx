@@ -14,24 +14,6 @@ import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../app/utils/vaultEntries";
 import {
-    listenToAiAvailableCommandsUpdated,
-    listenToAiMessageCompleted,
-    listenToAiMessageDelta,
-    listenToAiMessageStarted,
-    listenToAiPlanUpdated,
-    listenToAiPermissionRequest,
-    listenToAiRuntimeConnection,
-    listenToAiSessionCreated,
-    listenToAiSessionError,
-    listenToAiSessionUpdated,
-    listenToAiStatusEvent,
-    listenToAiThinkingCompleted,
-    listenToAiThinkingDelta,
-    listenToAiThinkingStarted,
-    listenToAiToolActivity,
-    listenToAiUserInputRequest,
-} from "./api";
-import {
     type AIChatSession,
     type AIRuntimeConnectionState,
     type AIRuntimeDescriptor,
@@ -59,6 +41,7 @@ import { exportChatSessionToVaultNote } from "./chatExport";
 import { ChatHistoryView } from "./components/ChatHistoryView";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
+import { useAiChatEventBridge } from "./useAiChatEventBridge";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -107,6 +90,7 @@ export function AIChatPanel() {
 
     // Actions — access via getState() to avoid 30+ unnecessary subscriptions
     const chatActions = useRef(useChatStore.getState()).current;
+    useAiChatEventBridge();
     const refreshEntries = useVaultStore((state) => state.refreshEntries);
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const screenshotRetentionSeconds = useChatStore(
@@ -545,112 +529,6 @@ export function AIChatPanel() {
         if (activeSetupStatus.onboardingRequired) return;
         setAuthTerminalRequest(null);
     }, [activeSetupStatus, authTerminalRequest]);
-
-    useEffect(() => {
-        let disposed = false;
-        let cleanupFns: Array<() => void> = [];
-
-        const bind = async () => {
-            const [
-                unlistenCreated,
-                unlistenUpdated,
-                unlistenError,
-                unlistenMessageStarted,
-                unlistenMessageDelta,
-                unlistenMessageCompleted,
-                unlistenThinkingStarted,
-                unlistenThinkingDelta,
-                unlistenThinkingCompleted,
-                unlistenToolActivity,
-                unlistenStatusEvent,
-                unlistenPlanUpdated,
-                unlistenAvailableCommandsUpdated,
-                unlistenPermissionRequest,
-                unlistenUserInputRequest,
-                unlistenRuntimeConnection,
-            ] = await Promise.all([
-                listenToAiSessionCreated((session) => {
-                    if (!disposed) chatActions.upsertSession(session);
-                }),
-                listenToAiSessionUpdated((session) => {
-                    if (!disposed) chatActions.upsertSession(session);
-                }),
-                listenToAiSessionError((payload) => {
-                    if (!disposed) chatActions.applySessionError(payload);
-                }),
-                listenToAiMessageStarted((payload) => {
-                    if (!disposed) chatActions.applyMessageStarted(payload);
-                }),
-                listenToAiMessageDelta((payload) => {
-                    if (!disposed) chatActions.applyMessageDelta(payload);
-                }),
-                listenToAiMessageCompleted((payload) => {
-                    if (!disposed) chatActions.applyMessageCompleted(payload);
-                }),
-                listenToAiThinkingStarted((payload) => {
-                    if (!disposed) chatActions.applyThinkingStarted(payload);
-                }),
-                listenToAiThinkingDelta((payload) => {
-                    if (!disposed) chatActions.applyThinkingDelta(payload);
-                }),
-                listenToAiThinkingCompleted((payload) => {
-                    if (!disposed) chatActions.applyThinkingCompleted(payload);
-                }),
-                listenToAiToolActivity((payload) => {
-                    if (!disposed) chatActions.applyToolActivity(payload);
-                }),
-                listenToAiStatusEvent((payload) => {
-                    if (!disposed) chatActions.applyStatusEvent(payload);
-                }),
-                listenToAiPlanUpdated((payload) => {
-                    if (!disposed) chatActions.applyPlanUpdate(payload);
-                }),
-                listenToAiAvailableCommandsUpdated((payload) => {
-                    if (!disposed)
-                        chatActions.applyAvailableCommandsUpdate(payload);
-                }),
-                listenToAiPermissionRequest((payload) => {
-                    if (!disposed) chatActions.applyPermissionRequest(payload);
-                }),
-                listenToAiUserInputRequest((payload) => {
-                    if (!disposed) chatActions.applyUserInputRequest(payload);
-                }),
-                listenToAiRuntimeConnection((payload) => {
-                    if (!disposed) chatActions.applyRuntimeConnection(payload);
-                }),
-            ]);
-
-            cleanupFns = [
-                unlistenCreated,
-                unlistenUpdated,
-                unlistenError,
-                unlistenMessageStarted,
-                unlistenMessageDelta,
-                unlistenMessageCompleted,
-                unlistenThinkingStarted,
-                unlistenThinkingDelta,
-                unlistenThinkingCompleted,
-                unlistenToolActivity,
-                unlistenStatusEvent,
-                unlistenPlanUpdated,
-                unlistenAvailableCommandsUpdated,
-                unlistenPermissionRequest,
-                unlistenUserInputRequest,
-                unlistenRuntimeConnection,
-            ];
-        };
-
-        void bind();
-
-        return () => {
-            disposed = true;
-            cleanupFns.forEach((cleanup) => {
-                if (typeof cleanup === "function") {
-                    void cleanup();
-                }
-            });
-        };
-    }, [chatActions]);
 
     useEffect(() => {
         if (!tabsReady) return;
