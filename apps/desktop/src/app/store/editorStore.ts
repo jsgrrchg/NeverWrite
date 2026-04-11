@@ -1335,6 +1335,76 @@ function renameNoteAcrossWorkspace<
     };
 }
 
+function deleteMapAcrossWorkspace<
+    TState extends Pick<EditorStore, "panes" | "focusedPaneId" | "layoutTree">,
+>(state: TState, relativePath: string) {
+    const workspace = getEffectivePaneWorkspace(state);
+    const nextPanes = workspace.panes.map((pane) => {
+        const tabs = pane.tabs.filter(
+            (tab) => !isMapTab(tab) || tab.relativePath !== relativePath,
+        );
+        return tabs.length !== pane.tabs.length
+            ? updatePaneWithTabs(pane, tabs)
+            : pane;
+    });
+
+    const compactedWorkspace = removeEmptyPanesFromWorkspace({
+        panes: nextPanes,
+        focusedPaneId: workspace.focusedPaneId,
+        layoutTree: workspace.layoutTree,
+    });
+
+    return {
+        projection: buildFocusedPaneProjection(compactedWorkspace),
+        didChange:
+            compactedWorkspace.layoutTree !== workspace.layoutTree ||
+            compactedWorkspace.focusedPaneId !== workspace.focusedPaneId ||
+            compactedWorkspace.panes.length !== workspace.panes.length ||
+            compactedWorkspace.panes.some(
+                (pane, index) => pane !== workspace.panes[index],
+            ),
+    };
+}
+
+function renameMapAcrossWorkspace<
+    TState extends Pick<EditorStore, "panes" | "focusedPaneId" | "layoutTree">,
+>(
+    state: TState,
+    oldRelativePath: string,
+    newRelativePath: string,
+    newTitle: string,
+) {
+    const workspace = getEffectivePaneWorkspace(state);
+    const nextPanes = workspace.panes.map((pane) => {
+        let didChange = false;
+        const tabs = pane.tabs.map((tab) => {
+            if (!isMapTab(tab) || tab.relativePath !== oldRelativePath) {
+                return tab;
+            }
+
+            didChange = true;
+            return {
+                ...tab,
+                relativePath: newRelativePath,
+                title: newTitle,
+            };
+        });
+
+        return didChange ? updatePaneWithTabs(pane, tabs) : pane;
+    });
+
+    return {
+        projection: buildFocusedPaneProjection({
+            panes: nextPanes,
+            focusedPaneId: workspace.focusedPaneId,
+            layoutTree: workspace.layoutTree,
+        }),
+        didChange:
+            nextPanes.length !== workspace.panes.length ||
+            nextPanes.some((pane, index) => pane !== workspace.panes[index]),
+    };
+}
+
 export interface PendingReveal {
     noteId: string;
     targets: string[];
@@ -1507,6 +1577,12 @@ interface EditorStore {
     clearFileExternalConflict: (relativePath: string) => void;
     handleNoteDeleted: (noteId: string) => void;
     handleFileDeleted: (relativePath: string) => void;
+    handleMapDeleted: (relativePath: string) => void;
+    handleMapRenamed: (
+        oldRelativePath: string,
+        newRelativePath: string,
+        newTitle: string,
+    ) => void;
     handleNoteRenamed: (
         oldNoteId: string,
         newNoteId: string,
@@ -2966,6 +3042,25 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                 ),
                 fileExternalConflicts,
             };
+        });
+    },
+
+    handleMapDeleted: (relativePath) => {
+        set((state) => {
+            const next = deleteMapAcrossWorkspace(state, relativePath);
+            return next.didChange ? next.projection : state;
+        });
+    },
+
+    handleMapRenamed: (oldRelativePath, newRelativePath, newTitle) => {
+        set((state) => {
+            const next = renameMapAcrossWorkspace(
+                state,
+                oldRelativePath,
+                newRelativePath,
+                newTitle,
+            );
+            return next.didChange ? next.projection : state;
         });
     },
 

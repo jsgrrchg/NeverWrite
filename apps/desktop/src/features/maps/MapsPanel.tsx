@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useEditorStore, isMapTab } from "../../app/store/editorStore";
+import { useEditorStore } from "../../app/store/editorStore";
 import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
 import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
@@ -79,9 +79,11 @@ export function MapsPanel() {
     const [renameValue, setRenameValue] = useState("");
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const openMap = useEditorStore((s) => s.openMap);
+    const handleMapDeleted = useEditorStore((s) => s.handleMapDeleted);
+    const handleMapRenamed = useEditorStore((s) => s.handleMapRenamed);
     const activeMapRelativePath = useEditorStore((s) => {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        return tab && isMapTab(tab) ? tab.relativePath : null;
+        return tab?.kind === "map" ? tab.relativePath : null;
     });
 
     const dragStateRef = useRef<DragState | null>(null);
@@ -243,27 +245,25 @@ export function MapsPanel() {
         openMap(nextEntry.relativePath, nextEntry.title);
     };
 
-    const handleDeleteMap = async (map: MapEntry) => {
-        if (!vaultPath) return;
-        setContextMenu(null);
-        if (renamingMapPath === map.relativePath) {
-            setRenamingMapPath(null);
-            setRenameValue("");
-        }
-        await invoke("delete_map", {
-            vaultPath,
-            relativePath: map.relativePath,
-        });
-        setMaps((prev) =>
-            prev.filter((m) => m.relativePath !== map.relativePath),
-        );
-        // Close any open tab for this map
-        const { tabs, closeTab } = useEditorStore.getState();
-        const openTab = tabs.find(
-            (t) => isMapTab(t) && t.relativePath === map.relativePath,
-        );
-        if (openTab) closeTab(openTab.id, { reason: "delete" });
-    };
+    const handleDeleteMap = useCallback(
+        async (map: MapEntry) => {
+            if (!vaultPath) return;
+            setContextMenu(null);
+            if (renamingMapPath === map.relativePath) {
+                setRenamingMapPath(null);
+                setRenameValue("");
+            }
+            await invoke("delete_map", {
+                vaultPath,
+                relativePath: map.relativePath,
+            });
+            setMaps((prev) =>
+                prev.filter((entry) => entry.relativePath !== map.relativePath),
+            );
+            handleMapDeleted(map.relativePath);
+        },
+        [handleMapDeleted, renamingMapPath, vaultPath],
+    );
 
     const handleMapContextMenu = useCallback(
         (event: React.MouseEvent, map: MapEntry) => {
@@ -328,24 +328,18 @@ export function MapsPanel() {
                     ),
                 );
 
-                useEditorStore.setState((state) => ({
-                    tabs: state.tabs.map((tab) =>
-                        isMapTab(tab) && tab.relativePath === map.relativePath
-                            ? {
-                                  ...tab,
-                                  relativePath: updated.relative_path,
-                                  title: nextTitle,
-                              }
-                            : tab,
-                    ),
-                }));
+                handleMapRenamed(
+                    map.relativePath,
+                    updated.relative_path,
+                    nextTitle,
+                );
             } catch (error) {
                 logError("maps-panel", "Failed to rename map", error);
             } finally {
                 handleRenameCancel();
             }
         },
-        [handleRenameCancel, renameValue],
+        [handleMapRenamed, handleRenameCancel, renameValue],
     );
 
     const contextMenuEntries = useMemo<ContextMenuEntry[]>(() => {

@@ -5,7 +5,6 @@ import {
     useLayoutEffect,
     useRef,
     useState,
-    type ReactNode,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -38,7 +37,6 @@ import {
     isPdfTab,
     selectFocusedPaneId,
     selectPaneCount,
-    type Tab,
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { moveChatToSidebar } from "../ai/chatPaneMovement";

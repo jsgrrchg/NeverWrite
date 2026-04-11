@@ -1473,6 +1473,140 @@ describe("editorStore tab history mode", () => {
         });
     });
 
+    it("handleMapDeleted closes matching map tabs across panes and collapses empty panes", () => {
+        const noteTab = makeTab({
+            id: "note-a",
+            noteId: "notes/a",
+            title: "A",
+            content: "Alpha",
+        });
+        const mapTab = makeMapTab({
+            id: "map-a",
+            relativePath: "Excalidraw/Board.excalidraw",
+            title: "Board",
+        });
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [noteTab],
+                    activeTabId: noteTab.id,
+                    activationHistory: [noteTab.id],
+                    tabNavigationHistory: [noteTab.id],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [mapTab],
+                    activeTabId: mapTab.id,
+                    activationHistory: [mapTab.id],
+                    tabNavigationHistory: [mapTab.id],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            layoutTree,
+            tabs: [noteTab],
+            activeTabId: noteTab.id,
+            activationHistory: [noteTab.id],
+            tabNavigationHistory: [noteTab.id],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore
+            .getState()
+            .handleMapDeleted("Excalidraw/Board.excalidraw");
+
+        const state = useEditorStore.getState();
+        expect(selectLeafPaneIds(state)).toEqual(["primary"]);
+        expect(state.panes).toHaveLength(1);
+        expect(
+            state.panes
+                .flatMap((pane) => pane.tabs)
+                .some((tab) => isMapTab(tab)),
+        ).toBe(false);
+        expect(state.tabs[0]).toMatchObject({
+            id: noteTab.id,
+            kind: "note",
+        });
+    });
+
+    it("handleMapRenamed updates matching map tabs across panes without changing focus", () => {
+        const noteTab = makeTab({
+            id: "note-a",
+            noteId: "notes/a",
+            title: "A",
+            content: "Alpha",
+        });
+        const mapTab = makeMapTab({
+            id: "map-a",
+            relativePath: "Excalidraw/Board.excalidraw",
+            title: "Board",
+        });
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "secondary",
+        );
+
+        useEditorStore.setState({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [noteTab],
+                    activeTabId: noteTab.id,
+                    activationHistory: [noteTab.id],
+                    tabNavigationHistory: [noteTab.id],
+                    tabNavigationIndex: 0,
+                },
+                {
+                    id: "secondary",
+                    tabs: [mapTab],
+                    activeTabId: mapTab.id,
+                    activationHistory: [mapTab.id],
+                    tabNavigationHistory: [mapTab.id],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            layoutTree,
+            tabs: [noteTab],
+            activeTabId: noteTab.id,
+            activationHistory: [noteTab.id],
+            tabNavigationHistory: [noteTab.id],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore
+            .getState()
+            .handleMapRenamed(
+                "Excalidraw/Board.excalidraw",
+                "Excalidraw/Architecture.excalidraw",
+                "Architecture",
+            );
+
+        const state = useEditorStore.getState();
+        const secondaryPane = selectPaneState(state, "secondary");
+        expect(state.focusedPaneId).toBe("primary");
+        expect(secondaryPane?.tabs[0]).toMatchObject({
+            kind: "map",
+            relativePath: "Excalidraw/Architecture.excalidraw",
+            title: "Architecture",
+        });
+        expect(state.tabs[0]).toMatchObject({
+            id: noteTab.id,
+            kind: "note",
+        });
+    });
+
     it("handleNoteDeleted removes reload and conflict state even when the note is not open", () => {
         useEditorStore.setState({
             tabs: [
