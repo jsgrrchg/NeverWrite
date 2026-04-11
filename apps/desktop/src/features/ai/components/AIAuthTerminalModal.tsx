@@ -88,42 +88,58 @@ export function AIAuthTerminalModal({
         let disposed = false;
         const unsubs: Array<() => void> = [];
 
+        const registerListener = async (
+            listenPromise: Promise<(() => void) | undefined>,
+        ) => {
+            const unlisten = await listenPromise;
+            if (typeof unlisten !== "function") {
+                return;
+            }
+            if (disposed) {
+                void unlisten();
+                return;
+            }
+            unsubs.push(unlisten);
+        };
+
         const attachListeners = async () => {
-            unsubs.push(
-                await listenToAiAuthTerminalStarted((payload) => {
-                    if (payload.sessionId !== sessionIdRef.current) return;
-                    setSnapshot(payload);
-                    setRawOutput(payload.buffer);
-                    setBusy(false);
-                }),
-            );
-            unsubs.push(
-                await listenToAiAuthTerminalOutput((payload) => {
-                    if (payload.sessionId !== sessionIdRef.current) return;
-                    setRawOutput((current) =>
-                        appendTerminalRawOutput(current, payload.chunk),
-                    );
-                }),
-            );
-            unsubs.push(
-                await listenToAiAuthTerminalExited((payload) => {
-                    if (payload.sessionId !== sessionIdRef.current) return;
-                    setSnapshot(payload);
-                    setBusy(false);
-                    void onRefreshSetup(runtimeId);
-                }),
-            );
-            unsubs.push(
-                await listenToAiAuthTerminalError((payload) => {
-                    if (payload.sessionId !== sessionIdRef.current) return;
-                    setSnapshot((current) => ({
-                        ...current,
-                        status: "error",
-                        errorMessage: payload.message,
-                    }));
-                    setBusy(false);
-                }),
-            );
+            await Promise.all([
+                registerListener(
+                    listenToAiAuthTerminalStarted((payload) => {
+                        if (payload.sessionId !== sessionIdRef.current) return;
+                        setSnapshot(payload);
+                        setRawOutput(payload.buffer);
+                        setBusy(false);
+                    }),
+                ),
+                registerListener(
+                    listenToAiAuthTerminalOutput((payload) => {
+                        if (payload.sessionId !== sessionIdRef.current) return;
+                        setRawOutput((current) =>
+                            appendTerminalRawOutput(current, payload.chunk),
+                        );
+                    }),
+                ),
+                registerListener(
+                    listenToAiAuthTerminalExited((payload) => {
+                        if (payload.sessionId !== sessionIdRef.current) return;
+                        setSnapshot(payload);
+                        setBusy(false);
+                        void onRefreshSetup(runtimeId);
+                    }),
+                ),
+                registerListener(
+                    listenToAiAuthTerminalError((payload) => {
+                        if (payload.sessionId !== sessionIdRef.current) return;
+                        setSnapshot((current) => ({
+                            ...current,
+                            status: "error",
+                            errorMessage: payload.message,
+                        }));
+                        setBusy(false);
+                    }),
+                ),
+            ]);
         };
 
         const startSession = async () => {
@@ -165,7 +181,12 @@ export function AIAuthTerminalModal({
             }
         };
 
-        void attachListeners().then(startSession);
+        void attachListeners().then(() => {
+            if (disposed) {
+                return;
+            }
+            void startSession();
+        });
 
         return () => {
             disposed = true;

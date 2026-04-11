@@ -1,5 +1,5 @@
-import { screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import { AIAuthTerminalModal } from "./AIAuthTerminalModal";
 
@@ -16,7 +16,26 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock("../api", () => apiMocks);
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>((res) => {
+        resolve = res;
+    });
+    return { promise, resolve };
+}
+
 describe("AIAuthTerminalModal", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        apiMocks.aiCloseAuthTerminalSession.mockResolvedValue(undefined);
+        apiMocks.aiWriteAuthTerminalSession.mockResolvedValue(undefined);
+        apiMocks.aiResizeAuthTerminalSession.mockResolvedValue(undefined);
+        apiMocks.listenToAiAuthTerminalStarted.mockResolvedValue(vi.fn());
+        apiMocks.listenToAiAuthTerminalOutput.mockResolvedValue(vi.fn());
+        apiMocks.listenToAiAuthTerminalExited.mockResolvedValue(vi.fn());
+        apiMocks.listenToAiAuthTerminalError.mockResolvedValue(vi.fn());
+    });
+
     it("renders buffered terminal output returned with the initial snapshot", async () => {
         const snapshot = {
             sessionId: "authterm-1",
@@ -95,5 +114,57 @@ describe("AIAuthTerminalModal", () => {
                 screen.getByText("Waiting for Gemini sign-in"),
             ).toBeInTheDocument();
         });
+    });
+
+    it("cleans up listeners that resolve after the modal unmounts", async () => {
+        const startedDeferred = createDeferred<() => void>();
+        const outputDeferred = createDeferred<() => void>();
+        const exitedDeferred = createDeferred<() => void>();
+        const errorDeferred = createDeferred<() => void>();
+
+        const startedUnlisten = vi.fn();
+        const outputUnlisten = vi.fn();
+        const exitedUnlisten = vi.fn();
+        const errorUnlisten = vi.fn();
+
+        apiMocks.listenToAiAuthTerminalStarted.mockReturnValue(
+            startedDeferred.promise,
+        );
+        apiMocks.listenToAiAuthTerminalOutput.mockReturnValue(
+            outputDeferred.promise,
+        );
+        apiMocks.listenToAiAuthTerminalExited.mockReturnValue(
+            exitedDeferred.promise,
+        );
+        apiMocks.listenToAiAuthTerminalError.mockReturnValue(
+            errorDeferred.promise,
+        );
+
+        const view = renderComponent(
+            <AIAuthTerminalModal
+                open
+                runtimeId="claude-acp"
+                runtimeName="Claude"
+                vaultPath="/vault"
+                onClose={vi.fn()}
+                onRefreshSetup={vi.fn(async () => undefined)}
+            />,
+        );
+
+        view.unmount();
+
+        await act(async () => {
+            startedDeferred.resolve(startedUnlisten);
+            outputDeferred.resolve(outputUnlisten);
+            exitedDeferred.resolve(exitedUnlisten);
+            errorDeferred.resolve(errorUnlisten);
+            await Promise.resolve();
+        });
+
+        expect(startedUnlisten).toHaveBeenCalledOnce();
+        expect(outputUnlisten).toHaveBeenCalledOnce();
+        expect(exitedUnlisten).toHaveBeenCalledOnce();
+        expect(errorUnlisten).toHaveBeenCalledOnce();
+        expect(apiMocks.aiStartAuthTerminalSession).not.toHaveBeenCalled();
     });
 });
