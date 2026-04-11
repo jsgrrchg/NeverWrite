@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -557,12 +557,89 @@ describe("SettingsPanel", () => {
             }),
         );
 
-        expect(mockInvoke()).toHaveBeenCalledWith(
+        await waitFor(() => {
+            expect(mockInvoke()).toHaveBeenCalledWith(
+                "download_and_install_app_update",
+                {
+                    version: "0.2.0",
+                    target: "darwin-aarch64",
+                },
+            );
+        });
+    });
+
+    it("revalidates sensitive state before starting install", async () => {
+        vi.mocked(getAllWebviewWindows).mockResolvedValue([
+            { label: "main" },
+        ] as Awaited<ReturnType<typeof getAllWebviewWindows>>);
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "get_app_update_configuration") {
+                return {
+                    enabled: true,
+                    currentVersion: "0.1.0",
+                    channel: "stable",
+                    endpoint: "https://updates.example.com/stable/latest.json",
+                    message: null,
+                    update: null,
+                };
+            }
+
+            if (command === "check_for_app_update") {
+                return {
+                    enabled: true,
+                    currentVersion: "0.1.0",
+                    channel: "stable",
+                    endpoint: "https://updates.example.com/stable/latest.json",
+                    message: null,
+                    update: {
+                        currentVersion: "0.1.0",
+                        version: "0.2.0",
+                        date: "2026-04-04T12:00:00Z",
+                        body: "## Added\n\n- In-app install flow.",
+                        rawJson: {},
+                        target: "darwin-aarch64",
+                        downloadUrl:
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                    },
+                };
+            }
+
+            if (command === "download_and_install_app_update") {
+                return undefined;
+            }
+
+            return undefined;
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Updates" }));
+
+        expect(await screen.findByText("0.2.0")).toBeInTheDocument();
+
+        localStorage.setItem(
+            "neverwrite:window-operational-state:main",
+            JSON.stringify({
+                label: "main",
+                windowMode: "main",
+                windowRole: "main",
+                windowTitle: "NeverWrite",
+                dirtyTabs: ["Draft note"],
+                pendingReviewSessions: [],
+                activeAgentSessions: [],
+            }),
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Download and install" }),
+        );
+
+        expect(
+            await screen.findByText("This update may interrupt active work."),
+        ).toBeInTheDocument();
+        expect(mockInvoke()).not.toHaveBeenCalledWith(
             "download_and_install_app_update",
-            {
-                version: "0.2.0",
-                target: "darwin-aarch64",
-            },
+            expect.anything(),
         );
     });
 });

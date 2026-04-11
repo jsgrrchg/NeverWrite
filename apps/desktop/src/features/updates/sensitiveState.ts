@@ -14,6 +14,8 @@ import {
 import type { AIChatSession } from "../ai/types";
 
 const WINDOW_OPERATIONAL_STATE_PREFIX = "neverwrite:window-operational-state:";
+export const WINDOW_OPERATIONAL_STATE_PUBLISH_DEBOUNCE_MS = 200;
+const WINDOW_OPERATIONAL_STATE_SETTLE_BUFFER_MS = 25;
 
 export interface WindowOperationalState {
     label: string;
@@ -38,6 +40,13 @@ export interface SensitiveUpdateState {
 
 function getOperationalStateKey(label: string) {
     return `${WINDOW_OPERATIONAL_STATE_PREFIX}${label}`;
+}
+
+export function isWindowOperationalStateStorageKey(key: string | null) {
+    return (
+        typeof key === "string" &&
+        key.startsWith(WINDOW_OPERATIONAL_STATE_PREFIX)
+    );
 }
 
 function resolveWindowRole(
@@ -136,11 +145,21 @@ export function writeWindowOperationalState(
 ) {
     const key = getOperationalStateKey(label);
     if (!state) {
+        if (safeStorageGetItem(key) === null) {
+            return false;
+        }
         safeStorageRemoveItem(key);
-        return;
+        return true;
     }
 
-    safeStorageSetItem(key, JSON.stringify(state));
+    // Avoid rewriting and rebroadcasting identical operational snapshots.
+    const serializedState = JSON.stringify(state);
+    if (safeStorageGetItem(key) === serializedState) {
+        return false;
+    }
+
+    safeStorageSetItem(key, serializedState);
+    return true;
 }
 
 export function readWindowOperationalState(label: string) {
@@ -175,6 +194,29 @@ export async function listLiveWindowOperationalStates() {
     return windows
         .map((window) => readWindowOperationalState(window.label))
         .filter((state): state is WindowOperationalState => state !== null);
+}
+
+export async function readSensitiveUpdateState() {
+    return collectSensitiveUpdateState(await listLiveWindowOperationalStates());
+}
+
+function waitForOperationalStateSettle(ms: number) {
+    return new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
+}
+
+export async function readSettledSensitiveUpdateState() {
+    const next = await readSensitiveUpdateState();
+    if (next.requiresConfirmation) {
+        return next;
+    }
+
+    await waitForOperationalStateSettle(
+        WINDOW_OPERATIONAL_STATE_PUBLISH_DEBOUNCE_MS +
+            WINDOW_OPERATIONAL_STATE_SETTLE_BUFFER_MS,
+    );
+    return readSensitiveUpdateState();
 }
 
 export function collectSensitiveUpdateState(
