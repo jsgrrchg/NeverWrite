@@ -4,6 +4,7 @@ import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import { openSettingsWindow } from "../../../app/detachedWindows";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { useChatStore } from "../store/chatStore";
+import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 import { AIChatSessionList } from "./AIChatSessionList";
 import { AIChatTabs } from "./AIChatTabs";
 import { getSessionTitle } from "../sessionPresentation";
@@ -558,7 +559,10 @@ export function AIChatHeader({
                                             "transparent";
                                     }}
                                 >
-                                    {runtime.name}
+                                    {getRuntimeDisplayName(
+                                        runtime.id,
+                                        runtime.name,
+                                    )}
                                 </button>
                             ))}
                             <div

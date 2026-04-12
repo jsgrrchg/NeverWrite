@@ -55,78 +55,55 @@ function ReviewEmptyState({
     onUndo?: () => void;
 }) {
     return (
-        <div
-            className="flex h-full flex-col items-center justify-center"
-            style={{ backgroundColor: "var(--bg-primary)" }}
-        >
-            <div
-                className="flex flex-col items-center gap-4 rounded-2xl px-10 py-12"
-                style={{
-                    backgroundColor: "var(--bg-secondary)",
-                    border: "1px solid var(--border)",
-                    boxShadow: "var(--shadow-soft)",
-                    maxWidth: 380,
-                }}
+        <div className="flex h-full flex-col items-center justify-center gap-3">
+            <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--text-secondary)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ opacity: 0.45 }}
             >
+                <path d="M9 12l2 2 4-4" />
+                <circle cx="12" cy="12" r="10" />
+            </svg>
+            <div className="flex flex-col items-center gap-1 text-center">
                 <div
-                    className="flex items-center justify-center rounded-xl"
                     style={{
-                        width: 48,
-                        height: 48,
-                        backgroundColor:
-                            "color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary))",
+                        fontSize: "0.85em",
+                        fontWeight: 500,
+                        color: "var(--text-secondary)",
                     }}
                 >
-                    <svg
-                        width="24"
-                        height="24"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="var(--accent)"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <path d="M9 12l2 2 4-4" />
-                        <circle cx="12" cy="12" r="10" />
-                    </svg>
+                    No pending AI edits
                 </div>
-                <div className="flex flex-col items-center gap-1 text-center">
-                    <div
-                        style={{
-                            fontSize: "0.92em",
-                            fontWeight: 600,
-                            color: "var(--text-primary)",
-                        }}
-                    >
-                        No pending AI edits
-                    </div>
-                    <div
-                        style={{
-                            fontSize: "0.8em",
-                            color: "var(--text-secondary)",
-                            lineHeight: 1.5,
-                        }}
-                    >
-                        All changes have been resolved.
-                        <br />
-                        New edits will appear here automatically.
-                    </div>
+                <div
+                    style={{
+                        fontSize: "0.75em",
+                        color: "var(--text-secondary)",
+                        opacity: 0.6,
+                        lineHeight: 1.5,
+                    }}
+                >
+                    New edits will appear here automatically.
                 </div>
-                {hasUndo && onUndo && (
-                    <button
-                        type="button"
-                        onClick={onUndo}
-                        className="review-action-btn rounded-md px-3 py-1.5 text-xs"
-                        style={{
-                            fontWeight: 500,
-                            ...getNeutralButtonStyle(),
-                        }}
-                    >
-                        Undo Last Reject
-                    </button>
-                )}
             </div>
+            {hasUndo && onUndo && (
+                <button
+                    type="button"
+                    onClick={onUndo}
+                    className="review-action-btn rounded-md px-3 py-1.5 text-xs"
+                    style={{
+                        fontWeight: 500,
+                        ...getNeutralButtonStyle(),
+                    }}
+                >
+                    Undo Last Reject
+                </button>
+            )}
         </div>
     );
 }

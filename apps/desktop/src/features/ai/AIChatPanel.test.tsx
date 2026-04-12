@@ -389,7 +389,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         renderComponent(<AIChatPanel />);
 
         fireEvent.click(screen.getByTitle("New chat"));
-        fireEvent.click(screen.getByRole("button", { name: "Codex ACP" }));
+        fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
         await waitFor(() => {
             expect(newSession).toHaveBeenCalledWith("codex-acp");

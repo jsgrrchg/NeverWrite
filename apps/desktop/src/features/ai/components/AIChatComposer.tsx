@@ -48,7 +48,7 @@ import {
 } from "../../../app/services/pretextService";
 import { estimateComposerTextHeight } from "./chatTextPretext";
 import { useVaultStore } from "../../../app/store/vaultStore";
-import { AI_MESSAGE_LABEL, APP_BRAND_NAME } from "../../../app/utils/branding";
+import { AI_MESSAGE_LABEL } from "../../../app/utils/branding";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
@@ -133,27 +133,25 @@ const COMMON_SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "init",
         label: "/init",
-        description: "Generate starter instructions for the current workspace.",
+        description: "starter instructions",
         insertText: "/init ",
     },
     {
         id: "review",
         label: "/review",
-        description:
-            "Review current uncommitted changes or add instructions after it.",
+        description: "review changes",
         insertText: "/review ",
     },
     {
         id: "plan",
         label: "/plan",
-        description:
-            "Create or refine a step-by-step plan before making changes.",
+        description: "step-by-step plan",
         insertText: "/plan ",
     },
     {
         id: "compact",
         label: "/compact",
-        description: "Compact the active thread before continuing.",
+        description: "compact thread",
         insertText: "/compact",
     },
 ];
@@ -162,25 +160,25 @@ const CODEX_SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "review-branch",
         label: "/review-branch",
-        description: "Review changes against a base branch.",
+        description: "review branch",
         insertText: "/review-branch ",
     },
     {
         id: "review-commit",
         label: "/review-commit",
-        description: "Review a specific commit by SHA.",
+        description: "review commit",
         insertText: "/review-commit ",
     },
     {
         id: "undo",
         label: "/undo",
-        description: "Undo the last change from this session.",
+        description: "undo last change",
         insertText: "/undo",
     },
     {
         id: "logout",
         label: "/logout",
-        description: `Sign out this runtime in ${APP_BRAND_NAME}.`,
+        description: "sign out",
         insertText: "/logout",
     },
 ];
