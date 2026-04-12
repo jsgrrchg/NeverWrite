@@ -368,6 +368,16 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
         managed.session.status = AiSessionStatus::Streaming;
         Ok(managed.session.clone())
     }
+
+    fn register_file_baseline(
+        &mut self,
+        session_id: &str,
+        display_path: &str,
+        content: String,
+    ) -> Result<(), String> {
+        self.handle_from_session(session_id)?
+            .register_file_baseline(session_id, display_path, content)
+    }
 }
 
 impl CodexRuntimeAdapter {
