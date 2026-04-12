@@ -28,11 +28,16 @@ import {
     clearPretextServiceCacheMatching,
     measurePretextText,
 } from "./pretextService";
+import type { PretextFontSignature } from "../utils/pretextFontSignatures";
 
-const TEST_FONT = {
+const TEST_FONT: PretextFontSignature = {
     key: "test-font",
     cssFont: "14px Test Sans",
+    family: "Test Sans",
+    sizePx: 14,
     lineHeightPx: 21,
+    weight: 400,
+    style: "normal",
 };
 
 describe("pretextService", () => {

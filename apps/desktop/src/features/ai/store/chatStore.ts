@@ -2655,6 +2655,7 @@ function finalizeSessionStopping(sessionId: string) {
         if (!current) {
             return state;
         }
+        const currentState: InterruptedTurnState = current;
 
         return {
             interruptedTurnStateBySessionId:
@@ -2664,7 +2665,7 @@ function finalizeSessionStopping(sessionId: string) {
                     {
                         isStopping: false,
                         ignoreLateActivity: true,
-                        pendingManualSend: current.pendingManualSend,
+                        pendingManualSend: currentState.pendingManualSend,
                     },
                 ),
         };
@@ -2778,7 +2779,7 @@ async function hasConflict(
     tracked: TrackedFile,
 ): Promise<RestoreConflictCheckResult> {
     const pathHash = await aiGetTextFileHash(vaultPath, tracked.path);
-    const appliedHash = hashTextContent(tracked.currentText) ?? "";
+    const appliedHash: string = hashTextContent(tracked.currentText) ?? "";
 
     if (pathHash !== appliedHash) {
         // For deleted files, the expected on-disk state is "file doesn't exist"
@@ -5024,10 +5025,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (!current) {
                     return state;
                 }
+                const currentSession: AIChatSession = current;
 
                 if (
-                    current.loadedPersistedMessageStart === 0 &&
-                    !current.isLoadingPersistedMessages
+                    currentSession.loadedPersistedMessageStart === 0 &&
+                    !currentSession.isLoadingPersistedMessages
                 ) {
                     return state;
                 }

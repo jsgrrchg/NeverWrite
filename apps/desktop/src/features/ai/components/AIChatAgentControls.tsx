@@ -68,6 +68,10 @@ function DropdownField({
     const searchInputRef = useRef<HTMLInputElement>(null);
     const selected = options.find((option) => option.value === value);
     const isDisabled = disabled || options.length === 0;
+    const closeDropdown = () => {
+        setOpen(false);
+        setQuery("");
+    };
     const filteredOptions = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
         if (!searchable || !normalizedQuery) {
@@ -90,17 +94,14 @@ function DropdownField({
         if (!open) return;
         const handleClick = (event: MouseEvent) => {
             if (ref.current?.contains(event.target as Node)) return;
-            setOpen(false);
+            closeDropdown();
         };
         document.addEventListener("mousedown", handleClick);
         return () => document.removeEventListener("mousedown", handleClick);
     }, [open]);
 
     useEffect(() => {
-        if (!open) {
-            setQuery("");
-            return;
-        }
+        if (!open) return;
 
         if (searchable) {
             searchInputRef.current?.focus();
@@ -113,7 +114,12 @@ function DropdownField({
             <button
                 type="button"
                 onClick={() => {
-                    if (!isDisabled) setOpen((current) => !current);
+                    if (isDisabled) return;
+                    if (open) {
+                        closeDropdown();
+                        return;
+                    }
+                    setOpen(true);
                 }}
                 className="flex items-center gap-1 rounded-md px-2 py-1 text-xs"
                 style={{
@@ -223,7 +229,7 @@ function DropdownField({
                                     disabled={option.disabled}
                                     onClick={() => {
                                         onChange(option.value);
-                                        setOpen(false);
+                                        closeDropdown();
                                     }}
                                     className="flex w-full items-center px-3 py-1.5 text-left text-xs"
                                     style={{
