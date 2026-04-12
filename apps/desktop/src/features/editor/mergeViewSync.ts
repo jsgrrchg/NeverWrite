@@ -316,25 +316,6 @@ export function syncMergeViewForPaths(
             editorDocSignature,
             trackedTextSignature,
         });
-        logMergeSyncState(
-            view,
-            "debug",
-            "defer merge sync while editor is stale",
-            {
-                candidatePaths,
-                sessionId,
-                identityKey: trackedFile.identityKey,
-                trackedVersion: trackedFile.version,
-                trackedPath: trackedFile.path,
-                inlineState: "waiting_for_editor_doc",
-                transitionReason: "editor_doc_stale",
-                target,
-                editorDocSignature,
-                trackedTextSignature,
-                editorLength: view.state.doc.length,
-                trackedLength: countNormalizedLength(trackedFile.currentText),
-            },
-        );
         reconfigureMergeView(view, currentSignature, {
             shouldShowMerge: false,
             sessionId,

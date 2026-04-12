@@ -47,6 +47,7 @@ import {
     rejectExactSpansRust,
     syncDerivedLinePatchRust,
 } from "./actionLogRustEngine";
+import { pathsMatchVaultScoped } from "../../../app/utils/vaultPaths";
 
 // ---------------------------------------------------------------------------
 // Patch primitives
@@ -906,6 +907,34 @@ export function updateTrackedFileWithDiff(
     };
 }
 
+export function replaceTrackedFileCurrentText(
+    file: TrackedFile,
+    currentText: string,
+    timestamp: number,
+): TrackedFile {
+    const synced = syncDerivedLinePatch(file);
+    const { unreviewedEdits, unreviewedRanges } = resolveTrackedFilePatches(
+        synced.diffBase,
+        currentText,
+    );
+
+    const didChangeText = synced.currentText !== currentText;
+    const didClearConflict = synced.conflictHash !== null;
+    if (!didChangeText && !didClearConflict) {
+        return synced;
+    }
+
+    return {
+        ...synced,
+        currentText,
+        unreviewedRanges,
+        unreviewedEdits,
+        conflictHash: null,
+        version: didChangeText ? synced.version + 1 : synced.version,
+        updatedAt: timestamp,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Consolidation (replaces consolidateEditedFilesBuffer for new sessions)
 // ---------------------------------------------------------------------------
@@ -919,16 +948,34 @@ function getDiffLookupKey(diff: AIFileDiff): string {
 function findTrackedFile(
     files: Record<string, TrackedFile>,
     diff: AIFileDiff,
+    options?: {
+        vaultPath?: string | null;
+    },
 ): TrackedFile | null {
     const key = getDiffLookupKey(diff);
     if (files[key]) return files[key];
+    const vaultPath = options?.vaultPath ?? null;
 
     // Fallback: search by path or originPath for moves
     if (diff.kind === "move" && diff.previous_path) {
         for (const file of Object.values(files)) {
             if (
-                file.path === diff.previous_path ||
-                file.originPath === diff.previous_path
+                pathsMatchVaultScoped(
+                    file.path,
+                    diff.previous_path,
+                    vaultPath,
+                    {
+                        includeLegacyLeadingSlashRelative: true,
+                    },
+                ) ||
+                pathsMatchVaultScoped(
+                    file.originPath,
+                    diff.previous_path,
+                    vaultPath,
+                    {
+                        includeLegacyLeadingSlashRelative: true,
+                    },
+                )
             ) {
                 return file;
             }
@@ -937,7 +984,16 @@ function findTrackedFile(
 
     // Fallback: search by current path for any diff type (handles move+update sequences)
     for (const file of Object.values(files)) {
-        if (file.path === diff.path) return file;
+        if (
+            pathsMatchVaultScoped(file.path, diff.path, vaultPath, {
+                includeLegacyLeadingSlashRelative: true,
+            }) ||
+            pathsMatchVaultScoped(file.identityKey, diff.path, vaultPath, {
+                includeLegacyLeadingSlashRelative: true,
+            })
+        ) {
+            return file;
+        }
     }
 
     return null;
@@ -947,6 +1003,9 @@ export function consolidateTrackedFiles(
     files: Record<string, TrackedFile>,
     diffs: AIFileDiff[],
     timestamp: number,
+    options?: {
+        vaultPath?: string | null;
+    },
 ): Record<string, TrackedFile> {
     const next = { ...files };
 
@@ -955,7 +1014,7 @@ export function consolidateTrackedFiles(
             continue; // Skip unsupported files
         }
 
-        const existing = findTrackedFile(next, diff);
+        const existing = findTrackedFile(next, diff, options);
 
         if (existing) {
             // Remove old key if identity changed (e.g. move)

@@ -3039,8 +3039,9 @@ export function Editor({
     }, [runMergeViewSync, scheduleMergeViewSync]);
 
     useEffect(() => {
-        return subscribeEditorReviewSync(() =>
-            resolveEditorTargetForOpenTab(activeTabRef.current),
+        return subscribeEditorReviewSync(
+            () => resolveEditorTargetForOpenTab(activeTabRef.current),
+            () => viewRef.current?.state.doc.toString() ?? null,
         );
     }, [activeTabId, activeNoteId]);
 

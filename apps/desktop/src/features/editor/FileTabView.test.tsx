@@ -22,6 +22,7 @@ import {
     setEditorTabs,
     setVaultEntries,
 } from "../../test/test-utils";
+import { resetExternalReloadBaselinesForTests } from "./externalReloadBaselineCache";
 
 function seedTrackedDiff(
     targetPath: string,
@@ -74,6 +75,7 @@ function seedTrackedDiff(
 
 describe("FileTabView", () => {
     beforeEach(() => {
+        resetExternalReloadBaselinesForTests();
         setVaultEntries([], "/vault");
     });
 
@@ -436,6 +438,83 @@ describe("FileTabView", () => {
             unmount();
             await Promise.resolve();
         });
+    });
+
+    it("notifies user edits for text files using the absolute file path", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/a.ts",
+                title: "a.ts",
+                path: "/vault/src/a.ts",
+                mimeType: "text/typescript",
+                viewer: "text",
+                content: "const a = 1;",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command, rawPayload) => {
+            if (command !== "save_vault_file") {
+                throw new Error(`Unexpected command: ${command}`);
+            }
+            const payload = rawPayload as Record<string, string>;
+            return {
+                relative_path: payload.relativePath,
+                file_name: payload.relativePath.split("/").pop(),
+                content: payload.content,
+            };
+        });
+
+        const originalNotifyUserEditOnFile =
+            useChatStore.getState().notifyUserEditOnFile;
+        const notifyUserEditOnFile = vi.fn();
+        useChatStore.setState({
+            notifyUserEditOnFile,
+        });
+
+        try {
+            await act(async () => {
+                renderComponent(<FileTabView />);
+                await Promise.resolve();
+            });
+
+            const editorElement = document.querySelector(".cm-editor");
+            expect(editorElement).not.toBeNull();
+
+            const view = EditorView.findFromDOM(editorElement as HTMLElement);
+            expect(view).not.toBeNull();
+
+            await act(async () => {
+                view!.dispatch({
+                    changes: {
+                        from: view!.state.doc.length,
+                        insert: "\n// local edit",
+                    },
+                });
+                await Promise.resolve();
+            });
+
+            expect(notifyUserEditOnFile).toHaveBeenCalledTimes(1);
+            expect(notifyUserEditOnFile.mock.calls[0]?.[0]).toBe(
+                "/vault/src/a.ts",
+            );
+            expect(notifyUserEditOnFile.mock.calls[0]?.[1]).toEqual([
+                {
+                    oldFrom: "const a = 1;".length,
+                    oldTo: "const a = 1;".length,
+                    newFrom: "const a = 1;".length,
+                    newTo: "const a = 1;\n// local edit".length,
+                },
+            ]);
+            expect(notifyUserEditOnFile.mock.calls[0]?.[2]).toBe(
+                "const a = 1;\n// local edit",
+            );
+        } finally {
+            useChatStore.setState({
+                notifyUserEditOnFile: originalNotifyUserEditOnFile,
+            });
+        }
     });
 
     it("toggles the in-file search panel on repeated Command+F in text files", async () => {

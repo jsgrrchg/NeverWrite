@@ -1545,6 +1545,9 @@ export default function App() {
 
                 // Reload editor content for open tabs when file changes externally
                 const change = event.payload;
+                void useChatStore
+                    .getState()
+                    .reconcileTrackedFilesFromVaultChange(change);
                 if (change.kind === "upsert" && change.note) {
                     invalidateLivePreviewNoteCache(change.note.id);
                     const noteId = change.note.id;

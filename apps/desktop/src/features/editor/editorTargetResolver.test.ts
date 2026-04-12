@@ -114,6 +114,45 @@ describe("editorTargetResolver", () => {
         });
     });
 
+    it("resolves a legacy slash-prefixed vault-relative file path", () => {
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "file",
+                    relativePath: "src/watcher.rs",
+                    path: "/vault/src/watcher.rs",
+                    title: "watcher.rs",
+                    content: "fn main() {}",
+                    mimeType: "text/rust",
+                    viewer: "text",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+
+        expect(findOpenFileTarget("/src/watcher.rs")).toMatchObject({
+            kind: "file",
+            relativePath: "src/watcher.rs",
+            absolutePath: "/vault/src/watcher.rs",
+            openTab: {
+                id: "tab-1",
+            },
+        });
+        expect(
+            resolveEditorTargetForTrackedPath("/src/watcher.rs"),
+        ).toMatchObject({
+            kind: "file",
+            relativePath: "src/watcher.rs",
+            absolutePath: "/vault/src/watcher.rs",
+        });
+    });
+
     it("resolves an open text file target by absolute path even without a vault root", () => {
         useVaultStore.setState({
             vaultPath: null,

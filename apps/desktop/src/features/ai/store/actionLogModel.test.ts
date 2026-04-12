@@ -822,6 +822,45 @@ describe("consolidateTrackedFiles", () => {
             { oldStart: 1, oldEnd: 2, newStart: 1, newEnd: 2 },
         ]);
     });
+
+    it("matches legacy slash-prefixed tracked paths against canonical vault paths", () => {
+        const legacy = consolidateTrackedFiles(
+            {},
+            [
+                makeDiff({
+                    path: "/src/watcher.rs",
+                    old_text: "old",
+                    new_text: "v1",
+                }),
+            ],
+            1000,
+            {
+                vaultPath: "/vault",
+            },
+        );
+
+        const updated = consolidateTrackedFiles(
+            legacy,
+            [
+                makeDiff({
+                    path: "/vault/src/watcher.rs",
+                    old_text: "old",
+                    new_text: "v2",
+                }),
+            ],
+            2000,
+            {
+                vaultPath: "/vault",
+            },
+        );
+
+        expect(Object.values(updated)).toHaveLength(1);
+        expect(Object.values(updated)[0]).toMatchObject({
+            path: "/vault/src/watcher.rs",
+            currentText: "v2",
+            diffBase: "old",
+        });
+    });
 });
 
 describe("ActionLogState helpers", () => {

@@ -9,6 +9,8 @@ import {
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     normalizeVaultPath,
+    normalizeVaultRoot,
+    pathsMatchVaultScoped,
     resolveVaultAbsolutePath,
     toVaultRelativePath,
 } from "../../app/utils/vaultPaths";
@@ -31,6 +33,32 @@ export type EditorTarget = NoteEditorTarget | FileEditorTarget;
 
 export function normalizeVaultPathMatch(path: string) {
     return normalizeVaultPath(path);
+}
+
+function toLegacyVaultRelativePath(path: string, vaultPath: string | null) {
+    if (!vaultPath) {
+        return null;
+    }
+
+    const normalizedPath = normalizeVaultPathMatch(path);
+    if (
+        !normalizedPath.startsWith("/") ||
+        /^[A-Za-z]:\//.test(normalizedPath)
+    ) {
+        return null;
+    }
+
+    const normalizedVaultPath = normalizeVaultRoot(vaultPath);
+    if (
+        normalizedVaultPath &&
+        (normalizedPath === normalizedVaultPath ||
+            normalizedPath.startsWith(`${normalizedVaultPath}/`))
+    ) {
+        return null;
+    }
+
+    const strippedPath = normalizedPath.replace(/^\/+/, "");
+    return strippedPath.length > 0 ? strippedPath : null;
 }
 
 function stripMarkdownExtension(path: string) {
@@ -120,7 +148,9 @@ export function findOpenNoteTarget(path: string): NoteEditorTarget | null {
 export function findOpenFileTarget(path: string): FileEditorTarget | null {
     const { vaultPath } = useVaultStore.getState();
     const normalizedPath = normalizeVaultPathMatch(path);
-    const relativePath = toVaultRelativePath(path, vaultPath);
+    const relativePath =
+        toVaultRelativePath(path, vaultPath) ??
+        toLegacyVaultRelativePath(path, vaultPath);
     const normalizedRelativePath = relativePath
         ? normalizeVaultPathMatch(relativePath)
         : null;
@@ -128,9 +158,20 @@ export function findOpenFileTarget(path: string): FileEditorTarget | null {
         (tab) =>
             isFileTab(tab) &&
             (normalizeVaultPathMatch(tab.path) === normalizedPath ||
+                pathsMatchVaultScoped(tab.path, normalizedPath, vaultPath, {
+                    includeLegacyLeadingSlashRelative: true,
+                }) ||
                 (normalizedRelativePath !== null &&
-                    normalizeVaultPathMatch(tab.relativePath) ===
-                        normalizedRelativePath)),
+                    (normalizeVaultPathMatch(tab.relativePath) ===
+                        normalizedRelativePath ||
+                        pathsMatchVaultScoped(
+                            tab.relativePath,
+                            normalizedRelativePath,
+                            vaultPath,
+                            {
+                                includeLegacyLeadingSlashRelative: true,
+                            },
+                        )))),
     );
     if (!openTab || !isFileTab(openTab)) {
         return null;
@@ -138,9 +179,7 @@ export function findOpenFileTarget(path: string): FileEditorTarget | null {
 
     return {
         kind: "file",
-        absolutePath: normalizedPath.startsWith("/")
-            ? normalizedPath
-            : normalizeVaultPathMatch(openTab.path),
+        absolutePath: normalizeVaultPathMatch(openTab.path),
         relativePath:
             normalizedRelativePath ??
             normalizeVaultPathMatch(openTab.relativePath),
@@ -181,7 +220,9 @@ export function resolveFileTargetForPath(
     }
 
     const { vaultPath } = useVaultStore.getState();
-    const relativePath = toVaultRelativePath(path, vaultPath);
+    const relativePath =
+        toVaultRelativePath(path, vaultPath) ??
+        toLegacyVaultRelativePath(path, vaultPath);
     if (!relativePath) {
         return null;
     }
